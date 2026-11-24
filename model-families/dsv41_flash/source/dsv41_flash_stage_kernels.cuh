@@ -337,15 +337,46 @@ static __device__ __forceinline__ const uint16_t *D41WindowKey(const uint16_t *_
 #define D41K_WINDOW_PART_KEYS (D41K_WINDOW_KEYS / D41K_WINDOW_PARTS)
 #define D41K_WINDOW_PART_SLICE (D41K_LATENT / D41K_WINDOW_PARTS)
 
+static __device__ __forceinline__ float D41WarpPrefixMax(float value, uint32_t lane, float *warp_total)
+{
+	float inclusive = value;
+	for ( uint32_t offset = 1u; offset < 32u; offset <<= 1u )
+	{
+		const float other = __shfl_up_sync(0xffffffffu, inclusive, offset);
+		if ( lane >= offset )
+			inclusive = fmaxf(inclusive, other);
+	}
+	if ( lane == 31u )
+		*warp_total = inclusive;
+	return __shfl_up_sync(0xffffffffu, inclusive, 1u);
+}
+
+static __device__ __forceinline__ void D41WindowPrefixWeights(float score, float carried_max, float prev_in_warp, const float *warp_max,
+	uint32_t warp, uint32_t lane_index, uint32_t count, float *keep, float *added, float *folded)
+{
+	if ( threadIdx.x >= count )
+		return;
+	float before = carried_max;
+	for ( uint32_t w = 0u; w < warp; ++w )
+		before = fmaxf(before, warp_max[w]);
+	if ( lane_index != 0u )
+		before = fmaxf(before, prev_in_warp);
+	const float top = fmaxf(before, score);
+	keep[threadIdx.x] = before == -INFINITY ? 0.0f : __expf(before - top);
+	added[threadIdx.x] = __expf(score - top);
+	if ( threadIdx.x + 1u == count )
+		folded[0] = top;
+}
+
 static __global__ void D41WindowFoldWholeKernel(float *__restrict__ records, uint32_t heads, const uint16_t *__restrict__ query,
 	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions,
 	const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin,
 	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t window,
 	float qk_scale)
 {
+	static_assert(D41K_WINDOW_KEYS % 32u == 0u && D41K_WINDOW_KEYS <= D41K_THREADS, "window keys fill whole warps");
 	__shared__ float warp_sums[D41K_WINDOW_KEYS][D41K_THREADS / 32u];
-	__shared__ float scores[D41K_WINDOW_KEYS];
-	__shared__ float prefix[D41K_WINDOW_KEYS];
+	__shared__ float warp_max[D41K_WINDOW_KEYS / 32u];
 	__shared__ float keep[D41K_WINDOW_KEYS];
 	__shared__ float added[D41K_WINDOW_KEYS];
 	__shared__ float folded[2];
@@ -386,36 +417,20 @@ static __global__ void D41WindowFoldWholeKernel(float *__restrict__ records, uin
 		}
 	}
 	__syncthreads();
-	if ( threadIdx.x < count )
+	float score = -INFINITY, prev_in_warp = -INFINITY;
+	if ( threadIdx.x < D41K_WINDOW_KEYS )
 	{
-		float total = 0.0f;
-		for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
-			total += warp_sums[threadIdx.x][w];
-		scores[threadIdx.x] = total * qk_scale;
-	}
-	__syncthreads();
-	if ( threadIdx.x < count )
-		prefix[threadIdx.x] = scores[threadIdx.x];
-	__syncthreads();
-	for ( uint32_t step = 1u; step < D41K_WINDOW_KEYS; step <<= 1u )
-	{
-		float candidate = threadIdx.x < count ? prefix[threadIdx.x] : -INFINITY;
-		if ( threadIdx.x < count && threadIdx.x >= step )
-			candidate = fmaxf(candidate, prefix[threadIdx.x - step]);
-		__syncthreads();
 		if ( threadIdx.x < count )
-			prefix[threadIdx.x] = candidate;
-		__syncthreads();
+		{
+			float total = 0.0f;
+			for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
+				total += warp_sums[threadIdx.x][w];
+			score = total * qk_scale;
+		}
+		prev_in_warp = D41WarpPrefixMax(score, lane_index, &warp_max[warp]);
 	}
-	if ( threadIdx.x < count )
-	{
-		const float before = threadIdx.x == 0u ? carried_max : fmaxf(carried_max, prefix[threadIdx.x - 1u]);
-		const float top = fmaxf(before, scores[threadIdx.x]);
-		keep[threadIdx.x] = before == -INFINITY ? 0.0f : __expf(before - top);
-		added[threadIdx.x] = __expf(scores[threadIdx.x] - top);
-		if ( threadIdx.x + 1u == count )
-			folded[0] = top;
-	}
+	__syncthreads();
+	D41WindowPrefixWeights(score, carried_max, prev_in_warp, warp_max, warp, lane_index, count, keep, added, folded);
 	__syncthreads();
 	if ( threadIdx.x == 0u )
 	{
@@ -459,11 +474,10 @@ static __global__ void __cluster_dims__(D41K_WINDOW_PARTS, 1, 1) __launch_bounds
 	uint64_t ring_slot_stride, uint32_t window, float qk_scale)
 {
 	static_assert(D41K_WINDOW_KEYS % D41K_WINDOW_PARTS == 0u && D41K_LATENT % D41K_WINDOW_PARTS == 0u && D41K_WINDOW_PART_SLICE <= D41K_THREADS &&
-		D41K_WINDOW_KEYS <= D41K_THREADS, "each part scores a whole run of keys and folds a whole slice of the latent");
+		D41K_WINDOW_KEYS <= D41K_THREADS && D41K_WINDOW_KEYS % 32u == 0u, "each part scores a whole run of keys and folds a whole slice of the latent");
 	__shared__ float warp_sums[D41K_WINDOW_PART_KEYS][D41K_THREADS / 32u];
 	__shared__ float part_scores[D41K_WINDOW_PART_KEYS];
-	__shared__ float scores[D41K_WINDOW_KEYS];
-	__shared__ float prefix[D41K_WINDOW_KEYS];
+	__shared__ float warp_max[D41K_WINDOW_KEYS / 32u];
 	__shared__ float keep[D41K_WINDOW_KEYS];
 	__shared__ float added[D41K_WINDOW_KEYS];
 	__shared__ float folded[2];
@@ -508,31 +522,15 @@ static __global__ void __cluster_dims__(D41K_WINDOW_PARTS, 1, 1) __launch_bounds
 		part_scores[threadIdx.x] = total * qk_scale;
 	}
 	cluster.sync();
-	if ( threadIdx.x < count )
-		scores[threadIdx.x] = cluster.map_shared_rank(part_scores, threadIdx.x / D41K_WINDOW_PART_KEYS)[threadIdx.x % D41K_WINDOW_PART_KEYS];
-	cluster.sync();
-	if ( threadIdx.x < count )
-		prefix[threadIdx.x] = scores[threadIdx.x];
-	__syncthreads();
-	for ( uint32_t step = 1u; step < D41K_WINDOW_KEYS; step <<= 1u )
+	float score = -INFINITY, prev_in_warp = -INFINITY;
+	if ( threadIdx.x < D41K_WINDOW_KEYS )
 	{
-		float candidate = threadIdx.x < count ? prefix[threadIdx.x] : -INFINITY;
-		if ( threadIdx.x < count && threadIdx.x >= step )
-			candidate = fmaxf(candidate, prefix[threadIdx.x - step]);
-		__syncthreads();
 		if ( threadIdx.x < count )
-			prefix[threadIdx.x] = candidate;
-		__syncthreads();
+			score = cluster.map_shared_rank(part_scores, threadIdx.x / D41K_WINDOW_PART_KEYS)[threadIdx.x % D41K_WINDOW_PART_KEYS];
+		prev_in_warp = D41WarpPrefixMax(score, lane_index, &warp_max[warp]);
 	}
-	if ( threadIdx.x < count )
-	{
-		const float before = threadIdx.x == 0u ? carried_max : fmaxf(carried_max, prefix[threadIdx.x - 1u]);
-		const float top = fmaxf(before, scores[threadIdx.x]);
-		keep[threadIdx.x] = before == -INFINITY ? 0.0f : __expf(before - top);
-		added[threadIdx.x] = __expf(scores[threadIdx.x] - top);
-		if ( threadIdx.x + 1u == count )
-			folded[0] = top;
-	}
+	cluster.sync();
+	D41WindowPrefixWeights(score, carried_max, prev_in_warp, warp_max, warp, lane_index, count, keep, added, folded);
 	__syncthreads();
 	if ( part == 0u && threadIdx.x == 0u )
 	{
@@ -590,6 +588,22 @@ static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wav
 
 #define D41K_GRID_ITEMS 32768u
 
+static __device__ __forceinline__ uint32_t D41PackBf16(float low, float high)
+{
+	return (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
+}
+
+static __device__ __forceinline__ uint32_t D41DequantE4m3x2(uint32_t bytes, float scale)
+{
+	return D41PackBf16(LmE4m3ToFloat((uint8_t)(bytes & 0xffu)) * scale, LmE4m3ToFloat((uint8_t)((bytes >> 8u) & 0xffu)) * scale);
+}
+
+static __device__ __forceinline__ uint4 D41DequantE4m3x8(uint2 codes, float scale)
+{
+	return make_uint4(D41DequantE4m3x2(codes.x, scale), D41DequantE4m3x2(codes.x >> 16u, scale),
+		D41DequantE4m3x2(codes.y, scale), D41DequantE4m3x2(codes.y >> 16u, scale));
+}
+
 static __device__ __forceinline__ void D41MergeSinkHead(const float *__restrict__ partials, uint64_t source_stride, uint32_t sources, uint32_t heads,
 	const float *__restrict__ sink, uint16_t *output, uint32_t row, uint32_t head, float *scales, float *denominator_shared)
 {
@@ -623,11 +637,52 @@ static __device__ __forceinline__ void D41MergeSinkHead(const float *__restrict_
 	}
 	__syncthreads();
 	const float denom = *denominator_shared;
+	const float *first_src = partials + base + 2u;
+	if ( (((uintptr_t)first_src | (uintptr_t)output) & 15u) == 0u && (sources == 1u || (source_stride & 3u) == 0u) )
+	{
+		const uint64_t stride_f4 = source_stride >> 2u;
+		const float4 *pq = (const float4 *)first_src;
+		uint2 *oq = (uint2 *)output;
+		for ( uint32_t v = threadIdx.x; v < D41K_LATENT / 4u; v += blockDim.x )
+		{
+			float4 m = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+			for ( uint32_t source = 0u; source < sources; ++source )
+			{
+				const float s = scales[source];
+				const float4 p = pq[(uint64_t)source * stride_f4 + v];
+				m.x = fmaf(p.x, s, m.x);
+				m.y = fmaf(p.y, s, m.y);
+				m.z = fmaf(p.z, s, m.z);
+				m.w = fmaf(p.w, s, m.w);
+			}
+			oq[v] = make_uint2(D41PackBf16(m.x / denom, m.y / denom), D41PackBf16(m.z / denom, m.w / denom));
+		}
+		return;
+	}
+	if ( (((uintptr_t)first_src | (uintptr_t)output) & 7u) == 0u && (sources == 1u || (source_stride & 1u) == 0u) )
+	{
+		const uint64_t stride_f2 = source_stride >> 1u;
+		const float2 *pq = (const float2 *)first_src;
+		uint32_t *oq = (uint32_t *)output;
+		for ( uint32_t v = threadIdx.x; v < D41K_LATENT / 2u; v += blockDim.x )
+		{
+			float2 m = make_float2(0.0f, 0.0f);
+			for ( uint32_t source = 0u; source < sources; ++source )
+			{
+				const float s = scales[source];
+				const float2 p = pq[(uint64_t)source * stride_f2 + v];
+				m.x = fmaf(p.x, s, m.x);
+				m.y = fmaf(p.y, s, m.y);
+			}
+			oq[v] = D41PackBf16(m.x / denom, m.y / denom);
+		}
+		return;
+	}
 	for ( uint32_t element = threadIdx.x; element < D41K_LATENT; element += blockDim.x )
 	{
 		float merged = 0.0f;
 		for ( uint32_t source = 0u; source < sources; ++source )
-			merged = fmaf(partials[(uint64_t)source * source_stride + base + 2u + element], scales[source], merged);
+			merged = fmaf(first_src[(uint64_t)source * source_stride + element], scales[source], merged);
 		output[element] = LmFloatToBf16(merged / denom);
 	}
 }
@@ -736,6 +791,18 @@ static __global__ void D41GroupInputKernel(const uint16_t *__restrict__ gathered
 	uint32_t width_per_rank, uint32_t first_rank, uint32_t ranks)
 {
 	const uint32_t row = blockIdx.y;
+	if ( (width_per_rank & 7u) == 0u && (((uintptr_t)gathered | (uintptr_t)group_input) & 15u) == 0u )
+	{
+		const uint32_t quads = width_per_rank >> 3u, span = quads * ranks;
+		const uint4 *gq = (const uint4 *)gathered;
+		uint4 *oq = (uint4 *)group_input;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < span; q += gridDim.x * blockDim.x )
+		{
+			const uint32_t rank = first_rank + q / quads, col = q % quads;
+			oq[(uint64_t)row * span + q] = gq[((uint64_t)rank * rows + row) * quads + col];
+		}
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width_per_rank * ranks; index += gridDim.x * blockDim.x )
 	{
 		const uint32_t rank = first_rank + index / width_per_rank, element = index % width_per_rank;
@@ -759,17 +826,41 @@ static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uin
 	uint32_t target_stride, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+	const uint16_t *src_row = source + (uint64_t)row * source_stride;
+	uint16_t *dst_row = target + (uint64_t)row * target_stride;
+	if ( (width & 7u) == 0u && (((uintptr_t)src_row | (uintptr_t)dst_row) & 15u) == 0u )
+	{
+		const uint32_t quads = width >> 3u;
+		const uint4 *sq = (const uint4 *)src_row;
+		uint4 *dq = (uint4 *)dst_row;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += gridDim.x * blockDim.x )
+			dq[q] = sq[q];
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
-		target[(uint64_t)row * target_stride + index] = source[(uint64_t)row * source_stride + index];
+		dst_row[index] = src_row[index];
 }
 
 static __global__ void D41IndexPackKernel(const uint16_t *__restrict__ query, const uint16_t *__restrict__ weight, uint16_t *__restrict__ packed,
 	uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
 {
 	const uint32_t row = blockIdx.x;
+	const uint16_t *q_row = query + (uint64_t)row * query_width, *w_row = weight + (uint64_t)row * weight_width;
+	uint16_t *p_row = packed + (uint64_t)row * pack_width;
+	if ( (query_width & 7u) == 0u && (((uintptr_t)q_row | (uintptr_t)p_row) & 15u) == 0u )
+	{
+		const uint32_t q_quads = query_width >> 3u;
+		const uint4 *qq = (const uint4 *)q_row;
+		uint4 *pq = (uint4 *)p_row;
+		for ( uint32_t i = threadIdx.x; i < q_quads; i += blockDim.x )
+			pq[i] = qq[i];
+		for ( uint32_t element = query_width + threadIdx.x; element < pack_width; element += blockDim.x )
+			p_row[element] = element < query_width + weight_width ? w_row[element - query_width] : (uint16_t)0u;
+		return;
+	}
 	for ( uint32_t element = threadIdx.x; element < pack_width; element += blockDim.x )
-		packed[(uint64_t)row * pack_width + element] = element < query_width ? query[(uint64_t)row * query_width + element] :
-			element < query_width + weight_width ? weight[(uint64_t)row * weight_width + element - query_width] : (uint16_t)0u;
+		p_row[element] = element < query_width ? q_row[element] :
+			element < query_width + weight_width ? w_row[element - query_width] : (uint16_t)0u;
 }
 
 static __global__ void D41IndexUnpackKernel(const uint16_t *__restrict__ packed, uint64_t rank_stride, uint16_t *__restrict__ query,
@@ -777,11 +868,24 @@ static __global__ void D41IndexUnpackKernel(const uint16_t *__restrict__ packed,
 {
 	const uint32_t row = blockIdx.x, rank = blockIdx.y, ranks = gridDim.y;
 	const uint16_t *source = packed + (uint64_t)rank * rank_stride + (uint64_t)row * pack_width;
+	uint16_t *q_dst = query + ((uint64_t)row * ranks + rank) * query_width;
+	uint16_t *w_dst = weight + ((uint64_t)row * ranks + rank) * weight_width;
+	if ( (query_width & 7u) == 0u && (((uintptr_t)source | (uintptr_t)q_dst) & 15u) == 0u )
+	{
+		const uint32_t q_quads = query_width >> 3u;
+		const uint4 *sq = (const uint4 *)source;
+		uint4 *qq = (uint4 *)q_dst;
+		for ( uint32_t i = threadIdx.x; i < q_quads; i += blockDim.x )
+			qq[i] = sq[i];
+		for ( uint32_t element = threadIdx.x; element < weight_width; element += blockDim.x )
+			w_dst[element] = source[query_width + element];
+		return;
+	}
 	for ( uint32_t element = threadIdx.x; element < query_width + weight_width; element += blockDim.x )
 		if ( element < query_width )
-			query[((uint64_t)row * ranks + rank) * query_width + element] = source[element];
+			q_dst[element] = source[element];
 		else
-			weight[((uint64_t)row * ranks + rank) * weight_width + element - query_width] = source[element];
+			w_dst[element - query_width] = source[element];
 }
 
 static __device__ __forceinline__ uint32_t D41ScalePair(uint32_t v, float factor)
@@ -925,11 +1029,29 @@ static __global__ void D41SharedSendKernel(const uint16_t *__restrict__ shared, 
 
 static __global__ void D41SharedDequantKernel(const uint8_t *__restrict__ bytes, uint16_t *__restrict__ act, uint32_t rows, uint32_t width)
 {
-	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row >= rows || element >= width )
+	const uint32_t row = blockIdx.y;
+	if ( row >= rows )
 		return;
-	const uint32_t exponent = bytes[(uint64_t)rows * width + (uint64_t)row * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK];
-	act[(uint64_t)row * width + element] = LmFloatToBf16(LmE4m3ToFloat(bytes[(uint64_t)row * width + element]) * __uint_as_float(exponent << 23u));
+	const uint8_t *src = bytes + (uint64_t)row * width;
+	const uint8_t *scales = bytes + (uint64_t)rows * width + (uint64_t)row * (width / SPARK_DSV41_FLASH_FP8_BLOCK);
+	uint16_t *dst = act + (uint64_t)row * width;
+	if ( (width & 7u) == 0u && ((uintptr_t)src & 7u) == 0u && ((uintptr_t)dst & 15u) == 0u )
+	{
+		const uint32_t quads = width >> 3u;
+		const uint2 *sq = (const uint2 *)src;
+		uint4 *dq = (uint4 *)dst;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += gridDim.x * blockDim.x )
+		{
+			const uint32_t exponent = scales[(q * 8u) / SPARK_DSV41_FLASH_FP8_BLOCK];
+			dq[q] = D41DequantE4m3x8(sq[q], __uint_as_float(exponent << 23u));
+		}
+		return;
+	}
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
+	{
+		const uint32_t exponent = scales[element / SPARK_DSV41_FLASH_FP8_BLOCK];
+		dst[element] = LmFloatToBf16(LmE4m3ToFloat(src[element]) * __uint_as_float(exponent << 23u));
+	}
 }
 
 static __global__ void D41FfnPackKernel(const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint8_t *__restrict__ block,
@@ -946,19 +1068,35 @@ static __global__ void D41FfnPackKernel(const uint32_t *__restrict__ route_exper
 static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, uint16_t *__restrict__ xq, uint32_t *__restrict__ route_expert,
 	float *__restrict__ route_weight, uint32_t own, uint32_t hidden, uint32_t top_k, uint64_t block_bytes)
 {
-	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = row / own, index = row - source * own;
+	const uint32_t row = blockIdx.y, source = row / own, index = row - source * own;
 	const uint8_t *block = received + (uint64_t)source * block_bytes;
 	const uint64_t ids = (uint64_t)own * (hidden + hidden / SPARK_DSV41_FLASH_FP8_BLOCK);
-	if ( element < top_k )
+	for ( uint32_t k = blockIdx.x * blockDim.x + threadIdx.x; k < top_k; k += gridDim.x * blockDim.x )
 	{
-		route_expert[(uint64_t)row * top_k + element] = ((const uint32_t *)(block + ids))[(uint64_t)index * top_k + element];
-		route_weight[(uint64_t)row * top_k + element] =
-			((const float *)(block + ids + (uint64_t)own * top_k * sizeof(uint32_t)))[(uint64_t)index * top_k + element];
+		route_expert[(uint64_t)row * top_k + k] = ((const uint32_t *)(block + ids))[(uint64_t)index * top_k + k];
+		route_weight[(uint64_t)row * top_k + k] =
+			((const float *)(block + ids + (uint64_t)own * top_k * sizeof(uint32_t)))[(uint64_t)index * top_k + k];
 	}
-	if ( element >= hidden )
+	const uint8_t *src = block + (uint64_t)index * hidden;
+	const uint8_t *scales = block + (uint64_t)own * hidden + (uint64_t)index * (hidden / SPARK_DSV41_FLASH_FP8_BLOCK);
+	uint16_t *dst = xq + (uint64_t)row * hidden;
+	if ( (hidden & 7u) == 0u && ((uintptr_t)src & 7u) == 0u && ((uintptr_t)dst & 15u) == 0u )
+	{
+		const uint32_t quads = hidden >> 3u;
+		const uint2 *sq = (const uint2 *)src;
+		uint4 *dq = (uint4 *)dst;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += gridDim.x * blockDim.x )
+		{
+			const uint32_t exponent = scales[(q * 8u) / SPARK_DSV41_FLASH_FP8_BLOCK];
+			dq[q] = D41DequantE4m3x8(sq[q], __uint_as_float(exponent << 23u));
+		}
 		return;
-	const uint32_t exponent = block[(uint64_t)own * hidden + (uint64_t)index * (hidden / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK];
-	xq[(uint64_t)row * hidden + element] = LmFloatToBf16(LmE4m3ToFloat(block[(uint64_t)index * hidden + element]) * __uint_as_float(exponent << 23u));
+	}
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < hidden; element += gridDim.x * blockDim.x )
+	{
+		const uint32_t exponent = scales[element / SPARK_DSV41_FLASH_FP8_BLOCK];
+		dst[element] = LmFloatToBf16(LmE4m3ToFloat(src[element]) * __uint_as_float(exponent << 23u));
+	}
 }
 
 #define D41K_BACKUP_FLAG 0x80000000u
@@ -1404,11 +1542,6 @@ static __device__ __forceinline__ uint32_t D41ReceivedSource(const D41ReceivedRo
 	return source;
 }
 
-static __device__ __forceinline__ uint32_t D41PackBf16(float low, float high)
-{
-	return (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
-}
-
 static __device__ __forceinline__ void D41AddBf16x8(float *total, uint4 value)
 {
 	const uint32_t words[4] = { value.x, value.y, value.z, value.w };
@@ -1796,24 +1929,55 @@ static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice
 	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset,
 	const uint16_t *__restrict__ shared_partial)
 {
-	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	float sum = 0.0f;
-	if ( element >= hidden_slice )
-		return;
-	for ( uint32_t source = 0u; source < degree; ++source )
+	const uint32_t row = blockIdx.y;
+	const uint32_t aligned = (hidden_slice & 7u) == 0u && (((uintptr_t)slice_out | (uintptr_t)output) & 15u) == 0u &&
+		(shared_partial != 0 ? ((uintptr_t)shared_partial & 15u) == 0u :
+			(((uintptr_t)received & 15u) == 0u && (source_stride & 7u) == 0u && (shared_offset & 7u) == 0u)) ? 1u : 0u;
+	if ( aligned != 0u )
 	{
-		float total = 0.0f;
-		for ( uint32_t k = 0u; k < top_k; ++k )
+		const uint32_t quads = hidden_slice >> 3u;
+		uint4 *out_q = (uint4 *)(output + (uint64_t)row * hidden_slice);
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += gridDim.x * blockDim.x )
 		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] / local_experts == source )
-				total += LmBf16ToFloat(slice_out[(uint64_t)route_packed_row[route] * hidden_slice + element]);
+			float sum[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+			for ( uint32_t source = 0u; source < degree; ++source )
+			{
+				float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+				for ( uint32_t k = 0u; k < top_k; ++k )
+				{
+					const uint32_t route = row * top_k + k;
+					if ( route_expert[route] / local_experts == source )
+						D41AddBf16x8(total, ((const uint4 *)(slice_out + (uint64_t)route_packed_row[route] * hidden_slice))[q]);
+				}
+				const uint4 sh = shared_partial != 0 ?
+					((const uint4 *)(shared_partial + ((uint64_t)source * gridDim.y + row) * hidden_slice))[q] :
+					((const uint4 *)(received + (uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice))[q];
+				D41AddBf16x8(total, sh);
+				for ( uint32_t i = 0u; i < 8u; ++i )
+					sum[i] += LmBf16ToFloat(LmFloatToBf16(total[i]));
+			}
+			out_q[q] = D41RoundBf16x8(sum);
 		}
-		total += LmBf16ToFloat(shared_partial != 0 ? shared_partial[((uint64_t)source * gridDim.y + row) * hidden_slice + element] :
-			received[(uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice + element]);
-		sum += LmBf16ToFloat(LmFloatToBf16(total));
+		return;
 	}
-	output[(uint64_t)row * hidden_slice + element] = __bfloat16_as_ushort(__float2bfloat16_rn(sum));
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < hidden_slice; element += gridDim.x * blockDim.x )
+	{
+		float sum = 0.0f;
+		for ( uint32_t source = 0u; source < degree; ++source )
+		{
+			float total = 0.0f;
+			for ( uint32_t k = 0u; k < top_k; ++k )
+			{
+				const uint32_t route = row * top_k + k;
+				if ( route_expert[route] / local_experts == source )
+					total += LmBf16ToFloat(slice_out[(uint64_t)route_packed_row[route] * hidden_slice + element]);
+			}
+			total += LmBf16ToFloat(shared_partial != 0 ? shared_partial[((uint64_t)source * gridDim.y + row) * hidden_slice + element] :
+				received[(uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice + element]);
+			sum += LmBf16ToFloat(LmFloatToBf16(total));
+		}
+		output[(uint64_t)row * hidden_slice + element] = __bfloat16_as_ushort(__float2bfloat16_rn(sum));
+	}
 }
 
 static __global__ void D41SliceGatherKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint32_t rows, uint32_t hidden_slice,
@@ -1884,6 +2048,25 @@ static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ pack
 
 static __global__ void D41SumSourcesF32Kernel(const float *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
 {
+	if ( (elements & 7u) == 0u && (((uintptr_t)gathered | (uintptr_t)output) & 15u) == 0u )
+	{
+		const uint64_t quads = elements >> 3u, stride_f4 = elements >> 2u;
+		const float4 *gq = (const float4 *)gathered;
+		uint4 *oq = (uint4 *)output;
+		for ( uint64_t q = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += (uint64_t)gridDim.x * blockDim.x )
+		{
+			float4 s0 = make_float4(0.0f, 0.0f, 0.0f, 0.0f), s1 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+			for ( uint32_t source = 0u; source < degree; ++source )
+			{
+				const uint64_t off = (uint64_t)source * stride_f4 + (q << 1u);
+				const float4 v0 = gq[off], v1 = gq[off + 1u];
+				s0.x += v0.x; s0.y += v0.y; s0.z += v0.z; s0.w += v0.w;
+				s1.x += v1.x; s1.y += v1.y; s1.z += v1.z; s1.w += v1.w;
+			}
+			oq[q] = make_uint4(D41PackBf16(s0.x, s0.y), D41PackBf16(s0.z, s0.w), D41PackBf16(s1.x, s1.y), D41PackBf16(s1.z, s1.w));
+		}
+		return;
+	}
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
 	{
 		float sum = 0.0f;
@@ -1895,6 +2078,20 @@ static __global__ void D41SumSourcesF32Kernel(const float *__restrict__ gathered
 
 static __global__ void D41SumGatheredKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
 {
+	if ( (elements & 7u) == 0u && (((uintptr_t)gathered | (uintptr_t)output) & 15u) == 0u )
+	{
+		const uint64_t quads = elements >> 3u;
+		const uint4 *gq = (const uint4 *)gathered;
+		uint4 *oq = (uint4 *)output;
+		for ( uint64_t q = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += (uint64_t)gridDim.x * blockDim.x )
+		{
+			float sum[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+			for ( uint32_t source = 0u; source < degree; ++source )
+				D41AddBf16x8(sum, gq[(uint64_t)source * quads + q]);
+			oq[q] = D41RoundBf16x8(sum);
+		}
+		return;
+	}
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
 	{
 		float sum = 0.0f;
