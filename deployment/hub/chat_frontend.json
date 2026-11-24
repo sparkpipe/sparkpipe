@@ -1,1271 +1,1271 @@
 {
- "public": {
-  "header": "X-SparkPipe-Public",
-  "keys_file": "api_keys.json",
+  "public": {
+    "header": "X-SparkPipe-Public",
+    "keys_file": "api_keys.json",
+    "models": [
+      "glm-5.3",
+      "glm-5.3-flash",
+      "kimi-k3",
+      "deepseek-v4.1-flash",
+      "gemma-4-31b",
+      "gemma-4-26b-a4b",
+      "hy4-preview",
+      "ling-3.0-flash",
+      "muse-glimmer-30b",
+      "ling-3.0-flash-fin",
+      "laguna-s-2.1",
+      "mimo-v2.6-flash",
+      "mimo-v2.6-pro",
+      "k-exaone-2.0",
+      "a.x-k2",
+      "solar-open-2"
+    ]
+  },
   "models": [
-   "glm-5.3",
-   "glm-5.3-flash",
-   "kimi-k3",
-   "deepseek-v4.1-flash",
-   "gemma-4-31b",
-   "gemma-4-26b-a4b",
-   "hy4-preview",
-   "ling-3.0-flash",
-   "muse-glimmer-30b",
-   "ling-3.0-flash-fin",
-   "laguna-s-2.1",
-   "mimo-v2.6-flash",
-   "mimo-v2.6-pro",
-   "k-exaone-2.0",
-   "a.x-k2",
-   "solar-open-2"
-  ]
- },
- "models": [
-  {
-   "id": "glm-5.3",
-   "model_dir": "models/glm-5.3",
-   "engine": "http://127.0.0.1:8475",
-   "context_tokens": 1048576,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "glm-5.3-bf16/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "stop_tokens": [
-    "<|endoftext|>",
-    "<|user|>",
-    "<|observation|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "reasoning_effort",
-    "clear_thinking"
-   ],
-   "reasoning_effort": {
-    "low": {
-     "reasoning_effort": "low"
+    {
+      "id": "glm-5.3",
+      "model_dir": "models/glm-5.3",
+      "engine": "http://127.0.0.1:8475",
+      "context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "glm-5.3-bf16/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort",
+        "clear_thinking"
+      ],
+      "reasoning_effort": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "high"
+        },
+        "high": {
+          "reasoning_effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
     },
-    "medium": {
-     "reasoning_effort": "high"
+    {
+      "id": "glm-5.3-flash",
+      "model_dir": "models/glm-5.3-flash",
+      "engine": "http://127.0.0.1:8476",
+      "context_tokens": 131072,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "glm-5.3-flash-bf16-official/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort",
+        "clear_thinking"
+      ],
+      "reasoning_effort": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "high"
+        },
+        "high": {
+          "reasoning_effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
     },
-    "high": {
-     "reasoning_effort": "max"
+    {
+      "id": "kimi-k3",
+      "model_dir": "models/kimi-k3",
+      "engine": "http://127.0.0.1:8459",
+      "context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "kimi-k3/README.md (single-step tasks: temperature 1.0, top-p 0.95)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 32,
+      "tokenizer": {
+        "kind": "tiktoken",
+        "file": "tiktoken.model",
+        "special_tokens_from": "tokenizer_config.json",
+        "reserved_special_tokens": 256,
+        "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+      },
+      "renderer": {
+        "kind": "segments",
+        "module": "encoding_k3.py",
+        "function": "build_chat_segments"
+      },
+      "stop_tokens": [
+        "<|end_of_msg|>"
+      ],
+      "template_defaults": {
+        "thinking": true
+      },
+      "template_kwargs": [
+        "thinking",
+        "thinking_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "thinking": false
+        },
+        "low": {
+          "thinking_effort": "low"
+        },
+        "medium": {
+          "thinking_effort": "high"
+        },
+        "high": {
+          "thinking_effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<|open|>think<|sep|>",
+        "end": "<|close|>think<|sep|>",
+        "close": "<|close|>think<|sep|><|open|>response<|sep|>"
+      },
+      "tool_calls": {
+        "format": "tagged",
+        "start": "<|open|>call",
+        "end": "<|close|>call<|sep|>",
+        "attribute_end": "<|sep|>",
+        "argument_start": "<|open|>argument",
+        "argument_end": "<|close|>argument<|sep|>",
+        "object_start": "<|open|>json",
+        "object_end": "<|close|>json<|sep|>"
+      },
+      "content_markers": [
+        "<|open|>response<|sep|>",
+        "<|close|>response<|sep|>",
+        "<|open|>tools<|sep|>",
+        "<|close|>tools<|sep|>"
+      ],
+      "end_markers": [
+        "<|close|>message<|sep|>"
+      ]
+    },
+    {
+      "id": "kimi-k3.1-pro",
+      "model_dir": "models/kimi-k3.1-pro",
+      "engine": "http://127.0.0.1:8481",
+      "context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "kimi-k3.1-pro/README.md (reasoning effort max, temperature 1.0, top-p 0.95)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 32,
+      "tokenizer": {
+        "kind": "tiktoken",
+        "file": "tiktoken.model",
+        "special_tokens_from": "tokenizer_config.json",
+        "reserved_special_tokens": 256,
+        "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+      },
+      "renderer": {
+        "kind": "segments",
+        "module": "encoding_k3.py",
+        "function": "build_chat_segments"
+      },
+      "stop_tokens": [
+        "<|end_of_msg|>"
+      ],
+      "template_defaults": {
+        "thinking": true
+      },
+      "template_kwargs": [
+        "thinking",
+        "thinking_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "thinking": false
+        },
+        "low": {
+          "thinking_effort": "low"
+        },
+        "medium": {
+          "thinking_effort": "high"
+        },
+        "high": {
+          "thinking_effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<|open|>think<|sep|>",
+        "end": "<|close|>think<|sep|>",
+        "close": "<|close|>think<|sep|><|open|>response<|sep|>"
+      },
+      "tool_calls": {
+        "format": "tagged",
+        "start": "<|open|>call",
+        "end": "<|close|>call<|sep|>",
+        "attribute_end": "<|sep|>",
+        "argument_start": "<|open|>argument",
+        "argument_end": "<|close|>argument<|sep|>",
+        "object_start": "<|open|>json",
+        "object_end": "<|close|>json<|sep|>"
+      },
+      "content_markers": [
+        "<|open|>response<|sep|>",
+        "<|close|>response<|sep|>",
+        "<|open|>tools<|sep|>",
+        "<|close|>tools<|sep|>"
+      ],
+      "end_markers": [
+        "<|close|>message<|sep|>"
+      ]
+    },
+    {
+      "id": "qwen3.8-27b",
+      "model_dir": "models/qwen3.8-27b",
+      "engine": "http://127.0.0.1:8461",
+      "context_tokens": 262144,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20
+      },
+      "sampling_source": "qwen3.8-27b/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "template_defaults": {
+        "enable_thinking": true
+      },
+      "template_kwargs": [
+        "enable_thinking",
+        "reasoning_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true,
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "enable_thinking": true,
+          "reasoning_effort": "xhigh"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>",
+        "close": "\n</think>\n\n"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "qwen3.8-27b-fp8",
+      "model_dir": "models/qwen3.8-27b",
+      "engine": "http://127.0.0.1:8482",
+      "context_tokens": 262144,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20
+      },
+      "sampling_source": "qwen3.8-27b/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "template_defaults": {
+        "enable_thinking": true
+      },
+      "template_kwargs": [
+        "enable_thinking",
+        "reasoning_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true,
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "enable_thinking": true,
+          "reasoning_effort": "xhigh"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>",
+        "close": "\n</think>\n\n"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "model_dir": "models/deepseek-v4.1-flash",
+      "engine": "http://127.0.0.1:8463",
+      "context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "deepseek-v4.1-flash/README.md (evaluations use temperature 1.0, top_p 0.95)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "renderer": {
+        "kind": "segments",
+        "module": "encoding_dsv41.py",
+        "function": "build_chat_segments"
+      },
+      "stop_tokens": [
+        "<\uff5cend\u2581of\u2581sentence\uff5c>"
+      ],
+      "template_defaults": {
+        "thinking": true,
+        "effort": "high"
+      },
+      "template_kwargs": [
+        "thinking",
+        "effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "thinking": false
+        },
+        "low": {
+          "effort": "low"
+        },
+        "medium": {
+          "effort": "high"
+        },
+        "high": {
+          "effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "tagged",
+        "start": "\n<\uff5cDSML\uff5c invoke",
+        "end": "</\uff5cDSML\uff5c invoke>",
+        "attribute_end": ">",
+        "argument_start": "<\uff5cDSML\uff5c parameter",
+        "argument_end": "</\uff5cDSML\uff5c parameter>",
+        "name_attribute": "name",
+        "key_attribute": "name",
+        "string_attribute": "string"
+      },
+      "content_markers": [
+        "<\uff5cDSML\uff5c calls>",
+        "\n</\uff5cDSML\uff5c calls>"
+      ]
+    },
+    {
+      "id": "qwen3.8-max",
+      "model_dir": "models/qwen3.8-max",
+      "engine": "http://127.0.0.1:8464",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20
+      },
+      "sampling_source": "qwen3.8-2.4t-a95b-fp8/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort"
+      ],
+      "reasoning_effort": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "xhigh"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>",
+        "close": "\n</think>\n\n"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "qwen3.8-flash",
+      "model_dir": "models/qwen3.8-flash",
+      "engine": "http://127.0.0.1:8465",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20
+      },
+      "sampling_source": "qwen3.8-flash-next/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>"
+      ],
+      "template_defaults": {
+        "enable_thinking": true
+      },
+      "template_kwargs": [
+        "enable_thinking",
+        "reasoning_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true,
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "enable_thinking": true,
+          "reasoning_effort": "xhigh"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>",
+        "close": "\n</think>\n\n"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "gemma-4-31b",
+      "model_dir": "models/gemma-4-31b",
+      "engine": "http://127.0.0.1:8466",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64
+      },
+      "sampling_source": "gemma-4-31b-it/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<turn|>",
+        "<eos>",
+        "<|tool_response>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<|channel>thought\n",
+        "end": "<channel|>"
+      },
+      "tool_calls": {
+        "format": "object",
+        "start": "<|tool_call>",
+        "end": "<tool_call|>",
+        "name_prefix": "call:",
+        "string_delimiter": "<|\"|>"
+      }
+    },
+    {
+      "id": "gemma-4-26b-a4b",
+      "model_dir": "models/gemma-4-26b-a4b",
+      "engine": "http://127.0.0.1:8467",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64
+      },
+      "sampling_source": "gemma-4-26b-a4b-it/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<turn|>",
+        "<eos>",
+        "<|tool_response>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<|channel>thought\n",
+        "end": "<channel|>"
+      },
+      "tool_calls": {
+        "format": "object",
+        "start": "<|tool_call>",
+        "end": "<tool_call|>",
+        "name_prefix": "call:",
+        "string_delimiter": "<|\"|>"
+      }
+    },
+    {
+      "id": "hy4-preview",
+      "model_dir": "models/hy4-preview",
+      "engine": "http://127.0.0.1:8470",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 0.9,
+        "top_p": 1.0
+      },
+      "sampling_source": "hy4-preview-fp8-official/generation_config.json (top_k -1: off)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<\uff5chy_end:opensource\uff5c>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "reasoning_effort": "no_think"
+        },
+        "low": {
+          "reasoning_effort": "high"
+        },
+        "medium": {
+          "reasoning_effort": "high"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
+      },
+      "reasoning": {
+        "start": "<think:opensource>",
+        "end": "</think:opensource>"
+      },
+      "tool_calls": {
+        "format": "key_value",
+        "start": "<tool_call:opensource>",
+        "end": "</tool_call:opensource>",
+        "key_start": "<arg_key:opensource>",
+        "key_end": "</arg_key:opensource>",
+        "value_start": "<arg_value:opensource>",
+        "value_end": "</arg_value:opensource>"
+      },
+      "content_markers": [
+        "<tool_calls:opensource>",
+        "</tool_calls:opensource>"
+      ]
+    },
+    {
+      "id": "ling-3.0-flash",
+      "model_dir": "models/ling-3.0-flash",
+      "engine": "http://127.0.0.1:8468",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20
+      },
+      "sampling_source": "ling-3.0-flash/README.md (default parameters)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|role_end|>",
+        "<|endoftext|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "key_value",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
+    },
+    {
+      "id": "muse-glimmer-30b",
+      "model_dir": "models/muse-glimmer-30b",
+      "engine": "http://127.0.0.1:8471",
+      "context_tokens": 131072,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64
+      },
+      "sampling_source": "muse-glimmer-30b/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|eot|>",
+        "<|end_of_text|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_strength"
+      ],
+      "reasoning_effort": {
+        "low": {
+          "reasoning_strength": "low"
+        },
+        "medium": {
+          "reasoning_strength": "medium"
+        },
+        "high": {
+          "reasoning_strength": "high"
+        }
+      },
+      "channels": {
+        "message_start": "<|start|>assistant",
+        "header_end": "<|message|>",
+        "message_end": "<|eom|>",
+        "recipient_prefix": " to=",
+        "reasoning_recipient": "self",
+        "content_recipient": "user"
+      },
+      "tool_calls": {
+        "format": "tagged",
+        "start": "<atem:invoke",
+        "end": "</atem:invoke>",
+        "attribute_end": ">",
+        "argument_start": "<atem:parameter",
+        "argument_end": "</atem:parameter>",
+        "name_attribute": "name",
+        "key_attribute": "name"
+      },
+      "content_markers": [
+        "<atem:function_calls>",
+        "</atem:function_calls>"
+      ]
+    },
+    {
+      "id": "ling-3.0-flash-fin",
+      "model_dir": "models/ling-3.0-flash-fin",
+      "engine": "http://127.0.0.1:8469",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20
+      },
+      "sampling_source": "ling-3.0-flash-fin/README.md (recommended for general inference)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|role_end|>",
+        "<|endoftext|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "key_value",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
+    },
+    {
+      "id": "laguna-s-2.1",
+      "model_dir": "models/laguna-s-2.1",
+      "engine": "http://127.0.0.1:8472",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": 20
+      },
+      "sampling_source": "laguna-s-2.1/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "\u3008|EOS|\u3009",
+        "</assistant>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "key_value",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "model_dir": "models/mimo-v2.6-flash",
+      "engine": "http://127.0.0.1:8473",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "mimo-v2.6-flash-rl/README.md (recommended sampling)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|mimo_audio_eod|>"
+      ],
+      "template_defaults": {
+        "enable_thinking": true
+      },
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "mimo-v2.6-pro",
+      "model_dir": "models/mimo-v2.6-pro",
+      "engine": "http://127.0.0.1:8474",
+      "context_tokens": 32768,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "mimo-v2.6-pro-rl/README.md (recommended sampling)",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|mimo_audio_eod|>"
+      ],
+      "template_defaults": {
+        "enable_thinking": true
+      },
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "k-exaone-2.0",
+      "model_dir": "models/k-exaone-2.0",
+      "engine": "http://127.0.0.1:8477",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "k-exaone-2.0-750b-bf16-official/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 32,
+      "stop_tokens": [
+        "<|endofturn|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "function_xml",
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "attribute_end": ">",
+        "function_start": "<function=",
+        "function_end": "</function>",
+        "parameter_start": "<parameter=",
+        "parameter_end": "</parameter>"
+      }
+    },
+    {
+      "id": "a.x-k2",
+      "model_dir": "models/a.x-k2",
+      "engine": "http://127.0.0.1:8478",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 0.9,
+        "top_p": 0.95
+      },
+      "sampling_source": "ax-k2-fp8-official/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im_end|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "enable_thinking"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "enable_thinking": false
+        },
+        "low": {
+          "enable_thinking": true
+        },
+        "medium": {
+          "enable_thinking": true
+        },
+        "high": {
+          "enable_thinking": true
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "format": "json",
+        "start": "<tool_call>",
+        "end": "</tool_call>"
+      }
+    },
+    {
+      "id": "solar-open-2",
+      "model_dir": "models/solar-open-2",
+      "engine": "http://127.0.0.1:8479",
+      "context_tokens": 262144,
+      "max_output_tokens": 32768,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 1.0
+      },
+      "sampling_source": "solar-open2-250b-bf16-official/README.md",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|im:end|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort"
+      ],
+      "reasoning_effort": {
+        "minimal": {
+          "reasoning_effort": "low"
+        },
+        "low": {
+          "reasoning_effort": "medium"
+        },
+        "medium": {
+          "reasoning_effort": "medium"
+        },
+        "high": {
+          "reasoning_effort": "high"
+        }
+      },
+      "reasoning": {
+        "start": "<|think:start|>",
+        "end": "<|think:end|>"
+      },
+      "tool_calls": {
+        "start": "<|tool_call:start|>",
+        "end": "<|tool_call:end|>",
+        "key_start": "<|tool_arg:start|>",
+        "key_end": "<|tool_arg:value|>",
+        "value_start": "",
+        "value_end": "<|tool_arg:end|>"
+      }
     }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "key_start": "<arg_key>",
-    "key_end": "</arg_key>",
-    "value_start": "<arg_value>",
-    "value_end": "</arg_value>"
-   }
+  ],
+  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
+  "control": {
+    "status_url": "http://127.0.0.1:8440/status",
+    "force_url": "http://127.0.0.1:8440/force",
+    "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
   },
-  {
-   "id": "glm-5.3-flash",
-   "model_dir": "models/glm-5.3-flash",
-   "engine": "http://127.0.0.1:8476",
-   "context_tokens": 131072,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "glm-5.3-flash-bf16-official/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|endoftext|>",
-    "<|user|>",
-    "<|observation|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "reasoning_effort",
-    "clear_thinking"
-   ],
-   "reasoning_effort": {
-    "low": {
-     "reasoning_effort": "low"
-    },
-    "medium": {
-     "reasoning_effort": "high"
-    },
-    "high": {
-     "reasoning_effort": "max"
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "key_start": "<arg_key>",
-    "key_end": "</arg_key>",
-    "value_start": "<arg_value>",
-    "value_end": "</arg_value>"
-   }
+  "site_dir": "site",
+  "memory": {
+    "url": "http://127.0.0.1:8435",
+    "host_listen": "127.0.0.1:8436",
+    "token_file": "memory.token"
   },
-  {
-   "id": "kimi-k3",
-   "model_dir": "models/kimi-k3",
-   "engine": "http://127.0.0.1:8459",
-   "context_tokens": 1048576,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "kimi-k3/README.md (single-step tasks: temperature 1.0, top-p 0.95)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "tokenizer": {
-    "kind": "tiktoken",
-    "file": "tiktoken.model",
-    "special_tokens_from": "tokenizer_config.json",
-    "reserved_special_tokens": 256,
-    "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
-   },
-   "renderer": {
-    "kind": "segments",
-    "module": "encoding_k3.py",
-    "function": "build_chat_segments"
-   },
-   "stop_tokens": [
-    "<|end_of_msg|>"
-   ],
-   "template_defaults": {
-    "thinking": true
-   },
-   "template_kwargs": [
-    "thinking",
-    "thinking_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "thinking": false
-    },
-    "low": {
-     "thinking_effort": "low"
-    },
-    "medium": {
-     "thinking_effort": "high"
-    },
-    "high": {
-     "thinking_effort": "max"
-    }
-   },
-   "reasoning": {
-    "start": "<|open|>think<|sep|>",
-    "end": "<|close|>think<|sep|>",
-    "close": "<|close|>think<|sep|><|open|>response<|sep|>"
-   },
-   "tool_calls": {
-    "format": "tagged",
-    "start": "<|open|>call",
-    "end": "<|close|>call<|sep|>",
-    "attribute_end": "<|sep|>",
-    "argument_start": "<|open|>argument",
-    "argument_end": "<|close|>argument<|sep|>",
-    "object_start": "<|open|>json",
-    "object_end": "<|close|>json<|sep|>"
-   },
-   "content_markers": [
-    "<|open|>response<|sep|>",
-    "<|close|>response<|sep|>",
-    "<|open|>tools<|sep|>",
-    "<|close|>tools<|sep|>"
-   ],
-   "end_markers": [
-    "<|close|>message<|sep|>"
-   ]
+  "replay": {
+    "directory": "/srv/workspace/sparkpipe/replay",
+    "budget_bytes": 8589934592,
+    "directive": "/home/spec/sparkdata/working-state/directive"
   },
-  {
-   "id": "kimi-k3.1-pro",
-   "model_dir": "models/kimi-k3.1-pro",
-   "engine": "http://127.0.0.1:8481",
-   "context_tokens": 1048576,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "kimi-k3.1-pro/README.md (reasoning effort max, temperature 1.0, top-p 0.95)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "tokenizer": {
-    "kind": "tiktoken",
-    "file": "tiktoken.model",
-    "special_tokens_from": "tokenizer_config.json",
-    "reserved_special_tokens": 256,
-    "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
-   },
-   "renderer": {
-    "kind": "segments",
-    "module": "encoding_k3.py",
-    "function": "build_chat_segments"
-   },
-   "stop_tokens": [
-    "<|end_of_msg|>"
-   ],
-   "template_defaults": {
-    "thinking": true
-   },
-   "template_kwargs": [
-    "thinking",
-    "thinking_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "thinking": false
-    },
-    "low": {
-     "thinking_effort": "low"
-    },
-    "medium": {
-     "thinking_effort": "high"
-    },
-    "high": {
-     "thinking_effort": "max"
-    }
-   },
-   "reasoning": {
-    "start": "<|open|>think<|sep|>",
-    "end": "<|close|>think<|sep|>",
-    "close": "<|close|>think<|sep|><|open|>response<|sep|>"
-   },
-   "tool_calls": {
-    "format": "tagged",
-    "start": "<|open|>call",
-    "end": "<|close|>call<|sep|>",
-    "attribute_end": "<|sep|>",
-    "argument_start": "<|open|>argument",
-    "argument_end": "<|close|>argument<|sep|>",
-    "object_start": "<|open|>json",
-    "object_end": "<|close|>json<|sep|>"
-   },
-   "content_markers": [
-    "<|open|>response<|sep|>",
-    "<|close|>response<|sep|>",
-    "<|open|>tools<|sep|>",
-    "<|close|>tools<|sep|>"
-   ],
-   "end_markers": [
-    "<|close|>message<|sep|>"
-   ]
+  "records": {
+    "directory": "/srv/workspace/sparkpipe/request-records"
   },
-  {
-   "id": "qwen3.8-27b",
-   "model_dir": "models/qwen3.8-27b",
-   "engine": "http://127.0.0.1:8461",
-   "context_tokens": 262144,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 20
-   },
-   "sampling_source": "qwen3.8-27b/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "stop_tokens": [
-    "<|im_end|>",
-    "<|endoftext|>"
-   ],
-   "template_defaults": {
-    "enable_thinking": true
-   },
-   "template_kwargs": [
-    "enable_thinking",
-    "reasoning_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true,
-     "reasoning_effort": "low"
-    },
-    "medium": {
-     "enable_thinking": true,
-     "reasoning_effort": "medium"
-    },
-    "high": {
-     "enable_thinking": true,
-     "reasoning_effort": "xhigh"
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>",
-    "close": "\n</think>\n\n"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
+  "codex": {
+    "instructions_file": "codex_instructions.md"
   },
-  {
-   "id": "qwen3.8-27b-fp8",
-   "model_dir": "models/qwen3.8-27b",
-   "engine": "http://127.0.0.1:8482",
-   "context_tokens": 262144,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 20
-   },
-   "sampling_source": "qwen3.8-27b/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "stop_tokens": [
-    "<|im_end|>",
-    "<|endoftext|>"
-   ],
-   "template_defaults": {
-    "enable_thinking": true
-   },
-   "template_kwargs": [
-    "enable_thinking",
-    "reasoning_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true,
-     "reasoning_effort": "low"
-    },
-    "medium": {
-     "enable_thinking": true,
-     "reasoning_effort": "medium"
-    },
-    "high": {
-     "enable_thinking": true,
-     "reasoning_effort": "xhigh"
+  "client": {
+    "citation_wrapper": {
+      "head_sha256": "8054351a96b97f5970c71f09d9b3c7b4e06539fb99d29e8b68d1b71e0d9bfa00",
+      "open": "<context>\n",
+      "close": "\n</context>\n",
+      "separator": "\n"
     }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>",
-    "close": "\n</think>\n\n"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
-  },
-  {
-   "id": "deepseek-v4.1-flash",
-   "model_dir": "models/deepseek-v4.1-flash",
-   "engine": "http://127.0.0.1:8463",
-   "context_tokens": 1048576,
-   "max_output_tokens": 131072,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "deepseek-v4.1-flash/README.md (evaluations use temperature 1.0, top_p 0.95)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "renderer": {
-    "kind": "segments",
-    "module": "encoding_dsv41.py",
-    "function": "build_chat_segments"
-   },
-   "stop_tokens": [
-    "<｜end▁of▁sentence｜>"
-   ],
-   "template_defaults": {
-    "thinking": true,
-    "effort": "high"
-   },
-   "template_kwargs": [
-    "thinking",
-    "effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "thinking": false
-    },
-    "low": {
-     "effort": "low"
-    },
-    "medium": {
-     "effort": "high"
-    },
-    "high": {
-     "effort": "max"
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "tagged",
-    "start": "\n<｜DSML｜ invoke",
-    "end": "</｜DSML｜ invoke>",
-    "attribute_end": ">",
-    "argument_start": "<｜DSML｜ parameter",
-    "argument_end": "</｜DSML｜ parameter>",
-    "name_attribute": "name",
-    "key_attribute": "name",
-    "string_attribute": "string"
-   },
-   "content_markers": [
-    "<｜DSML｜ calls>",
-    "\n</｜DSML｜ calls>"
-   ]
-  },
-  {
-   "id": "qwen3.8-max",
-   "model_dir": "models/qwen3.8-max",
-   "engine": "http://127.0.0.1:8464",
-   "context_tokens": 32768,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 20
-   },
-   "sampling_source": "qwen3.8-2.4t-a95b-fp8/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|im_end|>",
-    "<|endoftext|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "reasoning_effort"
-   ],
-   "reasoning_effort": {
-    "low": {
-     "reasoning_effort": "low"
-    },
-    "medium": {
-     "reasoning_effort": "medium"
-    },
-    "high": {
-     "reasoning_effort": "xhigh"
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>",
-    "close": "\n</think>\n\n"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
-  },
-  {
-   "id": "qwen3.8-flash",
-   "model_dir": "models/qwen3.8-flash",
-   "engine": "http://127.0.0.1:8465",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 20
-   },
-   "sampling_source": "qwen3.8-flash-next/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|im_end|>",
-    "<|endoftext|>"
-   ],
-   "template_defaults": {
-    "enable_thinking": true
-   },
-   "template_kwargs": [
-    "enable_thinking",
-    "reasoning_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true,
-     "reasoning_effort": "low"
-    },
-    "medium": {
-     "enable_thinking": true,
-     "reasoning_effort": "medium"
-    },
-    "high": {
-     "enable_thinking": true,
-     "reasoning_effort": "xhigh"
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>",
-    "close": "\n</think>\n\n"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
-  },
-  {
-   "id": "gemma-4-31b",
-   "model_dir": "models/gemma-4-31b",
-   "engine": "http://127.0.0.1:8466",
-   "context_tokens": 32768,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 64
-   },
-   "sampling_source": "gemma-4-31b-it/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<turn|>",
-    "<eos>",
-    "<|tool_response>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<|channel>thought\n",
-    "end": "<channel|>"
-   },
-   "tool_calls": {
-    "format": "object",
-    "start": "<|tool_call>",
-    "end": "<tool_call|>",
-    "name_prefix": "call:",
-    "string_delimiter": "<|\"|>"
-   }
-  },
-  {
-   "id": "gemma-4-26b-a4b",
-   "model_dir": "models/gemma-4-26b-a4b",
-   "engine": "http://127.0.0.1:8467",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 64
-   },
-   "sampling_source": "gemma-4-26b-a4b-it/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<turn|>",
-    "<eos>",
-    "<|tool_response>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<|channel>thought\n",
-    "end": "<channel|>"
-   },
-   "tool_calls": {
-    "format": "object",
-    "start": "<|tool_call>",
-    "end": "<tool_call|>",
-    "name_prefix": "call:",
-    "string_delimiter": "<|\"|>"
-   }
-  },
-  {
-   "id": "hy4-preview",
-   "model_dir": "models/hy4-preview",
-   "engine": "http://127.0.0.1:8470",
-   "context_tokens": 32768,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 0.9,
-    "top_p": 1.0
-   },
-   "sampling_source": "hy4-preview-fp8-official/generation_config.json (top_k -1: off)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<｜hy_end:opensource｜>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "reasoning_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "reasoning_effort": "no_think"
-    },
-    "low": {
-     "reasoning_effort": "high"
-    },
-    "medium": {
-     "reasoning_effort": "high"
-    },
-    "high": {
-     "reasoning_effort": "high"
-    }
-   },
-   "reasoning": {
-    "start": "<think:opensource>",
-    "end": "</think:opensource>"
-   },
-   "tool_calls": {
-    "format": "key_value",
-    "start": "<tool_call:opensource>",
-    "end": "</tool_call:opensource>",
-    "key_start": "<arg_key:opensource>",
-    "key_end": "</arg_key:opensource>",
-    "value_start": "<arg_value:opensource>",
-    "value_end": "</arg_value:opensource>"
-   },
-   "content_markers": [
-    "<tool_calls:opensource>",
-    "</tool_calls:opensource>"
-   ]
-  },
-  {
-   "id": "ling-3.0-flash",
-   "model_dir": "models/ling-3.0-flash",
-   "engine": "http://127.0.0.1:8468",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 0.6,
-    "top_p": 0.95,
-    "top_k": 20
-   },
-   "sampling_source": "ling-3.0-flash/README.md (default parameters)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|role_end|>",
-    "<|endoftext|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "key_value",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "key_start": "<arg_key>",
-    "key_end": "</arg_key>",
-    "value_start": "<arg_value>",
-    "value_end": "</arg_value>"
-   }
-  },
-  {
-   "id": "muse-glimmer-30b",
-   "model_dir": "models/muse-glimmer-30b",
-   "engine": "http://127.0.0.1:8471",
-   "context_tokens": 131072,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 64
-   },
-   "sampling_source": "muse-glimmer-30b/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|eot|>",
-    "<|end_of_text|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "reasoning_strength"
-   ],
-   "reasoning_effort": {
-    "low": {
-     "reasoning_strength": "low"
-    },
-    "medium": {
-     "reasoning_strength": "medium"
-    },
-    "high": {
-     "reasoning_strength": "high"
-    }
-   },
-   "channels": {
-    "message_start": "<|start|>assistant",
-    "header_end": "<|message|>",
-    "message_end": "<|eom|>",
-    "recipient_prefix": " to=",
-    "reasoning_recipient": "self",
-    "content_recipient": "user"
-   },
-   "tool_calls": {
-    "format": "tagged",
-    "start": "<atem:invoke",
-    "end": "</atem:invoke>",
-    "attribute_end": ">",
-    "argument_start": "<atem:parameter",
-    "argument_end": "</atem:parameter>",
-    "name_attribute": "name",
-    "key_attribute": "name"
-   },
-   "content_markers": [
-    "<atem:function_calls>",
-    "</atem:function_calls>"
-   ]
-  },
-  {
-   "id": "ling-3.0-flash-fin",
-   "model_dir": "models/ling-3.0-flash-fin",
-   "engine": "http://127.0.0.1:8469",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95,
-    "top_k": 20
-   },
-   "sampling_source": "ling-3.0-flash-fin/README.md (recommended for general inference)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|role_end|>",
-    "<|endoftext|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "key_value",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "key_start": "<arg_key>",
-    "key_end": "</arg_key>",
-    "value_start": "<arg_value>",
-    "value_end": "</arg_value>"
-   }
-  },
-  {
-   "id": "laguna-s-2.1",
-   "model_dir": "models/laguna-s-2.1",
-   "engine": "http://127.0.0.1:8472",
-   "context_tokens": 32768,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 1.0,
-    "top_k": 20
-   },
-   "sampling_source": "laguna-s-2.1/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "〈|EOS|〉",
-    "</assistant>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "key_value",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "key_start": "<arg_key>",
-    "key_end": "</arg_key>",
-    "value_start": "<arg_value>",
-    "value_end": "</arg_value>"
-   }
-  },
-  {
-   "id": "mimo-v2.6-flash",
-   "model_dir": "models/mimo-v2.6-flash",
-   "engine": "http://127.0.0.1:8473",
-   "context_tokens": 32768,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "mimo-v2.6-flash-rl/README.md (recommended sampling)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|im_end|>",
-    "<|endoftext|>",
-    "<|mimo_audio_eod|>"
-   ],
-   "template_defaults": {
-    "enable_thinking": true
-   },
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
-  },
-  {
-   "id": "mimo-v2.6-pro",
-   "model_dir": "models/mimo-v2.6-pro",
-   "engine": "http://127.0.0.1:8474",
-   "context_tokens": 32768,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "mimo-v2.6-pro-rl/README.md (recommended sampling)",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|im_end|>",
-    "<|endoftext|>",
-    "<|mimo_audio_eod|>"
-   ],
-   "template_defaults": {
-    "enable_thinking": true
-   },
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
-  },
-  {
-   "id": "k-exaone-2.0",
-   "model_dir": "models/k-exaone-2.0",
-   "engine": "http://127.0.0.1:8477",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 0.95
-   },
-   "sampling_source": "k-exaone-2.0-750b-bf16-official/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 4,
-   "stop_tokens": [
-    "<|endofturn|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "function_xml",
-    "start": "<tool_call>",
-    "end": "</tool_call>",
-    "attribute_end": ">",
-    "function_start": "<function=",
-    "function_end": "</function>",
-    "parameter_start": "<parameter=",
-    "parameter_end": "</parameter>"
-   }
-  },
-  {
-   "id": "a.x-k2",
-   "model_dir": "models/a.x-k2",
-   "engine": "http://127.0.0.1:8478",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 0.9,
-    "top_p": 0.95
-   },
-   "sampling_source": "ax-k2-fp8-official/generation_config.json",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 8,
-   "stop_tokens": [
-    "<|im_end|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "enable_thinking"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "enable_thinking": false
-    },
-    "low": {
-     "enable_thinking": true
-    },
-    "medium": {
-     "enable_thinking": true
-    },
-    "high": {
-     "enable_thinking": true
-    }
-   },
-   "reasoning": {
-    "start": "<think>",
-    "end": "</think>"
-   },
-   "tool_calls": {
-    "format": "json",
-    "start": "<tool_call>",
-    "end": "</tool_call>"
-   }
-  },
-  {
-   "id": "solar-open-2",
-   "model_dir": "models/solar-open-2",
-   "engine": "http://127.0.0.1:8479",
-   "context_tokens": 262144,
-   "max_output_tokens": 32768,
-   "sampling_defaults": {
-    "temperature": 1.0,
-    "top_p": 1.0
-   },
-   "sampling_source": "solar-open2-250b-bf16-official/README.md",
-   "warm_queue": {
-    "depth": 64,
-    "wait_seconds": 3900,
-    "activation_url": "http://127.0.0.1:8440/activate"
-   },
-   "sequences": 16,
-   "stop_tokens": [
-    "<|im:end|>"
-   ],
-   "template_defaults": {},
-   "template_kwargs": [
-    "reasoning_effort"
-   ],
-   "reasoning_effort": {
-    "minimal": {
-     "reasoning_effort": "low"
-    },
-    "low": {
-     "reasoning_effort": "medium"
-    },
-    "medium": {
-     "reasoning_effort": "medium"
-    },
-    "high": {
-     "reasoning_effort": "high"
-    }
-   },
-   "reasoning": {
-    "start": "<|think:start|>",
-    "end": "<|think:end|>"
-   },
-   "tool_calls": {
-    "start": "<|tool_call:start|>",
-    "end": "<|tool_call:end|>",
-    "key_start": "<|tool_arg:start|>",
-    "key_end": "<|tool_arg:value|>",
-    "value_start": "",
-    "value_end": "<|tool_arg:end|>"
-   }
   }
- ],
- "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
- "control": {
-  "status_url": "http://127.0.0.1:8440/status",
-  "force_url": "http://127.0.0.1:8440/force",
-  "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
- },
- "site_dir": "site",
- "memory": {
-  "url": "http://127.0.0.1:8435",
-  "host_listen": "127.0.0.1:8436",
-  "token_file": "memory.token"
- },
- "replay": {
-  "directory": "/srv/workspace/sparkpipe/replay",
-  "budget_bytes": 8589934592,
-  "directive": "/home/spec/sparkdata/working-state/directive"
- },
- "records": {
-  "directory": "/srv/workspace/sparkpipe/request-records"
- },
- "codex": {
-  "instructions_file": "codex_instructions.md"
- },
- "client": {
-  "citation_wrapper": {
-   "head_sha256": "8054351a96b97f5970c71f09d9b3c7b4e06539fb99d29e8b68d1b71e0d9bfa00",
-   "open": "<context>\n",
-   "close": "\n</context>\n",
-   "separator": "\n"
-  }
- }
 }
