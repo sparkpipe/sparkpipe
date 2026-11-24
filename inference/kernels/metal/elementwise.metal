@@ -26,11 +26,32 @@ kernel void spark_add_rows(constant SparkSiluMulParams &p [[buffer(0)]], device 
 	uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint threads = group_size.x;
-	const uint row = group.y, index = group.x * threads + tid;
+	const uint row = group.y, index = (group.x * threads + tid) * 8u;
 	if ( index >= p.dimension )
 		return;
-	const ulong at = (ulong)row * p.input_stride + index;
-	hidden[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(hidden[at]) + SparkMathBf16ToFloat(addend[(ulong)row * p.output_stride + index]));
+	device ushort *h = hidden + (ulong)row * p.input_stride + index;
+	device const ushort *a = addend + (ulong)row * p.output_stride + index;
+	if ( index + 8u <= p.dimension && (((ulong)h | (ulong)a) & 15ul) == 0ul )
+	{
+		float4 hl, hh, al, ah;
+		SparkUnpack8(*(device const uint4 *)h, hl, hh);
+		SparkUnpack8(*(device const uint4 *)a, al, ah);
+		*(device uint4 *)h = SparkPack8(hl + al, hh + ah);
+		return;
+	}
+	for ( uint k = 0u; k < 8u && index + k < p.dimension; k++ )
+		h[k] = SparkMathFloatToBf16(SparkMathBf16ToFloat(h[k]) + SparkMathBf16ToFloat(a[k]));
+}
+
+template <uint ACTIVATION>
+static inline float SparkGatedActivate(float gate, float up, float limit, float up_limit)
+{
+	return ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanh(gate)) * up :
+		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up :
+		ACTIVATION == SPARK_GATED_SILU_ROUNDED_CLAMP ? SparkMathClampedGlu(SparkMathRoundBf16(SparkMathSilu(gate)), up, limit) :
+		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, limit) :
+		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, limit) :
+		ACTIVATION == SPARK_GATED_SITU ? SparkMathSitu(gate, up, limit, up_limit) : SparkMathSilu(gate) * up;
 }
 
 template <uint ACTIVATION>
@@ -39,18 +60,26 @@ kernel void spark_gated_mul(constant SparkSiluMulParams &p [[buffer(0)]], device
 	uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint threads = group_size.x;
-	const uint row = group.y, index = group.x * threads + tid;
+	const uint row = group.y, index = (group.x * threads + tid) * 4u;
 	if ( index >= p.dimension )
 		return;
-	device const ushort *source = input + (ulong)row * p.input_stride;
-	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]);
-	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanh(gate)) * up :
-		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up :
-		ACTIVATION == SPARK_GATED_SILU_ROUNDED_CLAMP ? SparkMathClampedGlu(SparkMathRoundBf16(SparkMathSilu(gate)), up, p.limit) :
-		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, p.limit) :
-		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) :
-		ACTIVATION == SPARK_GATED_SITU ? SparkMathSitu(gate, up, p.limit, p.up_limit) : SparkMathSilu(gate) * up;
-	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
+	device const ushort *g_ptr = input + (ulong)row * p.input_stride + index;
+	device const ushort *u_ptr = g_ptr + p.dimension;
+	device ushort *dst = output + (ulong)row * p.output_stride + index;
+	if ( index + 4u <= p.dimension && (((ulong)g_ptr | (ulong)u_ptr | (ulong)dst) & 7ul) == 0ul )
+	{
+		const float4 g = SparkUnpack4(*(device const uint2 *)g_ptr);
+		const float4 u = SparkUnpack4(*(device const uint2 *)u_ptr);
+		const float4 y = float4(
+			SparkGatedActivate<ACTIVATION>(g.x, u.x, p.limit, p.up_limit),
+			SparkGatedActivate<ACTIVATION>(g.y, u.y, p.limit, p.up_limit),
+			SparkGatedActivate<ACTIVATION>(g.z, u.z, p.limit, p.up_limit),
+			SparkGatedActivate<ACTIVATION>(g.w, u.w, p.limit, p.up_limit));
+		*(device uint2 *)dst = SparkPack4(y);
+		return;
+	}
+	for ( uint k = 0u; k < 4u && index + k < p.dimension; k++ )
+		dst[k] = SparkMathFloatToBf16(SparkGatedActivate<ACTIVATION>(SparkMathBf16ToFloat(g_ptr[k]), SparkMathBf16ToFloat(u_ptr[k]), p.limit, p.up_limit));
 }
 
 template [[host_name("spark_silu_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU>(constant SparkSiluMulParams &p [[buffer(0)]],
@@ -76,20 +105,40 @@ template [[host_name("spark_situ_mul")]] kernel void spark_gated_mul<SPARK_GATED
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 
 template <uint ACTIVATION>
+static inline float SparkGatedRoutedActivate(float gate, float up, float weight, float limit)
+{
+	return ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(gate)) * up * weight :
+		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSilu(gate), up, limit) * weight :
+		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, limit) * weight : SparkMathSilu(gate) * up * weight;
+}
+
+template <uint ACTIVATION>
 kernel void spark_gated_mul_routed(constant SparkSiluMulParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
 	device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint threads = group_size.x;
-	const uint row = group.y, index = group.x * threads + tid;
+	const uint row = group.y, index = (group.x * threads + tid) * 4u;
 	if ( index >= p.dimension )
 		return;
-	device const ushort *source = input + (ulong)row * p.input_stride;
-	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]), weight = weights[row];
-	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(gate)) * up * weight :
-		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSilu(gate), up, p.limit) * weight :
-		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) * weight : SparkMathSilu(gate) * up * weight;
-	output[(ulong)row * p.output_stride + index] = SparkMathFloatToBf16(activated);
+	const float weight = weights[row];
+	device const ushort *g_ptr = input + (ulong)row * p.input_stride + index;
+	device const ushort *u_ptr = g_ptr + p.dimension;
+	device ushort *dst = output + (ulong)row * p.output_stride + index;
+	if ( index + 4u <= p.dimension && (((ulong)g_ptr | (ulong)u_ptr | (ulong)dst) & 7ul) == 0ul )
+	{
+		const float4 g = SparkUnpack4(*(device const uint2 *)g_ptr);
+		const float4 u = SparkUnpack4(*(device const uint2 *)u_ptr);
+		const float4 y = float4(
+			SparkGatedRoutedActivate<ACTIVATION>(g.x, u.x, weight, p.limit),
+			SparkGatedRoutedActivate<ACTIVATION>(g.y, u.y, weight, p.limit),
+			SparkGatedRoutedActivate<ACTIVATION>(g.z, u.z, weight, p.limit),
+			SparkGatedRoutedActivate<ACTIVATION>(g.w, u.w, weight, p.limit));
+		*(device uint2 *)dst = SparkPack4(y);
+		return;
+	}
+	for ( uint k = 0u; k < 4u && index + k < p.dimension; k++ )
+		dst[k] = SparkMathFloatToBf16(SparkGatedRoutedActivate<ACTIVATION>(SparkMathBf16ToFloat(g_ptr[k]), SparkMathBf16ToFloat(u_ptr[k]), weight, p.limit));
 }
 
 template [[host_name("spark_silu_mul_routed")]] kernel void spark_gated_mul_routed<SPARK_GATED_SILU>(constant SparkSiluMulParams &p [[buffer(0)]],
@@ -108,22 +157,64 @@ template [[host_name("spark_silu_gate_limit_mul_routed")]] kernel void spark_gat
 
 kernel void spark_scale_rows(constant SparkScaleParams &p [[buffer(0)]], device ushort *values [[buffer(1)]], uint index [[thread_position_in_grid]])
 {
-	if ( index < p.count )
-		values[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(values[index]) * p.scale);
+	const ulong base = (ulong)index * 8u;
+	if ( base >= p.count )
+		return;
+	device ushort *v = values + base;
+	if ( base + 8u <= p.count && ((ulong)v & 15ul) == 0ul )
+	{
+		float4 lo, hi;
+		SparkUnpack8(*(device const uint4 *)v, lo, hi);
+		*(device uint4 *)v = SparkPack8(lo * p.scale, hi * p.scale);
+		return;
+	}
+	for ( ulong k = 0u; k < 8u && base + k < p.count; k++ )
+		v[k] = SparkMathFloatToBf16(SparkMathBf16ToFloat(v[k]) * p.scale);
 }
 
 kernel void spark_softcap_rows(constant SparkScaleParams &p [[buffer(0)]], device float *values [[buffer(1)]], uint index [[thread_position_in_grid]])
 {
-	if ( index < p.count )
+	const ulong base = (ulong)index * 4u;
+	if ( base >= p.count )
+		return;
+	device float *v = values + base;
+	if ( base + 4u <= p.count && ((ulong)v & 15ul) == 0ul )
 	{
-		const float value = p.multiply != 0.0f ? values[index] * p.multiply : values[index];
-		values[index] = p.scale != 0.0f ? SparkMathSoftcap(value, p.scale) : value;
+		float4 x = *(device const float4 *)v;
+		if ( p.multiply != 0.0f )
+			x *= p.multiply;
+		if ( p.scale != 0.0f )
+			x = float4(SparkMathSoftcap(x.x, p.scale), SparkMathSoftcap(x.y, p.scale), SparkMathSoftcap(x.z, p.scale), SparkMathSoftcap(x.w, p.scale));
+		*(device float4 *)v = x;
+		return;
+	}
+	for ( ulong k = 0u; k < 4u && base + k < p.count; k++ )
+	{
+		const float value = p.multiply != 0.0f ? v[k] * p.multiply : v[k];
+		v[k] = p.scale != 0.0f ? SparkMathSoftcap(value, p.scale) : value;
 	}
 }
 
 static inline void SparkRouteProbabilities(constant SparkRouteParams &p, device const ushort *values, threadgroup float *probability,
 	threadgroup float *scratch, device atomic_uint *error, uint row, uint tid, uint threads, uint lane, uint simd, uint simds)
 {
+	if ( p.experts <= threads )
+	{
+		float logit = -INFINITY;
+		if ( tid < p.experts )
+		{
+			logit = SparkMathBf16ToFloat(values[tid]);
+			if ( !isfinite(logit) )
+				atomic_store_explicit(error, 1u + row, memory_order_relaxed);
+		}
+		const float best = SparkGroupMax(logit, scratch, lane, simd, simds);
+		const float e = tid < p.experts ? exp(logit - best) : 0.0f;
+		const float total = SparkGroupSum(e, scratch, lane, simd, simds);
+		if ( tid < p.experts )
+			probability[tid] = e / total;
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		return;
+	}
 	float best = -INFINITY;
 	for ( uint i = tid; i < p.experts; i += threads )
 	{
@@ -179,17 +270,63 @@ kernel void spark_route_topk(constant SparkRouteParams &p [[buffer(0)]], device 
 {
 	threadgroup float scratch[32];
 	threadgroup float probability[SPARK_ROUTE_MAX_EXPERTS];
+	threadgroup uchar used[SPARK_ROUTE_MAX_EXPERTS];
+	threadgroup float simd_value[32];
+	threadgroup uint simd_index[32];
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
 	SparkRouteProbabilities(p, logits + (ulong)row * p.logit_stride, probability, scratch, error, row, tid, threads, lane, simd, simds);
 	for ( uint i = tid; i < p.experts; i += threads )
-	{
-		uint rank = 0u;
-		for ( uint j = 0u; j < p.experts; j++ )
-			rank += SparkRouteAbove(probability[j], j, probability[i], i) ? 1u : 0u;
-		if ( rank < p.top_k )
-			chosen[rank] = i;
-	}
+		used[i] = 0u;
 	threadgroup_barrier(mem_flags::mem_threadgroup);
+	for ( uint pick = 0u; pick < p.top_k; pick++ )
+	{
+		float best_val = 0.0f;
+		uint best_idx = 0xffffffffu;
+		for ( uint i = tid; i < p.experts; i += threads )
+		{
+			if ( used[i] != 0u )
+				continue;
+			const float v = probability[i];
+			if ( best_idx == 0xffffffffu || SparkRouteAbove(v, i, best_val, best_idx) )
+			{
+				best_val = v;
+				best_idx = i;
+			}
+		}
+		for ( uint offset = 16u; offset > 0u; offset >>= 1u )
+		{
+			const float ov = simd_shuffle_xor(best_val, offset);
+			const uint oi = simd_shuffle_xor(best_idx, offset);
+			if ( oi != 0xffffffffu && (best_idx == 0xffffffffu || SparkRouteAbove(ov, oi, best_val, best_idx)) )
+			{
+				best_val = ov;
+				best_idx = oi;
+			}
+		}
+		if ( lane == 0u )
+		{
+			simd_value[simd] = best_val;
+			simd_index[simd] = best_idx;
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( tid == 0u )
+		{
+			float tv = simd_value[0];
+			uint ti = simd_index[0];
+			for ( uint other = 1u; other < simds; other++ )
+			{
+				const uint oi = simd_index[other];
+				if ( oi != 0xffffffffu && (ti == 0xffffffffu || SparkRouteAbove(simd_value[other], oi, tv, ti)) )
+				{
+					tv = simd_value[other];
+					ti = oi;
+				}
+			}
+			chosen[pick] = ti;
+			used[ti] = 1u;
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+	}
 	if ( tid == 0u )
 		SparkRouteWeights(p, probability, chosen, expert_scale, experts, weights, row);
 }
@@ -222,17 +359,44 @@ kernel void spark_head_gate(constant SparkHeadGateParams &p [[buffer(0)]], devic
 	device const ushort *logits [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint head = group.x, row = group.y;
-	device ushort *base = values + ((ulong)row * p.heads + head) * p.head_dimension;
+	const uint head = group.x, row = group.y, D = p.head_dimension;
+	device ushort *base = values + ((ulong)row * p.heads + head) * D;
 	if ( p.gate_head_stride != 0u )
 	{
 		device const ushort *gates = logits + (ulong)row * p.gate_stride + (ulong)head * p.gate_head_stride + p.gate_offset;
-		for ( uint index = tid; index < p.head_dimension; index += group_size.x )
+		if ( (D & 7u) == 0u && (((ulong)base | (ulong)gates) & 15ul) == 0ul )
+		{
+			const uint chunks = D >> 3u;
+			for ( uint c = tid; c < chunks; c += group_size.x )
+			{
+				float4 vl, vh, gl, gh;
+				SparkUnpack8(((device const uint4 *)base)[c], vl, vh);
+				SparkUnpack8(((device const uint4 *)gates)[c], gl, gh);
+				vl *= float4(SparkHeadGateActivation(p.activation, gl.x), SparkHeadGateActivation(p.activation, gl.y),
+					SparkHeadGateActivation(p.activation, gl.z), SparkHeadGateActivation(p.activation, gl.w));
+				vh *= float4(SparkHeadGateActivation(p.activation, gh.x), SparkHeadGateActivation(p.activation, gh.y),
+					SparkHeadGateActivation(p.activation, gh.z), SparkHeadGateActivation(p.activation, gh.w));
+				((device uint4 *)base)[c] = SparkPack8(vl, vh);
+			}
+			return;
+		}
+		for ( uint index = tid; index < D; index += group_size.x )
 			base[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(base[index]) * SparkHeadGateActivation(p.activation, SparkMathBf16ToFloat(gates[index])));
 		return;
 	}
 	const float gate = SparkHeadGateActivation(p.activation, SparkMathBf16ToFloat(logits[(ulong)row * p.gate_stride + head]));
-	for ( uint index = tid; index < p.head_dimension; index += group_size.x )
+	if ( (D & 7u) == 0u && ((ulong)base & 15ul) == 0ul )
+	{
+		const uint chunks = D >> 3u;
+		for ( uint c = tid; c < chunks; c += group_size.x )
+		{
+			float4 vl, vh;
+			SparkUnpack8(((device const uint4 *)base)[c], vl, vh);
+			((device uint4 *)base)[c] = SparkPack8(vl * gate, vh * gate);
+		}
+		return;
+	}
+	for ( uint index = tid; index < D; index += group_size.x )
 		base[index] = SparkMathFloatToBf16(SparkMathBf16ToFloat(base[index]) * gate);
 }
 
@@ -248,62 +412,122 @@ kernel void spark_route_combine(constant SparkRouteParams &p [[buffer(0)]], devi
 	device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y, index = (group.x * group_size.x + tid) * 4u;
 	if ( index >= p.width )
 		return;
-	float total = 0.0f;
-	for ( uint k = 0u; k < p.top_k; k++ )
-		total += SparkMathBf16ToFloat(expert_out[((ulong)row * p.top_k + k) * p.width + index]);
-	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
+	device ushort *dst = output + (ulong)row * p.width + index;
+	if ( index + 4u <= p.width && (p.width & 3u) == 0u && (((ulong)expert_out | (ulong)dst) & 7ul) == 0ul )
+	{
+		float4 total = float4(0.0f);
+		for ( uint k = 0u; k < p.top_k; k++ )
+			total += SparkUnpack4(*(device const uint2 *)(expert_out + ((ulong)row * p.top_k + k) * p.width + index));
+		*(device uint2 *)dst = SparkPack4(total);
+		return;
+	}
+	for ( uint c = 0u; c < 4u && index + c < p.width; c++ )
+	{
+		float total = 0.0f;
+		for ( uint k = 0u; k < p.top_k; k++ )
+			total += SparkMathBf16ToFloat(expert_out[((ulong)row * p.top_k + k) * p.width + index + c]);
+		dst[c] = SparkMathFloatToBf16(total);
+	}
 }
 
 kernel void spark_route_combine_weighted(constant SparkRouteParams &p [[buffer(0)]], device const ushort *expert_out [[buffer(1)]],
 	device const float *weights [[buffer(2)]], device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y, index = (group.x * group_size.x + tid) * 4u;
 	if ( index >= p.width )
 		return;
-	float total = 0.0f;
-	for ( uint k = 0u; k < p.top_k; k++ )
+	device ushort *dst = output + (ulong)row * p.width + index;
+	if ( index + 4u <= p.width && (p.width & 3u) == 0u && (((ulong)expert_out | (ulong)dst) & 7ul) == 0ul )
 	{
-		const ulong route = (ulong)row * p.top_k + k;
-		total = fma(SparkMathBf16ToFloat(expert_out[route * p.width + index]), weights[route], total);
+		float4 total = float4(0.0f);
+		for ( uint k = 0u; k < p.top_k; k++ )
+		{
+			const ulong route = (ulong)row * p.top_k + k;
+			total = fma(SparkUnpack4(*(device const uint2 *)(expert_out + route * p.width + index)), float4(weights[route]), total);
+		}
+		*(device uint2 *)dst = SparkPack4(total);
+		return;
 	}
-	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
+	for ( uint c = 0u; c < 4u && index + c < p.width; c++ )
+	{
+		float total = 0.0f;
+		for ( uint k = 0u; k < p.top_k; k++ )
+		{
+			const ulong route = (ulong)row * p.top_k + k;
+			total = fma(SparkMathBf16ToFloat(expert_out[route * p.width + index + c]), weights[route], total);
+		}
+		dst[c] = SparkMathFloatToBf16(total);
+	}
 }
 
 kernel void spark_route_combine_weighted_shared(constant SparkRouteParams &p [[buffer(0)]], device const ushort *expert_out [[buffer(1)]],
 	device const float *weights [[buffer(2)]], device const ushort *shared [[buffer(3)]], device ushort *output [[buffer(4)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y, index = (group.x * group_size.x + tid) * 4u;
 	if ( index >= p.width )
 		return;
-	float total = 0.0f;
-	for ( uint k = 0u; k < p.top_k; k++ )
+	device const ushort *sh = shared + (ulong)row * p.width + index;
+	device ushort *dst = output + (ulong)row * p.width + index;
+	if ( index + 4u <= p.width && (p.width & 3u) == 0u && (((ulong)expert_out | (ulong)sh | (ulong)dst) & 7ul) == 0ul )
 	{
-		const ulong route = (ulong)row * p.top_k + k;
-		total = fma(SparkMathBf16ToFloat(expert_out[route * p.width + index]), weights[route], total);
+		float4 total = float4(0.0f);
+		for ( uint k = 0u; k < p.top_k; k++ )
+		{
+			const ulong route = (ulong)row * p.top_k + k;
+			total = fma(SparkUnpack4(*(device const uint2 *)(expert_out + route * p.width + index)), float4(weights[route]), total);
+		}
+		total += SparkUnpack4(*(device const uint2 *)sh);
+		*(device uint2 *)dst = SparkPack4(total);
+		return;
 	}
-	total += SparkMathBf16ToFloat(shared[(ulong)row * p.width + index]);
-	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
+	for ( uint c = 0u; c < 4u && index + c < p.width; c++ )
+	{
+		float total = 0.0f;
+		for ( uint k = 0u; k < p.top_k; k++ )
+		{
+			const ulong route = (ulong)row * p.top_k + k;
+			total = fma(SparkMathBf16ToFloat(expert_out[route * p.width + index + c]), weights[route], total);
+		}
+		total += SparkMathBf16ToFloat(sh[c]);
+		dst[c] = SparkMathFloatToBf16(total);
+	}
 }
 
 kernel void spark_route_combine_weighted_shared_f32(constant SparkRouteParams &p [[buffer(0)]], device const float *expert_out [[buffer(1)]],
 	device const float *weights [[buffer(2)]], device const float *shared [[buffer(3)]], device float *output [[buffer(4)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y, index = (group.x * group_size.x + tid) * 4u;
 	if ( index >= p.width )
 		return;
-	float total = 0.0f;
-	for ( uint k = 0u; k < p.top_k; k++ )
+	device const float *sh = shared + (ulong)row * p.width + index;
+	device float *dst = output + (ulong)row * p.width + index;
+	if ( index + 4u <= p.width && (p.width & 3u) == 0u && (((ulong)expert_out | (ulong)sh | (ulong)dst) & 15ul) == 0ul )
 	{
-		const ulong route = (ulong)row * p.top_k + k;
-		total = fma(expert_out[route * p.width + index], weights[route], total);
+		float4 total = float4(0.0f);
+		for ( uint k = 0u; k < p.top_k; k++ )
+		{
+			const ulong route = (ulong)row * p.top_k + k;
+			total = fma(*(device const float4 *)(expert_out + route * p.width + index), float4(weights[route]), total);
+		}
+		*(device float4 *)dst = total + *(device const float4 *)sh;
+		return;
 	}
-	output[(ulong)row * p.width + index] = total + shared[(ulong)row * p.width + index];
+	for ( uint c = 0u; c < 4u && index + c < p.width; c++ )
+	{
+		float total = 0.0f;
+		for ( uint k = 0u; k < p.top_k; k++ )
+		{
+			const ulong route = (ulong)row * p.top_k + k;
+			total = fma(expert_out[route * p.width + index + c], weights[route], total);
+		}
+		dst[c] = total + sh[c];
+	}
 }
 
 template <uint SCORE>
@@ -489,7 +713,23 @@ kernel void spark_logprob_rows(constant SparkLogprobParams &p [[buffer(0)]], dev
 	device const float *values = logits + (ulong)row * p.logit_stride;
 	float best = -INFINITY;
 	uint best_index = 0xffffffffu;
-	for ( uint i = tid; i < p.vocabulary; i += threads )
+	const bool aligned4 = ((ulong)values & 15ul) == 0ul;
+	const uint vec_end = aligned4 ? (p.vocabulary & ~3u) : 0u;
+	if ( aligned4 )
+	{
+		device const float4 *v4 = (device const float4 *)values;
+		const uint chunks = vec_end >> 2u;
+		for ( uint c = tid; c < chunks; c += threads )
+		{
+			const float4 v = v4[c];
+			const uint base = c << 2u;
+			if ( v.x > best ) { best = v.x; best_index = base; }
+			if ( v.y > best ) { best = v.y; best_index = base + 1u; }
+			if ( v.z > best ) { best = v.z; best_index = base + 2u; }
+			if ( v.w > best ) { best = v.w; best_index = base + 3u; }
+		}
+	}
+	for ( uint i = vec_end + tid; i < p.vocabulary; i += threads )
 		if ( values[i] > best )
 		{
 			best = values[i];
@@ -504,7 +744,17 @@ kernel void spark_logprob_rows(constant SparkLogprobParams &p [[buffer(0)]], dev
 	uint chosen = lane < simds ? index_scratch[lane] : 0xffffffffu;
 	chosen = simd_min(chosen);
 	float total = 0.0f;
-	for ( uint i = tid; i < p.vocabulary; i += threads )
+	if ( aligned4 )
+	{
+		device const float4 *v4 = (device const float4 *)values;
+		const uint chunks = vec_end >> 2u;
+		for ( uint c = tid; c < chunks; c += threads )
+		{
+			const float4 d = v4[c] - group_best;
+			total += (exp(d.x) + exp(d.y)) + (exp(d.z) + exp(d.w));
+		}
+	}
+	for ( uint i = vec_end + tid; i < p.vocabulary; i += threads )
 		total += exp(values[i] - group_best);
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
 	if ( tid == 0u )
@@ -536,26 +786,46 @@ kernel void spark_route_combine_shared(constant SparkRouteParams &p [[buffer(0)]
 	device const ushort *shared [[buffer(2)]], device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y, index = (group.x * group_size.x + tid) * 4u;
 	if ( index >= p.width )
 		return;
-	float total = 0.0f;
-	for ( uint k = 0u; k < p.top_k; k++ )
-		total += SparkMathBf16ToFloat(expert_out[((ulong)row * p.top_k + k) * p.width + index]);
-	total += SparkMathBf16ToFloat(shared[(ulong)row * p.width + index]);
-	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
+	device const ushort *sh = shared + (ulong)row * p.width + index;
+	device ushort *dst = output + (ulong)row * p.width + index;
+	if ( index + 4u <= p.width && (p.width & 3u) == 0u && (((ulong)expert_out | (ulong)sh | (ulong)dst) & 7ul) == 0ul )
+	{
+		float4 total = float4(0.0f);
+		for ( uint k = 0u; k < p.top_k; k++ )
+			total += SparkUnpack4(*(device const uint2 *)(expert_out + ((ulong)row * p.top_k + k) * p.width + index));
+		total += SparkUnpack4(*(device const uint2 *)sh);
+		*(device uint2 *)dst = SparkPack4(total);
+		return;
+	}
+	for ( uint c = 0u; c < 4u && index + c < p.width; c++ )
+	{
+		float total = 0.0f;
+		for ( uint k = 0u; k < p.top_k; k++ )
+			total += SparkMathBf16ToFloat(expert_out[((ulong)row * p.top_k + k) * p.width + index + c]);
+		total += SparkMathBf16ToFloat(sh[c]);
+		dst[c] = SparkMathFloatToBf16(total);
+	}
 }
 
 kernel void spark_sigmoid_gate_rows(constant SparkRouteParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
 	device const ushort *logits [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y, index = (group.x * group_size.x + tid) * 4u;
 	if ( index >= p.width )
 		return;
 	const float gate = SparkMathSigmoid(SparkMathBf16ToFloat(logits[(ulong)row * p.logit_stride]));
-	const ulong at = (ulong)row * p.width + index;
-	values[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(values[at]) * gate);
+	device ushort *v = values + (ulong)row * p.width + index;
+	if ( index + 4u <= p.width && ((ulong)v & 7ul) == 0ul )
+	{
+		*(device uint2 *)v = SparkPack4(SparkUnpack4(*(device const uint2 *)v) * gate);
+		return;
+	}
+	for ( uint c = 0u; c < 4u && index + c < p.width; c++ )
+		v[c] = SparkMathFloatToBf16(SparkMathBf16ToFloat(v[c]) * gate);
 }
 
 kernel void spark_block_qdq(constant SparkQdqParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]],
@@ -566,6 +836,36 @@ kernel void spark_block_qdq(constant SparkQdqParams &p [[buffer(0)]], device con
 		return;
 	device const ushort *x = input + (ulong)row * p.input_stride + block * size;
 	device ushort *y = output + (ulong)row * p.output_stride + block * size;
+	if ( (size & 7u) == 0u && (((ulong)x | (ulong)y) & 15ul) == 0ul )
+	{
+		float4 vals[8];
+		float4 amax4 = float4(0.0f);
+		const uint chunks = size >> 3u;
+		for ( uint c = 0u; c < chunks; c++ )
+		{
+			SparkUnpack8(((device const uint4 *)x)[c], vals[2u * c], vals[2u * c + 1u]);
+			amax4 = fmax(amax4, fmax(fabs(vals[2u * c]), fabs(vals[2u * c + 1u])));
+		}
+		const float amax = fmax(fmax(amax4.x, amax4.y), fmax(amax4.z, amax4.w));
+		const float scale = p.format == SPARK_QDQ_FP8 ? SparkMathFp8QdqScale(amax) : p.format == SPARK_QDQ_FP4 ? SparkMathFp4QdqScale(amax) :
+			SparkMathFp4Pow2QdqScale(amax);
+		for ( uint c = 0u; c < chunks; c++ )
+		{
+			float4 lo = vals[2u * c], hi = vals[2u * c + 1u];
+			if ( p.format == SPARK_QDQ_FP8 )
+			{
+				lo = float4(SparkMathFp8Qdq(lo.x, scale), SparkMathFp8Qdq(lo.y, scale), SparkMathFp8Qdq(lo.z, scale), SparkMathFp8Qdq(lo.w, scale));
+				hi = float4(SparkMathFp8Qdq(hi.x, scale), SparkMathFp8Qdq(hi.y, scale), SparkMathFp8Qdq(hi.z, scale), SparkMathFp8Qdq(hi.w, scale));
+			}
+			else
+			{
+				lo = float4(SparkMathFp4Qdq(lo.x, scale), SparkMathFp4Qdq(lo.y, scale), SparkMathFp4Qdq(lo.z, scale), SparkMathFp4Qdq(lo.w, scale));
+				hi = float4(SparkMathFp4Qdq(hi.x, scale), SparkMathFp4Qdq(hi.y, scale), SparkMathFp4Qdq(hi.z, scale), SparkMathFp4Qdq(hi.w, scale));
+			}
+			((device uint4 *)y)[c] = SparkPack8(lo, hi);
+		}
+		return;
+	}
 	float values[32];
 	float amax = 0.0f;
 	for ( uint i = 0u; i < size; i++ )
@@ -637,12 +937,24 @@ kernel void spark_compressed_positions(constant SparkCompressParams &p [[buffer(
 	last[row] = (position + 1u) / p.ratio - 1u;
 }
 
+static inline float4 SparkGroupSum4(float4 value, threadgroup float4 *scratch, uint lane, uint simd, uint simds)
+{
+	value = simd_sum(value);
+	if ( lane == 0u )
+		scratch[simd] = value;
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	float4 total = lane < simds ? scratch[lane] : float4(0.0f);
+	total = simd_sum(total);
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	return total;
+}
+
 kernel void spark_poly_norm_mul(constant SparkPolyNormParams &p [[buffer(0)]], device const ushort *gate_up [[buffer(1)]],
 	device const float *params [[buffer(2)]], device const uint *param_of_row [[buffer(3)]], device ushort *output [[buffer(4)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
-	threadgroup float scratch[32];
+	threadgroup float4 scratch[32];
 	if ( row >= p.rows )
 		return;
 	device const ushort *gate = gate_up + (ulong)row * p.input_stride, *up = gate + p.width;
@@ -654,22 +966,102 @@ kernel void spark_poly_norm_mul(constant SparkPolyNormParams &p [[buffer(0)]], d
 			y[i] = 0u;
 		return;
 	}
-	float square = 0.0f, fourth = 0.0f, sixth = 0.0f;
-	for ( uint i = tid; i < p.width; i += threads )
+	const bool vec8 = (p.width & 7u) == 0u && (((ulong)gate | (ulong)up | (ulong)y) & 15ul) == 0ul;
+	const uint chunks = p.width >> 3u;
+	const bool cached = vec8 && chunks <= threads;
+	float4 g_lo_c = float4(0.0f), g_hi_c = float4(0.0f);
+	float4 sums = float4(0.0f);
+	if ( vec8 )
 	{
-		const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), g2 = g * g, g3 = g2 * g;
-		square += g * g;
-		fourth += g2 * g2;
-		sixth += g3 * g3;
+		if ( cached )
+		{
+			if ( tid < chunks )
+			{
+				SparkUnpack8(((device const uint4 *)gate)[tid], g_lo_c, g_hi_c);
+				g_lo_c = clamp(g_lo_c, -p.clamp, p.clamp);
+				g_hi_c = clamp(g_hi_c, -p.clamp, p.clamp);
+				const float4 g2l = g_lo_c * g_lo_c, g2h = g_hi_c * g_hi_c;
+				const float4 g3l = g2l * g_lo_c, g3h = g2h * g_hi_c;
+				sums.x = dot(g_lo_c, g_lo_c) + dot(g_hi_c, g_hi_c);
+				sums.y = dot(g2l, g2l) + dot(g2h, g2h);
+				sums.z = dot(g3l, g3l) + dot(g3h, g3h);
+			}
+		}
+		else
+		{
+			for ( uint c = tid; c < chunks; c += threads )
+			{
+				float4 gl, gh;
+				SparkUnpack8(((device const uint4 *)gate)[c], gl, gh);
+				gl = clamp(gl, -p.clamp, p.clamp);
+				gh = clamp(gh, -p.clamp, p.clamp);
+				const float4 g2l = gl * gl, g2h = gh * gh;
+				const float4 g3l = g2l * gl, g3h = g2h * gh;
+				sums.x += dot(gl, gl) + dot(gh, gh);
+				sums.y += dot(g2l, g2l) + dot(g2h, g2h);
+				sums.z += dot(g3l, g3l) + dot(g3h, g3h);
+			}
+		}
 	}
-	square = SparkGroupSum(square, scratch, lane, simd, simds);
-	fourth = SparkGroupSum(fourth, scratch, lane, simd, simds);
-	sixth = SparkGroupSum(sixth, scratch, lane, simd, simds);
+	else
+	{
+		for ( uint i = tid; i < p.width; i += threads )
+		{
+			const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), g2 = g * g, g3 = g2 * g;
+			sums.x += g * g;
+			sums.y += g2 * g2;
+			sums.z += g3 * g3;
+		}
+	}
+	sums = SparkGroupSum4(sums, scratch, lane, simd, simds);
 	const float count = float(p.width);
-	const float d1 = sqrt(square / count + p.epsilon), d2 = sqrt(fourth / count + p.epsilon), d3 = sqrt(sixth / count + p.epsilon);
+	const float d1 = sqrt(sums.x / count + p.epsilon), d2 = sqrt(sums.y / count + p.epsilon), d3 = sqrt(sums.z / count + p.epsilon);
 	device const float *w = params + 4ul * index;
 	const float w0 = SparkMathSigmoid(w[0]), w1 = SparkMathSigmoid(w[1]), w2 = SparkMathSigmoid(w[2]);
 	const float bias = p.routed != 0u ? SparkMathClamp(w[3], p.bias_clamp) : w[3];
+	if ( vec8 )
+	{
+		for ( uint c = tid; c < chunks; c += threads )
+		{
+			float4 gl, gh, ul, uh;
+			if ( cached )
+			{
+				gl = g_lo_c;
+				gh = g_hi_c;
+			}
+			else
+			{
+				SparkUnpack8(((device const uint4 *)gate)[c], gl, gh);
+				gl = clamp(gl, -p.clamp, p.clamp);
+				gh = clamp(gh, -p.clamp, p.clamp);
+			}
+			SparkUnpack8(((device const uint4 *)up)[c], ul, uh);
+			ul = clamp(ul, -p.clamp, p.clamp);
+			uh = clamp(uh, -p.clamp, p.clamp);
+			float4 vl = float4(
+				SparkMathPolyNorm(gl.x, d1, d2, d3, w0, w1, w2, bias) * ul.x,
+				SparkMathPolyNorm(gl.y, d1, d2, d3, w0, w1, w2, bias) * ul.y,
+				SparkMathPolyNorm(gl.z, d1, d2, d3, w0, w1, w2, bias) * ul.z,
+				SparkMathPolyNorm(gl.w, d1, d2, d3, w0, w1, w2, bias) * ul.w);
+			float4 vh = float4(
+				SparkMathPolyNorm(gh.x, d1, d2, d3, w0, w1, w2, bias) * uh.x,
+				SparkMathPolyNorm(gh.y, d1, d2, d3, w0, w1, w2, bias) * uh.y,
+				SparkMathPolyNorm(gh.z, d1, d2, d3, w0, w1, w2, bias) * uh.z,
+				SparkMathPolyNorm(gh.w, d1, d2, d3, w0, w1, w2, bias) * uh.w);
+			if ( p.routed != 0u )
+			{
+				vl = clamp(vl, -p.clamp, p.clamp) * p.output_scale;
+				vh = clamp(vh, -p.clamp, p.clamp) * p.output_scale;
+			}
+			else
+			{
+				vl = SparkRoundBf16x4(vl) * p.output_scale;
+				vh = SparkRoundBf16x4(vh) * p.output_scale;
+			}
+			((device uint4 *)y)[c] = SparkPack8(vl, vh);
+		}
+		return;
+	}
 	for ( uint i = tid; i < p.width; i += threads )
 	{
 		const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), u = SparkMathClamp(SparkMathBf16ToFloat(up[i]), p.clamp);
