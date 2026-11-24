@@ -1,2 +1,2 @@
-+224
-spec-tree DSV4.1-Flash (Window Ring SWA + CSA2 ratio-2/ratio-1 KV + DSA Indexer + Engram n-gram): add geometry.tree_slot_grain support for TP16 ratio-2 256-slot alignment, tree ancestor lookup in D41WindowFoldKernel and zero-spill D41AttendTreeKernel, tree pairing/mapping/path-move in D41CompressorRowsKernel, D41CompressorSaveKernel, D41CompressedTreeMapKernel, D41CompressedPathMoveKernel and D41WindowRingStoreKernel, zero-spill D41TreeNgramHashKernel, and wire tree verification, KeepPath relocation and tree_slot_grain in dsv41_flash_stage.cuh and spark_dsv41_flash_stage_serving.c.
++286
+DeepSeek-V4.1-Flash speculative tree verification (SWA, CSA2, DSA, Engram) (#2154)
