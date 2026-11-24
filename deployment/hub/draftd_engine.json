@@ -54,7 +54,7 @@
    "taps": {
     "host": "10.10.250.2",
     "port": 7711,
-    "model_tag": "dsv41_flash_stage",
+    "model_tag": "dsv41_flash_rows16_stage",
     "hidden": 5120,
     "entries": "o36,o37,o38"
    },
