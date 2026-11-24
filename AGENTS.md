@@ -24,6 +24,19 @@
   `SPARK_STATUS_IO_ERROR`, never `BUSY`: the caller aborts the wave rather
   than retrying the round.
 
+## Performance objective (RAIS)
+
+- Optimization work targets the highest-ROI remaining headroom in **RAIS v1.0**
+  ([`docs/RAIS_BENCHMARK.md`](docs/RAIS_BENCHMARK.md)), ranked by
+  `python3 tools/rais_score.py score <results.jsonl> --hardware <profile>`.
+- Every performance PR compares before/after on identical hardware with
+  `python3 tools/rais_score.py compare <baseline.jsonl> <after.jsonl>` (Fast
+  Hill-Climb tier for per-PR iteration, Full Certification tier for release
+  qualification) and reports ΔRAIS, Base Roofline `R`, and `(α, 1/V)`.
+- Zero regressions on the hard binary correctness gates (`prose_exact`,
+  `code_exact`, `prefix_exact` Gate GX, `errors == 0`); any gate failure marks
+  the run `INVALID` and blocks landing.
+
 ## Workflow
 
 - Claude is the lead developer. Claude reports a PR ready once it works, then

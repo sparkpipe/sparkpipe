@@ -164,6 +164,10 @@ current authority.
 - [`../PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md): measurements,
   projections, and target gates only. History:
   [`archive/PERFORMANCE_HISTORY_2026-08.md`](archive/PERFORMANCE_HISTORY_2026-08.md).
+- [`RAIS_BENCHMARK.md`](RAIS_BENCHMARK.md): RAIS v1.0 (Roofline-Anchored
+  Inference Score) specification, 3-roofline math, 4 pillars / 12 sub-metrics,
+  hard binary correctness gates, fleet model weights, and reference CLI tools
+  (`tools/rais_score.py`, `tools/rais_bench.py`).
 - [`GOALS.md`](GOALS.md): operator directives (topology by measurement, B1
   target, model direction, COMPSEC-17 gate).
 - [`HANDOFF_DRIVERS_2026-09-28.md`](HANDOFF_DRIVERS_2026-09-28.md): milestone
