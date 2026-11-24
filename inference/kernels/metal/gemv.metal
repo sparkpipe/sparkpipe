@@ -43,8 +43,109 @@ constant float kSparkE2m1[16] = {
 	-0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
+constant ushort kSparkE4m3Bf16[256] = {
+	0x0000u, 0x3b00u, 0x3b80u, 0x3bc0u, 0x3c00u, 0x3c20u, 0x3c40u, 0x3c60u,
+	0x3c80u, 0x3c90u, 0x3ca0u, 0x3cb0u, 0x3cc0u, 0x3cd0u, 0x3ce0u, 0x3cf0u,
+	0x3d00u, 0x3d10u, 0x3d20u, 0x3d30u, 0x3d40u, 0x3d50u, 0x3d60u, 0x3d70u,
+	0x3d80u, 0x3d90u, 0x3da0u, 0x3db0u, 0x3dc0u, 0x3dd0u, 0x3de0u, 0x3df0u,
+	0x3e00u, 0x3e10u, 0x3e20u, 0x3e30u, 0x3e40u, 0x3e50u, 0x3e60u, 0x3e70u,
+	0x3e80u, 0x3e90u, 0x3ea0u, 0x3eb0u, 0x3ec0u, 0x3ed0u, 0x3ee0u, 0x3ef0u,
+	0x3f00u, 0x3f10u, 0x3f20u, 0x3f30u, 0x3f40u, 0x3f50u, 0x3f60u, 0x3f70u,
+	0x3f80u, 0x3f90u, 0x3fa0u, 0x3fb0u, 0x3fc0u, 0x3fd0u, 0x3fe0u, 0x3ff0u,
+	0x4000u, 0x4010u, 0x4020u, 0x4030u, 0x4040u, 0x4050u, 0x4060u, 0x4070u,
+	0x4080u, 0x4090u, 0x40a0u, 0x40b0u, 0x40c0u, 0x40d0u, 0x40e0u, 0x40f0u,
+	0x4100u, 0x4110u, 0x4120u, 0x4130u, 0x4140u, 0x4150u, 0x4160u, 0x4170u,
+	0x4180u, 0x4190u, 0x41a0u, 0x41b0u, 0x41c0u, 0x41d0u, 0x41e0u, 0x41f0u,
+	0x4200u, 0x4210u, 0x4220u, 0x4230u, 0x4240u, 0x4250u, 0x4260u, 0x4270u,
+	0x4280u, 0x4290u, 0x42a0u, 0x42b0u, 0x42c0u, 0x42d0u, 0x42e0u, 0x42f0u,
+	0x4300u, 0x4310u, 0x4320u, 0x4330u, 0x4340u, 0x4350u, 0x4360u, 0x4370u,
+	0x4380u, 0x4390u, 0x43a0u, 0x43b0u, 0x43c0u, 0x43d0u, 0x43e0u, 0x7fffu,
+	0x8000u, 0xbb00u, 0xbb80u, 0xbbc0u, 0xbc00u, 0xbc20u, 0xbc40u, 0xbc60u,
+	0xbc80u, 0xbc90u, 0xbca0u, 0xbcb0u, 0xbcc0u, 0xbcd0u, 0xbce0u, 0xbcf0u,
+	0xbd00u, 0xbd10u, 0xbd20u, 0xbd30u, 0xbd40u, 0xbd50u, 0xbd60u, 0xbd70u,
+	0xbd80u, 0xbd90u, 0xbda0u, 0xbdb0u, 0xbdc0u, 0xbdd0u, 0xbde0u, 0xbdf0u,
+	0xbe00u, 0xbe10u, 0xbe20u, 0xbe30u, 0xbe40u, 0xbe50u, 0xbe60u, 0xbe70u,
+	0xbe80u, 0xbe90u, 0xbea0u, 0xbeb0u, 0xbec0u, 0xbed0u, 0xbee0u, 0xbef0u,
+	0xbf00u, 0xbf10u, 0xbf20u, 0xbf30u, 0xbf40u, 0xbf50u, 0xbf60u, 0xbf70u,
+	0xbf80u, 0xbf90u, 0xbfa0u, 0xbfb0u, 0xbfc0u, 0xbfd0u, 0xbfe0u, 0xbff0u,
+	0xc000u, 0xc010u, 0xc020u, 0xc030u, 0xc040u, 0xc050u, 0xc060u, 0xc070u,
+	0xc080u, 0xc090u, 0xc0a0u, 0xc0b0u, 0xc0c0u, 0xc0d0u, 0xc0e0u, 0xc0f0u,
+	0xc100u, 0xc110u, 0xc120u, 0xc130u, 0xc140u, 0xc150u, 0xc160u, 0xc170u,
+	0xc180u, 0xc190u, 0xc1a0u, 0xc1b0u, 0xc1c0u, 0xc1d0u, 0xc1e0u, 0xc1f0u,
+	0xc200u, 0xc210u, 0xc220u, 0xc230u, 0xc240u, 0xc250u, 0xc260u, 0xc270u,
+	0xc280u, 0xc290u, 0xc2a0u, 0xc2b0u, 0xc2c0u, 0xc2d0u, 0xc2e0u, 0xc2f0u,
+	0xc300u, 0xc310u, 0xc320u, 0xc330u, 0xc340u, 0xc350u, 0xc360u, 0xc370u,
+	0xc380u, 0xc390u, 0xc3a0u, 0xc3b0u, 0xc3c0u, 0xc3d0u, 0xc3e0u, 0x7fffu
+};
+
+static inline float4 SparkFp8Word(uint word)
+{
+	return float4(as_type<float>(kSparkE4m3Bits[word & 0xffu]), as_type<float>(kSparkE4m3Bits[(word >> 8u) & 0xffu]),
+		as_type<float>(kSparkE4m3Bits[(word >> 16u) & 0xffu]), as_type<float>(kSparkE4m3Bits[word >> 24u]));
+}
+
+static inline uint2 SparkFp8Bf16Word(uint word)
+{
+	return uint2(uint(kSparkE4m3Bf16[word & 0xffu]) | (uint(kSparkE4m3Bf16[(word >> 8u) & 0xffu]) << 16u),
+		uint(kSparkE4m3Bf16[(word >> 16u) & 0xffu]) | (uint(kSparkE4m3Bf16[word >> 24u]) << 16u));
+}
+
+static inline float SparkE2m1Dot8(uint word, float4 x0, float4 x1)
+{
+	const float4 w0 = float4(kSparkE2m1[word & 15u], kSparkE2m1[(word >> 4u) & 15u], kSparkE2m1[(word >> 8u) & 15u], kSparkE2m1[(word >> 12u) & 15u]);
+	const float4 w1 = float4(kSparkE2m1[(word >> 16u) & 15u], kSparkE2m1[(word >> 20u) & 15u], kSparkE2m1[(word >> 24u) & 15u], kSparkE2m1[word >> 28u]);
+	return dot(w0, x0) + dot(w1, x1);
+}
+
+static inline float SparkE2m1Fma8(uint word, float4 x0, float4 x1, float acc)
+{
+	acc = fma(kSparkE2m1[word & 15u], x0.x, acc);
+	acc = fma(kSparkE2m1[(word >> 4u) & 15u], x0.y, acc);
+	acc = fma(kSparkE2m1[(word >> 8u) & 15u], x0.z, acc);
+	acc = fma(kSparkE2m1[(word >> 12u) & 15u], x0.w, acc);
+	acc = fma(kSparkE2m1[(word >> 16u) & 15u], x1.x, acc);
+	acc = fma(kSparkE2m1[(word >> 20u) & 15u], x1.y, acc);
+	acc = fma(kSparkE2m1[(word >> 24u) & 15u], x1.z, acc);
+	return fma(kSparkE2m1[word >> 28u], x1.w, acc);
+}
+
+template <uint R, bool F32>
+static inline void SparkGemvSimdRow(constant SparkGemvParams &p, device const ushort *x, device const ushort *w, device void *out, uint out_row, uint lane)
+{
+	const uint K = p.input_dimension;
+	if ( out_row >= p.output_dimension )
+		return;
+	device const ushort *row = w + (ulong)out_row * K;
+	float acc[R];
+	for ( uint r = 0u; r < R; r++ )
+		acc[r] = 0.0f;
+	for ( uint k = lane * 8u; k < K; k += 256u )
+	{
+		float4 wl, wh;
+		SparkUnpack8(*(device const uint4 *)(row + k), wl, wh);
+		for ( uint r = 0u; r < R; r++ )
+		{
+			float4 xl, xh;
+			SparkUnpack8(*(device const uint4 *)(x + (ulong)r * p.input_stride + k), xl, xh);
+			acc[r] += dot(wl, xl) + dot(wh, xh);
+		}
+	}
+	for ( uint r = 0u; r < R; r++ )
+	{
+		const float total = simd_sum(acc[r]);
+		if ( lane == 0u )
+		{
+			const ulong at = (ulong)r * p.output_stride + out_row;
+			if ( F32 )
+				((device float *)out)[at] = total;
+			else
+				((device ushort *)out)[at] = SparkMathFloatToBf16(total);
+		}
+	}
+}
+
 template <uint R, uint O, bool F32>
-static inline void SparkGemvRows(constant SparkGemvParams &p, device const ushort *x, device const ushort *w, device void *out, uint first,
+static inline void SparkGemvCoopRows(constant SparkGemvParams &p, device const ushort *x, device const ushort *w, device void *out, uint first,
 	uint lane, uint simd, threadgroup float *partial)
 {
 	const uint K = p.input_dimension, N = p.output_dimension;
@@ -98,50 +199,169 @@ kernel void spark_gemv(constant SparkGemvParams &p [[buffer(0)]], device const u
 	device void *out [[buffer(3)]], uint group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
 	uint simd [[simdgroup_index_in_threadgroup]])
 {
-	threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
-	SparkGemvRows<R, O, F32>(p, x, w, out, group * O, lane, simd, partial);
+	if constexpr ( O == SPARK_GEMV_SIMDS )
+	{
+		if ( p.input_dimension < SPARK_GEMV_SPAN )
+		{
+			SparkGemvSimdRow<R, F32>(p, x, w, out, group * O + simd, lane);
+			return;
+		}
+		threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
+		SparkGemvCoopRows<R, O, F32>(p, x, w, out, group * O, lane, simd, partial);
+		return;
+	}
+	constexpr uint SIMDS_PER_ROW = SPARK_GEMV_SIMDS / O;
+	constexpr uint STEP = SIMDS_PER_ROW * 256u;
+	threadgroup float partial[SPARK_GEMV_SIMDS * R];
+	const uint K = p.input_dimension, N = p.output_dimension;
+	const uint row_in_group = simd / SIMDS_PER_ROW, sub_simd = simd % SIMDS_PER_ROW;
+	const uint out_row = group * O + row_in_group;
+	if ( out_row < N )
+	{
+		device const ushort *row = w + (ulong)out_row * K;
+		float acc[R];
+		for ( uint r = 0u; r < R; r++ )
+			acc[r] = 0.0f;
+		for ( uint k = (sub_simd * 32u + lane) * 8u; k < K; k += STEP )
+		{
+			float4 wl, wh;
+			SparkUnpack8(*(device const uint4 *)(row + k), wl, wh);
+			for ( uint r = 0u; r < R; r++ )
+			{
+				float4 xl, xh;
+				SparkUnpack8(*(device const uint4 *)(x + (ulong)r * p.input_stride + k), xl, xh);
+				acc[r] += dot(wl, xl) + dot(wh, xh);
+			}
+		}
+		for ( uint r = 0u; r < R; r++ )
+		{
+			const float total = simd_sum(acc[r]);
+			if ( lane == 0u )
+				partial[simd * R + r] = total;
+		}
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( sub_simd != 0u || lane >= R || out_row >= N )
+		return;
+	const uint base = row_in_group * SIMDS_PER_ROW * R + lane;
+	float total = partial[base];
+	for ( uint s = 1u; s < SIMDS_PER_ROW; s++ )
+		total += partial[base + s * R];
+	const ulong at = (ulong)lane * p.output_stride + out_row;
+	if ( F32 )
+		((device float *)out)[at] = total;
+	else
+		((device ushort *)out)[at] = SparkMathFloatToBf16(total);
 }
 
-static inline float4 SparkFp8Word(uint word)
+template <uint R, bool MX>
+static inline void SparkFp8SimdRow(constant SparkGemvParams &p, device const ushort *x, device const uchar *w, device const uchar *scale,
+	device ushort *out, uint out_row, uint lane)
 {
-	return float4(as_type<float>(kSparkE4m3Bits[word & 0xffu]), as_type<float>(kSparkE4m3Bits[(word >> 8u) & 0xffu]),
-		as_type<float>(kSparkE4m3Bits[(word >> 16u) & 0xffu]), as_type<float>(kSparkE4m3Bits[word >> 24u]));
+	const uint K = p.input_dimension;
+	if ( out_row >= p.output_dimension )
+		return;
+	device const uchar *row = w + (ulong)out_row * K;
+	float acc[R];
+	for ( uint r = 0u; r < R; r++ )
+		acc[r] = 0.0f;
+	for ( uint k = lane * SPARK_FP8_CHUNK; k < K; k += 32u * SPARK_FP8_CHUNK )
+	{
+		const float block = SparkFp8Block<MX>(p, scale, ulong(out_row), k);
+		const uint4 bits = *(device const uint4 *)(row + k);
+		const float4 w0 = SparkFp8Word(bits.x), w1 = SparkFp8Word(bits.y), w2 = SparkFp8Word(bits.z), w3 = SparkFp8Word(bits.w);
+		for ( uint r = 0u; r < R; r++ )
+		{
+			device const ushort *xr = x + (ulong)r * p.input_stride + k;
+			float4 x0, x1, x2, x3;
+			SparkUnpack8(*(device const uint4 *)xr, x0, x1);
+			SparkUnpack8(*(device const uint4 *)(xr + 8u), x2, x3);
+			acc[r] = fma(block, (dot(w0, x0) + dot(w1, x1)) + (dot(w2, x2) + dot(w3, x3)), acc[r]);
+		}
+	}
+	for ( uint r = 0u; r < R; r++ )
+	{
+		const float total = simd_sum(acc[r]);
+		if ( lane == 0u )
+			out[(ulong)r * p.output_stride + out_row] = SparkMathFloatToBf16(total);
+	}
 }
 
-template <uint R, uint O, bool MX>
-static inline void SparkFp8Rows(constant SparkGemvParams &p, device const ushort *x, device const uchar *w, device const uchar *scale,
+template <uint O, bool MX>
+static inline void SparkFp8CoopR1(constant SparkGemvParams &p, device const ushort *x, device const uchar *w, device const uchar *scale,
 	device ushort *out, uint first, uint lane, uint simd, threadgroup float *partial)
 {
 	const uint K = p.input_dimension, N = p.output_dimension;
-	float acc[O][R];
+	float acc[O];
 	ulong rows[O];
 	for ( uint i = 0u; i < O; i++ )
 	{
 		rows[i] = min(first + i, N - 1u);
-		for ( uint r = 0u; r < R; r++ )
-			acc[i][r] = 0.0f;
+		acc[i] = 0.0f;
 	}
 	for ( uint k = (simd * 32u + lane) * SPARK_FP8_CHUNK; k < K; k += SPARK_GEMV_SIMDS * 32u * SPARK_FP8_CHUNK )
 	{
-		if ( R <= 2u )
+		float4 x0, x1, x2, x3;
+		SparkUnpack8(*(device const uint4 *)(x + k), x0, x1);
+		SparkUnpack8(*(device const uint4 *)(x + k + 8u), x2, x3);
+		for ( uint i = 0u; i < O; i++ )
 		{
-			float4 x0[R], x1[R], x2[R], x3[R];
-			for ( uint r = 0u; r < R; r++ )
-			{
-				device const ushort *xr = x + (ulong)r * p.input_stride + k;
-				SparkUnpack8(*(device const uint4 *)xr, x0[r], x1[r]);
-				SparkUnpack8(*(device const uint4 *)(xr + 8u), x2[r], x3[r]);
-			}
-			for ( uint i = 0u; i < O; i++ )
-			{
-				const float block = SparkFp8Block<MX>(p, scale, rows[i], k);
-				const uint4 bits = *(device const uint4 *)(w + rows[i] * K + k);
-				const float4 w0 = SparkFp8Word(bits.x), w1 = SparkFp8Word(bits.y), w2 = SparkFp8Word(bits.z), w3 = SparkFp8Word(bits.w);
-				for ( uint r = 0u; r < R; r++ )
-					acc[i][r] = fma(block, (dot(w0, x0[r]) + dot(w1, x1[r])) + (dot(w2, x2[r]) + dot(w3, x3[r])), acc[i][r]);
-			}
+			const float block = SparkFp8Block<MX>(p, scale, rows[i], k);
+			const uint4 bits = *(device const uint4 *)(w + rows[i] * K + k);
+			const float4 w0 = SparkFp8Word(bits.x), w1 = SparkFp8Word(bits.y), w2 = SparkFp8Word(bits.z), w3 = SparkFp8Word(bits.w);
+			acc[i] = fma(block, (dot(w0, x0) + dot(w1, x1)) + (dot(w2, x2) + dot(w3, x3)), acc[i]);
 		}
-		else
+	}
+	for ( uint i = 0u; i < O; i++ )
+	{
+		const float total = simd_sum(acc[i]);
+		if ( lane == 0u )
+			partial[simd * O + i] = total;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( simd != 0u || lane >= O )
+		return;
+	float total = partial[lane];
+	for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
+		total += partial[s * O + lane];
+	if ( first + lane < N )
+		out[first + lane] = SparkMathFloatToBf16(total);
+}
+
+template <uint R, uint O, bool MX>
+kernel void spark_gemv_fp8(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
+	device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]], uint group [[threadgroup_position_in_grid]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
+{
+	if constexpr ( R == 1u && O == SPARK_GEMV_SIMDS )
+	{
+		if ( p.input_dimension <= 2048u )
+		{
+			SparkFp8SimdRow<1u, MX>(p, x, w, scale, out, group * O + simd, lane);
+			return;
+		}
+		threadgroup float partial[SPARK_GEMV_SIMDS * O];
+		SparkFp8CoopR1<O, MX>(p, x, w, scale, out, group * O, lane, simd, partial);
+		return;
+	}
+	if constexpr ( O == SPARK_GEMV_SIMDS )
+	{
+		SparkFp8SimdRow<R, MX>(p, x, w, scale, out, group * O + simd, lane);
+		return;
+	}
+	if constexpr ( R > 2u && O > 1u )
+	{
+		threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
+		const uint K = p.input_dimension, N = p.output_dimension, first = group * O;
+		float acc[O][R];
+		ulong rows[O];
+		for ( uint i = 0u; i < O; i++ )
+		{
+			rows[i] = min(first + i, N - 1u);
+			for ( uint r = 0u; r < R; r++ )
+				acc[i][r] = 0.0f;
+		}
+		for ( uint k = (simd * 32u + lane) * SPARK_FP8_CHUNK; k < K; k += SPARK_GEMV_SIMDS * 32u * SPARK_FP8_CHUNK )
 		{
 			float4 w0[O], w1[O], w2[O], w3[O];
 			float block[O];
@@ -164,32 +384,64 @@ static inline void SparkFp8Rows(constant SparkGemvParams &p, device const ushort
 					acc[i][r] = fma(block[i], (dot(w0[i], x0) + dot(w1[i], x1)) + (dot(w2[i], x2) + dot(w3[i], x3)), acc[i][r]);
 			}
 		}
+		for ( uint i = 0u; i < O; i++ )
+			for ( uint r = 0u; r < R; r++ )
+			{
+				const float total = simd_sum(acc[i][r]);
+				if ( lane == 0u )
+					partial[(simd * O + i) * R + r] = total;
+			}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( simd != 0u || lane >= O * R )
+			return;
+		const uint i = lane / R, r = lane % R;
+		float total = partial[i * R + r];
+		for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
+			total += partial[(s * O + i) * R + r];
+		if ( first + i < N )
+			out[(ulong)r * p.output_stride + first + i] = SparkMathFloatToBf16(total);
+		return;
 	}
-	for ( uint i = 0u; i < O; i++ )
+	constexpr uint SIMDS_PER_ROW = SPARK_GEMV_SIMDS / O;
+	threadgroup float partial[SPARK_GEMV_SIMDS * R];
+	const uint K = p.input_dimension, N = p.output_dimension;
+	const uint row_in_group = simd / SIMDS_PER_ROW, sub_simd = simd % SIMDS_PER_ROW;
+	const uint out_row = group * O + row_in_group;
+	if ( out_row < N )
+	{
+		device const uchar *row = w + (ulong)out_row * K;
+		float acc[R];
+		for ( uint r = 0u; r < R; r++ )
+			acc[r] = 0.0f;
+		for ( uint k = (sub_simd * 32u + lane) * SPARK_FP8_CHUNK; k < K; k += SIMDS_PER_ROW * 32u * SPARK_FP8_CHUNK )
+		{
+			const float block = SparkFp8Block<MX>(p, scale, ulong(out_row), k);
+			const uint4 bits = *(device const uint4 *)(row + k);
+			const float4 w0 = SparkFp8Word(bits.x), w1 = SparkFp8Word(bits.y), w2 = SparkFp8Word(bits.z), w3 = SparkFp8Word(bits.w);
+			for ( uint r = 0u; r < R; r++ )
+			{
+				device const ushort *xr = x + (ulong)r * p.input_stride + k;
+				float4 x0, x1, x2, x3;
+				SparkUnpack8(*(device const uint4 *)xr, x0, x1);
+				SparkUnpack8(*(device const uint4 *)(xr + 8u), x2, x3);
+				acc[r] = fma(block, (dot(w0, x0) + dot(w1, x1)) + (dot(w2, x2) + dot(w3, x3)), acc[r]);
+			}
+		}
 		for ( uint r = 0u; r < R; r++ )
 		{
-			const float total = simd_sum(acc[i][r]);
+			const float total = simd_sum(acc[r]);
 			if ( lane == 0u )
-				partial[(simd * O + i) * R + r] = total;
+				partial[simd * R + r] = total;
 		}
+	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
-	if ( simd != 0u || lane >= O * R )
+	if ( sub_simd != 0u || lane >= R || out_row >= N )
 		return;
-	const uint i = lane / R, r = lane % R;
-	float total = partial[i * R + r];
-	for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
-		total += partial[(s * O + i) * R + r];
-	if ( first + i < N )
-		out[(ulong)r * p.output_stride + first + i] = SparkMathFloatToBf16(total);
-}
-
-template <uint R, uint O, bool MX>
-kernel void spark_gemv_fp8(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
-	device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]], uint group [[threadgroup_position_in_grid]],
-	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
-{
-	threadgroup float partial[SPARK_GEMV_SIMDS * O * R];
-	SparkFp8Rows<R, O, MX>(p, x, w, scale, out, group * O, lane, simd, partial);
+	const uint base = row_in_group * SIMDS_PER_ROW * R + lane;
+	float total = partial[base];
+	for ( uint s = 1u; s < SIMDS_PER_ROW; s++ )
+		total += partial[base + s * R];
+	out[(ulong)lane * p.output_stride + out_row] = SparkMathFloatToBf16(total);
 }
 
 template <bool MX>
@@ -197,7 +449,6 @@ kernel void spark_gemv_fp8_routed(constant SparkGemvParams &p [[buffer(0)]], dev
 	device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]], device const uint *experts [[buffer(5)]],
 	uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
-	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
 	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, first = group.x * SPARK_GEMV_OUTPUTS;
 	if ( experts[route] == SPARK_ROUTE_SKIP )
 	{
@@ -206,8 +457,17 @@ kernel void spark_gemv_fp8_routed(constant SparkGemvParams &p [[buffer(0)]], dev
 		return;
 	}
 	const ulong expert = experts[route];
-	SparkFp8Rows<1u, SPARK_GEMV_OUTPUTS, MX>(p, x + (ulong)(route / p.route_divisor) * p.input_stride, w + expert * N * K,
-		scale + expert * N * p.scale_stride * (MX ? 1u : 4u), out + (ulong)route * p.output_stride, first, lane, simd, partial);
+	device const ushort *xr = x + (ulong)(route / p.route_divisor) * p.input_stride;
+	device const uchar *wr = w + expert * N * K;
+	device const uchar *sr = scale + expert * N * p.scale_stride * (MX ? 1u : 4u);
+	device ushort *yr = out + (ulong)route * p.output_stride;
+	if ( K <= 2048u )
+	{
+		SparkFp8SimdRow<1u, MX>(p, xr, wr, sr, yr, first + simd, lane);
+		return;
+	}
+	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
+	SparkFp8CoopR1<SPARK_GEMV_OUTPUTS, MX>(p, xr, wr, sr, yr, first, lane, simd, partial);
 }
 
 template [[host_name("spark_gemv_fp8_routed")]] kernel void spark_gemv_fp8_routed<false>(constant SparkGemvParams &p [[buffer(0)]],
@@ -218,47 +478,6 @@ template [[host_name("spark_gemv_mxfp8_routed")]] kernel void spark_gemv_fp8_rou
 	device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]], device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]],
 	device const uint *experts [[buffer(5)]], uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
 	uint simd [[simdgroup_index_in_threadgroup]]);
-
-constant ushort kSparkE4m3Bf16[256] = {
-	0x0000u, 0x3b00u, 0x3b80u, 0x3bc0u, 0x3c00u, 0x3c20u, 0x3c40u, 0x3c60u,
-	0x3c80u, 0x3c90u, 0x3ca0u, 0x3cb0u, 0x3cc0u, 0x3cd0u, 0x3ce0u, 0x3cf0u,
-	0x3d00u, 0x3d10u, 0x3d20u, 0x3d30u, 0x3d40u, 0x3d50u, 0x3d60u, 0x3d70u,
-	0x3d80u, 0x3d90u, 0x3da0u, 0x3db0u, 0x3dc0u, 0x3dd0u, 0x3de0u, 0x3df0u,
-	0x3e00u, 0x3e10u, 0x3e20u, 0x3e30u, 0x3e40u, 0x3e50u, 0x3e60u, 0x3e70u,
-	0x3e80u, 0x3e90u, 0x3ea0u, 0x3eb0u, 0x3ec0u, 0x3ed0u, 0x3ee0u, 0x3ef0u,
-	0x3f00u, 0x3f10u, 0x3f20u, 0x3f30u, 0x3f40u, 0x3f50u, 0x3f60u, 0x3f70u,
-	0x3f80u, 0x3f90u, 0x3fa0u, 0x3fb0u, 0x3fc0u, 0x3fd0u, 0x3fe0u, 0x3ff0u,
-	0x4000u, 0x4010u, 0x4020u, 0x4030u, 0x4040u, 0x4050u, 0x4060u, 0x4070u,
-	0x4080u, 0x4090u, 0x40a0u, 0x40b0u, 0x40c0u, 0x40d0u, 0x40e0u, 0x40f0u,
-	0x4100u, 0x4110u, 0x4120u, 0x4130u, 0x4140u, 0x4150u, 0x4160u, 0x4170u,
-	0x4180u, 0x4190u, 0x41a0u, 0x41b0u, 0x41c0u, 0x41d0u, 0x41e0u, 0x41f0u,
-	0x4200u, 0x4210u, 0x4220u, 0x4230u, 0x4240u, 0x4250u, 0x4260u, 0x4270u,
-	0x4280u, 0x4290u, 0x42a0u, 0x42b0u, 0x42c0u, 0x42d0u, 0x42e0u, 0x42f0u,
-	0x4300u, 0x4310u, 0x4320u, 0x4330u, 0x4340u, 0x4350u, 0x4360u, 0x4370u,
-	0x4380u, 0x4390u, 0x43a0u, 0x43b0u, 0x43c0u, 0x43d0u, 0x43e0u, 0x7fffu,
-	0x8000u, 0xbb00u, 0xbb80u, 0xbbc0u, 0xbc00u, 0xbc20u, 0xbc40u, 0xbc60u,
-	0xbc80u, 0xbc90u, 0xbca0u, 0xbcb0u, 0xbcc0u, 0xbcd0u, 0xbce0u, 0xbcf0u,
-	0xbd00u, 0xbd10u, 0xbd20u, 0xbd30u, 0xbd40u, 0xbd50u, 0xbd60u, 0xbd70u,
-	0xbd80u, 0xbd90u, 0xbda0u, 0xbdb0u, 0xbdc0u, 0xbdd0u, 0xbde0u, 0xbdf0u,
-	0xbe00u, 0xbe10u, 0xbe20u, 0xbe30u, 0xbe40u, 0xbe50u, 0xbe60u, 0xbe70u,
-	0xbe80u, 0xbe90u, 0xbea0u, 0xbeb0u, 0xbec0u, 0xbed0u, 0xbee0u, 0xbef0u,
-	0xbf00u, 0xbf10u, 0xbf20u, 0xbf30u, 0xbf40u, 0xbf50u, 0xbf60u, 0xbf70u,
-	0xbf80u, 0xbf90u, 0xbfa0u, 0xbfb0u, 0xbfc0u, 0xbfd0u, 0xbfe0u, 0xbff0u,
-	0xc000u, 0xc010u, 0xc020u, 0xc030u, 0xc040u, 0xc050u, 0xc060u, 0xc070u,
-	0xc080u, 0xc090u, 0xc0a0u, 0xc0b0u, 0xc0c0u, 0xc0d0u, 0xc0e0u, 0xc0f0u,
-	0xc100u, 0xc110u, 0xc120u, 0xc130u, 0xc140u, 0xc150u, 0xc160u, 0xc170u,
-	0xc180u, 0xc190u, 0xc1a0u, 0xc1b0u, 0xc1c0u, 0xc1d0u, 0xc1e0u, 0xc1f0u,
-	0xc200u, 0xc210u, 0xc220u, 0xc230u, 0xc240u, 0xc250u, 0xc260u, 0xc270u,
-	0xc280u, 0xc290u, 0xc2a0u, 0xc2b0u, 0xc2c0u, 0xc2d0u, 0xc2e0u, 0xc2f0u,
-	0xc300u, 0xc310u, 0xc320u, 0xc330u, 0xc340u, 0xc350u, 0xc360u, 0xc370u,
-	0xc380u, 0xc390u, 0xc3a0u, 0xc3b0u, 0xc3c0u, 0xc3d0u, 0xc3e0u, 0x7fffu
-};
-
-static inline uint2 SparkFp8Bf16Word(uint word)
-{
-	return uint2(uint(kSparkE4m3Bf16[word & 0xffu]) | (uint(kSparkE4m3Bf16[(word >> 8u) & 0xffu]) << 16u),
-		uint(kSparkE4m3Bf16[(word >> 16u) & 0xffu]) | (uint(kSparkE4m3Bf16[word >> 24u]) << 16u));
-}
 
 template <bool MX>
 kernel void spark_dequant_fp8(constant SparkGemvParams &p [[buffer(0)]], device const uchar *w [[buffer(1)]], device const uchar *scale [[buffer(2)]],
@@ -285,76 +504,43 @@ template [[host_name("spark_dequant_fp8")]] kernel void spark_dequant_fp8<false>
 template [[host_name("spark_dequant_mxfp8")]] kernel void spark_dequant_fp8<true>(constant SparkGemvParams &p [[buffer(0)]],
 	device const uchar *w [[buffer(1)]], device const uchar *scale [[buffer(2)]], device ushort *out [[buffer(3)]], uint2 index [[thread_position_in_grid]]);
 
-static inline float SparkE2m1Dot8(uint word, float4 x0, float4 x1)
-{
-	const float4 w0 = float4(kSparkE2m1[word & 15u], kSparkE2m1[(word >> 4u) & 15u], kSparkE2m1[(word >> 8u) & 15u], kSparkE2m1[(word >> 12u) & 15u]);
-	const float4 w1 = float4(kSparkE2m1[(word >> 16u) & 15u], kSparkE2m1[(word >> 20u) & 15u], kSparkE2m1[(word >> 24u) & 15u], kSparkE2m1[word >> 28u]);
-	return dot(w0, x0) + dot(w1, x1);
-}
-
-static inline float SparkE2m1Fma8(uint word, float4 x0, float4 x1, float acc)
-{
-	acc = fma(kSparkE2m1[word & 15u], x0.x, acc);
-	acc = fma(kSparkE2m1[(word >> 4u) & 15u], x0.y, acc);
-	acc = fma(kSparkE2m1[(word >> 8u) & 15u], x0.z, acc);
-	acc = fma(kSparkE2m1[(word >> 12u) & 15u], x0.w, acc);
-	acc = fma(kSparkE2m1[(word >> 16u) & 15u], x1.x, acc);
-	acc = fma(kSparkE2m1[(word >> 20u) & 15u], x1.y, acc);
-	acc = fma(kSparkE2m1[(word >> 24u) & 15u], x1.z, acc);
-	return fma(kSparkE2m1[word >> 28u], x1.w, acc);
-}
-
 kernel void spark_gemv_mxfp4_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const uchar *w [[buffer(2)]],
 	device const uchar *scale [[buffer(3)]], device ushort *out [[buffer(4)]], device const uint *experts [[buffer(5)]],
 	uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
-	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
-	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, first = group.x * SPARK_GEMV_OUTPUTS;
+	const uint K = p.input_dimension, N = p.output_dimension, route = group.y, out_row = group.x * SPARK_GEMV_OUTPUTS + simd;
+	if ( out_row >= N )
+		return;
 	if ( experts[route] == SPARK_ROUTE_SKIP )
 	{
-		if ( simd == 0u && lane < SPARK_GEMV_OUTPUTS && first + lane < N )
-			out[(ulong)route * p.output_stride + first + lane] = 0u;
-		return;
-	}
-	const ulong expert = experts[route];
-	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
-	float acc[SPARK_GEMV_OUTPUTS];
-	device const uchar *weights[SPARK_GEMV_OUTPUTS];
-	device const uchar *scales[SPARK_GEMV_OUTPUTS];
-	for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
-	{
-		const ulong neuron = expert * N + min(first + i, N - 1u);
-		weights[i] = w + neuron * (K / 2u);
-		scales[i] = scale + neuron * (K / SPARK_MXFP4_GROUP);
-		acc[i] = 0.0f;
-	}
-	for ( uint k = (simd * 32u + lane) * SPARK_MXFP4_GROUP; k < K; k += SPARK_GEMV_SIMDS * 32u * SPARK_MXFP4_GROUP )
-	{
-		float4 xs[8];
-		for ( uint part = 0u; part < 4u; part++ )
-			SparkUnpack8(*(device const uint4 *)(row + k + 8u * part), xs[2u * part], xs[2u * part + 1u]);
-		for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
-		{
-			const uint4 bits = *(device const uint4 *)(weights[i] + k / 2u);
-			const float sum = (SparkE2m1Dot8(bits.x, xs[0], xs[1]) + SparkE2m1Dot8(bits.y, xs[2], xs[3])) +
-				(SparkE2m1Dot8(bits.z, xs[4], xs[5]) + SparkE2m1Dot8(bits.w, xs[6], xs[7]));
-			acc[i] = fma(SparkMathUe8m0ToFloat(scales[i][k / SPARK_MXFP4_GROUP]), sum, acc[i]);
-		}
-	}
-	for ( uint i = 0u; i < SPARK_GEMV_OUTPUTS; i++ )
-	{
-		const float total = simd_sum(acc[i]);
 		if ( lane == 0u )
-			partial[simd * SPARK_GEMV_OUTPUTS + i] = total;
-	}
-	threadgroup_barrier(mem_flags::mem_threadgroup);
-	if ( simd != 0u || lane >= SPARK_GEMV_OUTPUTS )
+			out[(ulong)route * p.output_stride + out_row] = 0u;
 		return;
-	float total = partial[lane];
-	for ( uint s = 1u; s < SPARK_GEMV_SIMDS; s++ )
-		total += partial[s * SPARK_GEMV_OUTPUTS + lane];
-	if ( first + lane < N )
-		out[(ulong)route * p.output_stride + first + lane] = SparkMathFloatToBf16(total);
+	}
+	const ulong neuron = (ulong)experts[route] * N + out_row;
+	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
+	device const uchar *weights = w + neuron * (K / 2u);
+	device const uchar *scales = scale + neuron * (K / SPARK_MXFP4_GROUP);
+	float acc = 0.0f;
+	for ( uint k = lane * SPARK_MXFP4_GROUP; k < K; k += 32u * SPARK_MXFP4_GROUP )
+	{
+		const uint4 bits = *(device const uint4 *)(weights + k / 2u);
+		const float sc = SparkMathUe8m0ToFloat(scales[k / SPARK_MXFP4_GROUP]);
+		device const ushort *xr = row + k;
+		float4 x0, x1;
+		SparkUnpack8(*(device const uint4 *)xr, x0, x1);
+		float sum0 = SparkE2m1Dot8(bits.x, x0, x1);
+		SparkUnpack8(*(device const uint4 *)(xr + 8u), x0, x1);
+		sum0 += SparkE2m1Dot8(bits.y, x0, x1);
+		SparkUnpack8(*(device const uint4 *)(xr + 16u), x0, x1);
+		float sum1 = SparkE2m1Dot8(bits.z, x0, x1);
+		SparkUnpack8(*(device const uint4 *)(xr + 24u), x0, x1);
+		sum1 += SparkE2m1Dot8(bits.w, x0, x1);
+		acc = fma(sc, sum0 + sum1, acc);
+	}
+	const float total = simd_sum(acc);
+	if ( lane == 0u )
+		out[(ulong)route * p.output_stride + out_row] = SparkMathFloatToBf16(total);
 }
 
 template <bool F32>
@@ -362,24 +548,29 @@ kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device 
 	device void *out [[buffer(3)]], device const uint *experts [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
-	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
-	const uint route = group.y;
+	const uint route = group.y, first = group.x * SPARK_GEMV_OUTPUTS;
 	const ulong at = (ulong)route * p.output_stride;
 	if ( experts[route] == SPARK_ROUTE_SKIP )
 	{
-		if ( simd == 0u && lane < SPARK_GEMV_OUTPUTS && group.x * SPARK_GEMV_OUTPUTS + lane < p.output_dimension )
+		if ( simd == 0u && lane < SPARK_GEMV_OUTPUTS && first + lane < p.output_dimension )
 		{
 			if ( F32 )
-				((device float *)out)[at + group.x * SPARK_GEMV_OUTPUTS + lane] = 0.0f;
+				((device float *)out)[at + first + lane] = 0.0f;
 			else
-				((device ushort *)out)[at + group.x * SPARK_GEMV_OUTPUTS + lane] = 0u;
+				((device ushort *)out)[at + first + lane] = 0u;
 		}
 		return;
 	}
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
 	device const ushort *weights = w + (ulong)experts[route] * p.output_dimension * p.input_dimension;
 	device void *target = F32 ? (device void *)((device float *)out + at) : (device void *)((device ushort *)out + at);
-	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, F32>(p, row, weights, target, group.x * SPARK_GEMV_OUTPUTS, lane, simd, partial);
+	if ( p.input_dimension < SPARK_GEMV_SPAN )
+	{
+		SparkGemvSimdRow<1u, F32>(p, row, weights, target, first + simd, lane);
+		return;
+	}
+	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
+	SparkGemvCoopRows<1u, SPARK_GEMV_OUTPUTS, F32>(p, row, weights, target, first, lane, simd, partial);
 }
 
 template [[host_name("spark_gemv_routed")]] kernel void spark_gemv_routed<false>(constant SparkGemvParams &p [[buffer(0)]],
@@ -433,19 +624,27 @@ kernel void spark_gemv_nvfp4_routed(constant SparkGemvParams &p [[buffer(0)]], d
 	}
 	const ulong expert = experts[route], at = expert * N + min(neuron, N - 1u);
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
-	device const uchar *weights = w + at * (K / 2u);
-	device const uchar *scales = scale + at * (K / SPARK_NVFP4_GROUP);
+	device const uint4 *weights = (device const uint4 *)(w + at * (K / 2u));
+	device const ushort *scales = (device const ushort *)(scale + at * (K / SPARK_NVFP4_GROUP));
 	const float global = global_scale[expert];
 	float acc = 0.0f;
 	for ( uint c = sub; c < chunks; c += lanes )
 	{
-		const uint4 bits = *(device const uint4 *)(weights + c * (SPARK_NVFP4_CHUNK / 2u));
-		float4 xs[8];
-		for ( uint part = 0u; part < 4u; part++ )
-			SparkUnpack8(*(device const uint4 *)(row + c * SPARK_NVFP4_CHUNK + 8u * part), xs[2u * part], xs[2u * part + 1u]);
-		const float low = SparkE2m1Fma8(bits.y, xs[2], xs[3], SparkE2m1Fma8(bits.x, xs[0], xs[1], 0.0f));
-		const float high = SparkE2m1Fma8(bits.w, xs[6], xs[7], SparkE2m1Fma8(bits.z, xs[4], xs[5], 0.0f));
-		const float low_scale = SparkMathUe4m3ToFloat(scales[2u * c]) * global, high_scale = SparkMathUe4m3ToFloat(scales[2u * c + 1u]) * global;
+		const uint4 bits = weights[c];
+		const ushort sc_pair = scales[c];
+		device const uint4 *xr = (device const uint4 *)(row + c * SPARK_NVFP4_CHUNK);
+		const uint4 bx0 = xr[0], bx1 = xr[1], bx2 = xr[2], bx3 = xr[3];
+		float4 x0, x1;
+		SparkUnpack8(bx0, x0, x1);
+		float low = SparkE2m1Fma8(bits.x, x0, x1, 0.0f);
+		SparkUnpack8(bx1, x0, x1);
+		low = SparkE2m1Fma8(bits.y, x0, x1, low);
+		SparkUnpack8(bx2, x0, x1);
+		float high = SparkE2m1Fma8(bits.z, x0, x1, 0.0f);
+		SparkUnpack8(bx3, x0, x1);
+		high = SparkE2m1Fma8(bits.w, x0, x1, high);
+		const float low_scale = SparkMathUe4m3ToFloat(uchar(sc_pair & 0xffu)) * global;
+		const float high_scale = SparkMathUe4m3ToFloat(uchar(sc_pair >> 8u)) * global;
 		acc = fma(high_scale, high, fma(low_scale, low, acc));
 	}
 	for ( uint step = lanes / 2u; step > 0u; step >>= 1u )
