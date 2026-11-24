@@ -244,7 +244,9 @@ struct HyDevice
 			return status;
 		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, L::kRankHeads, &state->rope);
 		IndexRope(state);
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		status = SparkDeviceStageGeometry(&state->stage, geometry);
+		geometry->tree_verify = status == SPARK_STATUS_OK ? 1u : 0u;
+		return status;
 	}
 
 	static SparkStatus BindHyper(State *state, const SparkStageRunnerDeviceWeights *weights, const char *prefix, uint32_t mixes, uint32_t scales, Hyper *hyper)
@@ -573,6 +575,28 @@ struct HyDevice
 		return HySchedule<G, HyDevice>::Step((State *)model, step, queue);
 	}
 
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *queue)
+	{
+		State *state = (State *)model;
+		SparkDeviceKeepTensors keep;
+		SparkDeviceStepTensors frame;
+		SparkStatus status = SparkDeviceStageKeepTables(&state->stage, step, kept, &keep);
+		if ( status != SPARK_STATUS_OK || step->tree == 0u || keep.moves == 0u )
+			return status;
+		status = SparkDeviceStageKeepRelocate(&state->stage, (SparkDeviceQueue *)queue, step, &keep);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageStepTables(&state->stage, step, &frame);
+		for ( uint32_t index = 0u; index < G::kIndexLayers && status == SPARK_STATUS_OK; index++ )
+		{
+			SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame, 0u);
+			SparkKvParams move = { keep.moves, 1u, G::kIndexDim / 2u, paged.page_slots, paged.pages_per_sequence, 0u, 0u, 0u, paged.pool_pages, G::kIndexDim / 2u, 0u, 0u };
+			paged.pool = SparkDeviceStageIndexCache(&state->stage, index).pool;
+			paged.kv_heads = 1u;
+			status = SparkOpsKvMove(state->stage.ops, (SparkDeviceQueue *)queue, &paged, keep.move_sources, keep.move_destinations, &move);
+		}
+		return status;
+	}
+
 	static const SparkStageRunnerModelInterface *Interface(void)
 	{
 		static const SparkStageRunnerModelInterface interface_table =
@@ -594,7 +618,7 @@ struct HyDevice
 			SparkDeviceStageReport,
 			0,
 			SparkDeviceStageLane,
-			0,
+			KeepRows,
 			0,
 			BindDevice,
 			0,
