@@ -1580,16 +1580,21 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 
 static void StageServingWaveHost(SparkStageServingState *state, const uint64_t *marks)
 {
+	SparkStageKvRecurrentCounters states;
 	uint32_t phase;
 	for ( phase = 0u; phase < 5u; ++phase )
 		state->wave_host_ns[phase] += marks[phase + 1u] - marks[phase];
 	if ( ++state->wave_host_count < 16u )
 		return;
-	fprintf(stderr, "STAGE-WAVE-HOST tag=%s rank=%u prefill_waves=%u admit_ms=%.1f submit_ms=%.1f capture_ms=%.1f sync_ms=%.1f finish_ms=%.1f\n",
+	SparkStageKvBindingTakeRecurrentCounters(&state->kv, &states);
+	fprintf(stderr, "STAGE-WAVE-HOST tag=%s rank=%u prefill_waves=%u admit_ms=%.1f submit_ms=%.1f capture_ms=%.1f sync_ms=%.1f finish_ms=%.1f "
+		"state_restores=%llu state_restore_skips=%llu state_restore_ms=%.1f state_captures=%llu state_capture_ms=%.1f\n",
 		state->model->module_tag, state->runner_config.tp_rank, state->wave_host_count,
 		(double)state->wave_host_ns[0] / state->wave_host_count / 1e6, (double)state->wave_host_ns[1] / state->wave_host_count / 1e6,
 		(double)state->wave_host_ns[2] / state->wave_host_count / 1e6, (double)state->wave_host_ns[3] / state->wave_host_count / 1e6,
-		(double)state->wave_host_ns[4] / state->wave_host_count / 1e6);
+		(double)state->wave_host_ns[4] / state->wave_host_count / 1e6,
+		(unsigned long long)states.restores, (unsigned long long)states.restore_skips, (double)states.restore_ns / 1e6,
+		(unsigned long long)states.captures, (double)states.capture_ns / 1e6);
 	memset(state->wave_host_ns, 0, sizeof(state->wave_host_ns));
 	state->wave_host_count = 0u;
 }

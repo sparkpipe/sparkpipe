@@ -23,6 +23,7 @@ extern "C" {
 #define SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS UINT32_C(0x00000002)
 #define SPARK_KV_PAGE_STORE_FLAG_DIRECT_IO UINT32_C(0x00000004)
 #define SPARK_KV_PAGE_STORE_FLAG_MEMORY UINT32_C(0x00000008)
+#define SPARK_KV_PAGE_STORE_DIGEST_BYTES 32u
 #define SPARK_KV_PAGE_STORE_KNOWN_FLAGS \
 	(SPARK_KV_PAGE_STORE_FLAG_CREATE_EXCLUSIVE | \
 	 SPARK_KV_PAGE_STORE_FLAG_ANONYMOUS | \
@@ -147,6 +148,11 @@ SparkStatus SparkKvPageStorePrefetch(
 	SparkKvPageStore *store,
 	SparkKvCacheArena *arena,
 	uint32_t logical_page_index);
+SparkStatus SparkKvPageStoreRecordDigest(
+	SparkKvPageStore *store,
+	uint32_t logical_page_index,
+	uint64_t generation,
+	uint8_t digest[SPARK_KV_PAGE_STORE_DIGEST_BYTES]);
 SparkStatus SparkKvPageStoreReadback(
 	SparkKvPageStore *store,
 	uint32_t logical_page_index,

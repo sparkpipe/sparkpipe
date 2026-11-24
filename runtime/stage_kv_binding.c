@@ -917,13 +917,18 @@ static SparkStatus SparkStageKvBindingAllocateStates(SparkStageKvBinding *bindin
 	(void)SparkStageKvBindingPin(binding,&binding->lane_state,bytes);
 	binding->state_staging = (uint8_t *)malloc((size_t)binding->recurrent.lane_bytes);
 	binding->lane_state_flags = (uint8_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_state_flags));
+	binding->lane_held_digests = (uint8_t *)calloc(binding->resident_sequence_capacity,SPARK_KV_PAGE_STORE_DIGEST_BYTES);
+	binding->lane_held_pages = (uint32_t *)malloc((size_t)binding->resident_sequence_capacity * sizeof(*binding->lane_held_pages));
+	binding->lane_held_generations = (uint64_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_held_generations));
 	binding->lane_staged_pages = (uint32_t *)malloc((size_t)binding->resident_sequence_capacity * sizeof(*binding->lane_staged_pages));
 	binding->lane_staged_generations = (uint64_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_staged_generations));
 	binding->lane_staged_sequences = (uint64_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_staged_sequences));
 	if ( binding->lane_state.host == 0 || binding->state_staging == 0 || binding->lane_state_flags == 0 ||
-		binding->lane_staged_pages == 0 || binding->lane_staged_generations == 0 || binding->lane_staged_sequences == 0 )
+		binding->lane_staged_pages == 0 || binding->lane_staged_generations == 0 || binding->lane_staged_sequences == 0 ||
+		binding->lane_held_digests == 0 || binding->lane_held_pages == 0 || binding->lane_held_generations == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(binding->lane_staged_pages,0xff,(size_t)binding->resident_sequence_capacity * sizeof(*binding->lane_staged_pages));
+	memset(binding->lane_held_pages,0xff,(size_t)binding->resident_sequence_capacity * sizeof(*binding->lane_held_pages));
 	return(SPARK_STATUS_OK);
 }
 
@@ -1810,6 +1815,9 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	SparkStageKvBindingRelease(&binding->lane_state);
 	free(binding->state_staging);
 	free(binding->lane_state_flags);
+	free(binding->lane_held_digests);
+	free(binding->lane_held_pages);
+	free(binding->lane_held_generations);
 	free(binding->lane_staged_pages);
 	free(binding->lane_staged_generations);
 	free(binding->lane_staged_sequences);
@@ -2212,9 +2220,39 @@ static const char *SparkStageKvRestoreInconsistent(const SparkStageKvBinding *bi
 	return(0);
 }
 
+static void SparkStageKvLaneForgets(SparkStageKvBinding *binding,uint32_t slot)
+{
+	binding->lane_held_pages[slot] = SPARK_KV_CACHE_NO_BLOCK;
+}
+
+static void SparkStageKvLaneHolds(SparkStageKvBinding *binding,const SparkStageKvStateJob *job)
+{
+	binding->lane_held_pages[job->slot] = SPARK_KV_CACHE_NO_BLOCK;
+	if ( SparkKvPageStoreRecordDigest(&binding->state_store,job->page,job->generation,binding->lane_held_digests + (size_t)job->slot * SPARK_KV_PAGE_STORE_DIGEST_BYTES) != SPARK_STATUS_OK )
+		return;
+	binding->lane_held_generations[job->slot] = job->generation;
+	binding->lane_held_pages[job->slot] = job->page;
+}
+
+static uint32_t SparkStageKvLaneHeld(SparkStageKvBinding *binding,const SparkStageKvStateJob *job)
+{
+	uint8_t stored[SPARK_KV_PAGE_STORE_DIGEST_BYTES];
+	if ( binding->lane_held_pages[job->slot] != job->page || binding->lane_held_generations[job->slot] != job->generation )
+		return(0u);
+	if ( SparkKvPageStoreRecordDigest(&binding->state_store,job->page,job->generation,stored) != SPARK_STATUS_OK )
+		return(0u);
+	return(memcmp(stored,binding->lane_held_digests + (size_t)job->slot * SPARK_KV_PAGE_STORE_DIGEST_BYTES,sizeof(stored)) == 0 ? 1u : 0u);
+}
+
 static SparkStatus SparkStageKvStateRead(SparkStageKvBinding *binding,const SparkStageKvStateJob *job)
 {
 	SparkStatus status,wait;
+	if ( SparkStageKvLaneHeld(binding,job) != 0u )
+	{
+		atomic_fetch_add(&binding->recurrent_restore_skips,1u);
+		return(SPARK_STATUS_OK);
+	}
+	SparkStageKvLaneForgets(binding,job->slot);
 	status = SparkKvPageStoreReadback(&binding->state_store,job->page,job->generation,(uintptr_t)SparkStageKvLaneState(binding,job->slot),binding->recurrent.lane_bytes);
 	while ( status == SPARK_STATUS_BUSY )
 	{
@@ -2223,6 +2261,8 @@ static SparkStatus SparkStageKvStateRead(SparkStageKvBinding *binding,const Spar
 			SPARK_RETURN(wait);
 		status = SparkKvPageStoreReadback(&binding->state_store,job->page,job->generation,(uintptr_t)SparkStageKvLaneState(binding,job->slot),binding->recurrent.lane_bytes);
 	}
+	if ( status == SPARK_STATUS_OK )
+		SparkStageKvLaneHolds(binding,job);
 	SPARK_RETURN(status);
 }
 
@@ -2237,6 +2277,10 @@ static SparkStatus SparkStageKvStateWrite(SparkStageKvBinding *binding,const Spa
 			SPARK_RETURN(wait);
 		status = SparkKvPageStoreWriteback(&binding->state_store,job->page,job->slot,job->generation,(uintptr_t)SparkStageKvLaneState(binding,job->slot),binding->recurrent.lane_bytes,0u,0u);
 	}
+	if ( status == SPARK_STATUS_OK )
+		SparkStageKvLaneHolds(binding,job);
+	else
+		SparkStageKvLaneForgets(binding,job->slot);
 	if ( status == SPARK_STATUS_CAPACITY_EXCEEDED )
 		return(status);
 	SPARK_RETURN(status);
@@ -2550,6 +2594,9 @@ static SparkStatus SparkStageKvBindingCopyLanes(SparkStageKvBinding *binding,uin
 {
 	uint32_t index;
 	SparkStatus status = SPARK_STATUS_OK;
+	for (index=0u; direction==SPARK_STAGE_KV_RECURRENT_TO_BUFFER && index<count; index++)
+		if ( slots[index] < binding->resident_sequence_capacity )
+			SparkStageKvLaneForgets(binding,slots[index]);
 	for (index=0u; index<count && status==SPARK_STATUS_OK; index++)
 		status = binding->recurrent.copy(binding->recurrent.context,direction,slots[index],
 			(void *)(uintptr_t)(binding->lane_state.device + SparkStageKvLaneStateOffset(binding,slots[index])),binding->recurrent.lane_bytes,queue);
@@ -2659,6 +2706,7 @@ void SparkStageKvBindingTakeRecurrentCounters(SparkStageKvBinding *binding,Spark
 	if ( binding == 0 )
 		return;
 	counters->restores = atomic_exchange(&binding->recurrent_restores,0u);
+	counters->restore_skips = atomic_exchange(&binding->recurrent_restore_skips,0u);
 	counters->restore_bytes = atomic_exchange(&binding->recurrent_restore_bytes,0u);
 	counters->restore_ns = atomic_exchange(&binding->recurrent_restore_ns,0u);
 	counters->captures = atomic_exchange(&binding->recurrent_captures,0u);

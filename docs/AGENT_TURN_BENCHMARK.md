@@ -380,6 +380,15 @@ nothing of this kind. It scales with the bytes of state a rank holds: a
 sixteenth of this on each rank of a sixteen-rank lane of the same model, a
 quarter on a lane of four.
 
+Since then the state store hashes its records with the 128-bit fast checksum
+instead of SHA-256 (18 ms against 80 ms on those bytes), and a lane that
+still holds a record's bytes resumes from them without the read through the
+store. By the component times above a capture becomes about 74 ms and a
+restore on the same lane nothing, a restore on another lane about 46 ms.
+That is arithmetic until the floor is run again; the rank's phase line now
+reports the counts and times (`state_restores`, `state_restore_skips`,
+`state_restore_ms`, `state_captures`, `state_capture_ms`).
+
 ### On the fleet: `scripts/turn_floor_fleet.sh`
 
 The driver walks served models through the tool on the hub, from the
