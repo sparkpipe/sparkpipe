@@ -80,12 +80,20 @@ static float ProbeValue(uint16_t bits)
 	return value;
 }
 
-static void ProbeScoreReference(const std::vector<uint16_t> &query,const std::vector<uint16_t> &weight,const std::vector<uint16_t> &keys,
+static std::vector<float> ProbeWidened(const std::vector<uint16_t> &bits)
+{
+	std::vector<float> values(bits.size());
+	for (uint64_t index=0u; index<bits.size(); index++)
+		values[index] = ProbeValue(bits[index]);
+	return values;
+}
+
+static void ProbeScoreReference(const std::vector<uint16_t> &query,const std::vector<float> &weight,const std::vector<uint16_t> &keys,
 	const std::vector<uint32_t> &position,const std::vector<float> &dense,uint32_t rows,uint32_t context,float scale,const char *label)
 {
 	uint64_t checked = 0u,mismatched = 0u,gated = 0u;
 	uint32_t row,key,head,dim;
-	char what[160];
+	char what[320];
 	for (row=0u; row<rows; row++)
 		for (key=0u; key<=position[row] && key<context; key++)
 		{
@@ -95,7 +103,7 @@ static void ProbeScoreReference(const std::vector<uint16_t> &query,const std::ve
 				double dot = 0.0;
 				for (dim=0u; dim<PROBE_DIM; dim++)
 					dot += (double)ProbeValue(query[((uint64_t)row * PROBE_HEADS + head) * PROBE_DIM + dim]) * ProbeValue(keys[(uint64_t)key * PROBE_DIM + dim]);
-				const double w = ProbeValue(weight[(uint64_t)row * PROBE_HEADS + head]);
+				const double w = weight[(uint64_t)row * PROBE_HEADS + head];
 				relu += w * (dot > 0.0 ? dot : 0.0);
 				plain += w * dot;
 				magnitude += fabs(w * dot);
@@ -215,7 +223,37 @@ static void ProbeCase(uint32_t context,uint32_t degree)
 	PROBE_CUDA(cudaDeviceSynchronize());
 	std::vector<float> dense = ProbeDownload(d_dense,(uint64_t)rows * context);
 	if ( context <= 9000u )
-		ProbeScoreReference(query,weight,keys,position,dense,rows,context,scale,label);
+		ProbeScoreReference(query,ProbeWidened(weight),keys,position,dense,rows,context,scale,label);
+	if ( context <= 9000u )
+	{
+		std::vector<float> fine = ProbeWidened(weight);
+		float *d_fine_scores = 0;
+		uint64_t checked = 0u,moved = 0u;
+		char fine_label[128];
+		for (index=0u; index<fine.size(); index++)
+			fine[index] *= 1.0009765625f;
+		float *d_fine = ProbeUpload(fine);
+		PROBE_CUDA(cudaMalloc((void **)&d_fine_scores,(uint64_t)rows * context * sizeof(float)));
+		PROBE_CUDA((LmWeightedSparseScoreLaunch<ProbeIndexKv,PROBE_HEADS,PROBE_DIM>(d_query,d_fine,full,d_sequence,d_context,d_position,rows,context,scale,
+			d_fine_scores,0)));
+		PROBE_CUDA(cudaDeviceSynchronize());
+		const std::vector<float> fine_scores = ProbeDownload(d_fine_scores,(uint64_t)rows * context);
+		snprintf(fine_label,sizeof(fine_label),"%s FP32 head weights",label);
+		ProbeScoreReference(query,fine,keys,position,fine_scores,rows,context,scale,fine_label);
+		for (row=0u; row<rows; row++)
+			for (index=0u; index<=position[row] && index<context; index++)
+			{
+				checked++;
+				if ( fine_scores[(uint64_t)row * context + index] != dense[(uint64_t)row * context + index] )
+					moved++;
+			}
+		char what[320];
+		snprintf(what,sizeof(what),"%s: weights between BF16 values move %llu of %llu scores, so the kernel reads the FP32 weights",fine_label,
+			(unsigned long long)moved,(unsigned long long)checked);
+		ProbeCheck(moved * 2u > checked,what);
+		cudaFree(d_fine_scores);
+		cudaFree(d_fine);
+	}
 	if ( context <= 9000u )
 	{
 		float *d_rounded = 0;
