@@ -538,7 +538,7 @@ SparkStatus SparkOpsHeadGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 		return(status);
 	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[1] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_HEAD_GATE,params->heads,params->rows,1u,OpsThreads(params->head_dimension,256u),params,sizeof(*params),
+	return(OpsLaunch(ops,queue,SPARK_OPS_HEAD_GATE,params->heads,params->rows,1u,OpsThreads((params->head_dimension + 7u) / 8u,256u),params,sizeof(*params),
 		bindings,2u));
 }
 
@@ -661,7 +661,7 @@ static SparkStatus OpsLinearRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, c
 		return(status);
 	staged[0] = OpsBind(SparkTensorAt(&ops->partial,0u,(uint64_t)launch.splits * params->rows * N * sizeof(float)),SPARK_DEVICE_BIND_READ);
 	staged[1] = bindings[2];
-	return(OpsLaunch(ops,queue,SPARK_OPS_GEMM_REDUCE,(N + 255u) / 256u,params->rows,1u,256u,&launch,sizeof(launch),staged,2u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_GEMM_REDUCE,((N + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,&launch,sizeof(launch),staged,2u));
 }
 
 SparkStatus SparkOpsLinear(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, const SparkGemvParams *params)
@@ -739,7 +739,7 @@ SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 		bindings[0] = OpsBind(w,SPARK_DEVICE_BIND_READ);
 		bindings[1] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
 		bindings[2] = OpsBind(dequant,SPARK_DEVICE_BIND_WRITE);
-		status = OpsLaunch(ops,queue,mx != 0u ? SPARK_OPS_DEQUANT_MXFP8 : SPARK_OPS_DEQUANT_FP8,(K / 4u + 255u) / 256u,N,1u,256u,params,sizeof(*params),
+		status = OpsLaunch(ops,queue,mx != 0u ? SPARK_OPS_DEQUANT_MXFP8 : SPARK_OPS_DEQUANT_FP8,(K / 8u + 255u) / 256u,N,1u,256u,params,sizeof(*params),
 			bindings,3u);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
@@ -748,7 +748,7 @@ SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 		bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
 		bindings[3] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
 		return(OpsLaunch(ops,queue,mx != 0u ? SPARK_OPS_GEMM_MXFP8_BLOCKS : SPARK_OPS_GEMM_FP8_BLOCKS,(N + OPS_GEMM_OUTPUTS - 1u) / OPS_GEMM_OUTPUTS,
-			(params->rows + OPS_GEMM_ROWS - 1u) / OPS_GEMM_ROWS,1u,128u,params,sizeof(*params),bindings,4u));
+			(params->rows + (mx != 0u ? OPS_GEMM_ROWS : 64u) - 1u) / (mx != 0u ? OPS_GEMM_ROWS : 64u),1u,128u,params,sizeof(*params),bindings,4u));
 	}
 	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(scale,SPARK_DEVICE_BIND_READ);
@@ -798,7 +798,7 @@ SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	bindings[4] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	bindings[6] = OpsBind(params->tree != 0u ? sequences->parent_rows : sequences->row_begin,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_CAUSAL_CONV,(params->channels + 255u) / 256u,params->sequences,1u,256u,params,sizeof(*params),bindings,7u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_CAUSAL_CONV,(params->channels + 63u) / 64u,params->sequences,1u,64u,params,sizeof(*params),bindings,7u));
 }
 
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension)
@@ -867,7 +867,7 @@ SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	bindings[9] = OpsBind(params->tree != 0u ? sequences->state_loads : sequences->row_begin,SPARK_DEVICE_BIND_READ);
 	bindings[10] = OpsBind(params->tree != 0u ? sequences->state_saves : sequences->row_begin,SPARK_DEVICE_BIND_READ);
 	bindings[11] = OpsBind(params->tree != 0u ? sequences->snapshots : state,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_DELTA_RULE,params->value_dimension / 4u,params->value_heads,params->sequences,128u,params,sizeof(*params),
+	return(OpsLaunch(ops,queue,SPARK_OPS_DELTA_RULE,(params->value_dimension + 15u) / 16u,params->value_heads,params->sequences,128u,params,sizeof(*params),
 		bindings,12u));
 }
 
@@ -930,7 +930,7 @@ SparkStatus SparkOpsChannelDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	bindings[6] = OpsBind(beta,SPARK_DEVICE_BIND_READ);
 	bindings[7] = OpsBind(mix,SPARK_DEVICE_BIND_READ);
 	bindings[8] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_DELTA_RULE,params->value_dimension / 4u,params->value_heads,params->sequences,128u,&launch,sizeof(launch),
+	return(OpsLaunch(ops,queue,SPARK_OPS_DELTA_RULE,(params->value_dimension + 15u) / 16u,params->value_heads,params->sequences,128u,&launch,sizeof(launch),
 		bindings,9u));
 }
 
@@ -958,7 +958,7 @@ SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const 
 	bindings[5] = OpsBind(paged->pool,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,params->skip != 0u ? SPARK_OPS_KV_STORE_SKIP : SPARK_OPS_KV_STORE,params->rows,params->kv_heads,1u,
-		OpsThreads(params->head_dimension,1024u),params,sizeof(*params),bindings,7u));
+		OpsThreads((params->head_dimension + 7u) / 8u,256u),params,sizeof(*params),bindings,7u));
 }
 
 SparkStatus SparkOpsKvMove(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor sources, SparkTensor destinations,
@@ -980,7 +980,7 @@ SparkStatus SparkOpsKvMove(SparkDeviceOps *ops, SparkDeviceQueue *queue, const S
 	bindings[3] = OpsBind(paged->page_table,SPARK_DEVICE_BIND_READ);
 	bindings[4] = OpsBind(paged->pool,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[5] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_KV_MOVE,params->rows,params->kv_heads,1u,OpsThreads(params->head_dimension,1024u),params,sizeof(*params),bindings,6u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_KV_MOVE,params->rows,params->kv_heads,1u,OpsThreads((params->head_dimension + 7u) / 8u,256u),params,sizeof(*params),bindings,6u));
 }
 
 static uint32_t OpsAttentionWidth(const SparkAttentionParams *params)
@@ -1032,7 +1032,7 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 		segment.row_offset = begin;
 		segment.rows = end;
 		status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_PREFILL + OpsAttentionWidth(params)),params->partitions,params->heads,
-			(end - begin + block_rows - 1u) / block_rows,128u,&segment,sizeof(segment),bindings,7u);
+			(end - begin + block_rows - 1u) / block_rows,params->head_dimension > 256u ? 256u : 128u,&segment,sizeof(segment),bindings,7u);
 	}
 	return(status);
 }
@@ -1624,7 +1624,7 @@ SparkStatus SparkOpsAddRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 	params.output_stride = addend_stride;
 	bindings[0] = OpsBind(hidden,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[1] = OpsBind(addend,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ADD_ROWS,(dimension + 255u) / 256u,rows,1u,256u,&params,sizeof(params),bindings,2u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_ADD_ROWS,((dimension + 7u) / 8u + 255u) / 256u,rows,1u,256u,&params,sizeof(params),bindings,2u));
 }
 
 SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor output, const SparkSiluMulParams *params,
@@ -1648,7 +1648,7 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL : activation == SPARK_GATED_SILU_ROUNDED ? SPARK_OPS_SILU_ROUNDED_MUL :
 		activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL : activation == SPARK_GATED_SILU_GATE_LIMIT ? SPARK_OPS_SILU_GATE_LIMIT_MUL :
 		activation == SPARK_GATED_SITU ? SPARK_OPS_SITU_MUL : activation == SPARK_GATED_SILU_ROUNDED_CLAMP ? SPARK_OPS_SILU_ROUNDED_CLAMP_MUL : SPARK_OPS_SILU_MUL,
-		(params->dimension + 255u) / 256u,
+		((params->dimension + 3u) / 4u + 255u) / 256u,
 		params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
@@ -1673,7 +1673,7 @@ SparkStatus SparkOpsGatedMulRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL_ROUTED : activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL_ROUTED :
 		activation == SPARK_GATED_SILU_GATE_LIMIT ? SPARK_OPS_SILU_GATE_LIMIT_MUL_ROUTED : SPARK_OPS_SILU_MUL_ROUTED,
-		(params->dimension + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+		((params->dimension + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
 SparkStatus SparkOpsRmsNormBranches(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor first, const SparkTensor *second,
@@ -1744,7 +1744,7 @@ static SparkStatus OpsScale(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkO
 	params.scale = scale;
 	params.multiply = multiply;
 	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,kernel,(uint32_t)((count + 255u) / 256u),1u,1u,256u,&params,sizeof(params),bindings,1u));
+	return(OpsLaunch(ops,queue,kernel,(uint32_t)(((count + (element == 2u ? 7u : 3u)) / (element == 2u ? 8u : 4u) + 255u) / 256u),1u,1u,256u,&params,sizeof(params),bindings,1u));
 }
 
 SparkStatus SparkOpsScaleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, uint64_t count, float scale)
@@ -1804,7 +1804,7 @@ SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *
 	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED,((params->width + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
 SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
@@ -1827,7 +1827,7 @@ SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQ
 	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,((params->width + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }
 
 SparkStatus SparkOpsRouteCombineWeightedSharedF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
@@ -1850,7 +1850,7 @@ SparkStatus SparkOpsRouteCombineWeightedSharedF32(SparkDeviceOps *ops, SparkDevi
 	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,((params->width + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }
 
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
@@ -1870,7 +1870,7 @@ SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_SHARED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_SHARED,((params->width + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
 SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params)
@@ -1886,7 +1886,7 @@ SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue
 		return(status);
 	bindings[0] = OpsBind(values,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[1] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_SIGMOID_GATE_ROWS,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_SIGMOID_GATE_ROWS,((params->width + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
 static SparkStatus OpsRouteScored(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, const SparkTensor *pinned,
@@ -2467,7 +2467,7 @@ SparkStatus SparkOpsRouteCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 		return(status);
 	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE,((params->width + 3u) / 4u + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
 SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor y, SparkTensor experts,

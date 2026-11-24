@@ -6,7 +6,7 @@
 #define SPARK_PROJECTION_GEMV 0u
 #define SPARK_PROJECTION_ROW_TILES 1u
 #define SPARK_GEMV_ROW_OUTPUTS(rows) ((rows) >= 8u ? 1u : (rows) >= 4u ? 2u : SPARK_GEMV_OUTPUTS)
-#define SPARK_ATTENTION_BLOCK_ROWS(dim) ((dim) > 256u ? 16u : 32u)
+#define SPARK_ATTENTION_BLOCK_ROWS(dim) ((void)(dim), 32u)
 #define SPARK_ATTENTION_SIMDS 8u
 #define SPARK_ROPE_ROUNDING_FP32 0u
 #define SPARK_ROPE_ROUNDING_TERMS 1u
