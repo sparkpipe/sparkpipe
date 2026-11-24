@@ -152,6 +152,24 @@ static __device__ __forceinline__ uint32_t LmCellMmaPackExact(float low, float h
 	return(packed);
 }
 
+static __device__ __forceinline__ uint32_t LmCellMmaE2m1Bf16Fused(uint32_t word, uint32_t byte, uint32_t scale_bf16x2)
+{
+	uint32_t widened, bits, out;
+	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
+		: "=r"(widened) : "r"(word >> (8u * byte)));
+	bits = ((widened >> 3u) & 0x0fff0fffu) | (widened & 0x80008000u);
+	asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
+	return(out);
+}
+
+static __device__ __forceinline__ uint32_t LmCellMmaE4m3Bf16Fused(uint32_t word, uint32_t selector, uint32_t scale_bf16x2)
+{
+	uint32_t placed = __byte_perm(word, 0u, selector), bits, out;
+	bits = ((placed >> 4u) & 0x07f007f0u) | (placed & 0x80008000u);
+	asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
+	return(out);
+}
+
 static __device__ __forceinline__ void LmCellMmaLoad(const uint8_t *tile, uint32_t lane, uint32_t g, uint32_t words[LM_CELL_MMA_FRAGS], uint32_t scales[LM_CELL_MMA_FRAGS])
 {
 	#pragma unroll
@@ -214,33 +232,86 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 			#pragma unroll
 			for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
 			{
-				float scale;
 				if constexpr ( SCALES == 0u )
-					scale = LmUe8m0ToFloat((uint8_t)scale_bits[f]);
+				{
+					const uint32_t code = scale_bits[f] & 255u;
+					if ( code >= 2u && code <= 142u )
+					{
+						const uint32_t s16 = (code + 112u) << 7u;
+						const uint32_t s2 = s16 | (s16 << 16u);
+						#pragma unroll
+						for ( j = 0u; j < 4u; j++ )
+							b[f][j] = LmCellMmaE2m1Bf16Fused(current[f],j,s2);
+					}
+					else
+					{
+						const float scale = LmUe8m0ToFloat((uint8_t)code);
+						#pragma unroll
+						for ( j = 0u; j < 4u; j++ )
+						{
+							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
+						}
+					}
+				}
 				else
 				{
 					const uint32_t neuron = threadIdx.x / LM_WARP_LANES * LM_WARP_LANES + (f / 2u) * LM_SKINNY_CELL_NEURONS + (f % 2u) * 8u + g;
 					const uint32_t word = scales[slot * LM_CELL_MMA_THREADS + neuron];
 					const uint32_t code = (word >> (((t * SCALES + (SCALES == 2u ? c / 2u : 0u)) & 3u) * 8u)) & 255u;
-					scale = SCALES == 1u ? LmUe8m0ToFloat((uint8_t)code) : LmUe4m3ToFloat((uint8_t)code) * global;
 					if constexpr ( BITS == 8u )
 					{
 						const uint32_t *codes = (const uint32_t *)(weights + slot * TILE_BYTES + neuron * LM_CELL_MMA_WIDE_ROW_BYTES + c * 8u);
+						if ( code >= 16u && code <= 134u )
+						{
+							const uint32_t s16 = (code + 120u) << 7u;
+							const uint32_t s2 = s16 | (s16 << 16u);
+							b[f][0] = LmCellMmaE4m3Bf16Fused(codes[0],0x1404u,s2);
+							b[f][1] = LmCellMmaE4m3Bf16Fused(codes[0],0x3424u,s2);
+							b[f][2] = LmCellMmaE4m3Bf16Fused(codes[1],0x1404u,s2);
+							b[f][3] = LmCellMmaE4m3Bf16Fused(codes[1],0x3424u,s2);
+						}
+						else
+						{
+							const float scale = LmUe8m0ToFloat((uint8_t)code);
+							#pragma unroll
+							for ( j = 0u; j < 4u; j++ )
+							{
+								const uint32_t bytes = (j < 2u ? codes[0] : codes[1]) >> ((j % 2u) * 16u);
+								b[f][j] = LmCellMmaPackExact(LmE4m3ToFloat((uint8_t)bytes) * scale,LmE4m3ToFloat((uint8_t)(bytes >> 8u)) * scale);
+							}
+						}
+					}
+					else if constexpr ( SCALES == 1u )
+					{
+						if ( code >= 2u && code <= 142u )
+						{
+							const uint32_t s16 = (code + 112u) << 7u;
+							const uint32_t s2 = s16 | (s16 << 16u);
+							#pragma unroll
+							for ( j = 0u; j < 4u; j++ )
+								b[f][j] = LmCellMmaE2m1Bf16Fused(current[f],j,s2);
+						}
+						else
+						{
+							const float scale = LmUe8m0ToFloat((uint8_t)code);
+							#pragma unroll
+							for ( j = 0u; j < 4u; j++ )
+							{
+								const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+								b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
+							}
+						}
+					}
+					else
+					{
+						const float scale = LmUe4m3ToFloat((uint8_t)code) * global;
 						#pragma unroll
 						for ( j = 0u; j < 4u; j++ )
 						{
-							const uint32_t bytes = (j < 2u ? codes[0] : codes[1]) >> ((j % 2u) * 16u);
-							b[f][j] = LmCellMmaPackExact(LmE4m3ToFloat((uint8_t)bytes) * scale,LmE4m3ToFloat((uint8_t)(bytes >> 8u)) * scale);
+							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
 						}
-					}
-				}
-				if constexpr ( BITS == 4u )
-				{
-					#pragma unroll
-					for ( j = 0u; j < 4u; j++ )
-					{
-						const float2 pair = LmSkinnyE2m1Pair(current[f],j);
-						b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
 					}
 				}
 			}

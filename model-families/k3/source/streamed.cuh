@@ -343,13 +343,24 @@ __global__ static void K3StreamedStateIdentityKernel(float *state, uint64_t matr
 
 __global__ static void K3StreamedStateComposeKernel(const float *transform, const float *incoming, const float *start, float *outgoing)
 {
-	const uint64_t head = blockIdx.x, row = blockIdx.y, column = threadIdx.x;
-	const float *m = transform + head * K3_KDA_KEY_DIM * K3_KDA_KEY_DIM + row * K3_KDA_KEY_DIM;
-	const float *s = incoming + head * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM + column;
-	float total = start != 0 ? start[(head * K3_KDA_KEY_DIM + row) * K3_KDA_VALUE_DIM + column] : 0.0f;
-	for (uint32_t inner = 0u; inner < K3_KDA_KEY_DIM; inner++)
-		total = __fmaf_rn(m[inner],s[(uint64_t)inner * K3_KDA_VALUE_DIM],total);
-	outgoing[(head * K3_KDA_KEY_DIM + row) * K3_KDA_VALUE_DIM + column] = total;
+	__shared__ float tile_m[16u][17u];
+	__shared__ float tile_s[16u][17u];
+	const uint64_t head = blockIdx.x;
+	const uint32_t row = blockIdx.y * 16u + threadIdx.y, col = blockIdx.z * 16u + threadIdx.x;
+	const float *m = transform + head * K3_KDA_KEY_DIM * K3_KDA_KEY_DIM + (uint64_t)row * K3_KDA_KEY_DIM;
+	const float *s = incoming + head * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM + col;
+	float total = start != 0 ? start[(head * K3_KDA_KEY_DIM + row) * K3_KDA_VALUE_DIM + col] : 0.0f;
+	for (uint32_t k0 = 0u; k0 < K3_KDA_KEY_DIM; k0 += 16u)
+	{
+		tile_m[threadIdx.y][threadIdx.x] = m[k0 + threadIdx.x];
+		tile_s[threadIdx.y][threadIdx.x] = s[(uint64_t)(k0 + threadIdx.y) * K3_KDA_VALUE_DIM];
+		__syncthreads();
+		#pragma unroll
+		for (uint32_t kk = 0u; kk < 16u; ++kk)
+			total = __fmaf_rn(tile_m[threadIdx.y][kk],tile_s[kk][threadIdx.x],total);
+		__syncthreads();
+	}
+	outgoing[(head * K3_KDA_KEY_DIM + row) * K3_KDA_VALUE_DIM + col] = total;
 }
 
 __global__ static void K3StreamedConvSeedKernel(uint16_t *window, const uint16_t *input, const uint32_t *chunk_row_begin, uint32_t channels, uint32_t chunks)
@@ -442,7 +453,7 @@ static int32_t K3StreamedFold(const float *transforms, const float *starts, floa
 		return(LM_LAUNCH_ERR_LAUNCH);
 	for (chunk = 1u; chunk < chunks; chunk++)
 	{
-		LM_LAUNCH((K3StreamedStateComposeKernel),dim3(heads,K3_KDA_KEY_DIM),K3_KDA_VALUE_DIM,0,stream,transforms + (uint64_t)chunk * slot_floats,running + current * slot_floats,
+		LM_LAUNCH((K3StreamedStateComposeKernel),dim3(heads,K3_KDA_KEY_DIM / 16u,K3_KDA_VALUE_DIM / 16u),dim3(16u,16u),0,stream,transforms + (uint64_t)chunk * slot_floats,running + current * slot_floats,
 			starts != 0 ? starts + (uint64_t)chunk * slot_floats : (const float *)0,running + (current ^ 1u) * slot_floats);
 		current ^= 1u;
 	}
@@ -533,7 +544,7 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 			const float *summary = x->summaries + (uint64_t)node * 2u * slot_floats;
 			if ( node == x->node && SparkGpuMemcpyAsync(x->incoming,x->running + current * slot_floats,(size_t)slot_bytes,SPARK_GPU_COPY_DEVICE_TO_DEVICE,stream) != SPARK_GPU_SUCCESS )
 				return(LM_LAUNCH_ERR_LAUNCH);
-			LM_LAUNCH((K3StreamedStateComposeKernel),dim3(heads,K3_KDA_KEY_DIM),K3_KDA_VALUE_DIM,0,stream,summary + slot_floats,x->running + current * slot_floats,summary,
+			LM_LAUNCH((K3StreamedStateComposeKernel),dim3(heads,K3_KDA_KEY_DIM / 16u,K3_KDA_VALUE_DIM / 16u),dim3(16u,16u),0,stream,summary + slot_floats,x->running + current * slot_floats,summary,
 				x->running + (current ^ 1u) * slot_floats);
 			current ^= 1u;
 		}
@@ -543,7 +554,7 @@ static int32_t K3StreamedKdaNode(K3LayerBuffers *b, const K3LayerWeights *shards
 			LM_LAUNCH((K3StreamedConvEndKernel),(channels[which] + 255u) / 256u,256u,0,stream,carried[which],end_tail + window_offset[which],
 				end_node != 0u ? x->tails + (uint64_t)(end_node - 1u) * tail_elements + window_offset[which] : carried[which],end_rows,channels[which]);
 		for (chunk = 1u; chunk < x->chunks; chunk++)
-			LM_LAUNCH((K3StreamedStateComposeKernel),dim3(heads,K3_KDA_KEY_DIM),K3_KDA_VALUE_DIM,0,stream,x->transforms + (uint64_t)(chunk - 1u) * slot_floats,
+			LM_LAUNCH((K3StreamedStateComposeKernel),dim3(heads,K3_KDA_KEY_DIM / 16u,K3_KDA_VALUE_DIM / 16u),dim3(16u,16u),0,stream,x->transforms + (uint64_t)(chunk - 1u) * slot_floats,
 				x->incoming + (uint64_t)(chunk - 1u) * slot_floats,x->ends + (uint64_t)(chunk - 1u) * slot_floats,x->incoming + (uint64_t)chunk * slot_floats);
 		b->kda_state_pool = (uint8_t *)x->incoming;
 		status = K3StreamedKdaRecur(b,b->value_bf16,b->attention_out_bf16,x->chunks,0u,stream);
@@ -787,8 +798,13 @@ static int32_t K3StreamedMlaSparse(K3LayerBuffers *b, const K3StreamedMlaExchang
 			status = LM_LAUNCH_ERR_LAUNCH;
 		if ( status != LM_LAUNCH_OK )
 			break;
-		LM_LAUNCH((LmPerHeadProjectSplitKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(count,HEADS,K3_V_HEAD_DIM / LM_PER_HEAD_SPLIT_OUTPUTS), K3_LAYER_THREADS, 0,
-			stream, x->sparse_latent,(const uint16_t *)b->mla_kv_b_value_weight,x->merged + (uint64_t)first * HEADS * K3_V_HEAD_DIM,HEADS,count);
+		if ( LmPerHeadProjectChainLaunch<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>(
+				x->sparse_latent,(const uint16_t *)b->mla_kv_b_value_weight,x->merged + (uint64_t)first * HEADS * K3_V_HEAD_DIM,
+				HEADS,count,stream,0u) != SPARK_GPU_SUCCESS )
+		{
+			status = LM_LAUNCH_ERR_LAUNCH;
+			break;
+		}
 	}
 	return(status);
 }

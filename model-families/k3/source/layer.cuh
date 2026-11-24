@@ -4,6 +4,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/stream_gemm.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/cell_mma.cuh"
@@ -569,7 +570,7 @@ static int32_t K3LayerKdaInputs(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	return(status == LM_LAUNCH_OK ? K3LayerKdaPrepare<Format>(b,rows,sequences,commit,multiprocessors,stream) : status);
 }
 
-static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf16, uint16_t *output_bf16, uint32_t sequences, uint32_t commit, SparkGpuStream stream)
+static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf16, uint16_t *output_bf16, uint32_t rows, uint32_t sequences, uint32_t commit, SparkGpuStream stream)
 {
 	const uint32_t state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS), 0u);
 	const float *retention = b->replay_retention != 0 ? b->replay_retention : b->kda_retention;
@@ -577,8 +578,11 @@ static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf
 	if ( b->kda_state_bf16 != 0u )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if constexpr ( LM_WARP_LANES == 32u )
-		LM_LAUNCH((LmDeltaRuleColumnKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
-			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, value_bf16,retention,write_gate,output_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices,0,0,0);
+	{
+		if ( LmDeltaRuleLaunch<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>(rows,b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,
+				b->query_bf16,b->key_bf16,value_bf16,retention,write_gate,output_bf16,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices,stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	}
 	else
 		LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
 			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, value_bf16,retention,write_gate,output_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
@@ -611,7 +615,7 @@ static int32_t K3LayerKdaBody(const K3LayerBuffers *b, uint32_t rows, uint32_t s
 {
 	int32_t status = K3LayerKdaInputs<Format>(b,rows,sequences,commit,multiprocessors,stream);
 	if ( status == LM_LAUNCH_OK )
-		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,sequences,commit,stream);
+		status = K3LayerKdaRecur(b,b->value_bf16,b->attention_out_bf16,rows,sequences,commit,stream);
 	return(status == LM_LAUNCH_OK ? K3LayerKdaFinish<Format>(b,rows,destination,partial_accumulate,multiprocessors,stream) : status);
 }
 
@@ -804,8 +808,12 @@ static int32_t K3LayerMlaGated(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 {
 	int32_t status;
 	if ( b->shard_mha == 0u && (b->shard_gather == 0u || b->shard_gather_expanded == 0u) )
-		LM_LAUNCH((LmPerHeadProjectSplitKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),K3_V_HEAD_DIM / LM_PER_HEAD_SPLIT_OUTPUTS), K3_LAYER_THREADS, 0, stream,
-			b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),rows);
+	{
+		if ( LmPerHeadProjectChainLaunch<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>(
+				b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight,b->value_bf16,
+				K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),rows,stream,b->row_invariant) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	}
 	status = gate_ready != 0u ? LM_LAUNCH_OK : K3LayerMlaGate(b,rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
