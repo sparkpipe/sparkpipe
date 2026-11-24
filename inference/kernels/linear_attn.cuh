@@ -346,9 +346,16 @@ void LmDeltaRuleColumnKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byt
 	if ( warp == 1u && count != 0u )
 	{
 		float predicted = 0.0f;
-		#pragma unroll 16
-		for ( index = 0u; index < KEY_DIM; index++ )
-			predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key_s[0][index]),forget_s[0][index],predicted);
+		#pragma unroll 4
+		for ( index = 0u; index < KEY_DIM; index += 4u )
+		{
+			const float4 key4 = *(const float4 *)&key_s[0][index];
+			const float4 forget4 = *(const float4 *)&forget_s[0][index];
+			predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
+			predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
+			predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
+			predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
+		}
 		coefficient_s[lane] = beta_s[0] * (value_s[0][lane] - predicted);
 	}
 	__syncthreads();
@@ -775,9 +782,16 @@ template<uint32_t REDUCE_THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class St
 static inline SparkGpuError LmDeltaRuleChunkLaunch(uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_bf16, const uint16_t *key_bf16, const uint16_t *value_bf16, const float *forget_gate, const float *write_gate, uint16_t *output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, SparkGpuStream stream)
 {
 	const uint32_t shared = (uint32_t)sizeof(LmDeltaRuleChunkShared<KEY_DIM,VALUE_DIM>);
-	SparkGpuError error = SparkGpuFuncSetAttribute(LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)shared);
-	if ( error != SPARK_GPU_SUCCESS || sequences == 0u || key_heads == 0u )
-		return(error != SPARK_GPU_SUCCESS ? error : SPARK_GPU_ERROR_INVALID_VALUE);
+	static bool granted = false;
+	if ( sequences == 0u || key_heads == 0u )
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
+	if ( !granted )
+	{
+		const SparkGpuError error = SparkGpuFuncSetAttribute(LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)shared);
+		if ( error != SPARK_GPU_SUCCESS )
+			return(error);
+		granted = true;
+	}
 	LM_LAUNCH((LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>),dim3(sequences,key_heads,1u),LM_DELTA_CHUNK_THREADS,shared,stream,state_pool,slot_bytes,state_index,
 		sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices);
 	return(SparkGpuPeekAtLastError());
