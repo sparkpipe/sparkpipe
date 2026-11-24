@@ -5,8 +5,8 @@
 
 #include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/mma.cuh"
-#include "inference/kernels/topk_warp.cuh"
 #include "runtime/launch.h"
+#include "inference/kernels/topk_warp.cuh"
 #include <stdint.h>
 #include "sparkpipe/spark_gpu.h"
 
