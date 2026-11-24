@@ -732,6 +732,7 @@ PYTHON_TESTS := \
 	tests/test_grouped_experts_bands_cuda.py \
 	tests/test_stream_gemm_cuda.py \
 	tests/test_launch_refusals_cuda.py \
+	tests/test_k3_oddrow_prefill_cuda.py \
 	tests/test_k3_projection_shapes_cuda.py \
 	tests/test_stream_k_tail_cuda.py \
 	tests/test_arch_guards_cuda.py \
