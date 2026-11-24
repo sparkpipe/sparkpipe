@@ -1,0 +1,2 @@
++239
+GB10 skinny GEMV optimizations in inference/kernels/skinny.cuh: 2-cell-per-warp coalesced 17-sector contiguous-K MXFP4 cell MoE with by-group dispatch, raw deferred scale loads, unpack-BF16-once multi-neuron frame compute (RG=8/16 NPG=2/4), ROWS=8 split dispatch, batched NVFP4 grouped experts, and zero register spills across all 303 instantiated kernels.
