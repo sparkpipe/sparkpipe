@@ -59,6 +59,7 @@ static const SparkStageServingModel Qwen38MaxStageServing =
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1,
 	.max_rows = SPARK_QWEN38_MAX_TP16_MAX_ROWS,
 	.verify_rows = SPARK_QWEN38_MAX_STAGE_VERIFY_ROWS,
+	.tree_slot_grain = SPARK_QWEN38_MAX_STAGE_TP_DEGREE,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_QWEN38_MAX_STAGE_PAGE_SLOTS,
 	.cache_checkpoint_token_count = SPARK_QWEN38_MAX_TP16_CHECKPOINT_TOKENS,
