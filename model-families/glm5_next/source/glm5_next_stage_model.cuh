@@ -758,9 +758,10 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	static SparkStatus HyperNorm(Glm5NextModelState *state, Frame &frame, uint32_t layer, Glm5NextPart part)
 	{
 		const Glm5NextLayerWeights *w = &state->layers[layer];
+		frame.b.prenormed = 1u;
 		if ( part == GLM5_NEXT_FFN_PART )
-			return Launch(Glm5NextHcSite(&frame.b, w->hc_ffn_fn, w->hc_ffn_base, w->hc_ffn_scale, frame.step->rows, frame.stream), "ffn hc site", layer);
-		return Launch(Glm5NextHcSite(&frame.b, w->hc_attn_fn, w->hc_attn_base, w->hc_attn_scale, frame.step->rows, frame.stream), "attention hc site",
+			return Launch(Glm5NextHcSiteNorm(&frame.b, w->hc_ffn_fn, w->hc_ffn_base, w->hc_ffn_scale, w->post_attn_norm, frame.step->rows, frame.stream), "ffn hc site", layer);
+		return Launch(Glm5NextHcSiteNorm(&frame.b, w->hc_attn_fn, w->hc_attn_base, w->hc_attn_scale, w->attn_norm, frame.step->rows, frame.stream), "attention hc site",
 			layer);
 	}
 
