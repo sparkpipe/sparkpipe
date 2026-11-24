@@ -4,6 +4,7 @@
 
 #include "inference/kernels/cell_mma.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "inference/kernels/stream_gemm.cuh"
 #include "runtime/gemm.cuh"
 #include "sparkpipe/spark_gpu.h"
 
@@ -42,6 +43,13 @@ static int32_t LmLocalExpertsUp(const LmLocalExpertRoutes &routes, const void *w
 	uint16_t *output, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream, uint32_t row_exact = 0u)
 {
 	int32_t launch;
+	if ( routes.rows == 1u )
+	{
+		launch = LmSkinnyGroupedSingleRow<Format>(weight, scale, activation, output, routes.group_row_offset, routes.route_source_token,
+			routes.local_experts, routes.routes, 0u, input_dimension, output_dimension, stream);
+		if ( launch != LM_LAUNCH_ERR_SHAPE )
+			return launch;
+	}
 	if ( LmLocalExpertsSkinny<Format>(routes, row_exact) != 0u )
 	{
 		launch = LmSkinnyGroupedExperts<Format>(weight, scale, activation, output, routes.group_row_offset, routes.route_source_token,
@@ -60,6 +68,13 @@ static int32_t LmLocalExpertsUp(const LmLocalExpertRoutes &routes, const void *w
 	}
 	else
 	{
+		if constexpr ( LmStreamWeight<Format>::kSupported )
+		{
+			launch = LmStreamGemmGrouped<Format>(weight, scale, activation, output, routes.group_row_offset, routes.route_source_token,
+				routes.local_experts, routes.routes, input_dimension, output_dimension, routes.multiprocessors, stream);
+			if ( launch != LM_LAUNCH_ERR_SHAPE )
+				return launch;
+		}
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
 		gemm.scale_a = LmScaleTensorNone();
@@ -80,6 +95,13 @@ static int32_t LmLocalExpertsDown(const LmLocalExpertRoutes &routes, const void 
 	uint16_t *output, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream, uint32_t row_exact = 0u)
 {
 	int32_t launch;
+	if ( routes.rows == 1u )
+	{
+		launch = LmSkinnyGroupedSingleRow<Format>(weight, scale, activation, output, routes.group_row_offset, routes.route_source_token,
+			routes.local_experts, routes.routes, 1u, input_dimension, output_dimension, stream);
+		if ( launch != LM_LAUNCH_ERR_SHAPE )
+			return launch;
+	}
 	if ( LmLocalExpertsSkinny<Format>(routes, row_exact) != 0u )
 	{
 		launch = LmSkinnyGroupedExperts<Format>(weight, scale, activation, output, routes.group_row_offset, routes.route_source_token,
@@ -98,6 +120,13 @@ static int32_t LmLocalExpertsDown(const LmLocalExpertRoutes &routes, const void 
 	}
 	else
 	{
+		if constexpr ( LmStreamWeight<Format>::kSupported )
+		{
+			launch = LmStreamGemmGrouped<Format>(weight, scale, activation, output, routes.group_row_offset, 0,
+				routes.local_experts, routes.routes, input_dimension, output_dimension, routes.multiprocessors, stream);
+			if ( launch != LM_LAUNCH_ERR_SHAPE )
+				return launch;
+		}
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
 		gemm.scale_a = LmScaleTensorNone();
