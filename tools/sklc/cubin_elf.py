@@ -110,9 +110,11 @@ def nvinfo_attr_byte(attr, val):
 
 
 def align_up(value, align):
-    if align <= 1:
-        return value
-    return (value + align - 1) // align * align
+    return value if align <= 1 else (value + align - 1) // align * align
+
+
+def nvrm_short_name(name):
+    return name if len(name) <= 64 else f"{name[:51]}_{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
 
 
 ARCH_SM_NUM = {
@@ -415,10 +417,8 @@ def build_manifest(kernels, cubin_bytes, source_path, source_bytes, arch="sm121"
         f"cubin {hashlib.sha256(cubin_bytes).hexdigest()} {len(cubin_bytes)}",
     ]
     for k in sorted(kernels, key=lambda x: x.name):
-        lines.append(
-            f"kernel {k.name} short {k.name[:64]} registers {k.registers} barriers {k.barriers} "
-            f"stack {k.stack_bytes} spill_stores 0 spill_loads 0 smem {k.smem_bytes}"
-        )
+        short = nvrm_short_name(k.name)
+        lines.append(f"kernel {k.name} short {short} registers {k.registers} barriers {k.barriers} stack {k.stack_bytes} spill_stores 0 spill_loads 0 smem {k.smem_bytes}")
         layout, _ = k.param_layout()
         for idx, (_, pkind, palign, pbytes, poff) in enumerate(layout):
             lines.append(f"param {k.name} {idx} {pkind} align {palign} bytes {pbytes} offset {poff}")

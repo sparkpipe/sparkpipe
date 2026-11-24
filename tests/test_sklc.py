@@ -63,9 +63,26 @@ def verify_arch(arch, expected_sm):
             assert f"kernel {kname} " in mtxt, f"missing kernel {kname} in {arch} manifest"
 
 
+def verify_long_name_manifest():
+    long_name = "k_" + ("a" * 80)
+    src = f"kernel[256, 32] {long_name}(global u32* dst, global u32* src, u32 n) {{ reg u32 i = ctaid_x() * 256 + tid_x(); if (i >= n) {{ return; }} reg u32 v = ldg32_stream(ptr_add(src, i, 4)); stg32(ptr_add(dst, i, 4), v); }}\n"
+    expected_short = f"{long_name[:51]}_{hashlib.sha256(long_name.encode('utf-8')).hexdigest()[:12]}"
+    with tempfile.TemporaryDirectory() as tmp:
+        skl_path = pathlib.Path(tmp) / "long.skl"
+        cubin_path = pathlib.Path(tmp) / "long.cubin"
+        manifest_path = pathlib.Path(tmp) / "long.manifest"
+        skl_path.write_text(src)
+        cmd = [sys.executable, str(SKLC), "--arch", "sm121", str(skl_path), "-o", str(cubin_path), "--manifest", str(manifest_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"sklc failed for long kernel name: {res.stderr}"
+        mtxt = manifest_path.read_text()
+        assert f"kernel {long_name} short {expected_short} " in mtxt, f"expected NVRM hashed short name {expected_short} in manifest:\n{mtxt}"
+
+
 def main():
     verify_arch("sm121", 121)
     verify_arch("sm120", 120)
+    verify_long_name_manifest()
     print(f"PASS sklc compiled {len(EXPECTED_KERNELS)} kernels cleanly for sm121 and sm120")
 
 
