@@ -1,0 +1,2 @@
++108
+Fix RAIS v1.0 Fast-tier nullable field scoring, per-token ITL normalization for coalesced SSE streams, and optional --api-log ground-truth speculation telemetry in tools/rais_bench.py and tools/rais_score.py.

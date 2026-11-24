@@ -318,6 +318,47 @@ class TestRaisBenchCli(unittest.TestCase):
         self.assertEqual(len(out_full["plan"]["prefill_long_targets"]), 2)
         self.assertEqual(len(out_full["plan"]["warm_targets"]), 2)
 
+    def test_fast_tier_null_fields_score_cleanly(self) -> None:
+        rec = sample_valid_record("deepseek-v4.1-flash", "sparkpipe", 1.0)
+        rec["metrics"]["prefill_128k_tokens"] = None
+        rec["metrics"]["prefill_128k_tok_s"] = None
+        rec["metrics"]["warm_100k_prefix_tokens"] = None
+        rec["metrics"]["warm_100k_ttft_ms"] = None
+        rec["metrics"]["b1_long_ctx"] = None
+        res = rais_score.score_model(rec, "16x-gb10-1x100g")
+        self.assertEqual(res["status"], "VALID")
+        self.assertGreater(res["certified_rais"], 0.0)
+
+    def test_coalesced_sse_itl_and_engine_measurements(self) -> None:
+        raw = {
+            "started": 0.0,
+            "http_status": 200,
+            "token_times": [0.05] + [0.21] * 8 + [0.37] * 8,
+            "event_times": [0.05, 0.21, 0.37],
+            "event_token_counts": [1, 8, 8],
+            "text": "hello world",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 17},
+            "spec_stats": None,
+            "error": None,
+            "finish_reason": "length",
+        }
+        summary = rais_bench.summarize_stream(raw)
+        self.assertAlmostEqual(summary["itl_p50_ms"], 20.0, places=2)
+        self.assertAlmostEqual(summary["chunk_mean"], 17.0 / 3.0, places=2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "api.log"
+            log_path.write_text(
+                'noise line\n'
+                '{"event":"engine_measurements","verify_lanes":12,"draft_tokens":60,"accepted_draft_tokens":42,"tree_frames":3,"tree_branch_frames":2,"tree_branch_accepted":1}\n',
+                encoding="utf-8",
+            )
+            em = rais_bench.read_engine_measurements(str(log_path))
+            self.assertIsNotNone(em)
+            self.assertEqual(em["verify_lanes"], 12)
+            self.assertEqual(em["accepted_draft_tokens"], 42)
+            self.assertEqual(em["tree_branch_accepted"], 1)
+
     def test_stream_summary_and_capacity_detection(self) -> None:
         summary = rais_bench.summarize_stream({
             "http_status": 200,
