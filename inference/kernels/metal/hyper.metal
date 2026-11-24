@@ -4,7 +4,19 @@ kernel void spark_hyper_expand(constant SparkHyperParams &p [[buffer(0)]], devic
 	device ushort *streams [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)hidden | (ulong)streams) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= p.streams * wvec )
+			return;
+		((device uint4 *)streams)[(ulong)row * p.streams * wvec + v] = ((device const uint4 *)hidden)[(ulong)row * wvec + v % wvec];
+		return;
+	}
+	const uint index = group.x * group_size.x + tid;
 	if ( index >= p.streams * p.width )
 		return;
 	streams[(ulong)row * p.streams * p.width + index] = hidden[(ulong)row * p.width + index % p.width];
@@ -16,36 +28,125 @@ kernel void spark_group_rmsnorm(constant SparkHyperParams &p [[buffer(0)]], devi
 	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
 	threadgroup float scratch[32];
-	const uint stream = group.x, row = group.y;
+	const uint stream = group.x, row = group.y, threads = group_size.x;
 	const ulong base = ((ulong)row * p.streams + stream) * p.width;
+	device const ushort *x = input + base;
 	device const float *gain = weight + (ulong)stream * p.width;
+	device ushort *y = output + base;
+	const uint vec = (((ulong)x | (ulong)gain | (ulong)y) & 15ul) == 0ul ? p.width / 8u : 0u, tail = vec * 8u;
+	float4 cl = 0.0f, ch = 0.0f;
 	float total = 0.0f;
-	for ( uint i = tid; i < p.width; i += group_size.x )
+	if ( vec <= threads )
 	{
-		const float value = SparkMathBf16ToFloat(input[base + i]);
+		if ( tid < vec )
+		{
+			SparkUnpack8(((device const uint4 *)x)[tid], cl, ch);
+			total = dot(cl, cl) + dot(ch, ch);
+		}
+	}
+	else
+	{
+		for ( uint v = tid; v < vec; v += threads )
+		{
+			float4 xl, xh;
+			SparkUnpack8(((device const uint4 *)x)[v], xl, xh);
+			total += dot(xl, xl) + dot(xh, xh);
+		}
+	}
+	for ( uint i = tail + tid; i < p.width; i += threads )
+	{
+		const float value = SparkMathBf16ToFloat(x[i]);
 		total += value * value;
 	}
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
 	const float scale = SparkMathRmsScale(total, float(p.width), p.epsilon);
-	for ( uint i = tid; i < p.width; i += group_size.x )
-		output[base + i] = SparkMathFloatToBf16(SparkMathBf16ToFloat(input[base + i]) * scale * gain[i]);
+	if ( vec <= threads )
+	{
+		if ( tid < vec )
+		{
+			const float4 gl = ((device const float4 *)gain)[2u * tid], gh = ((device const float4 *)gain)[2u * tid + 1u];
+			((device uint4 *)y)[tid] = SparkPack8(cl * scale * gl, ch * scale * gh);
+		}
+	}
+	else
+	{
+		for ( uint v = tid; v < vec; v += threads )
+		{
+			float4 xl, xh;
+			SparkUnpack8(((device const uint4 *)x)[v], xl, xh);
+			const float4 gl = ((device const float4 *)gain)[2u * v], gh = ((device const float4 *)gain)[2u * v + 1u];
+			((device uint4 *)y)[v] = SparkPack8(xl * scale * gl, xh * scale * gh);
+		}
+	}
+	for ( uint i = tail + tid; i < p.width; i += threads )
+		y[i] = SparkMathFloatToBf16(SparkMathBf16ToFloat(x[i]) * scale * gain[i]);
+}
+
+static inline float4 SparkHyperGate4(float4 v, float divisor)
+{
+	return float4(SparkMathHyperGate(v.x, divisor), SparkMathHyperGate(v.y, divisor), SparkMathHyperGate(v.z, divisor), SparkMathHyperGate(v.w, divisor));
 }
 
 kernel void spark_hyper_gate(constant SparkHyperParams &p [[buffer(0)]], device ushort *values [[buffer(1)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( ((ulong)values & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= wvec )
+			return;
+		const ulong at = (ulong)row * wvec + v;
+		float4 xl, xh;
+		SparkUnpack8(((device const uint4 *)values)[at], xl, xh);
+		((device uint4 *)values)[at] = SparkPack8(SparkHyperGate4(xl, p.divisor), SparkHyperGate4(xh, p.divisor));
+		return;
+	}
+	const uint index = group.x * group_size.x + tid;
 	if ( index >= p.width )
 		return;
 	const ulong at = (ulong)row * p.width + index;
 	values[at] = SparkMathFloatToBf16(SparkMathHyperGate(SparkMathBf16ToFloat(values[at]), p.divisor));
 }
 
+static inline float4 SparkHyperMixTerm4(float4 u, float4 n)
+{
+	const float4 g = float4(SparkMathHyperMixGate(u.x), SparkMathHyperMixGate(u.y), SparkMathHyperMixGate(u.z), SparkMathHyperMixGate(u.w));
+	return SparkRoundBf16x4(g * n);
+}
+
 kernel void spark_hyper_mix(constant SparkHyperParams &p [[buffer(0)]], device const ushort *up [[buffer(1)]],
 	device const ushort *normed [[buffer(2)]], device ushort *mixed [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, element = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)up | (ulong)normed | (ulong)mixed) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= wvec )
+			return;
+		const ulong base = (ulong)row * p.streams * wvec;
+		float4 tl = 0.0f, th = 0.0f;
+		for ( uint stream = 0u; stream < p.streams; stream++ )
+		{
+			const ulong at = base + (ulong)stream * wvec + v;
+			float4 ul, uh, nl, nh;
+			SparkUnpack8(((device const uint4 *)up)[at], ul, uh);
+			SparkUnpack8(((device const uint4 *)normed)[at], nl, nh);
+			tl += SparkHyperMixTerm4(ul, nl);
+			th += SparkHyperMixTerm4(uh, nh);
+		}
+		const float inv = float(p.streams);
+		((device uint4 *)mixed)[(ulong)row * wvec + v] = SparkPack8(tl / inv, th / inv);
+		return;
+	}
+	const uint element = group.x * group_size.x + tid;
 	if ( element >= p.width )
 		return;
 	const ulong base = (ulong)row * p.streams * p.width;
@@ -70,7 +171,19 @@ kernel void spark_hyper_inject_weights(constant SparkHyperParams &p [[buffer(0)]
 	float sums[SPARK_HYPER_MAX_STREAMS];
 	for ( uint stream = 0u; stream < p.streams; stream++ )
 		sums[stream] = 0.0f;
-	for ( uint i = tid; i < total_width; i += threads )
+	const uint vec = (((ulong)source | (ulong)weight) & 15ul) == 0ul && (total_width & 7u) == 0u ? total_width / 8u : 0u, tail = vec * 8u;
+	for ( uint v = tid; v < vec; v += threads )
+	{
+		float4 xl, xh;
+		SparkUnpack8(((device const uint4 *)source)[v], xl, xh);
+		for ( uint stream = 0u; stream < p.streams; stream++ )
+		{
+			float4 wl, wh;
+			SparkUnpack8(((device const uint4 *)weight)[(ulong)stream * vec + v], wl, wh);
+			sums[stream] += dot(xl, wl) + dot(xh, wh);
+		}
+	}
+	for ( uint i = tail + tid; i < total_width; i += threads )
 	{
 		const float value = SparkMathBf16ToFloat(source[i]);
 		for ( uint stream = 0u; stream < p.streams; stream++ )
@@ -88,7 +201,24 @@ kernel void spark_hyper_inject(constant SparkHyperParams &p [[buffer(0)]], devic
 	device const ushort *output [[buffer(2)]], device const float *inject [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)streams | (ulong)output) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= p.streams * wvec )
+			return;
+		const ulong at = (ulong)row * p.streams * wvec + v;
+		const float w = inject[(ulong)row * p.streams + v / wvec];
+		float4 ol, oh, sl, sh;
+		SparkUnpack8(((device const uint4 *)output)[(ulong)row * wvec + v % wvec], ol, oh);
+		SparkUnpack8(((device const uint4 *)streams)[at], sl, sh);
+		((device uint4 *)streams)[at] = SparkPack8(sl + SparkRoundBf16x4(ol * w), sh + SparkRoundBf16x4(oh * w));
+		return;
+	}
+	const uint index = group.x * group_size.x + tid;
 	if ( index >= p.streams * p.width )
 		return;
 	const ulong at = (ulong)row * p.streams * p.width + index;
@@ -103,22 +233,56 @@ kernel void spark_hyper_key_gate(constant SparkHyperParams &p [[buffer(0)]], dev
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
 	threadgroup float scratch[32];
-	const uint stream = group.x, row = group.y;
+	const uint stream = group.x, row = group.y, threads = group_size.x;
 	const ulong base = ((ulong)row * p.streams + stream) * p.width;
+	device const ushort *k = key + base, *q = query + base, *val = value + (ulong)row * p.width;
+	device ushort *g = gated + base;
+	const uint vec = (((ulong)k | (ulong)q | (ulong)val | (ulong)g) & 15ul) == 0ul ? p.width / 8u : 0u, tail = vec * 8u;
 	float total = 0.0f;
-	for ( uint i = tid; i < p.width; i += group_size.x )
-		total += SparkMathRoundBf16(SparkMathBf16ToFloat(key[base + i]) * SparkMathBf16ToFloat(query[base + i]));
+	for ( uint v = tid; v < vec; v += threads )
+	{
+		float4 kl, kh, ql, qh;
+		SparkUnpack8(((device const uint4 *)k)[v], kl, kh);
+		SparkUnpack8(((device const uint4 *)q)[v], ql, qh);
+		const float4 pl = SparkRoundBf16x4(kl * ql), ph = SparkRoundBf16x4(kh * qh);
+		total += (pl.x + pl.y) + (pl.z + pl.w) + (ph.x + ph.y) + (ph.z + ph.w);
+	}
+	for ( uint i = tail + tid; i < p.width; i += threads )
+		total += SparkMathRoundBf16(SparkMathBf16ToFloat(k[i]) * SparkMathBf16ToFloat(q[i]));
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
 	const float gate = SparkMathHyperKeyGate(total, p.width);
-	for ( uint i = tid; i < p.width; i += group_size.x )
-		gated[base + i] = SparkMathFloatToBf16(gate * SparkMathBf16ToFloat(value[(ulong)row * p.width + i]));
+	for ( uint v = tid; v < vec; v += threads )
+	{
+		float4 vl, vh;
+		SparkUnpack8(((device const uint4 *)val)[v], vl, vh);
+		((device uint4 *)g)[v] = SparkPack8(gate * vl, gate * vh);
+	}
+	for ( uint i = tail + tid; i < p.width; i += threads )
+		g[i] = SparkMathFloatToBf16(gate * SparkMathBf16ToFloat(val[i]));
 }
 
 kernel void spark_hyper_add(constant SparkHyperParams &p [[buffer(0)]], device ushort *streams [[buffer(1)]],
 	device const ushort *gated [[buffer(2)]], device const ushort *conv [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)streams | (ulong)gated | (ulong)conv) & 15ul) == 0ul && ((p.streams * p.width) & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, total_vec = p.streams * p.width / 8u;
+		if ( v >= total_vec )
+			return;
+		const ulong at = (ulong)row * total_vec + v;
+		float4 sl, sh, gl, gh, cl, ch;
+		SparkUnpack8(((device const uint4 *)streams)[at], sl, sh);
+		SparkUnpack8(((device const uint4 *)gated)[at], gl, gh);
+		SparkUnpack8(((device const uint4 *)conv)[at], cl, ch);
+		((device uint4 *)streams)[at] = SparkPack8(sl + SparkRoundBf16x4(gl + cl), sh + SparkRoundBf16x4(gh + ch));
+		return;
+	}
+	const uint index = group.x * group_size.x + tid;
 	if ( index >= p.streams * p.width )
 		return;
 	const ulong at = (ulong)row * p.streams * p.width + index;
@@ -130,35 +294,59 @@ template <uint MIXES>
 static inline void SparkHcTotals(device const ushort *source, device const float *fn, uint flat, uint tid, uint threads, uint lane, uint simd, uint simds,
 	threadgroup float *reduction, thread float *total)
 {
-	float dot[MIXES + 1u];
+	float acc[MIXES + 1u];
 	for ( uint m = 0u; m <= MIXES; m++ )
-		dot[m] = 0.0f;
-	for ( uint k = tid; k < flat; k += threads )
+		acc[m] = 0.0f;
+	const uint vec = ((ulong)source & 7ul) == 0ul && ((ulong)fn & 15ul) == 0ul && (flat & 3u) == 0u ? flat / 4u : 0u, tail = vec * 4u;
+	for ( uint v = tid; v < vec; v += threads )
+	{
+		const float4 x = SparkUnpack4(((device const uint2 *)source)[v]);
+		for ( uint m = 0u; m < MIXES; m++ )
+			acc[m] += dot(x, ((device const float4 *)fn)[(ulong)m * vec + v]);
+		acc[MIXES] += dot(x, x);
+	}
+	for ( uint k = tail + tid; k < flat; k += threads )
 	{
 		const float x = SparkMathBf16ToFloat(source[k]);
 		for ( uint m = 0u; m < MIXES; m++ )
-			dot[m] = fma(x, fn[(ulong)m * flat + k], dot[m]);
-		dot[MIXES] = fma(x, x, dot[MIXES]);
+			acc[m] = fma(x, fn[(ulong)m * flat + k], acc[m]);
+		acc[MIXES] = fma(x, x, acc[MIXES]);
 	}
 	for ( uint m = 0u; m <= MIXES; m++ )
 	{
-		const float value = simd_sum(dot[m]);
+		const float value = simd_sum(acc[m]);
 		if ( lane == 0u )
 			reduction[m * 32u + simd] = value;
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
-	for ( uint m = 0u; m <= MIXES; m++ )
+	if ( tid == 0u )
 	{
-		total[m] = 0.0f;
-		for ( uint w = 0u; w < simds; w++ )
-			total[m] += reduction[m * 32u + w];
+		for ( uint m = 0u; m <= MIXES; m++ )
+		{
+			total[m] = 0.0f;
+			for ( uint w = 0u; w < simds; w++ )
+				total[m] += reduction[m * 32u + w];
+		}
 	}
 }
 
 static inline void SparkHcCollapse(constant SparkHcParams &p, device const ushort *source, threadgroup const float *weights, device ushort *mixed, uint tid,
 	uint threads)
 {
-	for ( uint d = tid; d < p.width; d += threads )
+	const uint vec = (((ulong)source | (ulong)mixed) & 15ul) == 0ul && (p.width & 7u) == 0u ? p.width / 8u : 0u, tail = vec * 8u;
+	for ( uint v = tid; v < vec; v += threads )
+	{
+		float4 tl = 0.0f, th = 0.0f;
+		for ( uint s = 0u; s < p.streams; s++ )
+		{
+			float4 sl, sh;
+			SparkUnpack8(((device const uint4 *)(source + (ulong)s * p.width))[v], sl, sh);
+			tl = fma(weights[s], sl, tl);
+			th = fma(weights[s], sh, th);
+		}
+		((device uint4 *)mixed)[v] = SparkPack8(tl, th);
+	}
+	for ( uint d = tail + tid; d < p.width; d += threads )
 	{
 		float total = 0.0f;
 		for ( uint s = 0u; s < p.streams; s++ )
@@ -209,7 +397,24 @@ kernel void spark_hc_post(constant SparkHcParams &p [[buffer(0)]], device ushort
 	device const ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, index = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)streams | (ulong)output) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= p.streams * wvec )
+			return;
+		const ulong at = (ulong)row * p.streams * wvec + v;
+		const float gain = post[(ulong)row * p.streams + v / wvec];
+		float4 ol, oh, sl, sh;
+		SparkUnpack8(((device const uint4 *)output)[(ulong)row * wvec + v % wvec], ol, oh);
+		SparkUnpack8(((device const uint4 *)streams)[at], sl, sh);
+		((device uint4 *)streams)[at] = SparkPack8(fma(gain, ol, sl), fma(gain, oh, sh));
+		return;
+	}
+	const uint index = group.x * group_size.x + tid;
 	if ( index >= p.streams * p.width )
 		return;
 	const ulong at = (ulong)row * p.streams * p.width + index;
@@ -357,7 +562,43 @@ kernel void spark_hc_post_comb(constant SparkHcParams &p [[buffer(0)]], device u
 	device const float *comb [[buffer(3)]], device const ushort *output [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, d = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)streams | (ulong)output) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= wvec )
+			return;
+		device uint4 *row_streams = (device uint4 *)streams + (ulong)row * SPARK_HC_MAX_STREAMS * wvec;
+		float4 ol, oh;
+		SparkUnpack8(((device const uint4 *)output)[(ulong)row * wvec + v], ol, oh);
+		float4 rl[SPARK_HC_MAX_STREAMS], rh[SPARK_HC_MAX_STREAMS];
+		for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
+			SparkUnpack8(row_streams[(ulong)s * wvec + v], rl[s], rh[s]);
+		for ( uint t = 0u; t < SPARK_HC_MAX_STREAMS; t++ )
+		{
+			float4 vl = 0.0f, vh = 0.0f;
+			for ( uint s = 0u; s < SPARK_HC_MAX_STREAMS; s++ )
+			{
+				const float weight = comb[((ulong)row * SPARK_HC_MAX_STREAMS + s) * SPARK_HC_MAX_STREAMS + t];
+				const float w = ROUNDED ? SparkMathRoundBf16(weight) : weight;
+				vl = fma(w, rl[s], vl);
+				vh = fma(w, rh[s], vh);
+			}
+			const float gain = post[(ulong)row * SPARK_HC_MAX_STREAMS + t];
+			if ( ROUNDED )
+			{
+				const float g = SparkMathRoundBf16(gain);
+				row_streams[(ulong)t * wvec + v] = SparkPack8(SparkRoundBf16x4(g * ol) + SparkRoundBf16x4(vl), SparkRoundBf16x4(g * oh) + SparkRoundBf16x4(vh));
+			}
+			else
+				row_streams[(ulong)t * wvec + v] = SparkPack8(fma(gain, ol, vl), fma(gain, oh, vh));
+		}
+		return;
+	}
+	const uint d = group.x * group_size.x + tid;
 	if ( d >= p.width )
 		return;
 	device ushort *row_streams = streams + (ulong)row * SPARK_HC_MAX_STREAMS * p.width;
@@ -392,7 +633,29 @@ SPARK_HC_POST_COMB_INSTANCE("spark_hc_post_comb_f32", false)
 kernel void spark_stream_mean(constant SparkHcParams &p [[buffer(0)]], device const ushort *streams [[buffer(1)]], device ushort *output [[buffer(2)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, d = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)streams | (ulong)output) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= wvec )
+			return;
+		device const uint4 *source = (device const uint4 *)streams + (ulong)row * p.streams * wvec + v;
+		float4 tl = 0.0f, th = 0.0f;
+		for ( uint s = 0u; s < p.streams; s++ )
+		{
+			float4 sl, sh;
+			SparkUnpack8(source[(ulong)s * wvec], sl, sh);
+			tl += sl;
+			th += sh;
+		}
+		const float inv = float(p.streams);
+		((device uint4 *)output)[(ulong)row * wvec + v] = SparkPack8(tl / inv, th / inv);
+		return;
+	}
+	const uint d = group.x * group_size.x + tid;
 	if ( d >= p.width )
 		return;
 	device const ushort *source = streams + (ulong)row * p.streams * p.width + d;
@@ -406,7 +669,29 @@ kernel void spark_hc_collapse(constant SparkHcParams &p [[buffer(0)]], device co
 	device ushort *output [[buffer(3)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
 	uint2 group_size [[threads_per_threadgroup]])
 {
-	const uint row = group.y, d = group.x * group_size.x + tid;
+	const uint row = group.y;
+	if ( (((ulong)streams | (ulong)output) & 15ul) == 0ul && (p.width & 7u) == 0u && (group_size.x & 7u) == 0u )
+	{
+		const uint vec_threads = group_size.x / 8u;
+		if ( tid >= vec_threads )
+			return;
+		const uint v = group.x * vec_threads + tid, wvec = p.width / 8u;
+		if ( v >= wvec )
+			return;
+		device const uint4 *source = (device const uint4 *)streams + (ulong)row * p.streams * wvec + v;
+		float4 tl = 0.0f, th = 0.0f;
+		for ( uint s = 0u; s < p.streams; s++ )
+		{
+			float4 sl, sh;
+			SparkUnpack8(source[(ulong)s * wvec], sl, sh);
+			const float w = pre[(ulong)row * p.streams + s];
+			tl = fma(w, sl, tl);
+			th = fma(w, sh, th);
+		}
+		((device uint4 *)output)[(ulong)row * wvec + v] = SparkPack8(tl, th);
+		return;
+	}
+	const uint d = group.x * group_size.x + tid;
 	if ( d >= p.width )
 		return;
 	device const ushort *source = streams + (ulong)row * p.streams * p.width + d;
@@ -426,19 +711,69 @@ kernel void spark_stream_key_gate(constant SparkGateParams &p [[buffer(0)]], dev
 	device ushort *h = streams + ((ulong)row * p.streams + stream) * p.width;
 	device const ushort *row_kv = kv + (ulong)row * (p.streams + 1u) * p.width;
 	device const ushort *key = row_kv + (ulong)stream * p.width, *value = row_kv + (ulong)p.streams * p.width;
-	float h_square = 0.0f, key_square = 0.0f, dot = 0.0f;
-	for ( uint i = tid; i < p.width; i += threads )
+	device const ushort *qw = query_weight + (ulong)stream * p.width, *kw = key_weight + (ulong)stream * p.width;
+	const uint vec = (((ulong)h | (ulong)key | (ulong)value | (ulong)qw | (ulong)kw) & 15ul) == 0ul ? p.width / 8u : 0u, tail = vec * 8u;
+	float4 cl = 0.0f, ch = 0.0f;
+	float h_square = 0.0f, key_square = 0.0f, acc = 0.0f;
+	if ( vec <= threads )
+	{
+		if ( tid < vec )
+		{
+			float4 kl, kh, qwl, qwh, kwl, kwh;
+			SparkUnpack8(((device const uint4 *)h)[tid], cl, ch);
+			SparkUnpack8(((device const uint4 *)key)[tid], kl, kh);
+			SparkUnpack8(((device const uint4 *)qw)[tid], qwl, qwh);
+			SparkUnpack8(((device const uint4 *)kw)[tid], kwl, kwh);
+			h_square = dot(cl, cl) + dot(ch, ch);
+			key_square = dot(kl, kl) + dot(kh, kh);
+			acc = dot(cl * (qwl * kwl), kl) + dot(ch * (qwh * kwh), kh);
+		}
+	}
+	else
+	{
+		for ( uint v = tid; v < vec; v += threads )
+		{
+			float4 xl, xh, kl, kh, qwl, qwh, kwl, kwh;
+			SparkUnpack8(((device const uint4 *)h)[v], xl, xh);
+			SparkUnpack8(((device const uint4 *)key)[v], kl, kh);
+			SparkUnpack8(((device const uint4 *)qw)[v], qwl, qwh);
+			SparkUnpack8(((device const uint4 *)kw)[v], kwl, kwh);
+			h_square += dot(xl, xl) + dot(xh, xh);
+			key_square += dot(kl, kl) + dot(kh, kh);
+			acc += dot(xl * (qwl * kwl), kl) + dot(xh * (qwh * kwh), kh);
+		}
+	}
+	for ( uint i = tail + tid; i < p.width; i += threads )
 	{
 		const float x = SparkMathBf16ToFloat(h[i]), k = SparkMathBf16ToFloat(key[i]);
-		const float weight = SparkMathBf16ToFloat(query_weight[(ulong)stream * p.width + i]) * SparkMathBf16ToFloat(key_weight[(ulong)stream * p.width + i]);
+		const float weight = SparkMathBf16ToFloat(qw[i]) * SparkMathBf16ToFloat(kw[i]);
 		h_square = fma(x, x, h_square);
 		key_square = fma(k, k, key_square);
-		dot = fma(x * weight, k, dot);
+		acc = fma(x * weight, k, acc);
 	}
 	h_square = SparkGroupSum(h_square, scratch, lane, simd, simds);
 	key_square = SparkGroupSum(key_square, scratch, lane, simd, simds);
-	dot = SparkGroupSum(dot, scratch, lane, simd, simds);
-	const float gate = SparkMathSignedSqrtGate(dot, h_square, key_square, p.width, p.epsilon, p.floor);
-	for ( uint i = tid; i < p.width; i += threads )
+	acc = SparkGroupSum(acc, scratch, lane, simd, simds);
+	const float gate = SparkMathSignedSqrtGate(acc, h_square, key_square, p.width, p.epsilon, p.floor);
+	if ( vec <= threads )
+	{
+		if ( tid < vec )
+		{
+			float4 vl, vh;
+			SparkUnpack8(((device const uint4 *)value)[tid], vl, vh);
+			((device uint4 *)h)[tid] = SparkPack8(fma(gate, vl, cl), fma(gate, vh, ch));
+		}
+	}
+	else
+	{
+		for ( uint v = tid; v < vec; v += threads )
+		{
+			float4 xl, xh, vl, vh;
+			SparkUnpack8(((device const uint4 *)h)[v], xl, xh);
+			SparkUnpack8(((device const uint4 *)value)[v], vl, vh);
+			((device uint4 *)h)[v] = SparkPack8(fma(gate, vl, xl), fma(gate, vh, xh));
+		}
+	}
+	for ( uint i = tail + tid; i < p.width; i += threads )
 		h[i] = SparkMathFloatToBf16(fma(gate, SparkMathBf16ToFloat(value[i]), SparkMathBf16ToFloat(h[i])));
 }
