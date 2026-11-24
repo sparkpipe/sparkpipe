@@ -32,6 +32,8 @@
 #define K31_QUERY_RANK 1536u
 #define K31_MLP 14336u
 #define K31_BLOCK 7u
+#define K31_BRANCHES 2u
+#define K31_BRANCH_LEN 4u
 #define K31_VOCAB 163840u
 #define K31_QUERIES (K31_BLOCK * K31_HEADS)
 #define K31_MARKOV 512u
@@ -113,6 +115,10 @@ typedef struct K31Picks
 	float scores[K31_BLOCK];
 	uint32_t alt_tokens[K31_BLOCK];
 	float alt_scores[K31_BLOCK];
+	uint32_t branch_fork[K31_BRANCHES];
+	uint32_t branch_len[K31_BRANCHES];
+	uint32_t branch_tokens[K31_BRANCHES][K31_BRANCH_LEN];
+	float branch_scores[K31_BRANCHES][K31_BRANCH_LEN];
 } K31Picks;
 
 typedef struct K31Forward
@@ -876,6 +882,127 @@ void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 	}
 }
 
+__global__ __launch_bounds__(K31_WARP, 1)
+void K31BranchSelectKernel(K31Picks *__restrict__ picks, uint32_t drafts, float min_score)
+{
+	uint32_t used = 0u;
+	if ( threadIdx.x != 0u )
+		return;
+	for ( uint32_t branch = 0u; branch < K31_BRANCHES; branch++ )
+	{
+		picks->branch_fork[branch] = K31_BLOCK;
+		picks->branch_len[branch] = 0u;
+	}
+	for ( uint32_t step = 0u; step + 1u < drafts; step++ )
+	{
+		const float score = picks->alt_scores[step];
+		uint32_t pos = used;
+		if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
+			continue;
+		while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+		{
+			if ( pos < K31_BRANCHES )
+			{
+				picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
+				picks->branch_len[pos] = picks->branch_len[pos - 1u];
+				picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
+				picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+			}
+			pos--;
+		}
+		if ( pos < K31_BRANCHES )
+		{
+			picks->branch_fork[pos] = step;
+			picks->branch_len[pos] = 1u;
+			picks->branch_tokens[pos][0] = picks->alt_tokens[step];
+			picks->branch_scores[pos][0] = score;
+			if ( used < K31_BRANCHES )
+				used++;
+		}
+	}
+}
+
+__global__ __launch_bounds__(K31_THREADS, 1)
+void K31BranchRowKernel(uint32_t offset, uint32_t drafts, const K31Picks *__restrict__ picks, const uint32_t *__restrict__ candidates,
+	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
+{
+	__shared__ float vector[K31_MARKOV];
+	const uint32_t branch = blockIdx.y, fork = picks->branch_fork[branch], step = fork + offset;
+	const uint32_t warp = threadIdx.x / K31_WARP, lane = threadIdx.x % K31_WARP;
+	uint32_t previous;
+	float *row;
+	if ( fork >= drafts || step >= drafts )
+		return;
+	previous = picks->branch_tokens[branch][offset - 1u];
+	row = rows + (uint64_t)branch * K31_CANDIDATES;
+	for ( uint32_t index = threadIdx.x; index < K31_MARKOV; index += K31_THREADS )
+		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * K31_MARKOV + index]);
+	__syncthreads();
+	for ( uint32_t slot = blockIdx.x * (K31_THREADS / K31_WARP) + warp; slot < K31_CANDIDATES; slot += gridDim.x * (K31_THREADS / K31_WARP) )
+	{
+		const uint32_t candidate = candidates[step * K31_CANDIDATES + slot];
+		const uint16_t *edge = markov_next + (uint64_t)candidate * K31_MARKOV;
+		float sum = 0.0f;
+		for ( uint32_t element = lane; element < K31_MARKOV; element += K31_WARP )
+			sum += LmBf16ToFloat(edge[element]) * vector[element];
+		for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+			sum += __shfl_xor_sync(0xffffffffu, sum, mask);
+		if ( lane == 0u )
+			row[slot] = logits[(uint64_t)step * K31_VOCAB + candidate] + sum;
+	}
+}
+
+__global__ __launch_bounds__(K31_PICK_THREADS, 1)
+void K31BranchPickKernel(uint32_t offset, uint32_t drafts, float scale, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
+	K31Picks *__restrict__ picks)
+{
+	__shared__ unsigned long long best[K31_PICK_THREADS / K31_WARP];
+	__shared__ float reduction[K31_PICK_THREADS / K31_WARP];
+	__shared__ uint32_t chosen;
+	__shared__ float peak_scaled;
+	const uint32_t branch = blockIdx.x, fork = picks->branch_fork[branch], step = fork + offset;
+	const uint32_t warp = threadIdx.x / K31_WARP, lane = threadIdx.x % K31_WARP;
+	const float *row = rows + (uint64_t)branch * K31_CANDIDATES;
+	unsigned long long first = 0ull;
+	float denom = 0.0f;
+	if ( fork >= drafts || step >= drafts )
+		return;
+	for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
+	{
+		const unsigned long long key = K31RowKey(row, index);
+		if ( key > first )
+			first = key;
+	}
+	for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+	{
+		const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
+		if ( other > first )
+			first = other;
+	}
+	if ( lane == 0u )
+		best[warp] = first;
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		first = best[0];
+		for ( uint32_t index = 1u; index < K31_PICK_THREADS / K31_WARP; index++ )
+			if ( best[index] > first )
+				first = best[index];
+		chosen = K31KeySlot(first);
+		peak_scaled = row[chosen] * scale;
+	}
+	__syncthreads();
+	for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
+		denom += expf(row[index] * scale - peak_scaled);
+	denom = LmBlockSum<K31_PICK_THREADS>(denom, reduction);
+	if ( threadIdx.x == 0u )
+	{
+		picks->branch_tokens[branch][offset] = candidates[step * K31_CANDIDATES + chosen];
+		picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
+		picks->branch_len[branch] = offset + 1u;
+	}
+}
+
 static SparkStatus K31DeviceOpen(void)
 {
 	const SparkStatus status = SparkDeviceInitialize(0);
@@ -1131,7 +1258,7 @@ static SparkStatus K31Scratch(K31State *state)
 		!K31_DEVICE(forward->gate, K31_BLOCK * K31_MLP) || !K31_DEVICE(forward->up, K31_BLOCK * K31_MLP) || !K31_DEVICE(forward->act, K31_BLOCK * K31_MLP) ||
 		!K31_DEVICE(forward->mlp, K31_BLOCK * K31_HIDDEN) || !K31_DEVICE(forward->y, K31_BLOCK * K31_HIDDEN) ||
 		!K31_DEVICE(forward->logits, (uint64_t)K31_BLOCK * K31_VOCAB) || !K31_DEVICE(forward->logits_f32, (uint64_t)K31_BLOCK * K31_VOCAB) ||
-		!K31_DEVICE(forward->candidates, K31_BLOCK * K31_CANDIDATES) || !K31_DEVICE(forward->markov_row, K31_CANDIDATES) ||
+		!K31_DEVICE(forward->candidates, K31_BLOCK * K31_CANDIDATES) || !K31_DEVICE(forward->markov_row, K31_BRANCHES * K31_CANDIDATES) ||
 		!K31_DEVICE(forward->picks, 1u) ||
 		SparkGpuMallocHost((void **)&forward->host_picks, sizeof(K31Picks)) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1469,7 +1596,7 @@ static SparkStatus K31ForwardRun(K31State *state, const K31Sequence *sequence, u
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static SparkStatus K31Heads(K31State *state, uint32_t anchor_token, uint64_t position, const SparkRowSampling *sampling)
+static SparkStatus K31Heads(K31State *state, uint32_t anchor_token, uint64_t position, const SparkRowSampling *sampling, uint32_t drafts, uint32_t tree)
 {
 	K31Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
@@ -1487,6 +1614,18 @@ static SparkStatus K31Heads(K31State *state, uint32_t anchor_token, uint64_t pos
 		LM_LAUNCH((K31MarkovPickKernel), 1u, K31_PICK_THREADS, 0, stream, step, anchor_token, (uint32_t)position, (unsigned long long)sampling->seed,
 			sampling->inverse_temperature, sampling->nucleus, sampling->top_k, forward->markov_row, forward->candidates, forward->y, state->markov_previous,
 			state->confidence_weight, state->confidence_bias, forward->picks);
+	}
+	if ( tree != 0u && drafts >= 2u )
+	{
+		const float scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
+		LM_LAUNCH((K31BranchSelectKernel), 1u, K31_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
+		for ( uint32_t offset = 1u; offset < K31_BRANCH_LEN && offset < drafts; offset++ )
+		{
+			LM_LAUNCH((K31BranchRowKernel), dim3(K31_CANDIDATES / (K31_THREADS / K31_WARP), K31_BRANCHES), K31_THREADS, 0, stream, offset, drafts,
+				forward->picks, forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
+			LM_LAUNCH((K31BranchPickKernel), K31_BRANCHES, K31_PICK_THREADS, 0, stream, offset, drafts, scale, forward->markov_row, forward->candidates,
+				forward->picks);
+		}
 	}
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(K31Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
@@ -1725,15 +1864,46 @@ static SparkStatus K31Propose(void *opaque, const SparkDraftServerRequest *reque
 		return SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT;
 	drafts = drafts < K31_BLOCK ? drafts : K31_BLOCK;
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
-	status = K31ForwardRun(state, sequence, request->anchor_token_id, request->position, K31_LAYERS);
-	if ( status == SPARK_STATUS_OK )
-		status = K31Heads(state, request->anchor_token_id, request->position, &request->sampling);
-	if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS )
-		status = SPARK_STATUS_IO_ERROR;
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	*count = SparkDraftTreePack(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
-		state->forward.host_picks->alt_tokens, state->forward.host_picks->alt_scores, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	{
+		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		SparkDraftTreeBranch branches[K31_BLOCK];
+		uint32_t branch_count = 0u;
+		status = K31ForwardRun(state, sequence, request->anchor_token_id, request->position, K31_LAYERS);
+		if ( status == SPARK_STATUS_OK )
+			status = K31Heads(state, request->anchor_token_id, request->position, &request->sampling, drafts, tree);
+		if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS )
+			status = SPARK_STATUS_IO_ERROR;
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( tree != 0u )
+			for ( uint32_t step = 0u; step < drafts; step++ )
+			{
+				uint32_t matched = K31_BRANCHES;
+				for ( uint32_t b = 0u; b < K31_BRANCHES; b++ )
+					if ( state->forward.host_picks->branch_len[b] > 0u && state->forward.host_picks->branch_fork[b] == step )
+						matched = b;
+				branches[branch_count].fork_step = step;
+				if ( matched < K31_BRANCHES )
+				{
+					const uint32_t len = state->forward.host_picks->branch_len[matched];
+					branches[branch_count].length = len;
+					for ( uint32_t k = 0u; k < len; k++ )
+					{
+						branches[branch_count].tokens[k] = state->forward.host_picks->branch_tokens[matched][k];
+						branches[branch_count].scores[k] = state->forward.host_picks->branch_scores[matched][k];
+					}
+				}
+				else
+				{
+					branches[branch_count].length = 1u;
+					branches[branch_count].tokens[0] = state->forward.host_picks->alt_tokens[step];
+					branches[branch_count].scores[0] = state->forward.host_picks->alt_scores[step];
+				}
+				branch_count++;
+			}
+		*count = SparkDraftTreePackBranches(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
+			branches, branch_count, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	}
 	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 

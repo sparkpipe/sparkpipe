@@ -36,6 +36,8 @@
 #define DS41_O_WIDTH (DS41_GROUPS * DS41_O_RANK)
 #define DS41_WINDOW 128u
 #define DS41_BLOCK 5u
+#define DS41_BRANCHES 2u
+#define DS41_BRANCH_LEN 3u
 #define DS41_VOCAB 129280u
 #define DS41_MARKOV 256u
 #define DS41_EXPERTS 128u
@@ -142,10 +144,15 @@ typedef struct Ds41Picks
 {
 	unsigned long long keys[DS41_BLOCK];
 	unsigned long long alt_keys[DS41_BLOCK];
+	unsigned long long branch_keys[DS41_BRANCHES];
 	uint32_t tokens[DS41_BLOCK];
 	float scores[DS41_BLOCK];
 	uint32_t alt_tokens[DS41_BLOCK];
 	float alt_scores[DS41_BLOCK];
+	uint32_t branch_fork[DS41_BRANCHES];
+	uint32_t branch_len[DS41_BRANCHES];
+	uint32_t branch_tokens[DS41_BRANCHES][DS41_BRANCH_LEN];
+	float branch_scores[DS41_BRANCHES][DS41_BRANCH_LEN];
 } Ds41Picks;
 
 typedef struct Ds41Forward
@@ -939,6 +946,162 @@ void Ds41ConfidenceKernel(const Ds41Draft *__restrict__ draft, Ds41Picks *__rest
 	}
 }
 
+__global__ __launch_bounds__(DS41_WARP, 1)
+void Ds41BranchSelectKernel(Ds41Picks *__restrict__ picks, uint32_t drafts, float min_score)
+{
+	uint32_t used = 0u;
+	if ( threadIdx.x != 0u )
+		return;
+	for ( uint32_t branch = 0u; branch < DS41_BRANCHES; branch++ )
+	{
+		picks->branch_keys[branch] = 0ull;
+		picks->branch_fork[branch] = DS41_BLOCK;
+		picks->branch_len[branch] = 0u;
+	}
+	for ( uint32_t step = 0u; step + 1u < drafts; step++ )
+	{
+		const float score = picks->alt_scores[step];
+		uint32_t pos = used;
+		if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
+			continue;
+		while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+		{
+			if ( pos < DS41_BRANCHES )
+			{
+				picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
+				picks->branch_len[pos] = picks->branch_len[pos - 1u];
+				picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
+				picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+			}
+			pos--;
+		}
+		if ( pos < DS41_BRANCHES )
+		{
+			picks->branch_fork[pos] = step;
+			picks->branch_len[pos] = 1u;
+			picks->branch_tokens[pos][0] = picks->alt_tokens[step];
+			picks->branch_scores[pos][0] = score;
+			if ( used < DS41_BRANCHES )
+				used++;
+		}
+	}
+}
+
+__global__ __launch_bounds__(DS41_THREADS, 1)
+void Ds41BranchRowKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks,
+	const float *__restrict__ logits, const uint16_t *__restrict__ markov_embed, const uint16_t *__restrict__ markov_head, float *__restrict__ partials)
+{
+	constexpr uint32_t PER = DS41_MARKOV / DS41_WARP;
+	__shared__ float embedding[DS41_BRANCHES][DS41_MARKOV];
+	__shared__ unsigned long long best[DS41_BRANCHES][DS41_WARPS];
+	__shared__ float tops[DS41_BRANCHES][DS41_WARPS];
+	__shared__ float sums[DS41_BRANCHES][DS41_WARPS];
+	const uint32_t warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP;
+	const float scale = draft->greedy != 0u ? 1.0f : draft->inverse_temperature;
+	uint32_t steps[DS41_BRANCHES], any = 0u;
+	unsigned long long first[DS41_BRANCHES];
+	float top[DS41_BRANCHES], sum[DS41_BRANCHES];
+#pragma unroll
+	for ( uint32_t b = 0u; b < DS41_BRANCHES; b++ )
+	{
+		const uint32_t fork = picks->branch_fork[b];
+		steps[b] = fork < drafts && fork + offset < drafts ? fork + offset : DS41_BLOCK;
+		first[b] = 0ull;
+		top[b] = -INFINITY;
+		sum[b] = 0.0f;
+		if ( steps[b] < DS41_BLOCK )
+		{
+			const uint32_t previous = picks->branch_tokens[b][offset - 1u];
+			any = 1u;
+			for ( uint32_t index = threadIdx.x; index < DS41_MARKOV; index += DS41_THREADS )
+				embedding[b][index] = LmBf16ToFloat(markov_embed[(uint64_t)previous * DS41_MARKOV + index]);
+		}
+	}
+	if ( any == 0u )
+		return;
+	__syncthreads();
+	for ( uint32_t token = blockIdx.x * DS41_WARPS + warp; token < DS41_VOCAB; token += gridDim.x * DS41_WARPS )
+	{
+		const uint4 packed = __ldg((const uint4 *)(markov_head + (uint64_t)token * DS41_MARKOV + lane * PER));
+		const uint32_t words[4] = {packed.x, packed.y, packed.z, packed.w};
+#pragma unroll
+		for ( uint32_t b = 0u; b < DS41_BRANCHES; b++ )
+		{
+			if ( steps[b] >= DS41_BLOCK )
+				continue;
+			float dot = 0.0f;
+#pragma unroll
+			for ( uint32_t word = 0u; word < 4u; word++ )
+			{
+				dot += __uint_as_float(words[word] << 16u) * embedding[b][lane * PER + 2u * word];
+				dot += __uint_as_float(words[word] & 0xffff0000u) * embedding[b][lane * PER + 2u * word + 1u];
+			}
+			dot = Ds41WarpSum(dot);
+			if ( lane == 0u )
+			{
+				const float value = logits[(uint64_t)steps[b] * DS41_VOCAB + token] + dot;
+				const unsigned long long candidate = ((unsigned long long)SparkMathSampleOrdered(value) << 32u) | (unsigned long long)(0xffffffffu - token);
+				if ( candidate > first[b] )
+					first[b] = candidate;
+				Ds41SoftmaxMerge(&top[b], &sum[b], value * scale, 1.0f);
+			}
+		}
+	}
+	if ( lane == 0u )
+#pragma unroll
+		for ( uint32_t b = 0u; b < DS41_BRANCHES; b++ )
+		{
+			best[b][warp] = first[b];
+			tops[b][warp] = top[b];
+			sums[b][warp] = sum[b];
+		}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+#pragma unroll
+		for ( uint32_t b = 0u; b < DS41_BRANCHES; b++ )
+		{
+			if ( steps[b] >= DS41_BLOCK )
+				continue;
+			for ( uint32_t index = 1u; index < DS41_WARPS; index++ )
+			{
+				Ds41SoftmaxMerge(&top[b], &sum[b], tops[b][index], sums[b][index]);
+				if ( best[b][index] > first[b] )
+					first[b] = best[b][index];
+			}
+			partials[((uint64_t)b * gridDim.x + blockIdx.x) * 2u] = top[b];
+			partials[((uint64_t)b * gridDim.x + blockIdx.x) * 2u + 1u] = sum[b];
+			atomicMax(&picks->branch_keys[b], first[b]);
+		}
+}
+
+__global__ __launch_bounds__(DS41_THREADS, 1)
+void Ds41BranchReduceKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks,
+	const float *__restrict__ partials, uint32_t blocks)
+{
+	__shared__ float reduction[DS41_WARPS];
+	const uint32_t branch = blockIdx.x, fork = picks->branch_fork[branch], step = fork + offset;
+	if ( fork >= drafts || step >= drafts )
+		return;
+	{
+		const float scale = draft->greedy != 0u ? 1.0f : draft->inverse_temperature;
+		const unsigned long long key = picks->branch_keys[branch];
+		const float top = Ds41KeyValue(key) * scale;
+		const float *branch_partials = partials + (uint64_t)branch * 2u * blocks;
+		float sum = 0.0f;
+		for ( uint32_t block = threadIdx.x; block < blocks; block += DS41_THREADS )
+			if ( branch_partials[2u * block] != -INFINITY )
+				sum += branch_partials[2u * block + 1u] * expf(branch_partials[2u * block] - top);
+		sum = LmBlockSum<DS41_THREADS>(sum, reduction);
+		if ( threadIdx.x == 0u )
+		{
+			picks->branch_tokens[branch][offset] = Ds41KeyToken(key);
+			picks->branch_scores[branch][offset] = sum > 0.0f ? 1.0f / sum : 0.0f;
+			picks->branch_len[branch] = offset + 1u;
+			picks->branch_keys[branch] = 0ull;
+		}
+	}
+}
+
 static SparkStatus Ds41DeviceOpen(void)
 {
 	const SparkStatus status = SparkDeviceInitialize(0);
@@ -1627,7 +1790,7 @@ static SparkStatus Ds41RunForward(Ds41State *state, const uint16_t *ring_base, u
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static SparkStatus Ds41Heads(Ds41State *state, uint32_t greedy)
+static SparkStatus Ds41Heads(Ds41State *state, uint32_t greedy, uint32_t drafts, uint32_t tree)
 {
 	Ds41Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
@@ -1649,6 +1812,17 @@ static SparkStatus Ds41Heads(Ds41State *state, uint32_t greedy)
 	}
 	LM_LAUNCH((Ds41ConfidenceKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->draft, forward->picks, forward->hidden, state->markov_embed,
 		state->confidence, forward->softmax_partials, blocks);
+	if ( tree != 0u && drafts >= 2u )
+	{
+		LM_LAUNCH((Ds41BranchSelectKernel), 1u, DS41_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
+		for ( uint32_t offset = 1u; offset < DS41_BRANCH_LEN && offset < drafts; offset++ )
+		{
+			LM_LAUNCH((Ds41BranchRowKernel), blocks, DS41_THREADS, 0, stream, offset, drafts, forward->draft, forward->picks, forward->logits,
+				state->markov_embed, state->markov_head, forward->softmax_partials);
+			LM_LAUNCH((Ds41BranchReduceKernel), DS41_BRANCHES, DS41_THREADS, 0, stream, offset, drafts, forward->draft, forward->picks,
+				forward->softmax_partials, blocks);
+		}
+	}
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(Ds41Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
@@ -1844,16 +2018,47 @@ static SparkStatus Ds41Propose(void *opaque, const SparkDraftServerRequest *requ
 			return Ds41Settle(state, SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT);
 	drafts = drafts < DS41_BLOCK ? drafts : DS41_BLOCK;
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
-	status = Ds41Prepare(state, sequence, request->anchor_token_id, request->position, &request->sampling);
-	if ( status == SPARK_STATUS_OK )
-		status = Ds41RunForward(state, sequence->ring, DS41_STAGES, (const uint16_t **)0, (const float **)0);
-	if ( status == SPARK_STATUS_OK )
-		status = Ds41Heads(state, request->sampling.inverse_temperature > 0.0f ? 0u : 1u);
-	status = Ds41Settle(state, status);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	*count = SparkDraftTreePack(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
-		state->forward.host_picks->alt_tokens, state->forward.host_picks->alt_scores, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	{
+		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		SparkDraftTreeBranch branches[DS41_BLOCK];
+		uint32_t branch_count = 0u;
+		status = Ds41Prepare(state, sequence, request->anchor_token_id, request->position, &request->sampling);
+		if ( status == SPARK_STATUS_OK )
+			status = Ds41RunForward(state, sequence->ring, DS41_STAGES, (const uint16_t **)0, (const float **)0);
+		if ( status == SPARK_STATUS_OK )
+			status = Ds41Heads(state, request->sampling.inverse_temperature > 0.0f ? 0u : 1u, drafts, tree);
+		status = Ds41Settle(state, status);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( tree != 0u )
+			for ( uint32_t step = 0u; step < drafts; step++ )
+			{
+				uint32_t matched = DS41_BRANCHES;
+				for ( uint32_t b = 0u; b < DS41_BRANCHES; b++ )
+					if ( state->forward.host_picks->branch_len[b] > 0u && state->forward.host_picks->branch_fork[b] == step )
+						matched = b;
+				branches[branch_count].fork_step = step;
+				if ( matched < DS41_BRANCHES )
+				{
+					const uint32_t len = state->forward.host_picks->branch_len[matched];
+					branches[branch_count].length = len;
+					for ( uint32_t k = 0u; k < len; k++ )
+					{
+						branches[branch_count].tokens[k] = state->forward.host_picks->branch_tokens[matched][k];
+						branches[branch_count].scores[k] = state->forward.host_picks->branch_scores[matched][k];
+					}
+				}
+				else
+				{
+					branches[branch_count].length = 1u;
+					branches[branch_count].tokens[0] = state->forward.host_picks->alt_tokens[step];
+					branches[branch_count].scores[0] = state->forward.host_picks->alt_scores[step];
+				}
+				branch_count++;
+			}
+		*count = SparkDraftTreePackBranches(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
+			branches, branch_count, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	}
 	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 
