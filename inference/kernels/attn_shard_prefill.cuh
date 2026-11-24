@@ -19,6 +19,8 @@ typedef struct LmLatentShardSelection
 	const uint32_t *selected_positions;
 	const uint32_t *split_positions;
 	const uint32_t *split_offsets;
+	const uint32_t *fork_positions;
+	const uint32_t *slot_offsets;
 	uint32_t selected_count;
 	uint32_t dense_limit;
 	uint32_t record_heads;
@@ -27,9 +29,12 @@ typedef struct LmLatentShardSelection
 	uint32_t padded_heads;
 } LmLatentShardSelection;
 
-static __host__ __device__ inline LmLatentShardSelection LmLatentShardDense(uint32_t heads_per_rank)
+static __host__ __device__ inline LmLatentShardSelection LmLatentShardDense(
+	uint32_t heads_per_rank,
+	const uint32_t *fork_positions = 0,
+	const uint32_t *slot_offsets = 0)
 {
-	LmLatentShardSelection selection = { 0, 0, 0, 0u, 0u, heads_per_rank, 1u, 0u, 0u };
+	LmLatentShardSelection selection = { 0, 0, 0, fork_positions, slot_offsets, 0u, 0u, heads_per_rank, 1u, 0u, 0u };
 	return selection;
 }
 
@@ -290,9 +295,13 @@ void LmLatentShardPrefillKernel(
 			if (listed != 0u && selection.split_positions != 0)
 			{
 				const uint32_t *offsets = selection.split_offsets + (uint64_t)row * (cache.shard.degree + 1u) + cache.shard.rank;
+				const uint32_t row_fork = selection.fork_positions != 0 ? selection.fork_positions[row] : 0xffffffffu;
+				const uint32_t row_offset = selection.slot_offsets != 0 ? selection.slot_offsets[row] : 0u;
 				list_first = offsets[0];
 				count = offsets[1] - list_first;
 				first_listed = lane < count ? selection.split_positions[(uint64_t)row * selection.selected_count + list_first + lane] : 0u;
+				if (lane < count && first_listed >= row_fork)
+					first_listed += row_offset;
 			}
 			else if (listed != 0u)
 			{
@@ -351,7 +360,7 @@ void LmLatentShardPrefillKernel(
 	}
 	if (warp == ISSUER)
 	{
-		uint32_t row = 0u, sequence = 0u, listed = 0u, limit = 0u, window_begin = 0u, tile = 0u, tile_end = 0u, ahead = 0u, ahead_tile = 0xffffffffu, zeroed[2] = { 0u, 0u };
+		uint32_t row = 0u, sequence = 0u, listed = 0u, limit = 0u, window_begin = 0u, tile = 0u, tile_end = 0u, ahead = 0u, ahead_tile = 0xffffffffu, fork = 0xffffffffu, offset = 0u, zeroed[2] = { 0u, 0u };
 		const uint32_t *list = 0;
 		const uint8_t *slot = 0;
 		auto next = [&]() -> uint32_t
@@ -373,6 +382,8 @@ void LmLatentShardPrefillKernel(
 				listed = plans[record * PLAN_WORDS + 5u];
 				sequence = plans[record * PLAN_WORDS + 7u];
 				row = block * ROWS;
+				fork = selection.fork_positions != 0 ? selection.fork_positions[row] : 0xffffffffu;
+				offset = selection.slot_offsets != 0 ? selection.slot_offsets[row] : 0u;
 				list = listed == 0u ? 0 : selection.split_positions != 0 ? selection.split_positions + (uint64_t)row * selection.selected_count + plans[record * PLAN_WORDS + 6u] : list_shared;
 				ahead_tile = listed != 0u && selection.split_positions != 0 ? first : 0xffffffffu;
 				ahead = plans[record * PLAN_WORDS + PLAN_LIST + lane];
@@ -406,7 +417,8 @@ void LmLatentShardPrefillKernel(
 			const uint32_t local = which * TILE + lane;
 			if (local >= limit || local < window_begin)
 				return 0u;
-			return listed == 0u ? SparkKvShardLocalPosition(cache.shard, local) : list[local];
+			const uint32_t pos = listed == 0u ? SparkKvShardLocalPosition(cache.shard, local) : list[local];
+			return pos >= fork ? pos + offset : pos;
 		};
 		auto resolve = [&]() -> const uint8_t *
 		{
@@ -677,6 +689,7 @@ static inline SparkGpuError LmLatentShardPrefillRowsLaunch(
 		total_heads == 0u || (selection.padded_heads != 0u ? ROWS != 1u || selection.padded_heads != total_heads || total_heads >= block_heads :
 			(total_heads % block_heads) != 0u) ||
 		selection.record_heads == 0u || selection.record_copies == 0u || total_heads % selection.record_heads != 0u ||
+		(selection.fork_positions == 0) != (selection.slot_offsets == 0) || (selection.fork_positions != 0 && ROWS != 1u) ||
 		(selection.selected_positions != 0 && (ROWS != 1u || split_count != 1u || (selection.split_positions == 0) != (selection.split_offsets == 0))) ||
 		shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
 		SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u ||
@@ -769,7 +782,9 @@ static inline SparkGpuError LmLatentShardSplitLaunch(
 	uint64_t partial_rank_stride,
 	uint32_t rows,
 	uint32_t splits,
-	SparkGpuStream stream)
+	SparkGpuStream stream,
+	const uint32_t *fork_positions = 0,
+	const uint32_t *slot_offsets = 0)
 {
 	const uint32_t total_heads = heads_per_rank * cache.shard.degree;
 	const uint64_t row_floats = (uint64_t)splits * total_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
@@ -779,7 +794,8 @@ static inline SparkGpuError LmLatentShardSplitLaunch(
 		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	if (splits == 1u)
 		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
-			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
+			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream,
+			LmLatentShardDense(heads_per_rank, fork_positions, slot_offsets));
 	if (split_partials == 0 || split_capacity_floats < row_floats)
 		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	chunk = split_capacity_floats / row_floats < rows ? (uint32_t)(split_capacity_floats / row_floats) : rows;
@@ -790,7 +806,8 @@ static inline SparkGpuError LmLatentShardSplitLaunch(
 		const uint64_t split_stride = (uint64_t)cache.shard.degree * split_rank_stride;
 		const uint64_t records = (uint64_t)first * heads_per_rank;
 		error = LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16 + records * (LATENT + ROPE), query_rank_stride, heads_per_rank, total_heads,
-			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream, LmLatentShardDense(heads_per_rank));
+			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream,
+			LmLatentShardDense(heads_per_rank, fork_positions != 0 ? fork_positions + first : 0, slot_offsets != 0 ? slot_offsets + first : 0));
 		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		LM_LAUNCH((LmLatentShardSplitMergeKernel<LATENT>), dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, split_partials, split_rank_stride, split_stride, splits,
@@ -906,7 +923,9 @@ static inline SparkGpuError LmLatentShardAttendHeadsLaunch(
 	SparkGpuStream stream,
 	const uint32_t *split_positions = 0,
 	const uint32_t *split_offsets = 0,
-	uint32_t heads_per_block_limit = 4u)
+	uint32_t heads_per_block_limit = 4u,
+	const uint32_t *fork_positions = 0,
+	const uint32_t *slot_offsets = 0)
 {
 	static_assert(LmLatentShardTensorFits<Geometry, LATENT, ROPE>(), "shard prefill attention runs on the tensor-core kernel: the latent plus rope width must be "
 		"a multiple of 64, the latent a multiple of the warps' 16-wide tiles, the KV slot must hold the bf16 key row, and the tiles must fit shared memory");
@@ -924,7 +943,7 @@ static inline SparkGpuError LmLatentShardAttendHeadsLaunch(
 			"select at most %llu positions or pass them split\n", selected_count, (unsigned long long)list, LmLatentShardPrefillSharedBytes<LATENT + ROPE>(),
 			LM_PREFILL_ATTN_SHARED_LIMIT, (unsigned long long)((LM_PREFILL_ATTN_SHARED_LIMIT - LmLatentShardPrefillSharedBytes<LATENT + ROPE>()) / sizeof(uint32_t)) -
 			LM_LATENT_SHARD_THREADS);
-	const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, selected_count, dense_limit, record_heads, record_copies, 1u, padded };
+	const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, fork_positions, slot_offsets, selected_count, dense_limit, record_heads, record_copies, 1u, padded };
 	return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
 		sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, selection);
 }
@@ -945,9 +964,11 @@ static inline SparkGpuError LmLatentShardAttendLaunch(
 	float *partials,
 	uint64_t partial_rank_stride,
 	uint32_t rows,
-	SparkGpuStream stream)
+	SparkGpuStream stream,
+	const uint32_t *fork_positions = 0,
+	const uint32_t *slot_offsets = 0)
 {
 	return LmLatentShardAttendHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree,
 		sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u,
-		rows, stream);
+		rows, stream, (const uint32_t *)0, (const uint32_t *)0, 4u, fork_positions, slot_offsets);
 }

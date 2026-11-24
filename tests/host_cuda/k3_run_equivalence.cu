@@ -1,19 +1,3 @@
-// The KDA recurrence's run contract, executed on CPU: "a run of T is
-// bit-identical to T decode calls" - LmDeltaRuleKernel states that as a
-// gate, and this harness executes it for the shapes the K3 prefill port
-// (the adapter's run-prefix derivation) produces:
-//
-//   S1  one 8-row run vs 8 sequential one-row waves (outputs + state slot)
-//   S2  an explicit runs-of-one prefix vs the NULL-prefix decode reading
-//   S3  a mixed wave (prefill span + lone rows, three slots) vs sequential
-//   S4  the causal conv window carry over a run vs sequential
-//
-// THREADS=1 is the blessed host regime: the strided partial loops ARE the
-// serial walk, so both legs of every comparison run the same summation
-// order and only the RUN STRUCTURE differs. The GPU tier3/tier4 cell
-// through the live layer chain remains the serving gate; this pins the
-// kernel contract the wiring is built on.
-
 #include "tests/host_cuda/lm_host_cuda.cuh"
 
 #include <stdio.h>
@@ -22,8 +6,6 @@
 
 LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
-/* The shim backs `extern __shared__` with these fixed buffers; the delta
- * rule's state slab is the one this harness's kernels need. */
 float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 
 #include "inference/kernels/mma.cuh"
@@ -43,8 +25,6 @@ float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 #define K_ROWS 12u
 #define K_SLOTS 8u
 typedef float KState;
-/* slot_bytes is the WHOLE slot: the kernel slices it per key head
- * internally (head offset = KEY_DIM * VALUE_DIM * sizeof(State)). */
 #define K_SLOT_BYTES (K_KEY_HEADS * K_KEY_DIM * K_VALUE_DIM * sizeof(KState))
 
 static uint32_t lcg_state = 0x12345678u;
@@ -92,7 +72,6 @@ static void init_inputs(uint32_t rows, uint16_t *q, uint16_t *k, uint16_t *v,
 			conv_in[i] = lcg_bf16();
 }
 
-/* One wave call of the delta rule: grid (sequences, key_heads). */
 static void delta_wave(uint8_t *pool, const uint32_t *seqslots,
 	const uint32_t *prefix, const uint16_t *q, const uint16_t *k,
 	const uint16_t *v, const float *forget, const float *beta,
@@ -217,7 +196,6 @@ static int scenario_delta_runs_of_one(void)
 	}
 	prefix[8] = 8u;
 	delta_wave(pool_a, slots, prefix, q, k, v, forget, beta, out_a, 8u);
-	/* the decode form: no prefix, row i IS sequence i */
 	delta_wave(pool_b, slots, 0, q, k, v, forget, beta, out_b, 8u);
 	failures = compare_outputs(out_a, out_b, (size_t)8 * K_KEY_HEADS * K_VALUE_DIM,
 		"S2 outputs");
@@ -238,8 +216,6 @@ static int scenario_delta_mixed(void)
 	uint16_t *out_b = (uint16_t *)xmalloc((size_t)K_ROWS * K_KEY_HEADS * K_VALUE_DIM * 2);
 	uint8_t *pool_a = (uint8_t *)xmalloc((size_t)K_SLOTS * K_SLOT_BYTES);
 	uint8_t *pool_b = (uint8_t *)xmalloc((size_t)K_SLOTS * K_SLOT_BYTES);
-	/* rows 0..4 = one prefill span (slot 3), row 5 = a lone decode row
-	 * (slot 1), rows 6..11 = a second span (slot 0) */
 	const uint32_t prefix[4] = { 0u, 5u, 6u, 12u };
 	const uint32_t slots[3] = { 3u, 1u, 0u };
 	uint32_t row_slot[K_ROWS] = { 3u, 3u, 3u, 3u, 3u, 1u, 0u, 0u, 0u, 0u, 0u, 0u };
@@ -359,6 +335,69 @@ static int scenario_indexed(uint32_t lanes)
 	return failures;
 }
 
+static int scenario_conv_streams_tree(void)
+{
+	enum { T_ROWS = 8u };
+	const uint32_t parent[T_ROWS] = { 0xffffffffu, 0u, 1u, 2u, 0u, 4u, 2u, 6u };
+	const uint32_t paths[3][6] = {
+		{ 4u, 0u, 1u, 2u, 3u, 0u },
+		{ 3u, 0u, 4u, 5u, 0u, 0u },
+		{ 5u, 0u, 1u, 2u, 6u, 7u }
+	};
+	uint16_t in[3][T_ROWS * K_CHANNELS], out_tree[3][T_ROWS * K_CHANNELS];
+	uint16_t win_tree[3][K_CHANNELS * K_KERNEL], win_init[3][K_CHANNELS * K_KERNEL];
+	float weight[3][K_CHANNELS * K_KERNEL];
+	const uint32_t slots[1] = { 0u }, begin[2] = { 0u, T_ROWS };
+	uint32_t s, i;
+	int failures = 0;
+	lcg_state = 0x51a7beefu;
+	for ( s = 0u; s < 3u; ++s )
+	{
+		for ( i = 0u; i < T_ROWS * K_CHANNELS; ++i )
+			in[s][i] = lcg_bf16();
+		for ( i = 0u; i < K_CHANNELS * K_KERNEL; ++i )
+		{
+			weight[s][i] = lcg_float();
+			win_init[s][i] = lcg_bf16();
+			win_tree[s][i] = win_init[s][i];
+		}
+		memset(out_tree[s], 0, sizeof(out_tree[s]));
+	}
+	const LmCausalConvStreams<float> streams = {
+		{ win_tree[0], win_tree[1], win_tree[2] },
+		{ in[0], in[1], in[2] },
+		{ weight[0], weight[1], weight[2] },
+		{ out_tree[0], out_tree[1], out_tree[2] },
+		{ K_CHANNELS, K_CHANNELS, K_CHANNELS }
+	};
+	LM_LAUNCH((LmCausalConvStreamsKernel<K_THREADS,K_KERNEL,LM_CONV_SWISH,float>),
+		dim3(1u, (K_CHANNELS + K_THREADS - 1u) / K_THREADS, 3u), K_THREADS, 0, 0,
+		streams, slots, begin, (const uint32_t *)0, 1u, 0u, (const uint32_t *)0, parent);
+	for ( s = 0u; s < 3u; ++s )
+		failures += compare_pool((const uint8_t *)win_tree[s], (const uint8_t *)win_init[s],
+			sizeof(win_init[s]), "S5 uncommitted tree window");
+	for ( uint32_t p = 0u; p < 3u; ++p )
+	{
+		const uint32_t len = paths[p][0];
+		for ( s = 0u; s < 3u; ++s )
+		{
+			uint16_t win_seq[K_CHANNELS * K_KERNEL], out_seq[K_CHANNELS];
+			memcpy(win_seq, win_init[s], sizeof(win_seq));
+			for ( uint32_t step = 0u; step < len; ++step )
+			{
+				const uint32_t row = paths[p][1u + step];
+				LM_LAUNCH((LmCausalConvKernel<K_THREADS,K_KERNEL,LM_CONV_SWISH,float>),
+					dim3(1u, (K_CHANNELS + K_THREADS - 1u) / K_THREADS), K_THREADS, 0, 0,
+					win_seq, slots, (const uint32_t *)0, (const uint32_t *)0,
+					in[s] + (size_t)row * K_CHANNELS, weight[s], out_seq, K_CHANNELS, 1u, 1u);
+				failures += compare_outputs(out_tree[s] + (size_t)row * K_CHANNELS, out_seq,
+					K_CHANNELS, "S5 tree conv stream output");
+			}
+		}
+	}
+	return failures;
+}
+
 int main(void)
 {
 	int failures = 0;
@@ -384,6 +423,12 @@ int main(void)
 		int before = failures;
 		failures += scenario_conv_run8();
 		printf("S4 conv run-of-8 vs sequential: %s\n",
+			failures == before ? "PASS" : "FAIL");
+	}
+	{
+		int before = failures;
+		failures += scenario_conv_streams_tree();
+		printf("S5 conv streams tree vs sequential: %s\n",
 			failures == before ? "PASS" : "FAIL");
 	}
 	return failures != 0;

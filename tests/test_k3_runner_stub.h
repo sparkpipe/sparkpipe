@@ -143,13 +143,13 @@ uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
 uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner)
 {
 	(void)runner;
-	return(0u);
+	return(1u);
 }
 
 uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
 {
 	(void)runner;
-	return(0u);
+	return(SPARK_K3_SERVING_TP_DEGREE);
 }
 
 SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)

@@ -28,8 +28,10 @@ static int32_t TestK3Descriptor(void)
 	failures += TestK3Check(SparkModelServingAdapterValidateInterface(adapter,
 		0u) == SPARK_STATUS_OK &&
 		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u &&
-		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u,
-		"the common validator accepts the K3 adapter: it restores cached prefixes and serves publish frames (I23)");
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) != 0u &&
+		descriptor->tree_slot_grain == SPARK_K3_SERVING_TP_DEGREE,
+		"the common validator accepts the K3 adapter: it restores cached prefixes, serves publish frames (I23) and advertises tree verify at TP16 slot grain");
 	failures += TestK3Check(descriptor->cache_block_token_count == SPARK_K3_KV_PAGE_SLOTS &&
 		descriptor->cache_block_token_count == K3_KV_PAGE_SLOTS,
 		"the cache block is one KV page of the kernel's slot count");

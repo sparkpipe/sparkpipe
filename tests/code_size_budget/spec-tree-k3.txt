@@ -1,0 +1,2 @@
++112
+spec-tree K3 (MLA + DSA Indexer + KDA): add tree parent_rows to LmCausalConvStreamsLaunch, fork_positions/slot_offsets slot remapping to LmLatentShardPartialKernel, LmLatentShardPrefillKernel, LmAttentionDecodeKernel and LmWeightedSparseScoreKernel, wire KDA snapshots, MLA/DSA tree slots, 32-row verify graph key and dual-region LmKvShardPathMoveKernel in k3_stage.cuh/layer.cuh, and advertise tree_slot_grain on the K3 serving adapter.

@@ -169,7 +169,9 @@ void LmLatentShardPartialKernel(
     uint32_t record_heads,
     uint32_t record_copies,
     const uint32_t *__restrict__ split_positions,
-    const uint32_t *__restrict__ split_offsets)
+    const uint32_t *__restrict__ split_offsets,
+    const uint32_t *__restrict__ fork_positions = 0,
+    const uint32_t *__restrict__ slot_offsets = 0)
 {
     constexpr uint32_t WIDTH = LATENT + ROPE;
     constexpr uint32_t PER_LANE = WIDTH / 32u;
@@ -229,6 +231,8 @@ void LmLatentShardPartialKernel(
         for (element = 0u; element < PER_LANE; ++element)
             accumulator[head][element] = 0.0f;
     }
+    const uint32_t fork = fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
+    const uint32_t offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
     failed = 0u;
     for (step = warp; step < count && failed == 0u; step += LM_LATENT_SHARD_UNROLL * LM_LATENT_SHARD_WARPS)
     {
@@ -239,6 +243,8 @@ void LmLatentShardPartialKernel(
             if (index >= count || failed != 0u)
                 continue;
             position = split_list != 0 ? split_list[index] : listed != 0u ? shared_buf.compact.list[index] : SparkKvShardLocalPosition(cache.shard, index);
+            if (position >= fork)
+                position += offset;
             slot[unroll] = LmKvShardSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
             failed = slot[unroll] == 0 ? 1u : 0u;
         }
@@ -420,11 +426,14 @@ static inline SparkGpuError LmLatentShardPartialHeadsLaunch(
     SparkGpuStream stream,
     const uint32_t *split_positions = 0,
     const uint32_t *split_offsets = 0,
-    uint32_t heads_per_block_limit = 4u)
+    uint32_t heads_per_block_limit = 4u,
+    const uint32_t *fork_positions = 0,
+    const uint32_t *slot_offsets = 0)
 {
     uint32_t per_block;
     if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 ||
         record_heads == 0u || record_copies == 0u || total_heads % record_heads != 0u ||
+        (fork_positions == 0) != (slot_offsets == 0) ||
         SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u ||
         (selected_positions != 0 && selected_count > LM_LATENT_SHARD_LIST_CAPACITY) ||
         query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
@@ -434,11 +443,11 @@ static inline SparkGpuError LmLatentShardPartialHeadsLaunch(
     while (per_block > heads_per_block_limit && per_block > 1u)
         per_block /= 2u;
     if (per_block == 4u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     else if (per_block == 2u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     else
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     return SparkGpuPeekAtLastError();
 }
 
@@ -458,9 +467,11 @@ static inline SparkGpuError LmLatentShardPartialLaunch(
     float *partials,
     uint64_t partial_rank_stride,
     uint32_t rows,
-    SparkGpuStream stream)
+    SparkGpuStream stream,
+    const uint32_t *fork_positions = 0,
+    const uint32_t *slot_offsets = 0)
 {
-    return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u, rows, stream);
+    return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u, rows, stream, (const uint32_t *)0, (const uint32_t *)0, 4u, fork_positions, slot_offsets);
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
