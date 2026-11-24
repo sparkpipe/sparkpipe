@@ -560,7 +560,7 @@ SparkNvrmMemoryKind SparkNvrmLaunchControlKind(const SparkNvrmGpu *gpu)
 
 static SparkStatus GpuVideoCpu(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
 {
-	GPU_TRY(GpuMapToCpu(gpu,memory->handle,memory->bytes,SPARK_NVRM_VALUE(NVOS33_FLAGS_CACHING_TYPE,NVOS33_FLAGS_CACHING_TYPE_WRITECOMBINED),0u,
+	GPU_TRY(GpuMapToCpu(gpu,memory->handle,0u,memory->bytes,SPARK_NVRM_VALUE(NVOS33_FLAGS_CACHING_TYPE,NVOS33_FLAGS_CACHING_TYPE_WRITECOMBINED),0u,
 		(void *)(uintptr_t)memory->address,&memory->map_fd,&memory->cpu,owner));
 	memory->host_mapped = 1u;
 	memset(memory->cpu,0,(size_t)memory->bytes);

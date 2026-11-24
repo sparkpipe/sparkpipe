@@ -79,6 +79,23 @@ struct K3Schedule
 	using L = K3Layout;
 	using Context = typename B::Context;
 
+	static int32_t MlaSelect(Context &c, uint32_t layer)
+	{
+		int32_t status = B::kOk;
+		for ( uint32_t chunk = 0u; status == B::kOk && chunk < B::MlaIndexChunks(c, K3_LANE_A); chunk++ )
+		{
+			B::SetIndexChunk(c, K3_LANE_A, chunk);
+			status = B::MlaIndexSelect(c, K3_LANE_A, K3_STREAM_MAIN);
+			if ( status != B::kOk )
+				break;
+			B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_INDEX);
+			status = B::MlaIndexMerge(c, K3_LANE_A, K3_STREAM_MAIN);
+			if ( status == B::kOk )
+				B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_SELECTED);
+		}
+		return status;
+	}
+
 	static int32_t MlaGather(Context &c, uint32_t layer, uint32_t accumulate)
 	{
 		uint32_t window;
@@ -90,7 +107,13 @@ struct K3Schedule
 		B::SetGatherWindow(c, K3_LANE_A, 0u);
 		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_KEYS);
 		status = B::MlaGate(c, K3_LANE_A, K3_STREAM_MAIN);
+		if ( status == B::kOk )
+			status = B::MlaIndex(c, K3_LANE_A, K3_STREAM_MAIN);
 		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
+		if ( status == B::kOk )
+			status = MlaSelect(c, layer);
+		if ( status != B::kOk )
+			return status;
 		if ( B::MlaPasses(c, K3_LANE_A) <= 1u )
 		{
 			if ( status == B::kOk && B::GatherExpanded(c, K3_LANE_A) != 0u )
@@ -151,17 +174,8 @@ struct K3Schedule
 		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_QUERY);
 		status = B::MlaGate(c, K3_LANE_A, K3_STREAM_MAIN);
 		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_QUERY | K3_COLLECTIVE_FINISH);
-		for ( uint32_t chunk = 0u; status == B::kOk && chunk < B::MlaIndexChunks(c, K3_LANE_A); chunk++ )
-		{
-			B::SetIndexChunk(c, K3_LANE_A, chunk);
-			status = B::MlaIndexSelect(c, K3_LANE_A, K3_STREAM_MAIN);
-			if ( status != B::kOk )
-				break;
-			B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_INDEX);
-			status = B::MlaIndexMerge(c, K3_LANE_A, K3_STREAM_MAIN);
-			if ( status == B::kOk )
-				B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_SELECTED);
-		}
+		if ( status == B::kOk )
+			status = MlaSelect(c, layer);
 		if ( status != B::kOk )
 			return status;
 		status = B::MlaShardPartials(c, K3_LANE_A, K3_STREAM_MAIN);

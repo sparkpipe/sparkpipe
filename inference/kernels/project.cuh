@@ -24,18 +24,54 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 	uint32_t row = blockIdx.x,index;
 	uint32_t total = layout.query_dimension + layout.key_dimension + layout.value_dimension;
 	uint64_t base = (uint64_t)row * total;
+	const bool fused_vec = LmIsAligned16(fused_bf16) && ((total & 7u) == 0u);
 	if ( row >= rows )
 		return;
-	for (index = threadIdx.x; index < layout.query_dimension; index += THREADS)
-		query_bf16[((uint64_t)row * layout.query_dimension) + index] = fused_bf16[base + index];
-	for (index = threadIdx.x; index < layout.key_dimension; index += THREADS)
-		key_bf16[((uint64_t)row * layout.key_dimension) + index] =
-			fused_bf16[base + layout.query_dimension + index];
-	for (index = threadIdx.x; index < layout.value_dimension; index += THREADS)
-		value_bf16[((uint64_t)row * layout.value_dimension) + index] =
-			LmFloatToBf16(LmBf16ToFloat(
-				fused_bf16[base + layout.query_dimension + layout.key_dimension + index])
-				* value_scale);
+	if ( fused_vec && ((layout.query_dimension & 7u) == 0u) && LmIsAligned16(query_bf16) )
+	{
+		for (index = threadIdx.x * 8u; index < layout.query_dimension; index += THREADS * 8u)
+			*(uint4 *)(query_bf16 + ((uint64_t)row * layout.query_dimension) + index) =
+				*(const uint4 *)(fused_bf16 + base + index);
+	}
+	else
+	{
+		for (index = threadIdx.x; index < layout.query_dimension; index += THREADS)
+			query_bf16[((uint64_t)row * layout.query_dimension) + index] = fused_bf16[base + index];
+	}
+	if ( fused_vec && ((layout.query_dimension & 7u) == 0u) && ((layout.key_dimension & 7u) == 0u) && LmIsAligned16(key_bf16) )
+	{
+		for (index = threadIdx.x * 8u; index < layout.key_dimension; index += THREADS * 8u)
+			*(uint4 *)(key_bf16 + ((uint64_t)row * layout.key_dimension) + index) =
+				*(const uint4 *)(fused_bf16 + base + layout.query_dimension + index);
+	}
+	else
+	{
+		for (index = threadIdx.x; index < layout.key_dimension; index += THREADS)
+			key_bf16[((uint64_t)row * layout.key_dimension) + index] =
+				fused_bf16[base + layout.query_dimension + index];
+	}
+	if ( fused_vec && (((layout.query_dimension + layout.key_dimension) & 7u) == 0u) &&
+		((layout.value_dimension & 7u) == 0u) && LmIsAligned16(value_bf16) )
+	{
+		for (index = threadIdx.x * 8u; index < layout.value_dimension; index += THREADS * 8u)
+		{
+			uint16_t bits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(fused_bf16 + base + layout.query_dimension + layout.key_dimension + index), bits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = LmBf16ToFloat(bits[k]) * value_scale;
+			*(uint4 *)(value_bf16 + ((uint64_t)row * layout.value_dimension) + index) = LmPackUint4FloatToBf16(out_f);
+		}
+	}
+	else
+	{
+		for (index = threadIdx.x; index < layout.value_dimension; index += THREADS)
+			value_bf16[((uint64_t)row * layout.value_dimension) + index] =
+				LmFloatToBf16(LmBf16ToFloat(
+					fused_bf16[base + layout.query_dimension + layout.key_dimension + index])
+					* value_scale);
+	}
 }
 
 template<uint32_t THREADS>
@@ -47,6 +83,21 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 	uint64_t half_base = (uint64_t)row * heads * head_dimension;
 	if ( row >= rows )
 		return;
+	if ( ((head_dimension & 7u) == 0u) && LmIsAligned16(fused_bf16) && LmIsAligned16(query_bf16) && LmIsAligned16(gate_bf16) )
+	{
+		const uint32_t head_vecs = head_dimension >> 3u;
+		const uint32_t total_vecs = heads * head_vecs;
+		for (uint32_t v = threadIdx.x; v < total_vecs; v += THREADS)
+		{
+			head = v / head_vecs;
+			element = (v % head_vecs) << 3u;
+			*(uint4 *)(query_bf16 + half_base + ((uint64_t)v << 3u)) =
+				*(const uint4 *)(fused_bf16 + fused_base + ((uint64_t)head * 2u * head_dimension) + element);
+			*(uint4 *)(gate_bf16 + half_base + ((uint64_t)v << 3u)) =
+				*(const uint4 *)(fused_bf16 + fused_base + ((uint64_t)head * 2u * head_dimension) + head_dimension + element);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < heads * head_dimension; index += THREADS)
 	{
 		head = index / head_dimension;

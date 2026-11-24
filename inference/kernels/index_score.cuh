@@ -93,25 +93,58 @@ static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmKvShar
 	return(LmKvShardSlotRequired<Geometry>(view, sequence, SparkKvShardLocalPosition(view.shard, key), row, LM_KV_ACCESS_READ));
 }
 
-template<uint32_t HEAD_TILES>
+static __device__ __forceinline__ float LmIndexScoreRoundBf16(float value)
+{
+	return(LmBf16ToFloat(LmFloatToBf16(value)));
+}
+
+static __device__ __forceinline__ float LmIndexScoreWeight(uint16_t value)
+{
+	return(LmBf16ToFloat(value));
+}
+
+static __device__ __forceinline__ float LmIndexScoreWeight(float value)
+{
+	return(value);
+}
+
+template<uint32_t HEAD_TILES, bool ROUND_BF16 = false>
 static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_TILES][4], const float weight[2u * HEAD_TILES], uint32_t valid, uint32_t bound,
 	uint32_t written, uint32_t group, uint32_t row, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
 	float low,high;
 	uint32_t head_tile,entry;
-	for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-		for (entry = 0u; entry < 4u; entry++)
-			accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
-	low = __fmul_rn(weight[0], accumulator[0][0]);
-	high = __fmul_rn(weight[0], accumulator[0][1]);
-	low = __fmaf_rn(weight[1], accumulator[0][2], low);
-	high = __fmaf_rn(weight[1], accumulator[0][3], high);
-	for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
+	if constexpr ( ROUND_BF16 )
 	{
-		low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
-		high = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][1], high);
-		low = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2], low);
-		high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+			for (entry = 0u; entry < 4u; entry++)
+				accumulator[head_tile][entry] = fmaxf(LmIndexScoreRoundBf16(accumulator[head_tile][entry]), 0.0f);
+		low = 0.0f;
+		high = 0.0f;
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+		{
+			low = __fadd_rn(low, LmIndexScoreRoundBf16(__fmul_rn(weight[2u * head_tile], accumulator[head_tile][0])));
+			high = __fadd_rn(high, LmIndexScoreRoundBf16(__fmul_rn(weight[2u * head_tile], accumulator[head_tile][1])));
+			low = __fadd_rn(low, LmIndexScoreRoundBf16(__fmul_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2])));
+			high = __fadd_rn(high, LmIndexScoreRoundBf16(__fmul_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3])));
+		}
+	}
+	else
+	{
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+			for (entry = 0u; entry < 4u; entry++)
+				accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
+		low = __fmul_rn(weight[0], accumulator[0][0]);
+		high = __fmul_rn(weight[0], accumulator[0][1]);
+		low = __fmaf_rn(weight[1], accumulator[0][2], low);
+		high = __fmaf_rn(weight[1], accumulator[0][3], high);
+		for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
+		{
+			low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
+			high = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][1], high);
+			low = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2], low);
+			high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
+		}
 	}
 	for (entry = 4u; entry < LM_WARP_LANES; entry <<= 1u)
 	{
@@ -121,9 +154,11 @@ static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_
 	if ( group == 0u )
 	{
 		if ( written < score_stride )
-			scores[(uint64_t)row * score_stride + written] = valid != 0u && written < bound ? low * qk_scale : -INFINITY;
+			scores[(uint64_t)row * score_stride + written] = valid != 0u && written < bound ?
+				(ROUND_BF16 ? LmIndexScoreRoundBf16(low * qk_scale) : low * qk_scale) : -INFINITY;
 		if ( written + 1u < score_stride )
-			scores[(uint64_t)row * score_stride + written + 1u] = valid != 0u && written + 1u < bound ? high * qk_scale : -INFINITY;
+			scores[(uint64_t)row * score_stride + written + 1u] = valid != 0u && written + 1u < bound ?
+				(ROUND_BF16 ? LmIndexScoreRoundBf16(high * qk_scale) : high * qk_scale) : -INFINITY;
 	}
 }
 
@@ -141,9 +176,9 @@ static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uin
 
 #endif
 
-template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK>
+template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK, bool ROUND_BF16 = false, class Weight = uint16_t>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
-void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
+void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
 	const LmKvView &index_cache = LmIndexScorePages(index_view);
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
@@ -160,7 +195,7 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	uint32_t sequence,bound,tile,step,head_tile,valid;
 	if ( scores == 0 || row >= rows )
 		return;
-	valid = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight_bf16 != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
+	valid = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
 	sequence = valid != 0u ? sequence_of_row[row] : 0xffffffffu;
 	bound = 0u;
 	if ( valid == 0u || sequence >= index_cache.sequence_count )
@@ -188,8 +223,8 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 			}
 		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 		{
-			weight[2u * head_tile] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
-			weight[2u * head_tile + 1u] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
+			weight[2u * head_tile] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
+			weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
 		}
 	}
 	for (tile = warp / ROWS_PER_BLOCK; tile < LM_INDEX_SCORE_BLOCK_TILES; tile += tile_stride)
@@ -212,7 +247,7 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 					LmMmaBf16(accumulator[head_tile],a[head_tile][step],b);
 			}
 		}
-		LmIndexScoreStore<HEAD_TILES>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
+		LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
 	}
 }
 
@@ -224,9 +259,9 @@ static __device__ __forceinline__ void LmIndexScoreFillRow(float *__restrict__ s
 		scores[(uint64_t)row * score_stride + key] = -INFINITY;
 }
 
-template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM>
+template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, bool ROUND_BF16 = false, class Weight = uint16_t>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
-void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, LmIndexScorePackedView index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
+void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, LmIndexScorePackedView index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
 	constexpr uint32_t STEPS = INDEX_DIM / 16u;
@@ -244,8 +279,8 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 	const uint32_t group = lane / 4u,pair = lane % 4u;
 	const uint32_t key_first = blockIdx.x * LM_INDEX_SCORE_STAGED_KEYS;
 	const uint32_t row_first = blockIdx.y * LM_INDEX_SCORE_STAGED_ROWS;
-	const uint32_t configured = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight_bf16 != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
-	uint32_t local,tile,step,head_tile,entry;
+	const uint32_t configured = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
+	uint32_t local,tile,step,head_tile;
 	if ( scores == 0 )
 		return;
 	if ( threadIdx.x == 0u )
@@ -313,8 +348,8 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 				}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			{
-				weight[2u * head_tile] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
-				weight[2u * head_tile + 1u] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
+				weight[2u * head_tile] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
+				weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
 			}
 		}
 		for (tile = 0u; tile < TILES; tile++)
@@ -323,7 +358,6 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 			const uint32_t mine = first + group;
 			const uint32_t written = first + pair * 2u;
 			float accumulator[HEAD_TILES][4] = {};
-			float low,high;
 			if ( first >= score_stride )
 				break;
 			if ( valid != 0u && first >= bound )
@@ -343,32 +377,7 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 						LmMmaBf16(accumulator[head_tile],a[head_tile][step],b);
 				}
 			}
-			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-				for (entry = 0u; entry < 4u; entry++)
-					accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
-			low = __fmul_rn(weight[0], accumulator[0][0]);
-			high = __fmul_rn(weight[0], accumulator[0][1]);
-			low = __fmaf_rn(weight[1], accumulator[0][2], low);
-			high = __fmaf_rn(weight[1], accumulator[0][3], high);
-			for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
-			{
-				low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
-				high = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][1], high);
-				low = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2], low);
-				high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
-			}
-			for (entry = 4u; entry < LM_WARP_LANES; entry <<= 1u)
-			{
-				low += __shfl_xor_sync(0xffffffffu,low,(int)entry);
-				high += __shfl_xor_sync(0xffffffffu,high,(int)entry);
-			}
-			if ( group == 0u )
-			{
-				if ( written < score_stride )
-					scores[(uint64_t)row * score_stride + written] = valid != 0u && written < bound ? low * qk_scale : -INFINITY;
-				if ( written + 1u < score_stride )
-					scores[(uint64_t)row * score_stride + written + 1u] = valid != 0u && written + 1u < bound ? high * qk_scale : -INFINITY;
-			}
+			LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
 		}
 	}
 }
@@ -655,9 +664,9 @@ static __device__ __forceinline__ void LmIndexScoreKeyFragments(const uint8_t *s
 	}
 }
 
-template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM>
+template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, bool ROUND_BF16 = false, class Weight = uint16_t>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
-void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
+void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
 	constexpr uint32_t PITCH = INDEX_DIM * 2u + LM_INDEX_SCORE_STAGE_PAD, STAGE_BYTES = LM_INDEX_SCORE_STAGE_POSITIONS * PITCH;
 	constexpr uint32_t CHUNKS = LM_INDEX_SCORE_BLOCK_POSITIONS / LM_INDEX_SCORE_STAGE_POSITIONS;
@@ -692,7 +701,7 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 	__syncthreads();
 	if ( live != 0u )
 	{
-		valid = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight_bf16 != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
+		valid = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
 		sequence = valid != 0u ? sequence_of_row[row] : 0xffffffffu;
 		if ( valid == 0u || sequence >= index_cache.sequence_count )
 		{
@@ -719,8 +728,8 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 				}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			{
-				weight[2u * head_tile] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
-				weight[2u * head_tile + 1u] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
+				weight[2u * head_tile] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
+				weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
 			}
 		}
 	}
@@ -793,7 +802,7 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 							LmMmaBf16(accumulator[head_tile],a[head_tile][step + 1u],high_b);
 					}
 				}
-				LmIndexScoreStore<HEAD_TILES>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
+				LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
 			}
 		}
 		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
@@ -822,31 +831,31 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 			for (step = 0u; step < STEPS; step++)
 				for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 					LmMmaBf16(accumulator[head_tile],a[head_tile][step],b[step]);
-		LmIndexScoreStore<HEAD_TILES>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
+		LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
 	}
 }
 
 #endif
 
-template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages>
-static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const uint16_t *head_weight_bf16, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream)
+template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages, bool ROUND_BF16 = false, class Weight = uint16_t>
+static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const Weight *head_weight, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream)
 {
 	static_assert(LM_INDEX_SCORE_SHARED_ROWS == LM_INDEX_SCORE_WARPS, "the block-slot kernel gives every warp of a block its own row");
 #ifdef __CUDACC__
 	if constexpr ( LmIndexScoreStagedView<Pages>() != 0u )
 	{
-		LM_LAUNCH((LmWeightedSparseScoreStagedKernel<Geometry,INDEX_HEADS,INDEX_DIM>), dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
+		LM_LAUNCH((LmWeightedSparseScoreStagedKernel<Geometry,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
 			(rows + LM_INDEX_SCORE_STAGED_ROWS - 1u) / LM_INDEX_SCORE_STAGED_ROWS), LM_INDEX_SCORE_THREADS,
 			LM_INDEX_SCORE_STAGED_KEYS * (INDEX_DIM * (uint32_t)sizeof(uint16_t) + LM_INDEX_SCORE_STAGED_PAD), stream,
-			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 		return(SparkGpuPeekAtLastError());
 	}
 	if ( LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
-		LM_LAUNCH((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
-			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+		LM_LAUNCH((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	else
 #endif
-		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
-			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	return(SparkGpuPeekAtLastError());
 }

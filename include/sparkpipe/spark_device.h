@@ -22,6 +22,14 @@ typedef enum SparkDeviceSpace
 	SPARK_DEVICE_SPACE_FILE_BACKED = 5
 } SparkDeviceSpace;
 
+typedef enum SparkDeviceAddressKind
+{
+	SPARK_DEVICE_ADDRESS_OUTSIDE = 0,
+	SPARK_DEVICE_ADDRESS_BUFFER = 1,
+	SPARK_DEVICE_ADDRESS_MAPPED = 2,
+	SPARK_DEVICE_ADDRESS_UNKNOWN = 3
+} SparkDeviceAddressKind;
+
 #define SPARK_DEVICE_ACCESS_HOST_READ 1u
 #define SPARK_DEVICE_ACCESS_HOST_WRITE 2u
 #define SPARK_DEVICE_ACCESS_DEVICE_READ 4u
@@ -224,6 +232,7 @@ SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offse
 SparkStatus SparkDeviceMapFileSegments(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, uint64_t segment_stride, const char *owner);
 SparkStatus SparkDeviceFree(SparkDeviceBuffer *buffer);
 SparkStatus SparkDeviceResolve(SparkDeviceAddress address, uint64_t bytes, SparkDeviceRange *range);
+SparkDeviceAddressKind SparkDeviceAddressLookup(SparkDeviceAddress address, uint64_t bytes);
 SparkStatus SparkDeviceAddressOf(SparkDeviceRange range, uint64_t bytes, SparkDeviceAddress *address);
 SparkStatus SparkDeviceHostOf(SparkDeviceRange range, uint64_t bytes, void **host);
 uint32_t SparkDeviceSegmented(SparkDeviceRange range);
@@ -240,6 +249,7 @@ SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address, uint64_t bytes, Spa
 SparkStatus SparkDeviceMemoryUnmap(SparkDeviceAddress address, uint64_t bytes);
 
 SparkStatus SparkDeviceCopy(SparkDeviceQueue *queue, SparkDeviceRange destination, SparkDeviceRange source, uint64_t bytes);
+SparkStatus SparkDeviceCopyAddresses(SparkDeviceQueue *queue, SparkDeviceAddress destination, SparkDeviceAddress source, uint64_t bytes);
 SparkStatus SparkDeviceFill(SparkDeviceQueue *queue, SparkDeviceRange destination, uint8_t value, uint64_t bytes);
 SparkStatus SparkDeviceCopySync(SparkDeviceRange destination, SparkDeviceRange source, uint64_t bytes);
 

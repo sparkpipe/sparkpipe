@@ -129,6 +129,7 @@ typedef struct HostRange
 {
 	uint64_t base;
 	uint64_t bytes;
+	uint32_t writable;
 } HostRange;
 
 typedef struct HostRanges
@@ -195,6 +196,7 @@ static uint32_t HostRangeAdd(HostRanges *ranges, uint64_t base, uint64_t bytes)
 	}
 	ranges->ranges[ranges->count].base = base;
 	ranges->ranges[ranges->count].bytes = bytes;
+	ranges->ranges[ranges->count].writable = 0u;
 	ranges->count++;
 	return(1u);
 }
@@ -370,6 +372,8 @@ SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t byt
 		(void)mmap((void *)(uintptr_t)address,(size_t)bytes,PROT_NONE,MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,-1,0);
 		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"memory_map","",ENOMEM,"out of host memory for the mapping record");
 	}
+	else
+		host_mappings.ranges[host_mappings.count - 1u].writable = (access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u ? 1u : 0u;
 	pthread_mutex_unlock(&host_shared_mutex);
 	return(status);
 }
@@ -674,6 +678,56 @@ SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection
 	operation.source = ((HostAllocation *)source->backend)->data + source_offset;
 	operation.bytes = bytes;
 	return(HostEnqueue(queue,&operation,"copy"));
+}
+
+static uint32_t HostSpanned(const HostRanges *ranges, uint64_t base, uint64_t bytes, uint32_t write)
+{
+	uint64_t reached = base;
+	uint32_t index,moved = 1u;
+	while ( reached < base + bytes && moved != 0u )
+	{
+		moved = 0u;
+		for (index=0u; index<ranges->count && moved == 0u; index++)
+		{
+			const HostRange *range = &ranges->ranges[index];
+			if ( range->base <= reached && reached - range->base < range->bytes && (write == 0u || range->writable != 0u) )
+			{
+				reached = range->base + range->bytes;
+				moved = 1u;
+			}
+		}
+	}
+	return(bytes != 0u && reached >= base + bytes ? 1u : 0u);
+}
+
+uint32_t SparkDeviceBackendAddressMapped(SparkDeviceAddress address, uint64_t bytes, uint32_t write)
+{
+	uint32_t mapped;
+	pthread_mutex_lock(&host_shared_mutex);
+	mapped = HostSpanned(&host_mappings,address,bytes,write);
+	pthread_mutex_unlock(&host_shared_mutex);
+	return(mapped);
+}
+
+uint32_t SparkDeviceBackendAddressOwned(SparkDeviceAddress address, uint64_t bytes)
+{
+	uint32_t owned;
+	pthread_mutex_lock(&host_shared_mutex);
+	owned = HostRangeOverlaps(&host_reservations,address,bytes);
+	pthread_mutex_unlock(&host_shared_mutex);
+	return(owned);
+}
+
+SparkStatus SparkDeviceBackendCopyMapped(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t destination_at,
+	const SparkDeviceAllocation *source, uint64_t source_at, uint64_t bytes)
+{
+	HostOperation operation;
+	memset(&operation,0,sizeof(operation));
+	operation.kind = HOST_OPERATION_COPY;
+	operation.destination = destination != 0 ? ((HostAllocation *)destination->backend)->data + destination_at : (uint8_t *)(uintptr_t)destination_at;
+	operation.source = source != 0 ? ((HostAllocation *)source->backend)->data + source_at : (const uint8_t *)(uintptr_t)source_at;
+	operation.bytes = bytes;
+	return(HostEnqueue(queue,&operation,"copy_addresses"));
 }
 
 SparkStatus SparkDeviceBackendFill(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t offset, uint8_t value, uint64_t bytes)

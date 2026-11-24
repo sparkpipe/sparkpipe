@@ -285,12 +285,137 @@ static void GatherCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	cudaFree(scatter_device); cudaFree(gather_device); cudaFree(error_device);
 }
 
+static uint64_t GatherNext(uint64_t *state)
+{
+	*state = *state * 6364136223846793005ull + 1442695040888963407ull;
+	return *state >> 33u;
+}
+
+static void GatherSparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t heads_per_rank,uint32_t selected)
+{
+	const uint32_t pages = (context + GATHER_PAGE - 1u) / GATHER_PAGE;
+	const uint64_t query_stride = (uint64_t)rows * heads_per_rank * GATHER_WIDTH,rank_stride = (uint64_t)rows * heads_per_rank * GATHER_RECORD;
+	const float scale = 1.0f / sqrtf((float)GATHER_WIDTH);
+	SparkKvShard probe = {degree,0u,1u};
+	const uint32_t most = SparkKvShardGatherKeys(probe,context);
+	const uint64_t key_stride = (uint64_t)most * GatherKv::kSlotBytes;
+	std::vector<uint32_t> table(pages),positions(rows),sequences(rows,0u),contexts(1,context),token_sequence(context,0u),token_position(context);
+	std::vector<uint32_t> plan(3u,0u),chosen((uint64_t)rows * selected,0xffffffffu),pool(context);
+	std::vector<float> scatter((uint64_t)degree * degree * rank_stride),gather(scatter.size());
+	std::vector<uint8_t *> pools(degree);
+	uint32_t *table_device,*positions_device,*sequences_device,*contexts_device,*token_sequence_device,*token_position_device,*plan_device,*chosen_device;
+	uint16_t *values_device,*query_device;
+	uint8_t *keys_device;
+	float *scatter_device,*gather_device;
+	LmKvAccessError *error_device,error_host;
+	uint32_t page,row,rank,source,target,index,listed = 0u,filled = 0u;
+	uint64_t mismatches = 0u,state = 0x5eedull + context;
+	char label[128];
+
+	snprintf(label,sizeof(label),"sparse rows%u ctx%u degree%u heads%u top%u",rows,context,degree,heads_per_rank,selected);
+	for (page=0u; page<pages; page++)
+		table[page] = (page * 5u + 1u) % pages;
+	for (row=0u; row<rows; row++)
+	{
+		const uint32_t position = context - rows + row,span = position + 1u,take = span < selected ? span : selected;
+		positions[row] = position;
+		for (index=0u; index<span; index++)
+			pool[index] = index;
+		for (index=0u; index<take; index++)
+		{
+			const uint32_t pick = index + (uint32_t)(GatherNext(&state) % (span - index)),value = pool[pick];
+			pool[pick] = pool[index];
+			pool[index] = value;
+			chosen[(uint64_t)row * selected + index] = value;
+		}
+		listed += span > selected ? 1u : 0u;
+		filled += take;
+	}
+	for (index=0u; index<context; index++)
+		token_position[index] = index;
+	plan[2] = context;
+	table_device = GatherDevice(table);
+	positions_device = GatherDevice(positions);
+	sequences_device = GatherDevice(sequences);
+	contexts_device = GatherDevice(contexts);
+	token_sequence_device = GatherDevice(token_sequence);
+	token_position_device = GatherDevice(token_position);
+	plan_device = GatherDevice(plan);
+	chosen_device = GatherDevice(chosen);
+	GATHER_CUDA(cudaMalloc((void **)&values_device,(uint64_t)context * GATHER_WIDTH * 2u));
+	GATHER_CUDA(cudaMalloc((void **)&query_device,(uint64_t)degree * query_stride * 2u));
+	GATHER_CUDA(cudaMalloc((void **)&keys_device,(uint64_t)degree * key_stride));
+	GATHER_CUDA(cudaMalloc((void **)&scatter_device,scatter.size() * sizeof(float)));
+	GATHER_CUDA(cudaMalloc((void **)&gather_device,gather.size() * sizeof(float)));
+	GATHER_CUDA(cudaMalloc((void **)&error_device,sizeof(LmKvAccessError)));
+	GATHER_CUDA(cudaMemset(scatter_device,0xff,scatter.size() * sizeof(float)));
+	GATHER_CUDA(cudaMemset(gather_device,0x7f,gather.size() * sizeof(float)));
+	LmKvAccessErrorReset(&error_host);
+	GATHER_CUDA(cudaMemcpy(error_device,&error_host,sizeof(error_host),cudaMemcpyHostToDevice));
+	GatherFillKernel<<<512,256>>>(values_device,(uint64_t)context * GATHER_WIDTH,7u);
+	GatherFillKernel<<<256,256>>>(query_device,(uint64_t)degree * query_stride,3ull << 58u);
+	GATHER_CUDA(cudaGetLastError());
+	for (rank=0u; rank<degree; rank++)
+	{
+		SparkKvShard shard = {degree,rank,1u};
+		LmKvShardView local;
+		uint64_t bytes = SparkKvShardPoolBytes(shard,GATHER_PAGE,GatherKv::kSlotBytes,pages);
+		GATHER_CUDA(cudaMalloc((void **)&pools[rank],bytes));
+		GATHER_CUDA(cudaMemset(pools[rank],0,bytes));
+		GatherCheck(LmKvShardViewInitialize<GatherKv>(&local,pools[rank],table_device,pages,1u,pages,error_device,shard) == 0,"shard view",label);
+		LmKvShardStoreKernel<GatherKv,256u><<<context,256>>>(local,values_device,token_sequence_device,token_position_device,context,GATHER_WIDTH);
+		GATHER_CUDA(cudaGetLastError());
+		GatherCheck(LmLatentShardAttendLaunch<GatherKv,LmKvShardView,GATHER_LATENT,GATHER_ROPE>(local,query_device,query_stride,heads_per_rank,
+			sequences_device,contexts_device,positions_device,chosen_device,selected,selected,scale,scatter_device + (uint64_t)rank * degree * rank_stride,rank_stride,
+			rows,0) == cudaSuccess,"scatter selected attend launch",label);
+		GatherCheck(LmKvShardGatherPackLaunch<GatherKv,256u>(local,plan_device,plan_device + 1u,plan_device + 2u,1u,most,
+			keys_device + (uint64_t)rank * key_stride,0) == cudaSuccess,"gather pack launch",label);
+	}
+	for (target=0u; target<degree; target++)
+		for (source=0u; source<degree; source++)
+		{
+			SparkKvShard shard = {degree,source,1u};
+			LmKvShardView pages_view;
+			LmKvShardGatherView view;
+			GatherCheck(LmKvShardViewInitialize<GatherKv>(&pages_view,pools[source],table_device,pages,1u,pages,error_device,shard) == 0,"source pages",label);
+			GatherCheck(LmKvShardGatherViewInitialize<GatherKv>(&view,pages_view.pages,shard,keys_device + (uint64_t)source * key_stride,plan_device + 1u,plan_device + 2u) == 0,
+				"gather view",label);
+			GatherCheck(LmLatentShardAttendHeadsLaunch<GatherKv,LmKvShardGatherView,GATHER_LATENT,GATHER_ROPE>(view,query_device + (uint64_t)target * query_stride,query_stride,
+				heads_per_rank,heads_per_rank,sequences_device,contexts_device,positions_device,chosen_device,selected,selected,scale,
+				gather_device + ((uint64_t)target * degree + source) * rank_stride,rank_stride,heads_per_rank,1u,rows,0) == cudaSuccess,"gathered selected attend launch",label);
+		}
+	GATHER_CUDA(cudaDeviceSynchronize());
+	GATHER_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
+	GatherCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error on a selected-key wave",label);
+	GATHER_CUDA(cudaMemcpy(scatter.data(),scatter_device,scatter.size() * sizeof(float),cudaMemcpyDeviceToHost));
+	GATHER_CUDA(cudaMemcpy(gather.data(),gather_device,gather.size() * sizeof(float),cudaMemcpyDeviceToHost));
+	for (target=0u; target<degree; target++)
+		for (source=0u; source<degree; source++)
+			if ( memcmp(&gather[((uint64_t)target * degree + source) * rank_stride],&scatter[((uint64_t)source * degree + target) * rank_stride],rank_stride * sizeof(float)) != 0 )
+				mismatches++;
+	GatherCheck(listed != 0u || context <= selected,"the case attends through selected keys on some rows",label);
+	GatherCheck(mismatches == 0u,"every source's own-head partials over its selected keys equal that rank's scatter partials bit for bit",label);
+	printf("%s %s: %u of %u rows listed, %u keys chosen, %llu of %u source/target partial blocks differ\n",mismatches == 0u ? "ok  " : "FAIL",label,listed,rows,filled,
+		(unsigned long long)mismatches,degree * degree);
+	for (rank=0u; rank<degree; rank++)
+		cudaFree(pools[rank]);
+	cudaFree(table_device); cudaFree(positions_device); cudaFree(sequences_device); cudaFree(contexts_device);
+	cudaFree(token_sequence_device); cudaFree(token_position_device); cudaFree(plan_device); cudaFree(chosen_device);
+	cudaFree(values_device); cudaFree(query_device); cudaFree(keys_device);
+	cudaFree(scatter_device); cudaFree(gather_device); cudaFree(error_device);
+}
+
 int main(void)
 {
 	GatherCase(17u,640u,16u,6u);
 	GatherCase(100u,3000u,16u,6u);
 	GatherCase(203u,4099u,16u,6u);
 	GatherCase(64u,2048u,8u,12u);
+	GatherSparseCase(48u,5000u,16u,6u,2048u);
+	GatherSparseCase(300u,9000u,16u,6u,2048u);
+	GatherSparseCase(64u,3000u,16u,6u,1024u);
+	GatherSparseCase(40u,1500u,16u,6u,2048u);
+	GatherSparseCase(64u,4096u,8u,12u,1024u);
 	if ( gather_failures != 0 )
 	{
 		printf("latent gather prefill: %d failure(s)\n",gather_failures);
