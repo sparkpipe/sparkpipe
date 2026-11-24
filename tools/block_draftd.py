@@ -396,9 +396,12 @@ class Server:
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
         started = time.monotonic()
+        alternates = alternate_scores = None
         if self.dspark:
-            drafts, confidence = self.drafter.draft(context.ring, int(anchor), position, dspark_rule(self.drafter, sampling))
-            drafts, confidence = drafts[:min(depth, self.max_drafts)], confidence[:min(depth, self.max_drafts)]
+            drafts, confidence, alternates, alternate_scores = self.drafter.draft(context.ring, int(anchor), position, dspark_rule(self.drafter, sampling),
+                                                                                  return_alternates=True)
+            count = min(depth, self.max_drafts)
+            drafts, confidence, alternates, alternate_scores = drafts[:count], confidence[:count], alternates[:count], alternate_scores[:count]
         else:
             start, block_at, valid = context.span(positions)
             drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block), sampling)
@@ -407,7 +410,7 @@ class Server:
         self.timing["context"] += position
         self.stats["drafted"] += 1
         self.stats["draft_us"] += elapsed
-        return drafts, confidence, elapsed, None, None
+        return drafts, confidence, elapsed, alternates, alternate_scores
 
     def serve(self, connection):
         while True:

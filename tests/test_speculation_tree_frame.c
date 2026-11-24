@@ -1,7 +1,9 @@
 #include <assert.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
+#include "sparkpipe/spark_draft_tree_pack.h"
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
@@ -110,6 +112,48 @@ static void TestHazardNodeObservations(void)
 	assert(memcmp(&chain,&tree,sizeof(chain)) == 0);
 }
 
+static void TestDraftTreePackContract(void)
+{
+	const uint32_t tokens[15] = { 10u, 11u, 12u, 13u, 14u, 15u, 16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 24u };
+	const float scores[15] = { 0.9f, 0.8f, 0.7f, 0.6f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+	const uint32_t alts[15] = { 10u, 101u, 102u, 103u, 104u, 105u, 106u, 107u, 108u, 109u, 110u, 111u, 112u, 113u, 114u };
+	const float alt_scores[15] = { 0.45f, 0.12f, 0.35f, 0.04f, 0.35f, NAN, 0.28f, 0.19f, 0.22f, 0.15f, 0.41f, 0.31f, 0.26f, 0.18f, 0.11f };
+	SparkDraftBridgeNode nodes[32];
+	uint32_t parents[32], node_tokens[32], count, index;
+	SparkSpeculationTreeLayout layout;
+	count = SparkDraftTreePack(7u, 2u, tokens, scores, alts, alt_scores, 5u, 5u, 6u, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	assert(count == 6u);
+	assert(nodes[0].token_id == 7u && nodes[0].parent_index == SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX && nodes[0].depth == 0u && nodes[0].score == 1.0f);
+	for (index=0u; index<5u; index++)
+		assert(nodes[index + 1u].token_id == tokens[index] && nodes[index + 1u].parent_index == index && nodes[index + 1u].depth == index + 1u);
+	count = SparkDraftTreePack(7u, 2u, tokens, scores, alts, alt_scores, 5u, 8u, 9u, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	assert(count == 6u);
+	count = SparkDraftTreePack(7u, 2u, tokens, scores, alts, alt_scores, 5u, 5u, 10u, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	assert(count == 9u);
+	assert(nodes[6].token_id == 102u && nodes[6].parent_index == 2u && nodes[6].depth == 3u && fabsf(nodes[6].score - 0.35f) < 1e-6f);
+	assert(nodes[7].token_id == 104u && nodes[7].parent_index == 4u && nodes[7].depth == 5u && fabsf(nodes[7].score - 0.35f) < 1e-6f);
+	assert(nodes[8].token_id == 101u && nodes[8].parent_index == 1u && nodes[8].depth == 2u && fabsf(nodes[8].score - 0.12f) < 1e-6f);
+	for (index=0u; index<count; index++)
+	{
+		parents[index] = nodes[index].parent_index;
+		node_tokens[index] = nodes[index].token_id;
+	}
+	assert(SparkSpeculationTreeLayoutBuild(parents,node_tokens,count,100u,16u,&layout) == SPARK_STATUS_OK);
+	assert(layout.branches == 3u && layout.trunk_depth == 5u);
+	count = SparkDraftTreePack(7u, 4u, tokens, scores, alts, alt_scores, 15u, 15u, SPARK_SPECULATION_TREE_FRAME_MAX_ROWS, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+	assert(count == 16u + SPARK_SPECULATION_TREE_FRAME_MAX_BRANCHES);
+	assert(nodes[16].token_id == 110u && nodes[16].parent_index == 10u && nodes[16].depth == 11u);
+	assert(nodes[17].token_id == 102u && nodes[17].parent_index == 2u && nodes[17].depth == 3u);
+	assert(nodes[18].token_id == 104u && nodes[18].parent_index == 4u && nodes[18].depth == 5u);
+	for (index=0u; index<count; index++)
+	{
+		parents[index] = nodes[index].parent_index;
+		node_tokens[index] = nodes[index].token_id;
+	}
+	assert(SparkSpeculationTreeLayoutBuild(parents,node_tokens,count,500u,16u,&layout) == SPARK_STATUS_OK);
+	assert(layout.branches == SPARK_SPECULATION_TREE_FRAME_MAX_BRANCHES && layout.trunk_depth == 15u);
+}
+
 int main(void)
 {
 	TestChainLayoutIsPositions();
@@ -118,5 +162,6 @@ int main(void)
 	TestResolvePathPicksDeepestAcceptedBranch();
 	TestResolvePathChainMatchesPrefixRule();
 	TestHazardNodeObservations();
+	TestDraftTreePackContract();
 	return(0);
 }

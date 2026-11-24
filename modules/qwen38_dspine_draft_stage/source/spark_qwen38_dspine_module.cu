@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_clock.h"
+#include "sparkpipe/spark_draft_tree_pack.h"
 #include "sparkpipe/spark_drafter_module.h"
 #include "sparkpipe/spark_gpu.h"
 #include "sparkpipe/spark_json.h"
@@ -116,6 +117,8 @@ typedef struct Q38Picks
 {
 	uint32_t tokens[Q38_DRAFTS];
 	float scores[Q38_DRAFTS];
+	uint32_t alt_tokens[Q38_DRAFTS];
+	float alt_scores[Q38_DRAFTS];
 } Q38Picks;
 
 static __device__ __forceinline__ void Q38Rotation(uint32_t position, float inverse, float *cosine, float *sine)
@@ -618,7 +621,7 @@ __global__ __launch_bounds__(Q38_THREADS, 1)
 void Q38GreedyTableKernel(const Q38Draft *__restrict__ draft, const uint32_t *__restrict__ candidates, const uint16_t *__restrict__ raw,
 	const float *__restrict__ rms, const uint16_t *__restrict__ query, const uint16_t *__restrict__ norm, const uint16_t *__restrict__ head,
 	const uint16_t *__restrict__ tg, const uint16_t *__restrict__ tsv, const uint16_t *__restrict__ bias, uint32_t *__restrict__ table,
-	float *__restrict__ confidence)
+	uint32_t *__restrict__ alt_table, float *__restrict__ confidence, float *__restrict__ alt_confidence)
 {
 	__shared__ float base[Q38_LANES];
 	__shared__ float message[Q38_LANES][Q38_RANK];
@@ -658,18 +661,31 @@ void Q38GreedyTableKernel(const Q38Draft *__restrict__ draft, const uint32_t *__
 	if ( threadIdx.x < Q38_LANES )
 	{
 		const uint32_t sender = threadIdx.x;
-		float best = scores[sender][0], total = 0.0f;
-		uint32_t pick = 0u;
+		const float divisor = fmaxf(scale, Q38_CONFIDENCE_FLOOR);
+		float best = scores[sender][0], second = -INFINITY, total = 0.0f;
+		uint32_t pick = 0u, alt_pick = 1u;
 		for ( uint32_t choice = 1u; choice < Q38_LANES; choice++ )
-			if ( scores[sender][choice] > best )
+		{
+			const float value = scores[sender][choice];
+			if ( value > best )
 			{
-				best = scores[sender][choice];
+				second = best;
+				alt_pick = pick;
+				best = value;
 				pick = choice;
 			}
+			else if ( value > second )
+			{
+				second = value;
+				alt_pick = choice;
+			}
+		}
 		for ( uint32_t choice = 0u; choice < Q38_LANES; choice++ )
-			total += expf((scores[sender][choice] - best) / fmaxf(scale, Q38_CONFIDENCE_FLOOR));
+			total += expf((scores[sender][choice] - best) / divisor);
 		table[(uint64_t)row * Q38_LANES + sender] = pick;
+		alt_table[(uint64_t)row * Q38_LANES + sender] = alt_pick;
 		confidence[(uint64_t)row * Q38_LANES + sender] = 1.0f / total;
+		alt_confidence[(uint64_t)row * Q38_LANES + sender] = expf((second - best) / divisor) / total;
 	}
 }
 
@@ -736,7 +752,8 @@ void Q38RefinedKernel(const Q38Draft *__restrict__ draft, const uint32_t *__rest
 
 __global__ __launch_bounds__(Q38_WARP, 1)
 void Q38ChainKernel(const Q38Draft *__restrict__ draft, const uint32_t *__restrict__ candidates, const uint32_t *__restrict__ table,
-	const float *__restrict__ confidence, const float *__restrict__ refined_table, Q38Picks *__restrict__ picks)
+	const uint32_t *__restrict__ alt_table, const float *__restrict__ confidence, const float *__restrict__ alt_confidence,
+	const float *__restrict__ refined_table, Q38Picks *__restrict__ picks)
 {
 	const uint32_t lane = threadIdx.x;
 	uint32_t choice = 0u, previous = 0u, sampled_lane = 0u;
@@ -749,13 +766,16 @@ void Q38ChainKernel(const Q38Draft *__restrict__ draft, const uint32_t *__restri
 		const uint32_t greedy_token = candidates[(uint64_t)row * Q38_LANES + choice];
 		const float score = confidence[(uint64_t)row * Q38_LANES + previous];
 		uint32_t token = greedy_token;
+		uint32_t alt_token = candidates[(uint64_t)row * Q38_LANES + alt_table[(uint64_t)row * Q38_LANES + previous]];
+		float alt_score = alt_confidence[(uint64_t)row * Q38_LANES + previous];
 		if ( draft->greedy == 0u )
 		{
 			const float value = refined_table[((uint64_t)row * Q38_LANES + sampled_lane) * Q38_LANES + lane] * draft->inverse_temperature;
 			const uint32_t candidate = candidates[(uint64_t)row * Q38_LANES + lane];
 			const uint32_t active = (1u << Q38_LANES) - 1u;
 			float top = value, sum, probability, before = 0.0f;
-			uint32_t rank = 0u;
+			uint32_t rank = 0u, winner_rank, runner_rank, alt_lane = 0u;
+			float alt_prob = 0.0f;
 			unsigned long long key;
 			for ( uint32_t other = 0u; other < Q38_LANES; other++ )
 			{
@@ -784,18 +804,30 @@ void Q38ChainKernel(const Q38Draft *__restrict__ draft, const uint32_t *__restri
 				const unsigned long long other = __shfl_xor_sync(active, key, mask);
 				key = other > key ? other : key;
 			}
+			winner_rank = 0xffffffffu - (uint32_t)key;
+			runner_rank = winner_rank == 0u ? 1u : 0u;
 			for ( uint32_t other = 0u; other < Q38_LANES; other++ )
 			{
 				const uint32_t other_rank = __shfl_sync(active, rank, other);
-				if ( other_rank == 0xffffffffu - (uint32_t)key )
+				const float other_prob = __shfl_sync(active, probability, other);
+				if ( other_rank == winner_rank )
 					sampled_lane = other;
+				if ( other_rank == runner_rank )
+				{
+					alt_lane = other;
+					alt_prob = other_prob;
+				}
 			}
 			token = candidates[(uint64_t)row * Q38_LANES + sampled_lane];
+			alt_token = candidates[(uint64_t)row * Q38_LANES + alt_lane];
+			alt_score = alt_prob;
 		}
 		if ( lane == 0u )
 		{
 			picks->tokens[row] = token;
 			picks->scores[row] = score;
+			picks->alt_tokens[row] = alt_token;
+			picks->alt_scores[row] = alt_score;
 		}
 		previous = choice;
 		if ( row + 1u < Q38_DRAFTS )
@@ -841,7 +873,9 @@ typedef struct Q38Forward
 	uint32_t *pooled;
 	uint32_t *candidates;
 	uint32_t *table;
+	uint32_t *alt_table;
 	float *confidence;
+	float *alt_confidence;
 	float *refined_table;
 } Q38Forward;
 
@@ -1197,7 +1231,8 @@ static SparkStatus Q38Scratch(Q38State *state, uint64_t context_bytes)
 		!Q38_DEVICE(forward->base_f32, (uint64_t)Q38_DRAFTS * Q38_VOCAB) || !Q38_DEVICE(forward->topk_values, entries) ||
 		!Q38_DEVICE(forward->topk_positions, entries) || !Q38_DEVICE(forward->pooled, Q38_DRAFTS * Q38_POOL) ||
 		!Q38_DEVICE(forward->candidates, Q38_DRAFTS * Q38_LANES) || !Q38_DEVICE(forward->table, Q38_DRAFTS * Q38_LANES) ||
-		!Q38_DEVICE(forward->confidence, Q38_DRAFTS * Q38_LANES) || !Q38_DEVICE(forward->refined_table, Q38_DRAFTS * Q38_LANES * Q38_LANES) )
+		!Q38_DEVICE(forward->alt_table, Q38_DRAFTS * Q38_LANES) || !Q38_DEVICE(forward->confidence, Q38_DRAFTS * Q38_LANES) ||
+		!Q38_DEVICE(forward->alt_confidence, Q38_DRAFTS * Q38_LANES) || !Q38_DEVICE(forward->refined_table, Q38_DRAFTS * Q38_LANES * Q38_LANES) )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	for ( uint32_t index = 0u; index < state->capacity; index++ )
 		state->sequences[index].cache = state->caches + (uint64_t)index * Q38_SEQUENCE_ELEMENTS;
@@ -1568,13 +1603,13 @@ static SparkStatus Q38Heads(Q38State *state, uint32_t greedy)
 		return SPARK_STATUS_INTERNAL_ERROR;
 	LM_LAUNCH((Q38PoolKernel), Q38_DRAFTS, Q38_THREADS, 0, stream, forward->pooled, forward->normed, state->head, forward->candidates);
 	LM_LAUNCH((Q38GreedyTableKernel), Q38_DRAFTS, Q38_THREADS, 0, stream, forward->draft, forward->candidates, forward->raw, forward->rms, forward->packed,
-		state->norm, state->head, state->tg, state->tsv, state->gate_bias, forward->table, forward->confidence);
+		state->norm, state->head, state->tg, state->tsv, state->gate_bias, forward->table, forward->alt_table, forward->confidence, forward->alt_confidence);
 	if ( greedy == 0u )
 		LM_LAUNCH((Q38RefinedKernel), Q38_DRAFTS * Q38_LANES, Q38_THREADS, 0, stream, forward->draft, forward->candidates, forward->raw, forward->rms,
 			forward->packed, state->codebook, state->bridge_sender, state->bridge_value, state->gate_bias, state->layers[Q38_LAYERS - 1u].write, state->norm,
 			state->head, state->epsilon, forward->refined_table);
-	LM_LAUNCH((Q38ChainKernel), 1u, Q38_WARP, 0, stream, forward->draft, forward->candidates, forward->table, forward->confidence, forward->refined_table,
-		forward->picks);
+	LM_LAUNCH((Q38ChainKernel), 1u, Q38_WARP, 0, stream, forward->draft, forward->candidates, forward->table, forward->alt_table, forward->confidence,
+		forward->alt_confidence, forward->refined_table, forward->picks);
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(Q38Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
@@ -1594,7 +1629,7 @@ static void Q38ForwardFree(Q38Forward *forward)
 		forward->partials, forward->attended, forward->projected, forward->residual, forward->gate, forward->up, forward->act, forward->mlp, forward->raw,
 		forward->rms, forward->bridge_normed, forward->codes_projected, forward->codes, forward->packed, forward->message, forward->delta, forward->normed,
 		forward->y, forward->base, forward->base_f32, forward->topk_values, forward->topk_positions, forward->pooled, forward->candidates, forward->table,
-		forward->confidence, forward->refined_table,
+		forward->alt_table, forward->confidence, forward->alt_confidence, forward->refined_table,
 	};
 	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
 		(void)SparkGpuFree(buffers[index]);
@@ -1709,11 +1744,13 @@ static SparkStatus Q38Propose(void *opaque, const SparkDraftServerRequest *reque
 	Q38Sequence *sequence = Q38Live(state, request->sequence_id);
 	const uint32_t source = request->speculator_mask & (~request->speculator_mask + 1u);
 	const uint64_t first = request->position > Q38_WINDOW ? request->position - Q38_WINDOW : 0u;
-	uint32_t drafts = request->depth < request->max_depth ? request->depth : request->max_depth;
+	const uint32_t requested = request->depth < request->max_depth ? request->depth : request->max_depth;
+	const uint32_t limit = request->node_capacity != 0u && request->node_capacity < capacity ? request->node_capacity : capacity;
+	uint32_t drafts = requested;
 	uint64_t checked = first;
 	SparkStatus status;
 	*count = 0u;
-	if ( capacity == 0u )
+	if ( limit == 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( sequence == 0 || (request->position != 0u && Q38Held(sequence, request->position - 1u) == 0u) )
 		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
@@ -1731,7 +1768,7 @@ static SparkStatus Q38Propose(void *opaque, const SparkDraftServerRequest *reque
 		if ( sequence->tokens[position % Q38_WINDOW] != request->committed_token_ids[position] )
 			return Q38Settle(state, SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT);
 	drafts = drafts < Q38_DRAFTS ? drafts : Q38_DRAFTS;
-	drafts = drafts < capacity - 1u ? drafts : capacity - 1u;
+	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	status = Q38Prepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling);
 	if ( status == SPARK_STATUS_OK )
 		status = Q38RunForward(state, sequence, Q38_LAYERS);
@@ -1740,20 +1777,8 @@ static SparkStatus Q38Propose(void *opaque, const SparkDraftServerRequest *reque
 	status = Q38Settle(state, status);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	nodes[0].token_id = request->anchor_token_id;
-	nodes[0].parent_index = SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX;
-	nodes[0].depth = 0u;
-	nodes[0].source_bit = source;
-	nodes[0].score = 1.0f;
-	for ( uint32_t draft = 0u; draft < drafts; draft++ )
-	{
-		nodes[draft + 1u].token_id = state->forward.host_picks->tokens[draft];
-		nodes[draft + 1u].parent_index = draft;
-		nodes[draft + 1u].depth = draft + 1u;
-		nodes[draft + 1u].source_bit = source;
-		nodes[draft + 1u].score = state->forward.host_picks->scores[draft];
-	}
-	*count = drafts + 1u;
+	*count = SparkDraftTreePack(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
+		state->forward.host_picks->alt_tokens, state->forward.host_picks->alt_scores, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
 	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 

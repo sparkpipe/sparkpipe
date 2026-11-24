@@ -26,7 +26,7 @@ import triton.language as tl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from block_drafter import coupled_choice  # noqa: E402
-from dspark_drafter import STAGES, DsparkDrafter, act_qdq, qlinear, rms_norm  # noqa: E402
+from dspark_drafter import STAGES, DsparkDrafter, act_qdq, qlinear, rms_norm, runner_up
 
 INGEST_GRAPH_ROWS = 16
 GEMV_BLOCK_N = 16
@@ -119,6 +119,8 @@ class DsparkFast(DsparkDrafter):
                             torch.zeros((), device=self.device), torch.zeros((), dtype=torch.int64, device=self.device))
         self.out_tokens = torch.zeros(rows, dtype=torch.int64, device=self.device)
         self.out_confidence = torch.zeros(rows, dtype=torch.float32, device=self.device)
+        self.out_alternates = torch.zeros(rows, dtype=torch.int64, device=self.device)
+        self.out_alternate_scores = torch.zeros(rows, dtype=torch.float32, device=self.device)
         self.ingest_taps = torch.zeros(INGEST_GRAPH_ROWS, len(self.tap_names) * self.dim, dtype=torch.bfloat16, device=self.device)
         self.ingest_positions = torch.zeros(INGEST_GRAPH_ROWS, dtype=torch.int64, device=self.device)
         self.ingest_keys = torch.zeros(STAGES, INGEST_GRAPH_ROWS, self.head_dim, dtype=torch.bfloat16, device=self.device)
@@ -236,12 +238,16 @@ class DsparkFast(DsparkDrafter):
         hidden, logits = self.forward_fast()
         previous = self.static_token
         embeddings = []
+        scale = self.static_rule[1] if sampled else 1.0
         for slot in range(rows):
             embedding = torch.index_select(self.markov_embed, 0, previous.view(1)).view(-1)
             embeddings.append(embedding)
             row = logits[slot] + mm32(embedding.view(1, -1), self.markov16).view(-1)
             previous = coupled_choice(row, self.static_rule, position + slot) if sampled else torch.argmax(row)
+            alt_token, alt_score = runner_up(row, previous, scale)
             self.out_tokens[slot] = previous
+            self.out_alternates[slot] = alt_token
+            self.out_alternate_scores[slot] = alt_score
         features = torch.cat((hidden, torch.stack(embeddings)), -1).to(torch.float32)
         self.out_confidence.copy_(torch.sigmoid(F.linear(features, self.confidence).squeeze(-1)))
 
@@ -296,7 +302,7 @@ class DsparkFast(DsparkDrafter):
         torch.cuda.synchronize(self.device)
 
     @torch.inference_mode()
-    def draft(self, context, token, position, sampling=None):
+    def draft(self, context, token, position, sampling=None, return_alternates=False):
         sampled = sampling is not None
         if sampled:
             for target, value in zip(self.static_rule, sampling):
@@ -309,6 +315,8 @@ class DsparkFast(DsparkDrafter):
             body = torch.compile(self.draft_body, dynamic=False) if self.compiled else self.draft_body
             self.draft_graphs[sampled] = self.capture(lambda: body(sampled))
         self.draft_graphs[sampled].replay()
+        if return_alternates:
+            return self.out_tokens.tolist(), self.out_confidence.tolist(), self.out_alternates.tolist(), self.out_alternate_scores.tolist()
         return self.out_tokens.tolist(), self.out_confidence.tolist()
 
 

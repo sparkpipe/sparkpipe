@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_clock.h"
+#include "sparkpipe/spark_draft_tree_pack.h"
 #include "sparkpipe/spark_drafter_module.h"
 #include "sparkpipe/spark_gpu.h"
 #include "sparkpipe/spark_json.h"
@@ -110,6 +111,8 @@ typedef struct K31Picks
 {
 	uint32_t tokens[K31_BLOCK];
 	float scores[K31_BLOCK];
+	uint32_t alt_tokens[K31_BLOCK];
+	float alt_scores[K31_BLOCK];
 } K31Picks;
 
 typedef struct K31Forward
@@ -730,6 +733,17 @@ static __device__ __forceinline__ uint32_t K31KeySlot(unsigned long long key)
 	return 0xffffffffu - (uint32_t)key;
 }
 
+static __device__ __forceinline__ void K31Top2Insert(unsigned long long candidate, unsigned long long *first, unsigned long long *second)
+{
+	if ( candidate > *first )
+	{
+		*second = *first;
+		*first = candidate;
+	}
+	else if ( candidate > *second && candidate != *first )
+		*second = candidate;
+}
+
 __global__ __launch_bounds__(K31_PICK_THREADS, 1)
 void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsigned long long seed, float inverse_temperature, float nucleus,
 	uint32_t top_k, const float *__restrict__ row, const uint32_t *__restrict__ candidates, const uint16_t *__restrict__ y,
@@ -738,11 +752,15 @@ void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 {
 	__shared__ unsigned long long keys[K31_CANDIDATES];
 	__shared__ unsigned long long best[K31_PICK_THREADS / K31_WARP];
+	__shared__ unsigned long long second_best[K31_PICK_THREADS / K31_WARP];
 	__shared__ float reduction[K31_PICK_THREADS / K31_WARP];
 	__shared__ uint32_t chosen;
+	__shared__ uint32_t alt_chosen;
+	__shared__ float peak_scaled;
 	const uint32_t previous = step == 0u ? anchor : picks->tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / K31_WARP, lane = threadIdx.x % K31_WARP;
-	float dot = 0.0f;
+	const float scale = inverse_temperature > 0.0f ? inverse_temperature : 1.0f;
+	float dot = 0.0f, denom = 0.0f;
 	if ( inverse_temperature > 0.0f )
 	{
 		for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
@@ -772,7 +790,7 @@ void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 			const uint32_t token = candidates[step * K31_CANDIDATES + slot];
 			const float scaled = row[slot] * inverse_temperature;
 			float peak = scaled, total, probability, running, keyed;
-			uint32_t winner;
+			uint32_t winner, runner;
 			unsigned long long key;
 			for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
 				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, mask));
@@ -797,33 +815,51 @@ void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 				key = other > key ? other : key;
 			}
 			winner = 0xffffffffu - (uint32_t)key;
+			runner = winner == 0u ? 1u : 0u;
 			if ( lane == winner )
 				chosen = slot;
+			if ( lane == runner )
+				alt_chosen = slot;
+			if ( lane == 0u )
+				peak_scaled = peak;
 		}
 	}
 	else
 	{
-		unsigned long long key = 0ull;
+		unsigned long long first = 0ull, second = 0ull;
 		for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
-		{
-			const unsigned long long candidate = K31RowKey(row, index);
-			key = candidate > key ? candidate : key;
-		}
+			K31Top2Insert(K31RowKey(row, index), &first, &second);
 		for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
 		{
-			const unsigned long long other = __shfl_xor_sync(0xffffffffu, key, mask);
-			key = other > key ? other : key;
+			const unsigned long long other_first = __shfl_xor_sync(0xffffffffu, first, mask);
+			const unsigned long long other_second = __shfl_xor_sync(0xffffffffu, second, mask);
+			K31Top2Insert(other_first, &first, &second);
+			K31Top2Insert(other_second, &first, &second);
 		}
 		if ( lane == 0u )
-			best[warp] = key;
+		{
+			best[warp] = first;
+			second_best[warp] = second;
+		}
 		__syncthreads();
 		if ( threadIdx.x == 0u )
 		{
+			first = best[0];
+			second = second_best[0];
 			for ( uint32_t index = 1u; index < K31_PICK_THREADS / K31_WARP; index++ )
-				key = best[index] > key ? best[index] : key;
-			chosen = K31KeySlot(key);
+			{
+				K31Top2Insert(best[index], &first, &second);
+				K31Top2Insert(second_best[index], &first, &second);
+			}
+			chosen = K31KeySlot(first);
+			alt_chosen = K31KeySlot(second);
+			peak_scaled = row[chosen];
 		}
 	}
+	__syncthreads();
+	for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
+		denom += expf(row[index] * scale - peak_scaled);
+	denom = LmBlockSum<K31_PICK_THREADS>(denom, reduction);
 	for ( uint32_t index = threadIdx.x; index < K31_CONFIDENCE; index += K31_PICK_THREADS )
 	{
 		const float feature = index < K31_HIDDEN ? LmBf16ToFloat(y[(uint64_t)step * K31_HIDDEN + index])
@@ -835,6 +871,8 @@ void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 	{
 		picks->tokens[step] = candidates[step * K31_CANDIDATES + chosen];
 		picks->scores[step] = 1.0f / (1.0f + expf(-(dot + LmBf16ToFloat(confidence_bias[0]))));
+		picks->alt_tokens[step] = candidates[step * K31_CANDIDATES + alt_chosen];
+		picks->alt_scores[step] = denom > 0.0f ? expf(row[alt_chosen] * scale - peak_scaled) / denom : 0.0f;
 	}
 }
 
@@ -1672,10 +1710,12 @@ static SparkStatus K31Propose(void *opaque, const SparkDraftServerRequest *reque
 	K31State *state = (K31State *)opaque;
 	K31Sequence *sequence = K31SequenceFind(state, request->sequence_id, 0u);
 	const uint32_t source = request->speculator_mask & (~request->speculator_mask + 1u);
-	uint32_t drafts = request->depth < request->max_depth ? request->depth : request->max_depth;
+	const uint32_t requested = request->depth < request->max_depth ? request->depth : request->max_depth;
+	const uint32_t limit = request->node_capacity != 0u && request->node_capacity < capacity ? request->node_capacity : capacity;
+	uint32_t drafts = requested;
 	SparkStatus status;
 	*count = 0u;
-	if ( capacity == 0u )
+	if ( limit == 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( K31Covers(sequence, request->position) == 0u )
 		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
@@ -1684,7 +1724,7 @@ static SparkStatus K31Propose(void *opaque, const SparkDraftServerRequest *reque
 	if ( sequence != 0 && K31TokensMatch(sequence, request) == 0u )
 		return SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT;
 	drafts = drafts < K31_BLOCK ? drafts : K31_BLOCK;
-	drafts = drafts < capacity - 1u ? drafts : capacity - 1u;
+	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	status = K31ForwardRun(state, sequence, request->anchor_token_id, request->position, K31_LAYERS);
 	if ( status == SPARK_STATUS_OK )
 		status = K31Heads(state, request->anchor_token_id, request->position, &request->sampling);
@@ -1692,20 +1732,8 @@ static SparkStatus K31Propose(void *opaque, const SparkDraftServerRequest *reque
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	nodes[0].token_id = request->anchor_token_id;
-	nodes[0].parent_index = SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX;
-	nodes[0].depth = 0u;
-	nodes[0].source_bit = source;
-	nodes[0].score = 1.0f;
-	for ( uint32_t draft = 0u; draft < drafts; draft++ )
-	{
-		nodes[draft + 1u].token_id = state->forward.host_picks->tokens[draft];
-		nodes[draft + 1u].parent_index = draft;
-		nodes[draft + 1u].depth = draft + 1u;
-		nodes[draft + 1u].source_bit = source;
-		nodes[draft + 1u].score = state->forward.host_picks->scores[draft];
-	}
-	*count = drafts + 1u;
+	*count = SparkDraftTreePack(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
+		state->forward.host_picks->alt_tokens, state->forward.host_picks->alt_scores, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
 	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 
