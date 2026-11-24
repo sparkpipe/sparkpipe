@@ -313,13 +313,50 @@ static int AlternatingTreeGraphReplayRules(void)
 	return failed;
 }
 
+static SparkStatus MockKeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream)
+{
+	(void)model;
+	(void)step;
+	(void)kept;
+	(void)stream;
+	return SPARK_STATUS_OK;
+}
+
+static int TreeSlotGrainRules(void)
+{
+	SparkStageRunnerState *state = new SparkStageRunnerState;
+	SparkStageRunner runner;
+	SparkStageRunnerModelInterface iface;
+	uint32_t dummy_path = 0u;
+	memset(state, 0, sizeof(*state));
+	memset(&runner, 0, sizeof(runner));
+	memset(&iface, 0, sizeof(iface));
+	iface.keep_rows = MockKeepRows;
+	state->model_interface = &iface;
+	state->geometry.tree_verify = 1u;
+	state->geometry.kv_shard.degree = 16u;
+	state->geometry.kv_shard.grain = 8u;
+	state->verify_path_rows = &dummy_path;
+	runner.private_state = state;
+	const uint32_t fallback = SparkStageRunnerTreeSlotGrain(&runner);
+	state->geometry.tree_slot_grain = 256u;
+	const uint32_t explicit_grain = SparkStageRunnerTreeSlotGrain(&runner);
+	delete state;
+	if ( fallback != 128u || explicit_grain != 256u )
+	{
+		printf("FAIL tree slot grain rules: fallback=%u explicit=%u\n", fallback, explicit_grain);
+		return 1;
+	}
+	return 0;
+}
+
 int main(void)
 {
 	SparkStageRunnerState *state = new SparkStageRunnerState;
 	SparkStageRunner runner;
 	SparkStageRunnerStep in;
 	int status = 0;
-	if ( GraphIdentityRules() != 0 || GraphSlotRules() != 0 )
+	if ( GraphIdentityRules() != 0 || GraphSlotRules() != 0 || TreeSlotGrainRules() != 0 )
 		return 1;
 	memset(state, 0, sizeof(*state));
 	memset(&runner, 0, sizeof(runner));

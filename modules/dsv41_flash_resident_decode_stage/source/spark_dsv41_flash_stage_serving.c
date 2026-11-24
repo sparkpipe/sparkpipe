@@ -73,6 +73,7 @@ static const SparkStageServingModel Dsv41FlashStageServing =
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1,
 	.max_rows = SPARK_DSV41_FLASH_TP16_MAX_ROWS,
 	.verify_rows = SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS,
+	.tree_slot_grain = (SPARK_DSV41_FLASH_STAGE_KV_DEGREE > 1u ? 2u : 1u) * SPARK_DSV41_FLASH_STAGE_SHARD_GRAIN * SPARK_DSV41_FLASH_STAGE_KV_DEGREE,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS,
 	.cache_checkpoint_token_count = SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS,

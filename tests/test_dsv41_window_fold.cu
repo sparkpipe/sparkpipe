@@ -7,7 +7,9 @@
 #include <vector>
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 #include "model-families/dsv41_flash/source/dsv41_flash_attend.cuh"
+#include "inference/kernels/index_score.cuh"
 #include "inference/kernels/mx_gemm.cuh"
+#include "inference/kernels/ngram_hash.cuh"
 
 #define DEGREE 16u
 #define LATENT 512u
@@ -387,6 +389,608 @@ static uint32_t InitCase(uint32_t rows, uint32_t heads, uint32_t destinations, u
 	return wrong;
 }
 
+struct TreeSpec
+{
+	uint32_t rows, anchor, context, stride;
+	std::vector<uint32_t> parent, positions, slots, fork_positions, slot_offsets;
+};
+
+static TreeSpec BuildTreeSpec(const std::vector<uint32_t> &parent, uint32_t anchor, uint32_t slot_grain)
+{
+	const uint32_t rows = (uint32_t)parent.size();
+	TreeSpec spec;
+	spec.rows = rows;
+	spec.anchor = anchor;
+	spec.parent = parent;
+	spec.positions.resize(rows);
+	spec.slots.resize(rows);
+	spec.fork_positions.resize(rows);
+	spec.slot_offsets.resize(rows);
+	std::vector<uint32_t> first_child(rows, D41K_NO_ROW), depth(rows, 0u), branch(rows, 0u), fork_pos(rows, 0u);
+	uint32_t branches = 0u, max_depth = 0u, extent = 0u;
+	for ( uint32_t r = 1u; r < rows; ++r )
+	{
+		const uint32_t p = parent[r];
+		depth[r] = depth[p] + 1u;
+		if ( first_child[p] == D41K_NO_ROW )
+		{
+			first_child[p] = r;
+			branch[r] = branch[p];
+			fork_pos[r] = fork_pos[p];
+		}
+		else
+		{
+			branches++;
+			branch[r] = branches;
+			fork_pos[r] = anchor + depth[r];
+		}
+		if ( depth[r] > max_depth )
+			max_depth = depth[r];
+	}
+	spec.stride = slot_grain > 1u ? (max_depth + 1u + slot_grain - 1u) / slot_grain * slot_grain : max_depth + 1u;
+	for ( uint32_t r = 0u; r < rows; ++r )
+	{
+		spec.positions[r] = anchor + depth[r];
+		spec.slot_offsets[r] = branch[r] * spec.stride;
+		spec.slots[r] = spec.positions[r] + spec.slot_offsets[r];
+		spec.fork_positions[r] = branch[r] == 0u ? spec.positions[r] + 1u : fork_pos[r];
+		if ( depth[r] + spec.slot_offsets[r] > extent )
+			extent = depth[r] + spec.slot_offsets[r];
+	}
+	spec.context = anchor + extent + 1u;
+	return spec;
+}
+
+static std::vector<uint32_t> TreePathToRow(const std::vector<uint32_t> &parent, uint32_t row)
+{
+	std::vector<uint32_t> rev;
+	for ( uint32_t cur = row; cur != D41K_NO_ROW; cur = parent[cur] )
+		rev.push_back(cur);
+	return std::vector<uint32_t>(rev.rbegin(), rev.rend());
+}
+
+static uint32_t RunTreeNgramCase(uint32_t anchor)
+{
+	const uint32_t orders = 3u, heads = 8u, cols = orders * heads, vocab = 64u, pad = 7;
+	const std::vector<uint32_t> parent = { D41K_NO_ROW, 0u, 1u, 2u, 3u, 0u, 5u, 6u, 1u, 8u };
+	const TreeSpec tree = BuildTreeSpec(parent, anchor, 8u);
+	std::vector<int32_t> token_map(vocab);
+	for ( uint32_t t = 0u; t < vocab; ++t )
+		token_map[t] = (t % 11u == 0u) ? -1 : (int32_t)(100u + (t * 7u) % 53u);
+	std::vector<int64_t> multipliers = { 1315423911ll, 2654435761ll, 2246822519ll, 3266489917ll };
+	std::vector<int64_t> primes(cols), offsets(cols);
+	for ( uint32_t c = 0u; c < cols; ++c )
+	{
+		primes[c] = 1009ll + (int64_t)c * 37ll;
+		offsets[c] = (int64_t)c * 2048ll;
+	}
+	std::vector<uint32_t> tokens(tree.rows);
+	for ( uint32_t r = 0u; r < tree.rows; ++r )
+		tokens[r] = (uint32_t)((Mix(r + anchor * 19u + 7u)) % vocab);
+	std::vector<int32_t> init_hist = { 112, -1, 141, 0 };
+	if ( anchor < 3u )
+		init_hist = { 103, 109, 117, 0 };
+	int32_t *map_d = Device(token_map), *hist_d = Device(init_hist);
+	int64_t *mult_d = Device(multipliers), *prime_d = Device(primes), *off_d = Device(offsets);
+	uint32_t *tok_d = Device(tokens), *pos_d = Device(tree.positions), *par_d = Device(tree.parent);
+	std::vector<uint32_t> slot_v = { 0u };
+	uint32_t *slot_d = Device(slot_v);
+	int64_t *tree_ids_d = Scratch<int64_t>((size_t)tree.rows * cols);
+	D41TreeNgramHashKernel<<<1, 64>>>(tok_d, map_d, pos_d, par_d, slot_d, hist_d, 4u, mult_d, prime_d, off_d, tree_ids_d, tree.rows, orders, heads, pad);
+	CUDA(cudaDeviceSynchronize());
+	std::vector<int64_t> tree_ids((size_t)tree.rows * cols);
+	CUDA(cudaMemcpy(tree_ids.data(), tree_ids_d, tree_ids.size() * sizeof(int64_t), cudaMemcpyDeviceToHost));
+	uint64_t mismatches = 0u;
+	uint32_t *seq_tok_d = Scratch<uint32_t>(1u), *seq_pos_d = Scratch<uint32_t>(1u), *seq_lane_d = Device(std::vector<uint32_t>{ 0u });
+	uint32_t *seq_ord_d = Device(std::vector<uint32_t>{ 0u }), *seq_beg_d = Device(std::vector<uint32_t>{ 0u, 1u }), *seq_idx_d = Device(std::vector<uint32_t>{ 0u });
+	int32_t *seq_hist_d = Scratch<int32_t>(4u);
+	int64_t *seq_ids_d = Scratch<int64_t>(cols);
+	for ( uint32_t r = 0u; r < tree.rows; ++r )
+	{
+		const std::vector<uint32_t> path = TreePathToRow(tree.parent, r);
+		CUDA(cudaMemcpy(seq_hist_d, init_hist.data(), 4u * sizeof(int32_t), cudaMemcpyHostToDevice));
+		std::vector<int64_t> last_ids(cols);
+		for ( uint32_t step = 0u; step < path.size(); ++step )
+		{
+			const uint32_t pr = path[step];
+			CUDA(cudaMemcpy(seq_tok_d, &tokens[pr], sizeof(uint32_t), cudaMemcpyHostToDevice));
+			CUDA(cudaMemcpy(seq_pos_d, &tree.positions[pr], sizeof(uint32_t), cudaMemcpyHostToDevice));
+			LmNgramHashKernel<<<1, 64>>>(seq_tok_d, map_d, seq_pos_d, seq_lane_d, seq_ord_d, seq_beg_d, seq_idx_d, slot_d, seq_hist_d, 4u, mult_d, prime_d, off_d,
+				seq_ids_d, 1u, orders, heads, pad, -1, 0u);
+			LmNgramHistoryKernel<<<1, 64>>>(seq_tok_d, map_d, seq_beg_d, seq_idx_d, slot_d, seq_hist_d, 4u, 1u, orders, 1u, (const uint32_t *)0);
+		}
+		CUDA(cudaDeviceSynchronize());
+		CUDA(cudaMemcpy(last_ids.data(), seq_ids_d, cols * sizeof(int64_t), cudaMemcpyDeviceToHost));
+		for ( uint32_t c = 0u; c < cols; ++c )
+			mismatches += tree_ids[(size_t)r * cols + c] != last_ids[c] ? 1u : 0u;
+	}
+	const std::vector<std::vector<uint32_t>> accepts = { { 0u, 1u, 2u }, { 0u, 5u, 6u }, { 0u, 1u, 8u, 9u } };
+	const uint32_t post_tokens[2] = { 17u, 22u };
+	for ( const auto &acc : accepts )
+	{
+		const uint32_t kept = (uint32_t)acc.size();
+		std::vector<uint32_t> pb = { 0u, kept }, kv = { kept };
+		uint32_t *pb_d = Device(pb), *pr_d = Device(acc), *kv_d = Device(kv);
+		CUDA(cudaMemcpy(hist_d, init_hist.data(), 4u * sizeof(int32_t), cudaMemcpyHostToDevice));
+		LmNgramHistoryKernel<<<1, 64>>>(tok_d, map_d, pb_d, pr_d, slot_d, hist_d, 4u, 1u, orders, 1u, kv_d);
+		CUDA(cudaMemcpy(seq_hist_d, init_hist.data(), 4u * sizeof(int32_t), cudaMemcpyHostToDevice));
+		for ( uint32_t pr : acc )
+		{
+			CUDA(cudaMemcpy(seq_tok_d, &tokens[pr], sizeof(uint32_t), cudaMemcpyHostToDevice));
+			LmNgramHistoryKernel<<<1, 64>>>(seq_tok_d, map_d, seq_beg_d, seq_idx_d, slot_d, seq_hist_d, 4u, 1u, orders, 1u, (const uint32_t *)0);
+		}
+		for ( uint32_t extra = 0u; extra < 2u; ++extra )
+		{
+			const uint32_t p = anchor + kept + extra;
+			CUDA(cudaMemcpy(seq_tok_d, &post_tokens[extra], sizeof(uint32_t), cudaMemcpyHostToDevice));
+			CUDA(cudaMemcpy(seq_pos_d, &p, sizeof(uint32_t), cudaMemcpyHostToDevice));
+			LmNgramHashKernel<<<1, 64>>>(seq_tok_d, map_d, seq_pos_d, seq_lane_d, seq_ord_d, seq_beg_d, seq_idx_d, slot_d, hist_d, 4u, mult_d, prime_d, off_d,
+				tree_ids_d, 1u, orders, heads, pad, -1, 0u);
+			LmNgramHistoryKernel<<<1, 64>>>(seq_tok_d, map_d, seq_beg_d, seq_idx_d, slot_d, hist_d, 4u, 1u, orders, 1u, (const uint32_t *)0);
+			LmNgramHashKernel<<<1, 64>>>(seq_tok_d, map_d, seq_pos_d, seq_lane_d, seq_ord_d, seq_beg_d, seq_idx_d, slot_d, seq_hist_d, 4u, mult_d, prime_d, off_d,
+				seq_ids_d, 1u, orders, heads, pad, -1, 0u);
+			LmNgramHistoryKernel<<<1, 64>>>(seq_tok_d, map_d, seq_beg_d, seq_idx_d, slot_d, seq_hist_d, 4u, 1u, orders, 1u, (const uint32_t *)0);
+			CUDA(cudaDeviceSynchronize());
+			std::vector<int64_t> a(cols), b(cols);
+			CUDA(cudaMemcpy(a.data(), tree_ids_d, cols * sizeof(int64_t), cudaMemcpyDeviceToHost));
+			CUDA(cudaMemcpy(b.data(), seq_ids_d, cols * sizeof(int64_t), cudaMemcpyDeviceToHost));
+			for ( uint32_t c = 0u; c < cols; ++c )
+				mismatches += a[c] != b[c] ? 1u : 0u;
+		}
+		cudaFree(pb_d); cudaFree(pr_d); cudaFree(kv_d);
+	}
+	cudaFree(map_d); cudaFree(hist_d); cudaFree(mult_d); cudaFree(prime_d); cudaFree(off_d);
+	cudaFree(tok_d); cudaFree(pos_d); cudaFree(par_d); cudaFree(slot_d); cudaFree(tree_ids_d);
+	cudaFree(seq_tok_d); cudaFree(seq_pos_d); cudaFree(seq_lane_d); cudaFree(seq_ord_d);
+	cudaFree(seq_beg_d); cudaFree(seq_idx_d); cudaFree(seq_hist_d); cudaFree(seq_ids_d);
+	printf("tree engram anchor %u: %llu hash mismatches across tree rows and post-keep decode\n", anchor, (unsigned long long)mismatches);
+	return mismatches != 0u ? 1u : 0u;
+}
+
+template<uint32_t RATIO>
+static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_grain)
+{
+	using Kv = LmKvGeometry<1280u, 256u / RATIO, true>;
+	constexpr uint32_t GRAIN = 8u, INDEX_HEADS = 32u, INDEX_DIM = 128u, TOPK = 512u;
+	const uint32_t heads = degree == 1u ? 16u : 64u, local_heads = heads / degree, ring_rows = WINDOW / degree;
+	const float qk_scale = 1.0f / sqrtf((float)LATENT);
+	const std::vector<uint32_t> parent = { D41K_NO_ROW, 0u, 1u, 2u, 3u, 0u, 5u, 6u, 1u, 8u, 2u, 10u };
+	const TreeSpec tree = BuildTreeSpec(parent, anchor, slot_grain);
+	const uint32_t max_context = tree.context + 8u, max_keys = max_context / RATIO + 4u;
+	const uint32_t pages = (max_keys + Kv::kPageSlots - 1u) / Kv::kPageSlots;
+	const uint32_t score_stride = ((SparkKvShardGatherKeys(SparkKvShard{ degree, 0u, GRAIN }, max_keys) + 63u) / 64u) * 64u;
+	std::vector<uint32_t> table(pages);
+	for ( uint32_t p = 0u; p < pages; ++p )
+		table[p] = pages - 1u - p;
+	const uint32_t total_pool_tokens = anchor + tree.rows + 2u;
+	std::vector<float> all_c_kv((size_t)total_pool_tokens * LATENT), all_c_score((size_t)total_pool_tokens * LATENT);
+	for ( size_t i = 0u; i < all_c_kv.size(); ++i )
+	{
+		all_c_kv[i] = (float)((int32_t)((Mix(i ^ (0x101u + anchor)) >> 40u) & 0xfffu) - 2048) / 512.0f;
+		all_c_score[i] = (float)((int32_t)((Mix(i ^ (0x202u + RATIO)) >> 40u) & 0xfffu) - 2048) / 1024.0f;
+	}
+	std::vector<uint16_t> all_idx_key = Values((size_t)total_pool_tokens * INDEX_DIM, 0x303u + anchor);
+	std::vector<uint16_t> all_wave = Values((size_t)total_pool_tokens * LATENT, 0x404u + anchor);
+	std::vector<uint16_t> all_query = Values((size_t)(tree.rows + 2u) * heads * LATENT, 0x505u + anchor);
+	std::vector<uint16_t> all_idx_q = Values((size_t)(tree.rows + 2u) * INDEX_HEADS * INDEX_DIM, 0x606u + anchor);
+	std::vector<uint16_t> all_idx_w = Values((size_t)(tree.rows + 2u) * INDEX_HEADS, 0x707u + anchor);
+	std::vector<float> sink(heads);
+	for ( uint32_t h = 0u; h < heads; ++h )
+		sink[h] = (float)((int32_t)(Mix(h ^ 0x808u) & 0xffu) - 128) / 32.0f;
+	uint32_t *table_d = Device(table);
+	float *sink_d = Device(sink);
+	LmKvAccessError *err_d;
+	CUDA(cudaMalloc((void **)&err_d, sizeof(LmKvAccessError)));
+	LmKvAccessError err;
+	LmKvAccessErrorReset(&err);
+	CUDA(cudaMemcpy(err_d, &err, sizeof(err), cudaMemcpyHostToDevice));
+	const uint64_t pool_bytes = SparkKvShardPoolBytes(SparkKvShard{ degree, 0u, GRAIN }, Kv::kPageSlots, 1280u, pages);
+	std::vector<uint8_t *> base_pools(degree), work_pools(degree);
+	std::vector<LmKvShardView> base_views(degree), base_idx_views(degree), work_views(degree), work_idx_views(degree);
+	for ( uint32_t r = 0u; r < degree; ++r )
+	{
+		const SparkKvShard sh = { degree, r, GRAIN };
+		CUDA(cudaMalloc((void **)&base_pools[r], pool_bytes));
+		CUDA(cudaMemset(base_pools[r], 0, pool_bytes));
+		CUDA(cudaMalloc((void **)&work_pools[r], pool_bytes));
+		REQUIRE(LmKvShardViewInitialize<Kv>(&base_views[r], base_pools[r], table_d, pages, 1u, pages, err_d, sh) == 0);
+		REQUIRE(LmKvShardViewInitialize<Kv>(&base_idx_views[r], base_pools[r] + LATENT * sizeof(uint16_t), table_d, pages, 1u, pages, err_d, sh) == 0);
+		REQUIRE(LmKvShardViewInitialize<Kv>(&work_views[r], work_pools[r], table_d, pages, 1u, pages, err_d, sh) == 0);
+		REQUIRE(LmKvShardViewInitialize<Kv>(&work_idx_views[r], work_pools[r] + LATENT * sizeof(uint16_t), table_d, pages, 1u, pages, err_d, sh) == 0);
+	}
+	uint16_t *base_rings_d = Scratch<uint16_t>((size_t)degree * ring_rows * LATENT);
+	uint16_t *work_rings_d = Scratch<uint16_t>((size_t)degree * ring_rows * LATENT);
+	CUDA(cudaMemset(base_rings_d, 0, (size_t)degree * ring_rows * LATENT * sizeof(uint16_t)));
+	float *base_cstate_d = Scratch<float>(2u * LATENT), *work_cstate_d = Scratch<float>(2u * LATENT);
+	CUDA(cudaMemset(base_cstate_d, 0, 2u * LATENT * sizeof(float)));
+	float *all_c_kv_d = Device(all_c_kv), *all_c_score_d = Device(all_c_score);
+	uint16_t *all_idx_key_d = Device(all_idx_key), *all_wave_d = Device(all_wave);
+	uint16_t *all_query_d = Device(all_query), *all_idx_q_d = Device(all_idx_q), *all_idx_w_d = Device(all_idx_w);
+	uint16_t *pooled_d = Scratch<uint16_t>((size_t)anchor * LATENT);
+	uint32_t *emit_d = Scratch<uint32_t>(anchor + tree.rows);
+	std::vector<uint32_t> pre_pos(anchor), pre_lane(anchor, 0u), pre_ord(anchor), pre_beg = { 0u, anchor }, pre_idx(anchor), seq0 = { 0u };
+	for ( uint32_t i = 0u; i < anchor; ++i )
+		pre_pos[i] = pre_ord[i] = pre_idx[i] = i;
+	uint32_t *pre_pos_d = Device(pre_pos), *pre_lane_d = Device(pre_lane), *pre_ord_d = Device(pre_ord), *pre_beg_d = Device(pre_beg), *pre_idx_d = Device(pre_idx), *seq0_d = Device(seq0);
+	D41CompressorRowsKernel<<<anchor, D41K_THREADS>>>(all_c_kv_d, all_c_score_d, pooled_d, emit_d, base_cstate_d, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, pre_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT);
+	if ( RATIO > 1u )
+		D41CompressorSaveKernel<<<anchor, D41K_THREADS>>>(all_c_kv_d, all_c_score_d, base_cstate_d, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, seq0_d, anchor, RATIO, 2u * LATENT, LATENT, 1u, (const uint32_t *)0);
+	for ( uint32_t r = 0u; r < degree; ++r )
+	{
+		D41StoreCompressedKernel<Kv><<<anchor, D41K_THREADS>>>(base_views[r], pooled_d, all_idx_key_d, emit_d, pre_lane_d, INDEX_DIM);
+		D41WindowRingStoreKernel<<<anchor, D41K_THREADS>>>(all_wave_d, base_rings_d + (size_t)r * ring_rows * LATENT, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, seq0_d,
+			(uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, anchor, 1u, (const uint32_t *)0);
+	}
+	CUDA(cudaDeviceSynchronize());
+	CUDA(cudaMemcpy(&err, err_d, sizeof(err), cudaMemcpyDeviceToHost));
+	REQUIRE(err.error_code == LM_FRAME_ERROR_NONE);
+	cudaFree(pooled_d); cudaFree(pre_pos_d); cudaFree(pre_lane_d); cudaFree(pre_ord_d); cudaFree(pre_beg_d); cudaFree(pre_idx_d);
+	auto cloneBase = [&]()
+	{
+		for ( uint32_t r = 0u; r < degree; ++r )
+			CUDA(cudaMemcpy(work_pools[r], base_pools[r], pool_bytes, cudaMemcpyDeviceToDevice));
+		CUDA(cudaMemcpy(work_rings_d, base_rings_d, (size_t)degree * ring_rows * LATENT * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+		CUDA(cudaMemcpy(work_cstate_d, base_cstate_d, 2u * LATENT * sizeof(float), cudaMemcpyDeviceToDevice));
+	};
+	cloneBase();
+	std::vector<uint32_t> t_lane(tree.rows, 0u), t_ord(tree.rows), t_beg = { 0u, tree.rows }, t_idx(tree.rows), t_ctx = { tree.context };
+	for ( uint32_t r = 0u; r < tree.rows; ++r )
+		t_ord[r] = t_idx[r] = r;
+	uint32_t *t_pos_d = Device(tree.positions), *t_slots_d = Device(tree.slots), *t_fork_d = Device(tree.fork_positions), *t_off_d = Device(tree.slot_offsets), *t_par_d = Device(tree.parent);
+	uint32_t *t_lane_d = Device(t_lane), *t_ord_d = Device(t_ord), *t_beg_d = Device(t_beg), *t_idx_d = Device(t_idx), *t_ctx_d = Device(t_ctx);
+	uint32_t *t_bound_d = Scratch<uint32_t>(tree.rows), *t_len_d = Scratch<uint32_t>(1u), *t_cfork_d = Scratch<uint32_t>(tree.rows), *t_coff_d = Scratch<uint32_t>(tree.rows);
+	uint16_t *t_pooled_d = Scratch<uint16_t>((size_t)tree.rows * LATENT);
+	D41CompressedEmitPositionKernel<<<1, 256>>>(t_pos_d, t_bound_d, tree.rows, RATIO);
+	D41CompressedLengthKernel<<<1, 256>>>(t_ctx_d, t_len_d, 1u, RATIO);
+	D41CompressedTreeMapKernel<<<1, 256>>>(t_fork_d, t_off_d, t_cfork_d, t_coff_d, tree.rows, RATIO);
+	const float *t_ckv = all_c_kv_d + (size_t)anchor * LATENT, *t_cscore = all_c_score_d + (size_t)anchor * LATENT;
+	const uint16_t *t_ikey = all_idx_key_d + (size_t)anchor * INDEX_DIM, *t_wave = all_wave_d + (size_t)anchor * LATENT;
+	D41CompressorRowsKernel<<<tree.rows, D41K_THREADS>>>(t_ckv, t_cscore, t_pooled_d, emit_d, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT, t_slots_d, t_par_d);
+	for ( uint32_t r = 0u; r < degree; ++r )
+		D41StoreCompressedKernel<Kv><<<tree.rows, D41K_THREADS>>>(work_views[r], t_pooled_d, t_ikey, emit_d, t_lane_d, INDEX_DIM);
+	float *t_scores_d = Scratch<float>((size_t)degree * tree.rows * score_stride);
+	const uint64_t t_rec_stride = (uint64_t)tree.rows * local_heads * D41K_RECORD;
+	const uint64_t t_q_stride = (uint64_t)tree.rows * local_heads * LATENT;
+	uint16_t *t_q_rank_d = Scratch<uint16_t>((size_t)degree * t_q_stride);
+	std::vector<uint16_t> t_q_rank((size_t)degree * t_q_stride);
+	for ( uint32_t r = 0u; r < degree; ++r )
+		for ( uint32_t row = 0u; row < tree.rows; ++row )
+			for ( uint32_t h = 0u; h < local_heads; ++h )
+				memcpy(&t_q_rank[(size_t)r * t_q_stride + ((size_t)row * local_heads + h) * LATENT],
+					&all_query[((size_t)row * heads + r * local_heads + h) * LATENT], LATENT * sizeof(uint16_t));
+	CUDA(cudaMemcpy(t_q_rank_d, t_q_rank.data(), t_q_rank.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
+	float *t_recs_d = Scratch<float>((size_t)degree * degree * t_rec_stride);
+	float *t_recv_d = Scratch<float>((size_t)degree * degree * t_rec_stride);
+	uint16_t *t_out_d = Scratch<uint16_t>((size_t)degree * tree.rows * local_heads * LATENT);
+	std::vector<uint32_t> t_sel((size_t)tree.rows * TOPK);
+	for ( uint32_t row = 0u; row < tree.rows; ++row )
+	{
+		const uint32_t vis = (tree.positions[row] + 1u) / RATIO;
+		for ( uint32_t k = 0u; k < TOPK; ++k )
+			t_sel[(size_t)row * TOPK + k] = vis != 0u ? (k * 13u + row * 7u) % vis : 0u;
+	}
+	uint32_t *t_sel_d = Device(t_sel);
+	for ( uint32_t r = 0u; r < degree; ++r )
+	{
+		REQUIRE((LmWeightedSparseScoreLaunch<Kv, INDEX_HEADS, INDEX_DIM, LmKvShardView, true>(all_idx_q_d, all_idx_w_d, work_idx_views[r], t_lane_d, t_len_d, t_bound_d,
+			tree.rows, score_stride, 1.0f, t_scores_d + (size_t)r * tree.rows * score_stride, 0, t_cfork_d, t_coff_d)) == SPARK_GPU_SUCCESS);
+		REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(work_views[r], t_q_rank_d, t_q_stride, local_heads, heads, t_lane_d, t_len_d, t_bound_d,
+			t_sel_d, TOPK, TOPK, qk_scale, t_recs_d + (size_t)r * degree * t_rec_stride, t_rec_stride, local_heads, 1u, tree.rows, 0,
+			(const uint32_t *)0, (const uint32_t *)0, 4u, t_cfork_d, t_coff_d)) == SPARK_GPU_SUCCESS);
+		D41WindowFoldKernel<<<dim3(tree.rows, heads), D41K_THREADS>>>(t_recs_d + (size_t)r * degree * t_rec_stride, t_rec_stride, local_heads, t_q_rank_d, t_q_stride,
+			t_wave, work_rings_d + (size_t)r * ring_rows * LATENT, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, (uint64_t)ring_rows * LATENT, ring_rows, WINDOW,
+			degree, r, qk_scale, local_heads, 1u, t_par_d);
+	}
+	for ( uint32_t dst = 0u; dst < degree; ++dst )
+		for ( uint32_t src = 0u; src < degree; ++src )
+			CUDA(cudaMemcpy(t_recv_d + ((size_t)dst * degree + src) * t_rec_stride, t_recs_d + ((size_t)src * degree + dst) * t_rec_stride, t_rec_stride * sizeof(float), cudaMemcpyDeviceToDevice));
+	for ( uint32_t dst = 0u; dst < degree; ++dst )
+		D41MergeSinkKernel<<<dim3(tree.rows, local_heads), D41K_THREADS>>>(t_recv_d + (size_t)dst * degree * t_rec_stride, t_rec_stride, degree, local_heads,
+			sink_d + dst * local_heads, t_out_d + (size_t)dst * tree.rows * local_heads * LATENT);
+	uint16_t *t_attend_d = 0;
+	if ( degree == 1u )
+	{
+		t_attend_d = Scratch<uint16_t>((size_t)tree.rows * heads * LATENT);
+		REQUIRE((D41AttendLaunch<Kv, LATENT, 1u>(work_views[0], 1u, t_q_rank_d, t_lane_d, t_len_d, t_bound_d, t_sel_d, TOPK, t_wave, work_rings_d,
+			(uint64_t)ring_rows * LATENT, ring_rows, t_pos_d, t_lane_d, t_beg_d, t_idx_d, seq0_d, sink_d, qk_scale, t_attend_d, (const float *)0, 0u, 0u,
+			(uint8_t *)0, tree.rows, tree.rows, 0u, 0, 0u, 0u, 0u, t_cfork_d, t_coff_d, t_par_d)) == SPARK_GPU_SUCCESS);
+	}
+	CUDA(cudaDeviceSynchronize());
+	CUDA(cudaMemcpy(&err, err_d, sizeof(err), cudaMemcpyDeviceToHost));
+	REQUIRE(err.error_code == LM_FRAME_ERROR_NONE);
+	std::vector<float> tree_scores((size_t)degree * tree.rows * score_stride);
+	std::vector<uint16_t> tree_out((size_t)degree * tree.rows * local_heads * LATENT), tree_attend(degree == 1u ? (size_t)tree.rows * heads * LATENT : 1u);
+	CUDA(cudaMemcpy(tree_scores.data(), t_scores_d, tree_scores.size() * sizeof(float), cudaMemcpyDeviceToHost));
+	CUDA(cudaMemcpy(tree_out.data(), t_out_d, tree_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+	if ( degree == 1u )
+		CUDA(cudaMemcpy(tree_attend.data(), t_attend_d, tree_attend.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+	uint64_t score_diffs = 0u, out_diffs = 0u, attend_diffs = 0u, post_diffs = 0u;
+	uint32_t *s_pos_d = Scratch<uint32_t>(1u), *s_ctx_d = Scratch<uint32_t>(1u), *s_bound_d = Scratch<uint32_t>(1u), *s_len_d = Scratch<uint32_t>(1u);
+	uint32_t *s_lane_d = Device(std::vector<uint32_t>{ 0u }), *s_ord_d = Device(std::vector<uint32_t>{ 0u }), *s_beg_d = Device(std::vector<uint32_t>{ 0u, 1u }), *s_idx_d = Device(std::vector<uint32_t>{ 0u });
+	uint32_t *s_sel_d = Scratch<uint32_t>(TOPK);
+	uint16_t *s_pooled_d = Scratch<uint16_t>(LATENT), *s_q_d = Scratch<uint16_t>((size_t)heads * LATENT), *s_out_d = Scratch<uint16_t>((size_t)heads * LATENT);
+	uint16_t *s_attend_d = Scratch<uint16_t>((size_t)heads * LATENT);
+	const uint64_t s_rec_stride = (uint64_t)local_heads * D41K_RECORD;
+	float *s_scores_d = Scratch<float>((size_t)degree * score_stride), *s_recs_d = Scratch<float>((size_t)degree * degree * s_rec_stride), *s_recv_d = Scratch<float>((size_t)degree * degree * s_rec_stride);
+	auto runOneSeq = [&](uint32_t tok_offset, uint32_t q_row, uint32_t pos, const uint32_t *sel_host, bool eval_out)
+	{
+		const uint32_t ctx = pos + 1u;
+		CUDA(cudaMemcpy(s_pos_d, &pos, sizeof(uint32_t), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(s_ctx_d, &ctx, sizeof(uint32_t), cudaMemcpyHostToDevice));
+		D41CompressedEmitPositionKernel<<<1, 64>>>(s_pos_d, s_bound_d, 1u, RATIO);
+		D41CompressedLengthKernel<<<1, 64>>>(s_ctx_d, s_len_d, 1u, RATIO);
+		D41CompressorRowsKernel<<<1, D41K_THREADS>>>(all_c_kv_d + (size_t)tok_offset * LATENT, all_c_score_d + (size_t)tok_offset * LATENT, s_pooled_d, emit_d,
+			work_cstate_d, s_pos_d, s_lane_d, s_ord_d, s_beg_d, s_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT);
+		if ( RATIO > 1u )
+			D41CompressorSaveKernel<<<1, D41K_THREADS>>>(all_c_kv_d + (size_t)tok_offset * LATENT, all_c_score_d + (size_t)tok_offset * LATENT, work_cstate_d,
+				s_pos_d, s_lane_d, s_ord_d, s_beg_d, seq0_d, 1u, RATIO, 2u * LATENT, LATENT, 1u, (const uint32_t *)0);
+		for ( uint32_t r = 0u; r < degree; ++r )
+			D41StoreCompressedKernel<Kv><<<1, D41K_THREADS>>>(work_views[r], s_pooled_d, all_idx_key_d + (size_t)tok_offset * INDEX_DIM, emit_d, s_lane_d, INDEX_DIM);
+		if ( eval_out )
+		{
+			CUDA(cudaMemcpy(s_sel_d, sel_host, TOPK * sizeof(uint32_t), cudaMemcpyHostToDevice));
+			CUDA(cudaMemcpy(s_q_d, all_query_d + (size_t)q_row * heads * LATENT, (size_t)heads * LATENT * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+			for ( uint32_t r = 0u; r < degree; ++r )
+			{
+				REQUIRE((LmWeightedSparseScoreLaunch<Kv, INDEX_HEADS, INDEX_DIM, LmKvShardView, true>(all_idx_q_d + (size_t)q_row * INDEX_HEADS * INDEX_DIM,
+					all_idx_w_d + (size_t)q_row * INDEX_HEADS, work_idx_views[r], s_lane_d, s_len_d, s_bound_d, 1u, score_stride, 1.0f,
+					s_scores_d + (size_t)r * score_stride, 0)) == SPARK_GPU_SUCCESS);
+				REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(work_views[r], s_q_d, (uint64_t)local_heads * LATENT, local_heads, heads,
+					s_lane_d, s_len_d, s_bound_d, s_sel_d, TOPK, TOPK, qk_scale, s_recs_d + (size_t)r * degree * s_rec_stride, s_rec_stride, local_heads, 1u, 1u, 0)) == SPARK_GPU_SUCCESS);
+				D41WindowFoldKernel<<<dim3(1u, heads), D41K_THREADS>>>(s_recs_d + (size_t)r * degree * s_rec_stride, s_rec_stride, local_heads, s_q_d,
+					(uint64_t)local_heads * LATENT, all_wave_d + (size_t)tok_offset * LATENT, work_rings_d + (size_t)r * ring_rows * LATENT, s_pos_d, s_lane_d,
+					s_ord_d, s_beg_d, s_idx_d, seq0_d, (uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, qk_scale, local_heads, 1u);
+			}
+			for ( uint32_t dst = 0u; dst < degree; ++dst )
+				for ( uint32_t src = 0u; src < degree; ++src )
+					CUDA(cudaMemcpy(s_recv_d + ((size_t)dst * degree + src) * s_rec_stride, s_recs_d + ((size_t)src * degree + dst) * s_rec_stride, s_rec_stride * sizeof(float), cudaMemcpyDeviceToDevice));
+			for ( uint32_t dst = 0u; dst < degree; ++dst )
+				D41MergeSinkKernel<<<dim3(1u, local_heads), D41K_THREADS>>>(s_recv_d + (size_t)dst * degree * s_rec_stride, s_rec_stride, degree, local_heads,
+					sink_d + dst * local_heads, s_out_d + (size_t)dst * local_heads * LATENT);
+			if ( degree == 1u )
+				REQUIRE((D41AttendLaunch<Kv, LATENT, 1u>(work_views[0], 1u, s_q_d, s_lane_d, s_len_d, s_bound_d, s_sel_d, TOPK, all_wave_d + (size_t)tok_offset * LATENT,
+					work_rings_d, (uint64_t)ring_rows * LATENT, ring_rows, s_pos_d, s_lane_d, s_beg_d, s_idx_d, seq0_d, sink_d, qk_scale, s_attend_d,
+					(const float *)0, 0u, 0u, (uint8_t *)0, 1u, 1u, 0u, 0)) == SPARK_GPU_SUCCESS);
+		}
+		for ( uint32_t r = 0u; r < degree; ++r )
+			D41WindowRingStoreKernel<<<1, D41K_THREADS>>>(all_wave_d + (size_t)tok_offset * LATENT, work_rings_d + (size_t)r * ring_rows * LATENT, s_pos_d, s_lane_d, s_ord_d,
+				s_beg_d, seq0_d, (uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, 1u, 1u, (const uint32_t *)0);
+	};
+	for ( uint32_t row = 0u; row < tree.rows; ++row )
+	{
+		cloneBase();
+		const std::vector<uint32_t> path = TreePathToRow(tree.parent, row);
+		for ( uint32_t step = 0u; step < path.size(); ++step )
+			runOneSeq(anchor + path[step], path[step], tree.positions[path[step]], &t_sel[(size_t)row * TOPK], step + 1u == path.size());
+		CUDA(cudaDeviceSynchronize());
+		std::vector<float> s_scores((size_t)degree * score_stride);
+		std::vector<uint16_t> s_out((size_t)heads * LATENT), s_att((size_t)heads * LATENT);
+		CUDA(cudaMemcpy(s_scores.data(), s_scores_d, s_scores.size() * sizeof(float), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(s_out.data(), s_out_d, s_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+		for ( uint32_t r = 0u; r < degree; ++r )
+			for ( uint32_t k = 0u; k < score_stride; ++k )
+				score_diffs += memcmp(&tree_scores[((size_t)r * tree.rows + row) * score_stride + k], &s_scores[(size_t)r * score_stride + k], sizeof(float)) != 0 ? 1u : 0u;
+		for ( uint32_t r = 0u; r < degree; ++r )
+			for ( uint32_t e = 0u; e < local_heads * LATENT; ++e )
+				out_diffs += tree_out[((size_t)r * tree.rows + row) * local_heads * LATENT + e] != s_out[(size_t)r * local_heads * LATENT + e] ? 1u : 0u;
+		if ( degree == 1u )
+		{
+			CUDA(cudaMemcpy(s_att.data(), s_attend_d, s_att.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+			for ( uint32_t e = 0u; e < heads * LATENT; ++e )
+				attend_diffs += tree_attend[(size_t)row * heads * LATENT + e] != s_att[e] ? 1u : 0u;
+		}
+	}
+	const std::vector<std::vector<uint32_t>> accepts = { { 0u, 1u, 2u }, { 0u, 5u }, { 0u, 5u, 6u, 7u }, { 0u, 1u, 8u, 9u }, { 0u, 1u, 2u, 10u, 11u } };
+	for ( const auto &acc : accepts )
+	{
+		const uint32_t kept = (uint32_t)acc.size();
+		cloneBase();
+		D41CompressorRowsKernel<<<tree.rows, D41K_THREADS>>>(t_ckv, t_cscore, t_pooled_d, emit_d, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT, t_slots_d, t_par_d);
+		for ( uint32_t r = 0u; r < degree; ++r )
+			D41StoreCompressedKernel<Kv><<<tree.rows, D41K_THREADS>>>(work_views[r], t_pooled_d, t_ikey, emit_d, t_lane_d, INDEX_DIM);
+		uint32_t *pr_d = Device(acc), *kv_d = Device(std::vector<uint32_t>{ kept });
+		for ( uint32_t r = 0u; r < degree; ++r )
+		{
+			D41WindowRingStoreKernel<<<tree.rows, D41K_THREADS>>>(t_wave, work_rings_d + (size_t)r * ring_rows * LATENT, t_pos_d, t_lane_d, t_ord_d, t_beg_d, seq0_d,
+				(uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, tree.rows, 1u, kv_d, pr_d);
+			D41CompressedPathMoveKernel<Kv, D41K_THREADS><<<tree.rows, D41K_THREADS>>>(work_views[r], t_lane_d, t_pos_d, pr_d, kv_d, t_slots_d, RATIO, 1280u / 2u);
+		}
+		if ( RATIO > 1u )
+			D41CompressorSaveKernel<<<tree.rows, D41K_THREADS>>>(t_ckv, t_cscore, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, seq0_d, tree.rows, RATIO, 2u * LATENT, LATENT, 1u, kv_d, pr_d);
+		std::vector<std::vector<float>> keep_scores(2u);
+		std::vector<std::vector<uint16_t>> keep_outs(2u);
+		std::vector<std::vector<uint32_t>> extra_sels(2u, std::vector<uint32_t>(TOPK));
+		for ( uint32_t extra = 0u; extra < 2u; ++extra )
+		{
+			const uint32_t p = anchor + kept + extra, vis = (p + 1u) / RATIO;
+			for ( uint32_t k = 0u; k < TOPK; ++k )
+				extra_sels[extra][k] = vis != 0u ? (k * 17u + extra * 5u) % vis : 0u;
+			runOneSeq(anchor + tree.rows + extra, tree.rows + extra, p, extra_sels[extra].data(), true);
+			CUDA(cudaDeviceSynchronize());
+			keep_scores[extra].resize((size_t)degree * score_stride);
+			keep_outs[extra].resize((size_t)heads * LATENT);
+			CUDA(cudaMemcpy(keep_scores[extra].data(), s_scores_d, keep_scores[extra].size() * sizeof(float), cudaMemcpyDeviceToHost));
+			CUDA(cudaMemcpy(keep_outs[extra].data(), s_out_d, keep_outs[extra].size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+		}
+		cloneBase();
+		for ( uint32_t pr : acc )
+			runOneSeq(anchor + pr, pr, tree.positions[pr], extra_sels[0].data(), false);
+		for ( uint32_t extra = 0u; extra < 2u; ++extra )
+		{
+			const uint32_t p = anchor + kept + extra;
+			runOneSeq(anchor + tree.rows + extra, tree.rows + extra, p, extra_sels[extra].data(), true);
+			CUDA(cudaDeviceSynchronize());
+			std::vector<float> ref_scores((size_t)degree * score_stride);
+			std::vector<uint16_t> ref_outs((size_t)heads * LATENT);
+			CUDA(cudaMemcpy(ref_scores.data(), s_scores_d, ref_scores.size() * sizeof(float), cudaMemcpyDeviceToHost));
+			CUDA(cudaMemcpy(ref_outs.data(), s_out_d, ref_outs.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+			for ( size_t i = 0u; i < ref_scores.size(); ++i )
+				post_diffs += memcmp(&keep_scores[extra][i], &ref_scores[i], sizeof(float)) != 0 ? 1u : 0u;
+			for ( size_t i = 0u; i < ref_outs.size(); ++i )
+				post_diffs += keep_outs[extra][i] != ref_outs[i] ? 1u : 0u;
+		}
+		cudaFree(pr_d); cudaFree(kv_d);
+	}
+	CUDA(cudaMemcpy(&err, err_d, sizeof(err), cudaMemcpyDeviceToHost));
+	REQUIRE(err.error_code == LM_FRAME_ERROR_NONE);
+	for ( uint32_t r = 0u; r < degree; ++r )
+	{
+		cudaFree(base_pools[r]);
+		cudaFree(work_pools[r]);
+	}
+	cudaFree(table_d); cudaFree(sink_d); cudaFree(err_d); cudaFree(base_rings_d); cudaFree(work_rings_d);
+	cudaFree(base_cstate_d); cudaFree(work_cstate_d); cudaFree(all_c_kv_d); cudaFree(all_c_score_d);
+	cudaFree(all_idx_key_d); cudaFree(all_wave_d); cudaFree(all_query_d); cudaFree(all_idx_q_d); cudaFree(all_idx_w_d);
+	cudaFree(emit_d); cudaFree(seq0_d); cudaFree(t_pos_d); cudaFree(t_slots_d); cudaFree(t_fork_d); cudaFree(t_off_d); cudaFree(t_par_d);
+	cudaFree(t_lane_d); cudaFree(t_ord_d); cudaFree(t_beg_d); cudaFree(t_idx_d); cudaFree(t_ctx_d); cudaFree(t_bound_d); cudaFree(t_len_d);
+	cudaFree(t_cfork_d); cudaFree(t_coff_d); cudaFree(t_pooled_d); cudaFree(t_scores_d); cudaFree(t_q_rank_d); cudaFree(t_recs_d);
+	cudaFree(t_recv_d); cudaFree(t_out_d); cudaFree(t_sel_d); if ( t_attend_d != 0 ) cudaFree(t_attend_d);
+	cudaFree(s_pos_d); cudaFree(s_ctx_d); cudaFree(s_bound_d); cudaFree(s_len_d); cudaFree(s_lane_d); cudaFree(s_ord_d); cudaFree(s_beg_d);
+	cudaFree(s_idx_d); cudaFree(s_sel_d); cudaFree(s_pooled_d); cudaFree(s_q_d); cudaFree(s_out_d); cudaFree(s_attend_d);
+	cudaFree(s_scores_d); cudaFree(s_recs_d); cudaFree(s_recv_d);
+	printf("tree csa2 ratio %u degree %u grain %u anchor %u: score_diffs %llu out_diffs %llu attend_diffs %llu post_keep_diffs %llu\n",
+		RATIO, degree, slot_grain, anchor, (unsigned long long)score_diffs, (unsigned long long)out_diffs,
+		(unsigned long long)attend_diffs, (unsigned long long)post_diffs);
+	return (score_diffs + out_diffs + attend_diffs + post_diffs) != 0u ? 1u : 0u;
+}
+
+static uint32_t RunTreeGraphCase(void)
+{
+	using Kv = LmKvGeometry<1280u, 128u, true>;
+	constexpr uint32_t ROWS = 12u, HEADS = 16u, INDEX_HEADS = 32u, INDEX_DIM = 128u, TOPK = 512u, ORDERS = 3u, EHEADS = 8u, ECOLS = ORDERS * EHEADS;
+	const uint32_t anchor = 201u, pages = 8u, score_stride = 512u;
+	const float qk_scale = 1.0f / sqrtf((float)LATENT);
+	const std::vector<uint32_t> parent_a = { D41K_NO_ROW, 0u, 1u, 2u, 3u, 0u, 5u, 6u, 1u, 8u, 2u, 10u };
+	const std::vector<uint32_t> parent_b = { D41K_NO_ROW, 0u, 1u, 2u, 0u, 4u, 5u, 6u, 2u, 8u, 1u, 10u };
+	const std::vector<uint32_t> parent_chain = { D41K_NO_ROW, 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u };
+	const TreeSpec tree_a = BuildTreeSpec(parent_a, anchor, 8u), tree_b = BuildTreeSpec(parent_b, anchor + 1u, 8u), chain = BuildTreeSpec(parent_chain, anchor, 8u);
+	std::vector<uint32_t> table(pages);
+	for ( uint32_t p = 0u; p < pages; ++p )
+		table[p] = p;
+	uint32_t *table_d = Device(table);
+	LmKvAccessError *err_d;
+	CUDA(cudaMalloc((void **)&err_d, sizeof(LmKvAccessError)));
+	LmKvAccessError err;
+	LmKvAccessErrorReset(&err);
+	CUDA(cudaMemcpy(err_d, &err, sizeof(err), cudaMemcpyHostToDevice));
+	uint8_t *pool_d;
+	CUDA(cudaMalloc((void **)&pool_d, (uint64_t)pages * Kv::kPageBytes));
+	CUDA(cudaMemset(pool_d, 0, (uint64_t)pages * Kv::kPageBytes));
+	LmKvShardView view, idx_view;
+	REQUIRE(LmKvShardViewInitialize<Kv>(&view, pool_d, table_d, pages, 1u, pages, err_d, SparkKvShard{ 1u, 0u, 8u }) == 0);
+	REQUIRE(LmKvShardViewInitialize<Kv>(&idx_view, pool_d + LATENT * sizeof(uint16_t), table_d, pages, 1u, pages, err_d, SparkKvShard{ 1u, 0u, 8u }) == 0);
+	std::vector<float> ckv(ROWS * LATENT, 0.25f), cscore(ROWS * LATENT, 0.5f), cstate(2u * LATENT, 0.125f), sink(HEADS, -0.25f);
+	for ( size_t i = 0u; i < ckv.size(); ++i )
+		ckv[i] = (float)((int32_t)((Mix(i ^ 0x111u) >> 40u) & 0xfffu) - 2048) / 512.0f;
+	std::vector<uint16_t> ikey = Values(ROWS * INDEX_DIM, 0x222u), wave = Values(ROWS * LATENT, 0x333u), ring = Values(WINDOW * LATENT, 0x444u);
+	std::vector<uint16_t> query = Values(ROWS * HEADS * LATENT, 0x555u), iq = Values(ROWS * INDEX_HEADS * INDEX_DIM, 0x666u), iw = Values(ROWS * INDEX_HEADS, 0x777u);
+	std::vector<uint32_t> lane(ROWS, 0u), ord(ROWS), beg = { 0u, ROWS }, idx(ROWS), seq0 = { 0u }, sel(ROWS * TOPK, 0u), tok(ROWS);
+	for ( uint32_t r = 0u; r < ROWS; ++r )
+	{
+		ord[r] = idx[r] = r;
+		tok[r] = 3u + r * 5u;
+	}
+	std::vector<int32_t> hist = { 10, 20, 30, 0 };
+	std::vector<int64_t> mult = { 1315423911ll, 2654435761ll, 2246822519ll, 3266489917ll }, primes(ECOLS, 1009ll), offs(ECOLS, 0ll);
+	float *ckv_d = Device(ckv), *cscore_d = Device(cscore), *cstate_d = Device(cstate), *sink_d = Device(sink);
+	uint16_t *ikey_d = Device(ikey), *wave_d = Device(wave), *ring_d = Device(ring), *query_d = Device(query), *iq_d = Device(iq), *iw_d = Device(iw);
+	uint32_t *lane_d = Device(lane), *ord_d = Device(ord), *beg_d = Device(beg), *idx_d = Device(idx), *seq0_d = Device(seq0), *sel_d = Device(sel), *tok_d = Device(tok);
+	int32_t *hist_d = Device(hist);
+	int64_t *mult_d = Device(mult), *primes_d = Device(primes), *offs_d = Device(offs), *ids_d = Scratch<int64_t>(ROWS * ECOLS);
+	uint32_t *pos_d = Scratch<uint32_t>(ROWS), *slots_d = Scratch<uint32_t>(ROWS), *fork_d = Scratch<uint32_t>(ROWS), *off_d = Scratch<uint32_t>(ROWS), *par_d = Scratch<uint32_t>(ROWS);
+	uint32_t *bound_d = Scratch<uint32_t>(ROWS), *ctx_d = Scratch<uint32_t>(1u), *len_d = Scratch<uint32_t>(1u), *cfork_d = Scratch<uint32_t>(ROWS), *coff_d = Scratch<uint32_t>(ROWS), *emit_d = Scratch<uint32_t>(ROWS);
+	uint16_t *pooled_d = Scratch<uint16_t>(ROWS * LATENT), *out_d = Scratch<uint16_t>(ROWS * HEADS * LATENT);
+	const uint64_t rec_stride = (uint64_t)ROWS * HEADS * D41K_RECORD;
+	float *scores_d = Scratch<float>(ROWS * score_stride), *recs_d = Scratch<float>(rec_stride);
+	cudaStream_t stream;
+	CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+	auto runPipeline = [&](bool is_tree)
+	{
+		D41CompressedEmitPositionKernel<<<1, 256, 0, stream>>>(pos_d, bound_d, ROWS, 2u);
+		D41CompressedLengthKernel<<<1, 256, 0, stream>>>(ctx_d, len_d, 1u, 2u);
+		if ( is_tree )
+		{
+			D41CompressedTreeMapKernel<<<1, 256, 0, stream>>>(fork_d, off_d, cfork_d, coff_d, ROWS, 2u);
+			D41TreeNgramHashKernel<<<1, 64, 0, stream>>>(tok_d, (const int32_t *)0, pos_d, par_d, seq0_d, hist_d, 4u, mult_d, primes_d, offs_d, ids_d, ROWS, ORDERS, EHEADS, 7);
+		}
+		else
+			LmNgramHashKernel<<<1, 64, 0, stream>>>(tok_d, (const int32_t *)0, pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, hist_d, 4u, mult_d, primes_d, offs_d, ids_d, ROWS, ORDERS, EHEADS, 7, -1, 0u);
+		D41CompressorRowsKernel<<<ROWS, D41K_THREADS, 0, stream>>>(ckv_d, cscore_d, pooled_d, emit_d, cstate_d, pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, 2u, 2u * LATENT, LATENT,
+			is_tree ? slots_d : (const uint32_t *)0, is_tree ? par_d : (const uint32_t *)0);
+		D41StoreCompressedKernel<Kv><<<ROWS, D41K_THREADS, 0, stream>>>(view, pooled_d, ikey_d, emit_d, lane_d, INDEX_DIM);
+		REQUIRE((LmWeightedSparseScoreLaunch<Kv, INDEX_HEADS, INDEX_DIM, LmKvShardView, true>(iq_d, iw_d, idx_view, lane_d, len_d, bound_d, ROWS, score_stride, 1.0f,
+			scores_d, stream, is_tree ? cfork_d : (const uint32_t *)0, is_tree ? coff_d : (const uint32_t *)0)) == SPARK_GPU_SUCCESS);
+		REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(view, query_d, (uint64_t)ROWS * HEADS * LATENT, HEADS, HEADS, lane_d, len_d, bound_d,
+			sel_d, TOPK, TOPK, qk_scale, recs_d, rec_stride, HEADS, 1u, ROWS, stream, (const uint32_t *)0, (const uint32_t *)0, 4u,
+			is_tree ? cfork_d : (const uint32_t *)0, is_tree ? coff_d : (const uint32_t *)0)) == SPARK_GPU_SUCCESS);
+		D41WindowFoldKernel<<<dim3(ROWS, HEADS), D41K_THREADS, 0, stream>>>(recs_d, rec_stride, HEADS, query_d, (uint64_t)ROWS * HEADS * LATENT, wave_d, ring_d,
+			pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, (uint64_t)WINDOW * LATENT, WINDOW, WINDOW, 1u, 0u, qk_scale, HEADS, 1u, is_tree ? par_d : (const uint32_t *)0);
+		D41MergeSinkKernel<<<dim3(ROWS, HEADS), D41K_THREADS, 0, stream>>>(recs_d, rec_stride, 1u, HEADS, sink_d, out_d);
+	};
+	auto loadSpec = [&](const TreeSpec &s)
+	{
+		CUDA(cudaMemcpyAsync(pos_d, s.positions.data(), ROWS * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+		CUDA(cudaMemcpyAsync(slots_d, s.slots.data(), ROWS * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+		CUDA(cudaMemcpyAsync(fork_d, s.fork_positions.data(), ROWS * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+		CUDA(cudaMemcpyAsync(off_d, s.slot_offsets.data(), ROWS * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+		CUDA(cudaMemcpyAsync(par_d, s.parent.data(), ROWS * sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+		CUDA(cudaMemcpyAsync(ctx_d, &s.context, sizeof(uint32_t), cudaMemcpyHostToDevice, stream));
+	};
+	loadSpec(tree_a);
+	runPipeline(true);
+	CUDA(cudaStreamSynchronize(stream));
+	cudaGraph_t tree_graph, chain_graph;
+	cudaGraphExec_t tree_exec, chain_exec;
+	CUDA(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+	runPipeline(true);
+	CUDA(cudaStreamEndCapture(stream, &tree_graph));
+	CUDA(cudaGraphInstantiate(&tree_exec, tree_graph, 0, 0, 0));
+	loadSpec(chain);
+	CUDA(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+	runPipeline(false);
+	CUDA(cudaStreamEndCapture(stream, &chain_graph));
+	CUDA(cudaGraphInstantiate(&chain_exec, chain_graph, 0, 0, 0));
+	uint64_t diffs = 0u;
+	const TreeSpec *specs[4] = { &tree_a, &chain, &tree_b, &chain };
+	const bool is_trees[4] = { true, false, true, false };
+	for ( uint32_t step = 0u; step < 4u; ++step )
+	{
+		loadSpec(*specs[step]);
+		CUDA(cudaGraphLaunch(is_trees[step] ? tree_exec : chain_exec, stream));
+		CUDA(cudaStreamSynchronize(stream));
+		std::vector<int64_t> g_ids(ROWS * ECOLS), e_ids(ROWS * ECOLS);
+		std::vector<float> g_scores(ROWS * score_stride), e_scores(ROWS * score_stride);
+		std::vector<uint16_t> g_out(ROWS * HEADS * LATENT), e_out(ROWS * HEADS * LATENT);
+		CUDA(cudaMemcpy(g_ids.data(), ids_d, g_ids.size() * sizeof(int64_t), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(g_scores.data(), scores_d, g_scores.size() * sizeof(float), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(g_out.data(), out_d, g_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+		loadSpec(*specs[step]);
+		runPipeline(is_trees[step]);
+		CUDA(cudaStreamSynchronize(stream));
+		CUDA(cudaMemcpy(e_ids.data(), ids_d, e_ids.size() * sizeof(int64_t), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(e_scores.data(), scores_d, e_scores.size() * sizeof(float), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(e_out.data(), out_d, e_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+		for ( size_t i = 0u; i < g_ids.size(); ++i )
+			diffs += g_ids[i] != e_ids[i] ? 1u : 0u;
+		for ( size_t i = 0u; i < g_scores.size(); ++i )
+			diffs += memcmp(&g_scores[i], &e_scores[i], sizeof(float)) != 0 ? 1u : 0u;
+		for ( size_t i = 0u; i < g_out.size(); ++i )
+			diffs += g_out[i] != e_out[i] ? 1u : 0u;
+	}
+	cudaGraphExecDestroy(tree_exec); cudaGraphDestroy(tree_graph);
+	cudaGraphExecDestroy(chain_exec); cudaGraphDestroy(chain_graph);
+	cudaStreamDestroy(stream);
+	cudaFree(table_d); cudaFree(err_d); cudaFree(pool_d); cudaFree(ckv_d); cudaFree(cscore_d); cudaFree(cstate_d); cudaFree(sink_d);
+	cudaFree(ikey_d); cudaFree(wave_d); cudaFree(ring_d); cudaFree(query_d); cudaFree(iq_d); cudaFree(iw_d);
+	cudaFree(lane_d); cudaFree(ord_d); cudaFree(beg_d); cudaFree(idx_d); cudaFree(seq0_d); cudaFree(sel_d); cudaFree(tok_d);
+	cudaFree(hist_d); cudaFree(mult_d); cudaFree(primes_d); cudaFree(offs_d); cudaFree(ids_d);
+	cudaFree(pos_d); cudaFree(slots_d); cudaFree(fork_d); cudaFree(off_d); cudaFree(par_d);
+	cudaFree(bound_d); cudaFree(ctx_d); cudaFree(len_d); cudaFree(cfork_d); cudaFree(coff_d); cudaFree(emit_d);
+	cudaFree(pooled_d); cudaFree(out_d); cudaFree(scores_d); cudaFree(recs_d);
+	printf("tree cuda graph alternating replay (0 recaptures, 4 steps): %llu bit diffs vs eager\n", (unsigned long long)diffs);
+	return diffs != 0u ? 1u : 0u;
+}
+
 int main(void)
 {
 	const Case cases[] = {
@@ -431,10 +1035,25 @@ int main(void)
 		waves_off += RunWave(w, 0u);
 	const uint32_t wave_sensitive = RunWave(waves[3], 1u);
 	const uint32_t unset = InitCase(2048u, 4u, 16u, 0u) + InitCase(4100u, 4u, 16u, 0u) + InitCase(3u, 8u, 16u, 37u);
-	if ( failures != 0u || sensitive == 0u || unset != 0u || waves_off != 0u || wave_sensitive == 0u || coded_mismatch != 0u )
+	uint32_t tree_failures = 0u;
+	tree_failures += RunTreeNgramCase(1u);
+	tree_failures += RunTreeNgramCase(200u);
+	tree_failures += RunTreeCsa2Case<2u>(110u, 16u, 256u);
+	tree_failures += RunTreeCsa2Case<2u>(200u, 16u, 256u);
+	tree_failures += RunTreeCsa2Case<2u>(201u, 16u, 256u);
+	tree_failures += RunTreeCsa2Case<2u>(1200u, 16u, 256u);
+	tree_failures += RunTreeCsa2Case<2u>(200u, 1u, 8u);
+	tree_failures += RunTreeCsa2Case<2u>(201u, 1u, 8u);
+	tree_failures += RunTreeCsa2Case<2u>(1200u, 1u, 8u);
+	tree_failures += RunTreeCsa2Case<1u>(200u, 16u, 256u);
+	tree_failures += RunTreeCsa2Case<1u>(201u, 16u, 256u);
+	tree_failures += RunTreeCsa2Case<1u>(200u, 1u, 8u);
+	tree_failures += RunTreeCsa2Case<1u>(600u, 1u, 8u);
+	tree_failures += RunTreeGraphCase();
+	if ( failures != 0u || sensitive == 0u || unset != 0u || waves_off != 0u || wave_sensitive == 0u || coded_mismatch != 0u || tree_failures != 0u )
 	{
-		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten, %u fused waves off the sequential fold's attention output, a perturbed wave key %s, %u coded waves off rope then quantize or off one tile a launch\n",
-			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected", coded_mismatch);
+		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten, %u fused waves off the sequential fold's attention output, a perturbed wave key %s, %u coded waves off rope then quantize or off one tile a launch, %u tree cases failed\n",
+			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected", coded_mismatch, tree_failures);
 		return 1;
 	}
 	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank, one block a head or eight clustered blocks a head; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte, also over fewer live rows with the rest untouched, and two query tiles a pass give one tile a launch's outputs and codes bit for bit; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");

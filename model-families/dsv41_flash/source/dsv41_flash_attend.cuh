@@ -37,9 +37,8 @@ static __device__ __forceinline__ void D41AttendBarrier(void)
 	asm volatile("bar.sync 1, %0;\n" :: "n"(D41A_CONSUMERS) : "memory");
 }
 
-template<class Geometry, uint32_t DIM, uint32_t QTILES>
-__global__ __launch_bounds__(D41A_THREADS, 1)
-void D41AttendKernel(
+template<class Geometry, uint32_t DIM, uint32_t QTILES, bool WITH_CODES>
+static __device__ __forceinline__ void D41AttendBody(
 	LmKvShardView cache,
 	uint32_t compressed,
 	const uint16_t *__restrict__ query,
@@ -69,7 +68,10 @@ void D41AttendKernel(
 	uint64_t codes_part_stride,
 	uint32_t rows,
 	uint32_t live,
-	uint32_t row_base)
+	uint32_t row_base,
+	const uint32_t *__restrict__ fork_positions,
+	const uint32_t *__restrict__ slot_offsets,
+	const uint32_t *__restrict__ parent_rows)
 {
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
 	constexpr uint32_t PITCH = ROW_BYTES + LM_LATENT_SHARD_ROW_PAD;
@@ -199,7 +201,7 @@ void D41AttendKernel(
 	}
 	if (warp == D41A_ISSUER)
 	{
-		uint32_t zeroed[2] = { 0u, 0u };
+		uint32_t zeroed[2] = { 0u, 0u }, zeroed0 = 0u, zeroed1 = 0u;
 		used = 0u;
 		for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 		{
@@ -218,6 +220,8 @@ void D41AttendKernel(
 			slot = plan[9];
 			window_begin = plan[10];
 			tile_first = plan[11];
+			const uint32_t fork = fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
+			const uint32_t offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
 			LmSharedReadsDone();
 			if (lane == 0u)
 				LmMbarrierArrive(&read[record]);
@@ -231,22 +235,52 @@ void D41AttendKernel(
 					if (key >= window_from)
 					{
 						const uint32_t at = position + key - (D41A_WINDOW - 1u);
-						source = (const uint8_t *)(at >= wave_first ? wave_kv + (uint64_t)sequence_row_indices[begin + at - wave_first] * DIM :
-							ring + (uint64_t)slot * ring_slot_stride + (uint64_t)(at % ring_rows) * DIM);
+						if (at >= wave_first)
+						{
+							uint32_t wave_row;
+							if (parent_rows != 0)
+							{
+								wave_row = row_base + row;
+								for (uint32_t back = position - at; back != 0u && wave_row != D41K_NO_ROW; --back)
+									wave_row = parent_rows[wave_row];
+							}
+							else
+								wave_row = sequence_row_indices[begin + at - wave_first];
+							source = (const uint8_t *)(wave_kv + (uint64_t)wave_row * DIM);
+						}
+						else
+							source = (const uint8_t *)(ring + (uint64_t)slot * ring_slot_stride + (uint64_t)(at % ring_rows) * DIM);
 					}
 				}
 				else
 				{
 					const uint32_t local = (tile_first + tile - D41A_WINDOW_TILES) * TILE + lane;
 					if (local < limit && local >= window_begin)
+					{
+						const uint32_t semantic = listed != 0u ? list_shared[local] : SparkKvShardLocalPosition(cache.shard, local);
 						source = LmKvShardSlotRequired<Geometry>(cache, sequence,
-							listed != 0u ? list_shared[local] : SparkKvShardLocalPosition(cache.shard, local), row, LM_KV_ACCESS_READ);
+							semantic >= fork ? semantic + offset : semantic, row, LM_KV_ACCESS_READ);
+					}
 				}
 				const uint32_t present = __ballot_sync(0xffffffffu, source != 0);
-				uint32_t clear = ~present & ~zeroed[buffer];
-				if (uses > 0u)
-					LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
-				zeroed[buffer] = ~present;
+				uint32_t clear;
+				if constexpr (WITH_CODES)
+				{
+					clear = ~present & ~zeroed[buffer];
+					if (uses > 0u)
+						LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
+					zeroed[buffer] = ~present;
+				}
+				else
+				{
+					clear = ~present & ~(buffer == 0u ? zeroed0 : zeroed1);
+					if (uses > 0u)
+						LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
+					if (buffer == 0u)
+						zeroed0 = ~present;
+					else
+						zeroed1 = ~present;
+				}
 				if (source != 0)
 					LmTmaLoadBulk1d(keys + (buffer * TILE + lane) * PITCH, source, &full[buffer], ROW_BYTES);
 				for (; clear != 0u; clear &= clear - 1u)
@@ -478,7 +512,7 @@ void D41AttendKernel(
 				value[frag][0] = LmFloatToBf16(fmaf(accumulator[qt][frag][index], kept, 0.0f) / divisor);
 				value[frag][1] = LmFloatToBf16(fmaf(accumulator[qt][frag][index + 1u], kept, 0.0f) / divisor);
 			}
-			if (codes == 0)
+			if ( !WITH_CODES || codes == 0 )
 			{
 				uint16_t *target = output + qt * output_part_stride + ((uint64_t)row * QUERIES + q) * DIM + warp * WARP_COLUMNS + (lane & 3u) * 2u;
 #pragma unroll
@@ -486,21 +520,22 @@ void D41AttendKernel(
 					*(uint32_t *)(target + frag * 8u) = (uint32_t)value[frag][0] | ((uint32_t)value[frag][1] << 16u);
 				continue;
 			}
-			if (warp * WARP_COLUMNS >= rope_offset)
+			if constexpr (WITH_CODES)
 			{
-				const uint32_t position = positions[row_base + row];
-#pragma unroll
-				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+				if (warp * WARP_COLUMNS >= rope_offset)
 				{
-					const uint32_t pair = (warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u - rope_offset) / 2u;
-					const float real = LmBf16ToFloat(value[frag][0]), imaginary = LmBf16ToFloat(value[frag][1]);
-					float sine, cosine;
-					D41RopeTurn(position, 0, frequency[pair], 1u, &sine, &cosine);
-					value[frag][0] = D41RopeReal(real, imaginary, sine, cosine);
-					value[frag][1] = D41RopeImaginary(real, imaginary, sine, cosine);
+					const uint32_t position = positions[row_base + row];
+#pragma unroll
+					for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+					{
+						const uint32_t pair = (warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u - rope_offset) / 2u;
+						const float real = LmBf16ToFloat(value[frag][0]), imaginary = LmBf16ToFloat(value[frag][1]);
+						float sine, cosine;
+						D41RopeTurn(position, 0, frequency[pair], 1u, &sine, &cosine);
+						value[frag][0] = D41RopeReal(real, imaginary, sine, cosine);
+						value[frag][1] = D41RopeImaginary(real, imaginary, sine, cosine);
+					}
 				}
-			}
-			{
 				const uint32_t group = q / group_heads, width = group_heads * DIM;
 				const uint32_t base = (q % group_heads) * DIM + warp * WARP_COLUMNS;
 				uint8_t *part_codes = codes + qt * codes_part_stride;
@@ -532,25 +567,81 @@ void D41AttendKernel(
 	}
 }
 
+template<class Geometry, uint32_t DIM, uint32_t QTILES>
+__global__ __launch_bounds__(D41A_THREADS, 1)
+void D41AttendKernel(
+	LmKvShardView cache, uint32_t compressed, const uint16_t *__restrict__ query, uint64_t query_part_stride, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ length, const uint32_t *__restrict__ bound, const uint32_t *__restrict__ selected, uint32_t topk,
+	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, uint64_t ring_slot_stride, uint32_t ring_rows,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ sequence_row_begin,
+	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, const float *__restrict__ sink, float qk_scale,
+	uint16_t *__restrict__ output, uint64_t output_part_stride, const float *__restrict__ frequency, uint32_t rope_offset, uint32_t group_heads,
+	uint8_t *__restrict__ codes, uint64_t codes_part_stride, uint32_t rows, uint32_t live, uint32_t row_base)
+{
+	D41AttendBody<Geometry, DIM, QTILES, true>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
+		ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride,
+		frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base, 0, 0, 0);
+}
+
+template<class Geometry, uint32_t DIM, uint32_t QTILES>
+__global__ __launch_bounds__(D41A_THREADS, 1)
+void D41AttendTreeKernel(
+	LmKvShardView cache, uint32_t compressed, const uint16_t *__restrict__ query, uint64_t query_part_stride, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ length, const uint32_t *__restrict__ bound, const uint32_t *__restrict__ selected, uint32_t topk,
+	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, uint64_t ring_slot_stride, uint32_t ring_rows,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ sequence_row_begin,
+	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, const float *__restrict__ sink, float qk_scale,
+	uint16_t *__restrict__ output, uint64_t output_part_stride, uint32_t rows, uint32_t live, uint32_t row_base,
+	const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets, const uint32_t *__restrict__ parent_rows)
+{
+	D41AttendBody<Geometry, DIM, QTILES, false>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
+		ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride,
+		0, 0u, 0u, 0, 0u, rows, live, row_base, fork_positions, slot_offsets, parent_rows);
+}
+
 template<class Geometry, uint32_t DIM, uint32_t QTILES = 1u>
 static inline SparkGpuError D41AttendLaunch(LmKvShardView cache, uint32_t compressed, const uint16_t *query, const uint32_t *sequence_of_row,
 	const uint32_t *length, const uint32_t *bound, const uint32_t *selected, uint32_t topk, const uint16_t *wave_kv, const uint16_t *ring,
 	uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *sequence_row_begin,
 	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, const float *frequency,
 	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, SparkGpuStream stream,
-	uint64_t query_part_stride = 0u, uint64_t output_part_stride = 0u, uint64_t codes_part_stride = 0u)
+	uint64_t query_part_stride = 0u, uint64_t output_part_stride = 0u, uint64_t codes_part_stride = 0u,
+	const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, const uint32_t *parent_rows = 0)
 {
 	const uint64_t shared = D41AttendSharedBytes<DIM, QTILES>(compressed != 0u && selected != 0 ? topk : 0u);
-	static bool granted = false;
+	const bool tree = fork_positions != 0 || parent_rows != 0;
+	static bool granted = false, granted_tree = false;
 	if (live == 0u)
 		return SPARK_GPU_SUCCESS;
 	if (rows == 0u || live > rows || query == 0 || (output == 0) == (codes == 0) || (QTILES > 1u && query_part_stride == 0u) ||
-		(QTILES > 1u && (output != 0 ? output_part_stride : codes_part_stride) == 0u) ||
+		(QTILES > 1u && (output != 0 ? output_part_stride : codes_part_stride) == 0u) || (fork_positions == 0) != (slot_offsets == 0) ||
+		(tree && codes != 0) ||
 		(codes != 0 && (frequency == 0 || group_heads == 0u || D41A_QUERIES % group_heads != 0u || rope_offset % (DIM / D41A_WARPS) != 0u ||
 		rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
 		sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u || shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
 		(compressed != 0u && (length == 0 || bound == 0 || sequence_of_row == 0 || SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u)))
 		return SPARK_GPU_ERROR_INVALID_VALUE;
+	if (tree)
+	{
+		if constexpr (QTILES == 1u)
+		{
+			if (!granted_tree)
+			{
+				const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)D41AttendTreeKernel<Geometry, DIM, QTILES>,
+					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)LM_PREFILL_ATTN_SHARED_LIMIT);
+				if (error != SPARK_GPU_SUCCESS)
+					return error;
+				granted_tree = true;
+			}
+			const uint32_t resident = LmLatentShardPrefillMultiprocessors();
+			const uint32_t grid = live < resident ? live : resident;
+			LM_LAUNCH((D41AttendTreeKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row,
+				length, bound, selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices,
+				recurrent_slot, sink, qk_scale, output, output_part_stride, rows, live, row_base, fork_positions, slot_offsets, parent_rows);
+			return SparkGpuPeekAtLastError();
+		}
+		return SPARK_GPU_ERROR_INVALID_VALUE;
+	}
 	if (!granted)
 	{
 		const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM, QTILES>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,
