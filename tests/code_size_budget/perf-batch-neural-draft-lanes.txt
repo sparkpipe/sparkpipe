@@ -1,0 +1,2 @@
++513
+perf/batch-neural-draft-lanes: add FIFO pipelined multi-request SparkDraftBridgeEnqueueTree (up to 8 in-flight DFT3 exchanges over one persistent TCP connection) in include/sparkpipe/spark_draft_bridge.h and ring/transport/draft_bridge.c, and raise SPARK_MODEL_BATCH_MODEL_DRAFT_LANES from 2 to 8 in runtime/model_batch_engine.c with burst batch draft prefetching, 16-slot answer cache, cancellation/eviction-safe FIFO settlement, cold-start multi-lane cost observation, and batch wait-aware profitability gating.

@@ -285,12 +285,66 @@ static void TestConfig(void)
 	CHECK(SparkDraftServerCreate(&config, &server) == SPARK_STATUS_INVALID_ARGUMENT, "more nodes than a DFT3 tree holds are refused");
 }
 
+static void TestPipelinedEight(void)
+{
+	SparkDraftServer *server = TestServer("draft-test", 500u);
+	SparkDraftBridge *bridge = server != 0 ? TestClient(SparkDraftServerPort(server), "draft-test", TEST_MAX_COMMITTED) : 0;
+	uint32_t committed[SPARK_DRAFT_BRIDGE_MAX_PIPELINE][5];
+	SparkDraftBridgeNode nodes[TEST_MAX_NODES];
+	SparkDraftBridgeProposalInfo info;
+	SparkDraftServerStats stats;
+	const uint64_t deadline = SparkMonotonicNs() + UINT64_C(3000000000);
+	uint32_t index, collected = 0u, matched = 1u;
+	if ( server == 0 || bridge == 0 )
+	{
+		CHECK(0, "the pipelined server and client start");
+		return;
+	}
+	for ( index = 0u; index < SPARK_DRAFT_BRIDGE_MAX_PIPELINE; ++index )
+	{
+		for ( uint32_t pos = 0u; pos < 5u; ++pos )
+			committed[index][pos] = 100u * (index + 1u) + pos;
+		CHECK(SparkDraftBridgeEnqueueTree(bridge, 2u, 1000u + index, 1u + index, 4u, committed[index][4], committed[index], 5u, 0, 0u, 4u, 30u, 8u, 0, 9u) ==
+			SPARK_STATUS_OK, "pipelined request enqueues");
+	}
+	while ( SparkMonotonicNs() < deadline && collected < SPARK_DRAFT_BRIDGE_MAX_PIPELINE )
+	{
+		SparkDraftServerRequest request;
+		while ( SparkDraftServerAdvance(server, &request) == SPARK_STATUS_OK )
+		{
+			TestAnswer answer;
+			TestTree(&answer, request.anchor_token_id);
+			answer.nodes[1].token_id = (uint32_t)(request.sequence_id + 500u);
+			(void)SparkDraftServerAnswer(server, answer.status, answer.nodes, answer.count, &answer.info);
+		}
+		for ( ;; )
+		{
+			uint32_t count = 0u;
+			const SparkStatus status = SparkDraftBridgeReply(bridge, nodes, &count, &info);
+			if ( status == SPARK_STATUS_PENDING || status == SPARK_STATUS_NOT_FOUND )
+				break;
+			if ( status != SPARK_STATUS_OK || count != 3u || nodes[0].token_id != committed[collected][4] ||
+				nodes[1].token_id != 1500u + collected )
+				matched = 0u;
+			collected++;
+		}
+		TestNap();
+	}
+	SparkDraftServerGetStats(server, &stats);
+	CHECK(collected == SPARK_DRAFT_BRIDGE_MAX_PIPELINE && matched != 0u && stats.connections == 1u && stats.requests == SPARK_DRAFT_BRIDGE_MAX_PIPELINE &&
+		stats.answered == SPARK_DRAFT_BRIDGE_MAX_PIPELINE && stats.bad_requests == 0u && stats.dropped == 0u,
+		"eight pipelined requests are answered in FIFO order over one connection");
+	SparkDraftBridgeDestroy(bridge);
+	SparkDraftServerDestroy(server);
+}
+
 int main(void)
 {
 	TestConfig();
 	TestRoundTrip();
 	TestRefusals();
 	TestCancelAndStall();
+	TestPipelinedEight();
 	if ( failures != 0 )
 	{
 		printf("FAIL test_draft_server: %d failures\n", failures);

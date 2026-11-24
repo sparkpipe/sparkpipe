@@ -29,6 +29,7 @@ extern "C" {
 #define SPARK_DRAFT_BRIDGE_MAX_TREE_NODES 4096u
 #define SPARK_DRAFT_BRIDGE_MAX_TIME_BUDGET_MS 60000u
 #define SPARK_DRAFT_BRIDGE_MAX_PORT 65535u
+#define SPARK_DRAFT_BRIDGE_MAX_PIPELINE 8u
 #define SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX 0xFFFFFFFFu
 
 #define SPARK_DRAFT_BRIDGE_SERVER_STATUS_OK 0u
@@ -83,6 +84,22 @@ SparkStatus SparkDraftBridgeInitialize(
 void SparkDraftBridgeDestroy(
     SparkDraftBridge *bridge);
 SparkStatus SparkDraftBridgeRequestTree(
+    SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
+    uint64_t sequence_id,
+    uint64_t generation,
+    uint64_t position,
+    uint32_t anchor_token_id,
+    const uint32_t *committed_token_ids,
+    uint32_t committed_token_count,
+    const void *tap_rows,
+    uint32_t tap_row_count,
+    uint32_t depth,
+    uint32_t time_budget_ms,
+    uint32_t max_depth,
+    const SparkRowSampling *sampling,
+    uint32_t node_capacity);
+SparkStatus SparkDraftBridgeEnqueueTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
     uint64_t sequence_id,
