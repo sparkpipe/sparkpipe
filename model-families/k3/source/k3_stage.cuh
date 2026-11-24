@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_error_site.h"
 #include "model-families/k3/source/layer.cuh"
+#include "model-families/k3/source/slice.cuh"
 #include "k3_streamed_prefill.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
@@ -847,7 +848,9 @@ static SparkStatus K3ModelExpertOffsets(SparkK3ModelState *state)
 		state->layer_w2_offset[routed] = state->module.pack.payload_base + w2.payload_offset;
 		routed_layers++;
 	}
-	return routed_layers != 0u ? SPARK_STATUS_OK : SPARK_STATUS_PARSE_ERROR;
+	if ( routed_layers == 0u )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ModelIndexEntry(SparkK3ModelState *state, uint32_t layer, const char *field, uint32_t rows, uint32_t columns)
@@ -859,7 +862,7 @@ static SparkStatus K3ModelIndexEntry(SparkK3ModelState *state, uint32_t layer, c
 		entry.shape_count != (columns != 0u ? 2u : 1u) || entry.shape[0] != rows || (columns != 0u && entry.shape[1] != columns) )
 	{
 		fprintf(stderr, "sparkpipe_k3: %s is not the BF16 [%u%s%u] indexer tensor\n", name, rows, columns != 0u ? "," : "", columns);
-		return SPARK_STATUS_VALIDATION_FAILED;
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	return SPARK_STATUS_OK;
 }
@@ -879,7 +882,7 @@ static SparkStatus K3ModelIndexer(SparkK3ModelState *state)
 			if ( fields != 0u )
 			{
 				fprintf(stderr, "sparkpipe_k3: KDA layer %u carries indexer tensors\n", layer);
-				return SPARK_STATUS_VALIDATION_FAILED;
+				SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 			}
 			latent += K3_LAYER_KIND(layer) == LM_LAYER_LATENT ? 1u : 0u;
 			continue;
@@ -892,27 +895,27 @@ static SparkStatus K3ModelIndexer(SparkK3ModelState *state)
 			K3ModelIndexEntry(state, layer, "mla_index_norm_bias", K3_INDEX_DIM, 0u) != SPARK_STATUS_OK )
 		{
 			fprintf(stderr, "sparkpipe_k3: MLA layer %u carries %u of the five indexer tensors or one of another shape\n", layer, fields);
-			return SPARK_STATUS_VALIDATION_FAILED;
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		}
 		indexed++;
 	}
 	if ( indexed != 0u && indexed != latent )
 	{
 		fprintf(stderr, "sparkpipe_k3: %u of the slice's %u MLA layers carry an indexer; a pack has it on every MLA layer or none\n", indexed, latent);
-		return SPARK_STATUS_VALIDATION_FAILED;
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	if ( (indexed != 0u) != (SPARK_K3_SERVING_INDEXER != 0) )
 	{
 		fprintf(stderr, "sparkpipe_k3: this adapter serves packs %s the MLA indexer, and this pack has %s\n",
 			SPARK_K3_SERVING_INDEXER != 0 ? "with" : "without", indexed != 0u ? "one" : "none");
-		return SPARK_STATUS_VALIDATION_FAILED;
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	if ( indexed == 0u )
 		return SPARK_STATUS_OK;
 	if ( SparkK3DispatchEnableIndex(d) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: the indexer scratch could not be set up (tp_degree %u, %u MLA layers)\n", d->tp_degree, d->mla_count);
-		return SPARK_STATUS_INTERNAL_ERROR;
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	fprintf(stderr, "sparkpipe_k3: MLA indexer on %u layers, top %u, index scratch %llu bytes\n", indexed, K3_INDEX_TOPK,
 		(unsigned long long)d->index_scratch_bytes);
@@ -1229,13 +1232,15 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
 		step->rows * K3_TOP_K, K3StepContext(state, step, stream), step->multiprocessors, stream);
 	if ( status == SPARK_K3_DISPATCH_ERR_CAPACITY )
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( status != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: slice dispatch failed %d\n", status);
-		return SPARK_STATUS_INTERNAL_ERROR;
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	return state->tp_context_overflow != 0u ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_OK;
+	if ( state->tp_context_overflow != 0u )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ModelSideband(void *model, uint32_t to_buffer, const void *hidden, void *buffer, uint64_t bytes, uint32_t rows, void *stream_void)
@@ -1244,11 +1249,16 @@ static SparkStatus K3ModelSideband(void *model, uint32_t to_buffer, const void *
 	K3LayerBuffers *b = state->dispatch.buffers;
 	SparkGpuStream stream = (SparkGpuStream)stream_void;
 	if ( to_buffer != 0u )
-		return buffer == 0 || K3RunnerCopy(buffer, b->attnres_bank_bf16, bytes, stream) != SPARK_GPU_SUCCESS ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
+	{
+		if ( buffer == 0 || K3RunnerCopy(buffer, b->attnres_bank_bf16, bytes, stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		return SPARK_STATUS_OK;
+	}
 	if ( buffer != 0 && K3RunnerCopy(b->attnres_bank_bf16, buffer, bytes, stream) != SPARK_GPU_SUCCESS )
-		return SPARK_STATUS_IO_ERROR;
-	return K3RunnerCopy(b->attnres_partial_bf16, hidden, (uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS ?
-		SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( K3RunnerCopy(b->attnres_partial_bf16, hidden, (uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ModelAttachKv(void *model, const SparkStageRunnerKv *kv)
@@ -1304,8 +1314,10 @@ static SparkStatus K3ModelResetSlot(void *model, uint32_t slot, void *stream)
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	const int32_t status = SparkK3DispatchResetSlot(&state->dispatch, slot, state->tp_degree, (SparkGpuStream)stream);
 	if ( status == SPARK_K3_DISPATCH_ERR_ARGUMENT )
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	return status == SPARK_K3_DISPATCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( status != SPARK_K3_DISPATCH_OK )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return SPARK_STATUS_OK;
 }
 
 static const void *K3ModelProbeBuffers(void *model)

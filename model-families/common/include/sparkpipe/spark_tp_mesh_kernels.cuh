@@ -605,6 +605,14 @@ static __device__ void SparkTpMeshTreeFinish(
     }
 }
 
+static __device__ __forceinline__ uint32_t SparkTpMeshDeviceTreeLevels(uint32_t degree) { uint32_t l = 0u; while ( (1u << l) < degree ) l++; return l; }
+static __device__ __forceinline__ uint32_t SparkTpMeshDeviceTreeRoute(uint32_t rank,uint32_t degree,uint32_t phase)
+{
+    uint32_t levels = SparkTpMeshDeviceTreeLevels(degree),reduce = phase < levels,step = 1u << (reduce != 0u ? phase : 2u * levels - phase - 1u),residue = rank % (2u * step);
+    uint32_t peer = residue == 0u && rank + step < degree ? rank + step : residue == step ? rank - step : UINT32_MAX;
+    return peer == UINT32_MAX ? 0u : ((residue == step) == (reduce != 0u) ? (peer + 1u) << 16u : peer + 1u);
+}
+
 __global__ void SparkTpMeshTreeKernel(
     uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     volatile uint64_t *entry,const volatile uint64_t *shipped,
@@ -616,7 +624,7 @@ __global__ void SparkTpMeshTreeKernel(
     __shared__ uint32_t ready;
     __shared__ uint64_t tag;
     uint32_t tid = threadIdx.x;
-    uint32_t levels = SparkTpMeshTreeLevels(degree);
+    uint32_t levels = SparkTpMeshDeviceTreeLevels(degree);
     uint32_t width = operation == 2u ? 8u : operation == 1u ? 4u : 2u;
     uint64_t capacity = (slot_bytes - 16u) / width;
     uint64_t deadline = SparkTpGlobalTimerNs() + timeout_ns;
@@ -630,7 +638,7 @@ __global__ void SparkTpMeshTreeKernel(
             __syncthreads();
             for ( uint32_t phase = 0u; phase < 2u * levels; phase++ )
             {
-                uint32_t route = SparkTpMeshTreeRoute(rank,degree,phase);
+                uint32_t route = SparkTpMeshDeviceTreeRoute(rank,degree,phase);
                 uint32_t send = route >> 16u;
                 uint32_t receive = route & 0xffffu;
                 if ( tid == 0u )

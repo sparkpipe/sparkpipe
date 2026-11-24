@@ -3,70 +3,8 @@
 #include "model-families/k3/source/layer.cuh"
 #include "inference/kernels/l2_load.cuh"
 #include "sparkpipe/spark_k3_family.h"
+#include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_gpu.h"
-
-struct K3LayerWeights
-{
-	const void *attn_norm_weight;
-	const void *mlp_norm_weight;
-
-	const void *kda_qkv_beta_weight;
-	const void *kda_decay_down_weight;
-	const float *kda_q_conv_weight;
-	const float *kda_k_conv_weight;
-	const float *kda_v_conv_weight;
-	const void *kda_decay_up_weight;
-	const float *kda_decay_bias;
-	const float *kda_head_log_scale;
-	const void *kda_gate_weight;
-	const float *kda_out_norm_weight;
-	const void *kda_out_weight;
-	const void *kda_out_scale;
-
-	const void *mla_q_down_weight;
-	const void *mla_q_down_scale;
-	const void *mla_q_norm_weight;
-	const void *mla_q_up_weight;
-	const void *mla_q_up_scale;
-	const void *mla_kv_a_weight;
-	const void *mla_kv_a_scale;
-	const void *mla_kv_a_norm_weight;
-	const void *mla_kv_b_value_weight;
-	const void *mla_q_b_weight;
-	const void *mla_kv_b_key_full_weight;
-	const void *mla_kv_b_value_full_weight;
-	const void *mla_kv_b_scale;
-	const void *mla_gate_weight;
-	const void *mla_out_weight;
-	const void *mla_out_scale;
-	const void *mla_index_query_weight;
-	const void *mla_index_key_weight;
-	const void *mla_index_head_weight;
-	const void *mla_index_norm_weight;
-	const void *mla_index_norm_bias;
-
-	const void *router_weight;
-	const float *router_bias;
-	const void *routed_down_weight;
-	const void *routed_down_scale;
-	const void *routed_up_weight;
-	const void *routed_up_scale;
-	const void *routed_norm_weight;
-	const void *expert_w1_weight;
-	const void *expert_w2_weight;
-	uint32_t expert_interleave;
-	uint32_t expert_tile_k;
-	const void *shared_w1_weight;
-	const void *shared_w1_scale;
-	const void *shared_w2_weight;
-	const void *shared_w2_scale;
-	const void *dense_gate_up_weight;
-	const void *dense_gate_up_scale;
-	const void *dense_down_weight;
-	const void *dense_down_scale;
-	const void *attnres_attn_weight;
-	const void *attnres_mlp_weight;
-};
 
 #define K3_L2_LOAD_BYTES (8u << 20)
 #define K3_L2_LOAD_BLOCKS 48u
@@ -270,7 +208,9 @@ static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t
 	state->layer_collective(state->collective_context,stream_word,layer,phase | K3_COLLECTIVE_FINISH);
 	if ( forked != 0u )
 		error = SparkGpuStreamWaitEvent(stream,(SparkGpuEvent)state->load_join,0u);
-	return(error == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( error != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
@@ -290,15 +230,16 @@ static uint32_t K3PairReady(const K3SliceState *state, const K3LayerBuffers *a, 
 static int32_t K3PairFence(const K3SliceState *state, SparkGpuStream waiter, SparkGpuStream signaler)
 {
 	SparkGpuEvent fence = (SparkGpuEvent)state->pair_fence;
-	return(SparkGpuEventRecord(fence,signaler) == SPARK_GPU_SUCCESS && SparkGpuStreamWaitEvent(waiter,fence,0u) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuEventRecord(fence,signaler) != SPARK_GPU_SUCCESS || SparkGpuStreamWaitEvent(waiter,fence,0u) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3PairRound(const K3SliceState *state, void *lane, SparkGpuStream main, SparkGpuStream producer, SparkGpuStream consumer, uint32_t layer, uint32_t phase, uint32_t split)
 {
 	void *const word = (void *)(uintptr_t)main;
 	if ( K3PairFence(state,main,producer) != LM_LAUNCH_OK )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	state->layer_collective(lane,word,layer,phase);
 	if ( split != 0u )
 		state->layer_collective(lane,word,layer,phase | K3_COLLECTIVE_FINISH);
@@ -724,11 +665,11 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 		|| state->replay_conv_q == 0 || state->replay_conv_k == 0
 		|| state->replay_conv_v == 0 || state->replay_retention == 0
 		|| state->replay_write_gate == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( slab_rows == 0u || slab_rows > state->verify_rows )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( state->kda_state_bf16 != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	for (layer = first_layer; layer < first_layer + layer_count; ++layer)
 	{
 		if ( !K3Layout::Kda(layer) )
@@ -739,7 +680,7 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 		const uint32_t rank_qk = rank_heads * K3_KDA_KEY_DIM, rank_v = rank_heads * K3_KDA_VALUE_DIM;
 		const uint32_t slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
 		if ( buffers->tp_rank * rank_heads + rank_heads > K3_KDA_HEADS || rank_heads != state->kda_rank_heads )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		LmCausalConvLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(buffers->kda_q_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_q,buffers->kda_q_conv_weight,buffers->query_bf16,rank_qk,sequences,1u,verify_row_indices, slab_rows, stream);
 		LmCausalConvLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(buffers->kda_k_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_k,buffers->kda_k_conv_weight,buffers->key_bf16,rank_qk,sequences,1u,verify_row_indices, slab_rows, stream);
 		LmCausalConvLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v,buffers->kda_v_conv_weight,buffers->value_bf16,rank_v,sequences,1u,verify_row_indices, slab_rows, stream);

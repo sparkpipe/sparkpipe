@@ -6,6 +6,7 @@
 #include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_k3_device_stage.h"
 #include "sparkpipe/spark_k3_family.h"
 
@@ -283,7 +284,7 @@ struct K3Device
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		const SparkDeviceStageRecurrentPlan pools[] = { { K3_KDA_LAYER_COUNT, SparkDeviceChannelDeltaStateBytes(&state->delta_shape) },
 			{ K3_KDA_LAYER_COUNT, SparkDeviceChannelDeltaWindowBytes(&state->delta_shape) } };
@@ -447,7 +448,7 @@ struct K3Device
 	static int32_t Failure(uint32_t layer, const char *phase, int32_t status)
 	{
 		fprintf(stderr, "k3 device stage: %s failed at layer %u (status %d)\n", phase, layer, (int)status);
-		return status;
+		SPARK_FAIL(status);
 	}
 
 	static void Bind(Context &c, uint32_t lane, uint32_t offset, uint32_t layer)
@@ -761,8 +762,10 @@ struct K3Device
 			return status;
 		const int32_t result = K3Schedule<K3Device>::Slice(c, 0u, K3_LAYERS);
 		if ( c.status != kOk )
-			return (SparkStatus)c.status;
-		return result == kOk ? SPARK_STATUS_OK : (SparkStatus)result;
+			SPARK_FAIL((SparkStatus)c.status);
+		if ( result != kOk )
+			SPARK_FAIL((SparkStatus)result);
+		return SPARK_STATUS_OK;
 	}
 
 	static const SparkStageRunnerModelInterface *Interface(void)

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
+#include "model-families/k3/source/slice.cuh"
 #include "sparkpipe/spark_k3_kv_shard.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 
@@ -1086,5 +1087,7 @@ int32_t SparkK3DispatchKeep(SparkK3Dispatch *d, const uint32_t *sequence_row_beg
 	const int32_t status = K3StageFold(d->weights, d->slice_state, d->buffers, d->first_layer, d->layer_count, sequences,
 		sequence_row_begin, sequence_row_indices, kept, rows, multiprocessors, (void *)stream);
 	d->slice_state->replay_active = 0u;
-	return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
+	if ( status != LM_LAUNCH_OK || SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_K3_DISPATCH_ERR_CUDA);
+	return SPARK_K3_DISPATCH_OK;
 }

@@ -1,33 +1,22 @@
 #pragma once
-
 #include <stdio.h>
-
 #include <cuda_bf16.h>
-
 #include <cuda_fp16.h>
-
 #include <cuda_runtime.h>
-
 #include <math.h>
-
 #include <stdint.h>
-
 #include "inference/kernels/activation.cuh"
-
+#include "inference/kernels/vec.cuh"
 #include "sparkpipe/spark_head_screen.h"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
-
 #if defined(__CUDACC__)
 #define SPARK_LM_LAUNCH(launch_statement) launch_statement
 #else
 #define SPARK_LM_LAUNCH(launch_statement)
 #endif
-
 #define SPARK_LM_WARP_LANES 32u
-
 #define SPARK_LM_CTA_THREADS 256u
-
 #define SPARK_LM_CTA_WARPS (SPARK_LM_CTA_THREADS / SPARK_LM_WARP_LANES)
 
 static __device__ __forceinline__ float SparkLmBf16ToFloat(const void *source, uint64_t index)
@@ -158,35 +147,74 @@ static __device__ __forceinline__ uint32_t SparkLmHeadUint4Word(uint4 value,uint
 	return(value.w);
 }
 
+static __device__ __forceinline__ float SparkLmHeadCertifiedNorm(double error_square,double weight_square,double shadow_square,double exact_gamma,double shadow_gamma)
+{
+	return(SparkLmHeadRoundDoubleUp((sqrt(error_square * (1.0 + 1.0e-12)) + (exact_gamma * sqrt(weight_square * (1.0 + 1.0e-12))) + (shadow_gamma * sqrt(shadow_square * (1.0 + 1.0e-12)))) * (1.0 + 1.0e-12)));
+}
+
 static __global__ void SparkLmHeadCertifiedFp8QuantizeKernel(const void *head_bf16,uint8_t *shadow_payload,float *shadow_scale_f32,float *cert_norm_f32,uint32_t candidate_count,uint32_t hidden_dimension)
 {
-	uint32_t neuron = (blockIdx.x * SPARK_LM_CTA_WARPS) + (threadIdx.x / SPARK_LM_WARP_LANES),lane = threadIdx.x % SPARK_LM_WARP_LANES,group,groups = hidden_dimension / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE;
+	uint32_t neuron = (blockIdx.x * SPARK_LM_CTA_WARPS) + (threadIdx.x / SPARK_LM_WARP_LANES),lane = threadIdx.x % SPARK_LM_WARP_LANES,group = 0u,groups = hidden_dimension / SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE;
 	uint64_t group_base,row_base = (uint64_t)neuron * hidden_dimension;
-	double delta,error_square,error_norm,shadow_norm,shadow_square,weight_norm,weight_square,cert;
+	double delta,error_square,shadow_square,weight_square;
 	double exact_gamma = SparkLmHeadFloatGamma((hidden_dimension / SPARK_LM_WARP_LANES) + 5u),shadow_gamma = SparkLmHeadFloatGamma((2u * hidden_dimension / SPARK_LM_WARP_LANES) + 5u);
 	float absmax,exact,quantized,scale;
 	if ( neuron >= candidate_count ) return;
-	for (group=0u; group<groups; group++)
+	if ( LmIsAligned16(head_bf16) && LmIsAligned8(shadow_payload) )
+		for (; group + 8u <= groups; group += 8u)
+		{
+			uint64_t vec_index = ((row_base + ((uint64_t)group * SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE)) >> 3u) + lane;
+			float exact_vec[8],other;
+			uint32_t packed_lo = 0u,packed_hi = 0u,k;
+			LmLoadBf16x8AsFloat(__ldg(((const uint4 *)head_bf16) + vec_index),exact_vec);
+			absmax = 0.0f;
+			#pragma unroll
+			for (k=0u; k<8u; k++) { float m = fabsf(exact_vec[k]); absmax = m > absmax ? m : absmax; }
+			other = __shfl_xor_sync(0xffffffffu,absmax,2u,4u); absmax = other > absmax ? other : absmax;
+			other = __shfl_xor_sync(0xffffffffu,absmax,1u,4u); absmax = other > absmax ? other : absmax;
+			scale = absmax > 0.0f ? absmax / LM_E4M3_MAX : 1.0f;
+			error_square = 0.0; weight_square = 0.0; shadow_square = 0.0;
+			#pragma unroll
+			for (k=0u; k<8u; k++)
+			{
+				uint8_t code = LmFloatToE4m3(exact_vec[k] / scale);
+				if ( k < 4u ) packed_lo |= (uint32_t)code << (k << 3u); else packed_hi |= (uint32_t)code << ((k - 4u) << 3u);
+				quantized = LmE4m3ToFloat(code) * scale;
+				delta = (double)exact_vec[k] - (double)quantized;
+				error_square += delta * delta;
+				weight_square += (double)exact_vec[k] * (double)exact_vec[k];
+				shadow_square += (double)quantized * (double)quantized;
+			}
+			((uint2 *)shadow_payload)[vec_index] = make_uint2(packed_lo,packed_hi);
+			error_square += __shfl_down_sync(0xffffffffu,error_square,2u,4u); error_square += __shfl_down_sync(0xffffffffu,error_square,1u,4u);
+			weight_square += __shfl_down_sync(0xffffffffu,weight_square,2u,4u); weight_square += __shfl_down_sync(0xffffffffu,weight_square,1u,4u);
+			shadow_square += __shfl_down_sync(0xffffffffu,shadow_square,2u,4u); shadow_square += __shfl_down_sync(0xffffffffu,shadow_square,1u,4u);
+			if ( (lane & 3u) == 0u )
+			{
+				uint64_t target = ((uint64_t)neuron * groups) + group + (lane >> 2u);
+				shadow_scale_f32[target] = scale;
+				cert_norm_f32[target] = SparkLmHeadCertifiedNorm(error_square,weight_square,shadow_square,exact_gamma,shadow_gamma);
+			}
+		}
+	for (; group<groups; group++)
 	{
+		uint8_t code;
 		group_base = row_base + ((uint64_t)group * SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE);
 		exact = SparkLmBf16ToFloat(head_bf16,group_base + lane);
-		absmax = SparkLmHeadWarpReduceMax(fabsf(exact));
-		absmax = __shfl_sync(0xffffffffu,absmax,0u);
+		absmax = __shfl_sync(0xffffffffu,SparkLmHeadWarpReduceMax(fabsf(exact)),0u);
 		scale = absmax > 0.0f ? absmax / LM_E4M3_MAX : 1.0f;
-		shadow_payload[group_base + lane] = LmFloatToE4m3(exact / scale);
-		quantized = LmE4m3ToFloat(shadow_payload[group_base + lane]) * scale;
+		code = LmFloatToE4m3(exact / scale);
+		shadow_payload[group_base + lane] = code;
+		quantized = LmE4m3ToFloat(code) * scale;
 		delta = (double)exact - (double)quantized;
 		error_square = SparkLmHeadWarpReduceDouble(delta * delta);
 		weight_square = SparkLmHeadWarpReduceDouble((double)exact * (double)exact);
 		shadow_square = SparkLmHeadWarpReduceDouble((double)quantized * (double)quantized);
 		if ( lane == 0u )
 		{
-			error_norm = sqrt(error_square * (1.0 + 1.0e-12));
-			weight_norm = sqrt(weight_square * (1.0 + 1.0e-12));
-			shadow_norm = sqrt(shadow_square * (1.0 + 1.0e-12));
-			cert = (error_norm + (exact_gamma * weight_norm) + (shadow_gamma * shadow_norm)) * (1.0 + 1.0e-12);
-			shadow_scale_f32[((uint64_t)neuron * groups) + group] = scale;
-			cert_norm_f32[((uint64_t)neuron * groups) + group] = SparkLmHeadRoundDoubleUp(cert);
+			uint64_t target = ((uint64_t)neuron * groups) + group;
+			shadow_scale_f32[target] = scale;
+			cert_norm_f32[target] = SparkLmHeadCertifiedNorm(error_square,weight_square,shadow_square,exact_gamma,shadow_gamma);
 		}
 	}
 }
