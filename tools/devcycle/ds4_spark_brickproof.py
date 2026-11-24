@@ -8,6 +8,7 @@ import base64
 import binascii
 import concurrent.futures
 import datetime
+import errno
 import json
 import os
 from pathlib import Path
@@ -54,6 +55,7 @@ HUB_GATEWAY_RANK = 15
 HUB_NOTIFY = "192.168.50.4:5514"
 NETWORK_MANAGER_RUNTIME = "/usr/local/sbin/ds4-switched-fabric-apply"
 DMA_GUARD_RUNTIME = "/usr/local/sbin/spark-dma-guard"
+DSCP_TRUST_RUNTIME = "/usr/local/sbin/sparkpipe-dscp-trust"
 CEPH_UID = 167
 CEPH_STATE_ROOT = Path("/var/lib/ceph")
 CEPH_LOG_ROOT = Path("/var/log/ceph")
@@ -91,7 +93,10 @@ OPTIONAL_BOOT_UNITS = (
     "rbdmap.service","nvmf-autoconnect.service","open-iscsi.service","iscsid.service","srp_daemon.service","srptools.service",
     "cloud-init.service","cloud-init-local.service","cloud-config.service","cloud-final.service","pollinate.service",
     "nvidia-spark-run-apt-upgrade-once.service","systemd-networkd-wait-online.service","plymouth-quit-wait.service",
+    "nvidia-spark-mlnx-firmware-manager.service",
 )
+VENDOR_UPDATE_SERVICE = "dgx-dashboard-admin.service"
+VENDOR_UPDATE_GUARD = f"/etc/systemd/system/{VENDOR_UPDATE_SERVICE}.d/sparkpipe-off.conf"
 FABRIC_INTERFACES = ("enp1s0f0np0","enp1s0f1np1","enP2p1s0f0np0","enP2p1s0f1np1")
 UPLINK_PROFILE = "ds4-uplink-wired"
 UPLINK_GATEWAY = "192.168.50.1"
@@ -101,6 +106,10 @@ NTP_SERVERS = ("192.168.50.4","10.10.250.2")
 CEPH_CLUSTER_FSID = "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"
 FIREWALL_RULESET = Path("/etc/spark-firewall.nft")
 DMA_GUARD_STATE = Path("/var/lib/spark-dma-guard/boots.json")
+NVIDIA_PROC = Path("/proc/driver/nvidia")
+PCI_DEVICES = Path("/sys/bus/pci/devices")
+GPU_PCI_ID = ("0x10de","0x2e12")
+GPU_TEMPERATURE_UNMEASURED = "not measured: waits for the runtime's RM thermal telemetry"
 RECOVERY_SETTINGS = {"kernel.panic":"60","kernel.softlockup_panic":"1","kernel.hung_task_panic":"1","vm.swappiness":"10"}
 KERNEL_MODULES_LOAD = "".join(f"{module}\n" for module in REQUIRED_KERNEL_MODULES)
 ASSET_SOURCES = {
@@ -124,6 +133,7 @@ ASSET_SOURCES.update({
     "/etc/systemd/system/sparkpipe-fsck-health.timer": ("tools/devcycle/fleet/sparkpipe-fsck-health.timer",0o644),
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf": ("tools/devcycle/fleet/spark-firewall-timeout.conf",0o644),
     "/etc/systemd/system/spark-firewall.service": ("tools/devcycle/fleet/spark-firewall.service",0o644),
+    VENDOR_UPDATE_GUARD: ("tools/devcycle/fleet/dgx-dashboard-admin-off.conf",0o644),
     DMA_GUARD_RUNTIME: ("tools/devcycle/spark_dma_guard.py",0o755),
     "/usr/local/sbin/spark-osd-guard": ("tools/devcycle/fleet/spark_osd_guard.sh",0o755),
     "/etc/systemd/system/spark-osd-guard@.service": ("tools/devcycle/fleet/spark-osd-guard@.service",0o644),
@@ -137,6 +147,7 @@ ASSET_SOURCES.update({
     "/etc/systemd/timesyncd.conf.d/sparkpipe-hub.conf": ("tools/devcycle/fleet/timesyncd-sparkpipe-hub.conf",0o644),
     "/etc/systemd/system/sparkpipe-roce-qos.service": ("tools/fabric/sparkpipe-roce-qos.service",0o644),
     "/usr/local/sbin/sparkpipe_roce_qos.sh": ("tools/fabric/sparkpipe_roce_qos.sh",0o755),
+    DSCP_TRUST_RUNTIME: ("tools/fabric/sparkpipe_dscp_trust.sh",0o755),
     f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}.target.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-cluster-start-after-ssh.conf",0o644),
     f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}@.service.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-daemon-start-after-ssh.conf",0o644),
 })
@@ -146,6 +157,7 @@ STAGED_ASSET_DESTINATIONS = (
     "/etc/systemd/system/sparkpipe-fsck-health.timer",
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf",
     "/etc/systemd/system/spark-firewall.service",
+    VENDOR_UPDATE_GUARD,
     DMA_GUARD_RUNTIME,
     *(f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf" for unit in BOOT_TIMEOUT_SOURCES),
 )
@@ -209,7 +221,10 @@ class BrickproofError(RuntimeError):
 
 
 def run(argv: list[str],input_bytes: bytes | None = None,timeout: int = 120,check: bool = True,env: dict[str,str] | None = None) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(argv,input=input_bytes,stdin=None if input_bytes is not None else subprocess.DEVNULL,capture_output=True,timeout=timeout,env=env)
+    try:
+        result = subprocess.run(argv,input=input_bytes,stdin=None if input_bytes is not None else subprocess.DEVNULL,capture_output=True,timeout=timeout,env=env)
+    except FileNotFoundError:
+        result = subprocess.CompletedProcess(argv,127,b"",f"{argv[0]}: command not found".encode())
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8",errors="replace").strip()
         raise BrickproofError(f"command failed ({result.returncode}): {' '.join(argv)}: {detail}")
@@ -926,6 +941,10 @@ def decouple_optional_boot_work() -> None:
     atomic_write(Path("/etc/cloud/cloud-init.disabled"),"commissioned by ds4_spark_brickproof\n",0o644)
 
 
+def stop_vendor_update_service() -> None:
+    run(["systemctl","disable","--now",VENDOR_UPDATE_SERVICE],check=False)
+
+
 def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     if os.geteuid() != 0:
         raise BrickproofError("remote apply must run as root")
@@ -970,6 +989,7 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     ceph_changes = [] if staged else install_ceph_policy()
     snap_units_retired = retire_stale_snap_units() + reset_vanished_failed_units()
     enable_policy_services(rank,node_id)
+    stop_vendor_update_service()
     run([DMA_GUARD_RUNTIME,"install","--notify",HUB_NOTIFY],timeout=120)
     run(["systemctl","start","logrotate.service"])
     return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"sshd_hardening_changed":sshd_hardening_changed,"memory_current_before":memory_current,"profile":"staged" if staged else "fleet","source_commit":payload["source_commit"]})
@@ -980,6 +1000,10 @@ def read_optional(path: Path) -> str:
         return(path.read_text())
     except (FileNotFoundError,PermissionError):
         return("")
+    except OSError as error:
+        if error.errno == errno.EINVAL:
+            return("")
+        raise
 
 
 def service_value(unit: str,property_name: str) -> str:
@@ -995,7 +1019,7 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
     expected_address = f"{RAIL2_PREFIX}.{rank}/{RAIL2_PREFIX_LENGTH}"
     addresses = [row.split()[3] for row in command(["ip","-4","-o","addr","show","dev",RAIL2_INTERFACE,"scope","global"],check=False).splitlines() if len(row.split()) > 3]
     idle_state = read_optional(Path("/sys/class/net") / RAIL2_IDLE_INTERFACE / "operstate").strip()
-    trust = command(["mlnx_qos","-i",RAIL2_INTERFACE],check=False)
+    trust = command([DSCP_TRUST_RUNTIME,"check",RAIL2_INTERFACE],check=False)
     pfc = command(["dcb","pfc","show","dev",RAIL2_INTERFACE,"prio-pfc"],check=False)
     buffers = command(["dcb","buffer","show","dev",RAIL2_INTERFACE,"prio-buffer"],check=False)
     observations = {"rail2:addresses":addresses,"rail2:idle_operstate":idle_state,"rail2:prio_pfc":pfc,"rail2:prio_buffer":buffers}
@@ -1003,7 +1027,7 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
         failures.append(f"rail2-address:{','.join(addresses) or 'none'}")
     if idle_state != "down":
         failures.append(f"rail2-idle-function:{idle_state or 'missing'}")
-    if "Priority trust state: dscp" not in trust:
+    if trust != f"{RAIL2_INTERFACE} trusts DSCP":
         failures.append("rail2-trust")
     if re.findall(r"\b([0-7]):on\b",pfc) != list(RAIL2_LOSSLESS_PRIORITIES):
         failures.append("rail2-pfc")
@@ -1012,12 +1036,37 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
     return(failures,observations)
 
 
-def audit_gpu() -> tuple[list[str],dict[str,object]]:
-    gpu = run(["nvidia-smi","--query-gpu=name,temperature.gpu","--format=csv,noheader,nounits"],timeout=30,check=False)
-    observations: dict[str,object] = {"gpu":gpu.stdout.decode("utf-8",errors="replace").strip()}
-    if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
-        return(["gpu-unhealthy"],observations)
-    return([],observations)
+def nvidia_information(text: str) -> dict[str,str]:
+    fields = (line.partition(":") for line in text.splitlines())
+    return({key.strip():value.strip() for key,separator,value in fields if separator})
+
+
+def nvidia_module_version(text: str) -> str:
+    match = re.search(r"Kernel Module(?: for \S+)?\s+([0-9]+\.[0-9][0-9.]*)",text.splitlines()[0] if text else "")
+    return(match.group(1) if match else "")
+
+
+def audit_gpu(proc_root: Path = NVIDIA_PROC,pci_root: Path = PCI_DEVICES) -> tuple[list[str],dict[str,object]]:
+    module = nvidia_module_version(read_optional(proc_root / "version"))
+    devices = sorted(path.parent.name for path in (proc_root / "gpus").glob("*/information"))
+    observations: dict[str,object] = {"gpu_module":module,"gpu_devices":devices,"gpu_temperature":GPU_TEMPERATURE_UNMEASURED}
+    if not module:
+        return(["gpu-module-missing"],observations)
+    if len(devices) != 1:
+        return([f"gpu-count:{len(devices)}"],observations)
+    device = devices[0]
+    information = nvidia_information(read_optional(proc_root / "gpus" / device / "information"))
+    identity = tuple(read_optional(pci_root / device / name).strip() for name in ("vendor","device"))
+    firmware = information.get("GPU Firmware","")
+    observations.update({"gpu_pci_id":":".join(identity),"gpu_firmware":firmware,"gpu_excluded":information.get("GPU Excluded",""),"gpu_uuid":information.get("GPU UUID","")})
+    failures = []
+    if identity != GPU_PCI_ID:
+        failures.append(f"gpu-not-gb10:{':'.join(identity)}")
+    if information.get("GPU Excluded") != "No":
+        failures.append(f"gpu-excluded:{information.get('GPU Excluded') or 'unknown'}")
+    if firmware != module:
+        failures.append(f"gpu-firmware:{firmware or 'none'}!={module}")
+    return(failures,observations)
 
 
 def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
@@ -1262,6 +1311,12 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         observations[f"{unit}.enabled"] = state
         if state != "masked":
             failures.append(f"optional-boot-unit:{unit}={state}")
+    vendor_state = is_enabled(VENDOR_UPDATE_SERVICE)
+    vendor_active = command(["systemctl","is-active",VENDOR_UPDATE_SERVICE],check=False)
+    observations[f"{VENDOR_UPDATE_SERVICE}.enabled"] = vendor_state
+    observations[f"{VENDOR_UPDATE_SERVICE}.active"] = vendor_active
+    if vendor_state not in ("disabled","not-found") or vendor_active == "active":
+        failures.append(f"vendor-update-service:{vendor_state}/{vendor_active}")
     for unit in fabric_units:
         before = service_value(unit,"Before")
         timeout = service_value(unit,"TimeoutStartUSec")
@@ -1536,9 +1591,11 @@ def audit_one(host: str,payload: dict[str,object],identity: Path) -> dict[str,ob
 
 def write_receipt(action: str,documents: list[dict[str,object]]) -> Path:
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = Path(tempfile.gettempdir()) / f"ds4_spark_brickproof_{action}_{timestamp}.json"
-    path.write_text(json.dumps({"action":action,"nodes":documents},indent=2,sort_keys=True) + "\n")
-    return(path)
+    handle,name = tempfile.mkstemp(prefix=f"ds4_spark_brickproof_{action}_{timestamp}_",suffix=".json")
+    with os.fdopen(handle,"w") as output:
+        output.write(json.dumps({"action":action,"nodes":documents},indent=2,sort_keys=True) + "\n")
+    os.chmod(name,0o644)
+    return(Path(name))
 
 
 def parse_nodes(value: str) -> tuple[str,...]:

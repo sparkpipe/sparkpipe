@@ -60,7 +60,7 @@ static void SleepCallback(void *context)
 
 static void PauseMs(long milliseconds)
 {
-	struct timespec pause = {0, milliseconds * 1000000L};
+	struct timespec pause = {milliseconds / 1000L, milliseconds % 1000L * 1000000L};
 	nanosleep(&pause,0);
 }
 
@@ -82,6 +82,21 @@ static void Pattern(uint8_t *bytes, uint64_t count, uint32_t seed)
 static int HostBackend(void)
 {
 	return(strcmp(SparkDeviceGetProperties()->backend,"host") == 0);
+}
+
+static void CountCallback(void *context)
+{
+	__atomic_add_fetch((uint32_t *)context,1u,__ATOMIC_SEQ_CST);
+}
+
+static uint32_t ProgramsRecord(void)
+{
+	return(strcmp(SparkDeviceGetProperties()->backend,"metal") != 0);
+}
+
+static uint32_t ProgramsRun(void)
+{
+	return((SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PROGRAMS) != 0u);
 }
 
 static int ChildFaults(SparkDeviceAddress address)
@@ -133,6 +148,35 @@ static void TestSpaces(void)
 	CHECK(device.handle == 0u && device.device == 0u,"free clears the buffer");
 }
 
+static uint32_t BorrowedFill(SparkDeviceQueue *queue, SparkDeviceBuffer *buffer, uint8_t value)
+{
+	const uint8_t *bytes = (const uint8_t *)buffer->host;
+	return(SparkDeviceFill(queue,At(buffer,0u),value,64u) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK &&
+		bytes[0] == value && bytes[63] == value);
+}
+
+static void TestAdoptOwnQueue(uint32_t adopts)
+{
+	SparkDeviceQueue *owner = 0,*borrowed = 0,*again = 0,*gone = 0,*refused = 0;
+	SparkDeviceBuffer scratch;
+	CHECK(SparkDeviceAllocate(&scratch,SPARK_DEVICE_SPACE_SHARED_COHERENT,4096u,"adopt scratch") == SPARK_STATUS_OK &&
+		SparkDeviceQueueCreate(&owner,"adopt owner") == SPARK_STATUS_OK,"create a queue and a host-visible buffer");
+	CHECK(SparkDeviceQueueAdopt(&borrowed,owner,"adopt own") == SPARK_STATUS_OK && borrowed == owner,
+		"adopting one of the device's own live queues hands back that queue, its sequence numbers and capture state");
+	CHECK(BorrowedFill(borrowed,&scratch,0x42),"work queued through the adopted handle runs");
+	CHECK(SparkDeviceQueueDestroy(borrowed) == SPARK_STATUS_OK && BorrowedFill(owner,&scratch,0x43),"releasing the adopted handle leaves the owner's queue working");
+	CHECK(SparkDeviceQueueAdopt(&again,owner,"adopt own again") == SPARK_STATUS_OK && again == owner && SparkDeviceQueueDestroy(owner) == SPARK_STATUS_OK &&
+		BorrowedFill(again,&scratch,0x44),"released by its owner first, the queue lives on for the adopter");
+	CHECK(SparkDeviceQueueDestroy(again) == SPARK_STATUS_OK,"the last release destroys the queue");
+	if ( adopts == 0u )
+	{
+		CHECK(SparkDeviceQueueCreate(&gone,"adopt gone") == SPARK_STATUS_OK && SparkDeviceQueueDestroy(gone) == SPARK_STATUS_OK &&
+			SparkDeviceQueueAdopt(&refused,gone,"adopt freed") == SPARK_STATUS_UNSUPPORTED && refused == 0,
+			"a freed queue's handle is not adopted: it is no longer a live queue of the device");
+	}
+	CHECK(SparkDeviceFree(&scratch) == SPARK_STATUS_OK,"free the scratch buffer");
+}
+
 static void TestAdopt(void)
 {
 	SparkDeviceBuffer held, adopted;
@@ -156,6 +200,7 @@ static void TestAdopt(void)
 			"a backend that owns all its queues refuses to adopt one");
 	}
 	CHECK(SparkDeviceFree(&held) == SPARK_STATUS_OK,"free the held buffer");
+	TestAdoptOwnQueue(adopts);
 }
 
 static void TestCopies(SparkDeviceQueue *queue)
@@ -320,6 +365,41 @@ static void TestEventLifetime(void)
 	CHECK(SparkDeviceQueueDestroy(slow) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(fast) == SPARK_STATUS_OK,"destroy the queues");
 }
 
+static void TestLongHold(void)
+{
+	enum { BYTES = 4096, HOLD_MS = 6000 };
+	SparkDeviceQueue *producer = 0, *consumer = 0;
+	SparkDeviceEvent *ready = 0;
+	SparkDeviceBuffer device, result;
+	Gate gate;
+	uint32_t index;
+	int filled = 1;
+	CHECK(SparkDeviceQueueCreate(&producer,"long hold producer") == SPARK_STATUS_OK && SparkDeviceQueueCreate(&consumer,"long hold consumer") == SPARK_STATUS_OK,
+		"create two queues");
+	CHECK(SparkDeviceEventCreate(&ready) == SPARK_STATUS_OK,"create an event");
+	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,BYTES,"long hold device") == SPARK_STATUS_OK,"allocate the shared target");
+	CHECK(SparkDeviceAllocate(&result,SPARK_DEVICE_SPACE_HOST_PAGEABLE,BYTES,"long hold result") == SPARK_STATUS_OK,"allocate the result");
+	GateInit(&gate);
+	CHECK(SparkDeviceQueueHostCallback(producer,GateWaitCallback,&gate) == SPARK_STATUS_OK,"block the producer");
+	CHECK(SparkDeviceFill(producer,At(&device,0u),0x5au,BYTES) == SPARK_STATUS_OK,"fill behind the block");
+	CHECK(SparkDeviceEventRecord(ready,producer) == SPARK_STATUS_OK,"record behind the block");
+	CHECK(SparkDeviceQueueWaitEvent(consumer,ready) == SPARK_STATUS_OK,"wait on the event from the other queue");
+	CHECK(SparkDeviceCopy(consumer,At(&result,0u),At(&device,0u),BYTES) == SPARK_STATUS_OK,"copy after the wait");
+	CHECK(SparkDeviceQueueQuery(consumer) == SPARK_STATUS_PENDING,"the waiting queue reports pending work");
+	PauseMs(HOLD_MS);
+	CHECK(SparkDeviceQueueQuery(producer) == SPARK_STATUS_PENDING,"work behind a host callback is still pending after a hold longer than a GPU watchdog");
+	GateOpen(&gate);
+	CHECK(SparkDeviceQueueWait(consumer,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"a queue that waited on an event for longer than a GPU watchdog completes");
+	CHECK(SparkDeviceQueueWait(producer,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"work held behind a host callback for longer than a GPU watchdog completes");
+	for ( index = 0u; index < BYTES; index++ )
+		if ( ((uint8_t *)result.host)[index] != 0x5au )
+			filled = 0;
+	CHECK(filled,"the waiting queue sees the producer's fill");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&result) == SPARK_STATUS_OK,"free the long hold buffers");
+	CHECK(SparkDeviceEventDestroy(ready) == SPARK_STATUS_OK,"destroy the event");
+	CHECK(SparkDeviceQueueDestroy(producer) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(consumer) == SPARK_STATUS_OK,"destroy the queues");
+}
+
 static void TestRecordedEventDestroy(SparkDeviceQueue *queue)
 {
 	SparkDeviceBuffer buffer = {0};
@@ -429,6 +509,65 @@ typedef struct ContractParams
 	uint32_t seed;
 } ContractParams;
 
+static void TestHostMemoryShare(void)
+{
+	const SparkDeviceProperties *properties = SparkDeviceGetProperties();
+	SparkDeviceMemoryHandle host = 0u, imported = 0u, device = 0u;
+	SparkDeviceAddress filled = 0u, mapped = 0u, refused = 0u;
+	SparkDeviceBuffer view, readback;
+	char expected[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	uint64_t granularity = 0u;
+	uint8_t *pattern;
+	int fd = -1;
+	if ( (properties->properties & SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE) == 0u )
+	{
+		snprintf(expected,sizeof(expected),"the %s backend has no exportable host memory",properties->backend);
+		CHECK(SparkDeviceMemoryCreateHost(&host,UINT64_C(1) << 21,"contract host share") == SPARK_STATUS_UNSUPPORTED && host == 0u &&
+			strcmp(SparkDeviceLastError()->text,expected) == 0,"without the property, host memory is refused and the refusal names the backend");
+		CHECK(SparkDeviceMemoryMap(UINT64_C(1) << 21,UINT64_C(1) << 21,9u,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_HOST_READ) ==
+			SPARK_STATUS_INVALID_ARGUMENT && strcmp(SparkDeviceLastError()->text,"host access maps only host memory") == 0,
+			"without the property, host access in a mapping is an invalid argument");
+		return;
+	}
+	CHECK(SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity) == SPARK_STATUS_OK && granularity != 0u,"granularity");
+	pattern = malloc((size_t)granularity);
+	CHECK(pattern != 0,"pattern buffer");
+	if ( pattern == 0 )
+		return;
+	Pattern(pattern,granularity,11u);
+	CHECK(SparkDeviceMemoryCreateHost(&host,granularity + 1u,"contract host share") == SPARK_STATUS_INVALID_ARGUMENT,"host memory comes in whole granules");
+	CHECK(SparkDeviceMemoryCreateHost(&host,granularity,"contract host share") == SPARK_STATUS_OK && host != 0u,"create host memory");
+	CHECK(SparkDeviceAddressReserve(&filled,granularity,"contract host share") == SPARK_STATUS_OK,"reserve a range to fill it");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,SPARK_DEVICE_ACCESS_HOST_WRITE) == SPARK_STATUS_INVALID_ARGUMENT &&
+		strcmp(SparkDeviceLastError()->text,"host write access needs host read access") == 0,"host write needs host read");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,SPARK_DEVICE_ACCESS_DEVICE_WRITE) == SPARK_STATUS_INVALID_ARGUMENT,"device write needs device read");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,0u) == SPARK_STATUS_INVALID_ARGUMENT,"a mapping grants a read");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE) == SPARK_STATUS_OK,
+		"map host memory for the CPU alone");
+	memcpy((void *)(uintptr_t)filled,pattern,(size_t)granularity);
+	CHECK(SparkDeviceMemoryExport(host,&fd) == SPARK_STATUS_OK && fd >= 0,"export host memory");
+	CHECK(SparkDeviceMemoryImport(&imported,fd,"contract host share") == SPARK_STATUS_OK && imported != 0u,"import host memory");
+	if ( fd >= 0 )
+		(void)close(fd);
+	CHECK(SparkDeviceAddressReserve(&mapped,granularity,"contract host share") == SPARK_STATUS_OK,"reserve a range for the import");
+	CHECK(SparkDeviceMemoryMap(mapped,granularity,imported,0u,SPARK_DEVICE_ACCESS_DEVICE_READ) == SPARK_STATUS_OK,"map the import device-read-only");
+	CHECK(SparkDeviceAdopt(&view,mapped,0,granularity,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"contract host share view") == SPARK_STATUS_OK,"adopt the device view");
+	CHECK(SparkDeviceAllocate(&readback,SPARK_DEVICE_SPACE_HOST_PINNED,granularity,"contract host share readback") == SPARK_STATUS_OK,"readback buffer");
+	CHECK(SparkDeviceCopySync(At(&readback,0u),At(&view,0u),granularity) == SPARK_STATUS_OK && memcmp(readback.host,pattern,(size_t)granularity) == 0,
+		"the device reads through the import what the holder wrote");
+	CHECK(SparkDeviceFree(&readback) == SPARK_STATUS_OK && SparkDeviceFree(&view) == SPARK_STATUS_OK,"free the readback and the view");
+	CHECK(SparkDeviceMemoryCreate(&device,granularity,"contract host share device") == SPARK_STATUS_OK,"create device memory");
+	CHECK(SparkDeviceAddressReserve(&refused,granularity,"contract host share") == SPARK_STATUS_OK,"reserve a range for device memory");
+	CHECK(SparkDeviceMemoryMap(refused,granularity,device,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_HOST_READ) == SPARK_STATUS_INVALID_ARGUMENT &&
+		strcmp(SparkDeviceLastError()->text,"host access maps only host memory") == 0,"host access to device memory is refused");
+	CHECK(SparkDeviceMemoryUnmap(mapped,granularity) == SPARK_STATUS_OK && SparkDeviceMemoryUnmap(filled,granularity) == SPARK_STATUS_OK,"unmap");
+	CHECK(SparkDeviceAddressRelease(mapped,granularity) == SPARK_STATUS_OK && SparkDeviceAddressRelease(filled,granularity) == SPARK_STATUS_OK &&
+		SparkDeviceAddressRelease(refused,granularity) == SPARK_STATUS_OK,"release the ranges");
+	CHECK(SparkDeviceMemoryRelease(imported) == SPARK_STATUS_OK && SparkDeviceMemoryRelease(host) == SPARK_STATUS_OK &&
+		SparkDeviceMemoryRelease(device) == SPARK_STATUS_OK,"release the memory");
+	free(pattern);
+}
+
 static SparkDeviceLaunch Launch1d(uint32_t count, uint32_t width, const ContractParams *params, const SparkDeviceBinding *bindings, uint32_t binding_count)
 {
 	SparkDeviceLaunch launch;
@@ -486,8 +625,8 @@ static void TestKernelRefusals(SparkDeviceQueue *queue, SparkDeviceKernel *write
 	launch.groups.y = 0u;
 	CHECK(SparkDeviceKernelLaunch(queue,writer,&launch) == SPARK_STATUS_INVALID_ARGUMENT,"an empty grid is refused");
 	launch = Launch1d(64u,64u,&params,bindings,1u);
-	launch.constant_bytes = SPARK_DEVICE_MAX_CONSTANT_BYTES + 4u;
-	CHECK(SparkDeviceKernelLaunch(queue,writer,&launch) == SPARK_STATUS_INVALID_ARGUMENT,"constants over 4096 bytes are refused");
+	launch.constant_bytes = SparkDeviceGetProperties()->max_constant_bytes + 4u;
+	CHECK(SparkDeviceKernelLaunch(queue,writer,&launch) == SPARK_STATUS_INVALID_ARGUMENT,"constants over the backend's limit are refused");
 	for ( index = 0u; index <= SPARK_DEVICE_MAX_BINDINGS; index++ )
 		bindings[index] = Bind(device,0u,256u,SPARK_DEVICE_BIND_WRITE);
 	launch = Launch1d(64u,64u,&params,bindings,SPARK_DEVICE_MAX_BINDINGS + 1u);
@@ -533,6 +672,64 @@ static void TestKernelOrdering(SparkDeviceQueue *queue, SparkDeviceKernel *write
 	CHECK(ordered,"a kernel, a copy and a kernel on one queue run in order");
 	CHECK(SparkDeviceFree(&produced) == SPARK_STATUS_OK && SparkDeviceFree(&copied) == SPARK_STATUS_OK && SparkDeviceFree(&result) == SPARK_STATUS_OK,
 		"free the ordering buffers");
+}
+
+
+static void TestKernelPrograms(SparkDeviceQueue *queue, SparkDeviceKernel *write)
+{
+	enum { COUNT = 5000, WIDTH = 256 };
+	if ( ProgramsRecord() == 0u )
+		return;
+	static const uint64_t values[][2] = {{11u, 5000u}, {977u, 1u}, {31337u, 4097u}};
+	SparkDeviceBuffer program_out, eager_out;
+	SparkDeviceBinding binding;
+	SparkDeviceLaunch launch;
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkDevicePatch patch;
+	ContractParams params = {COUNT, 0u};
+	uint32_t index, run, wrong = 0u;
+	CHECK(SparkDeviceAllocate(&program_out,SPARK_DEVICE_SPACE_SHARED_COHERENT,COUNT * 4u,"program kernel out") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&eager_out,SPARK_DEVICE_SPACE_SHARED_COHERENT,COUNT * 4u,"eager kernel out") == SPARK_STATUS_OK,"allocate the outputs");
+	binding = Bind(&program_out,0u,COUNT * 4u,SPARK_DEVICE_BIND_WRITE);
+	launch = Launch1d(COUNT,WIDTH,&params,&binding,1u);
+	CHECK(SparkDeviceProgramRecord(queue,"contract kernel program") == SPARK_STATUS_OK && SparkDeviceKernelLaunch(queue,write,&launch) == SPARK_STATUS_OK,
+		"record a launch");
+	memset(&patch,0,sizeof(patch));
+	patch.value = 0u;
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_CONSTANT;
+	patch.offset = 4u;
+	patch.bytes = 4u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the seed");
+	patch.value = 1u;
+	patch.offset = 0u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the count");
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_GRID_X;
+	patch.transform.multiply = 1;
+	patch.transform.divide = WIDTH;
+	patch.transform.scale = 1;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the grid width from the count");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK &&
+		info.kernels == 1u && info.values == 2u && info.places == 3u,"the program holds one kernel with three places for two values");
+	for ( run = 0u; program != 0 && run < sizeof(values) / sizeof(values[0]); run++ )
+	{
+		memset(program_out.host,0,COUNT * 4u);
+		memset(eager_out.host,0,COUNT * 4u);
+		CHECK(SparkDeviceProgramRun(program,queue,values[run],2u) == (ProgramsRun() != 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED),
+			"run the program with new patch values");
+		params.seed = (uint32_t)values[run][0];
+		params.count = (uint32_t)values[run][1];
+		binding = Bind(&eager_out,0u,COUNT * 4u,SPARK_DEVICE_BIND_WRITE);
+		launch = Launch1d(params.count,WIDTH,&params,&binding,1u);
+		CHECK(SparkDeviceKernelLaunch(queue,write,&launch) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
+			"launch the same values eagerly");
+		for ( index = 0u; ProgramsRun() != 0u && index < COUNT; index++ )
+			wrong += ((const uint32_t *)program_out.host)[index] != ((const uint32_t *)eager_out.host)[index];
+	}
+	CHECK(wrong == 0u,"every patched run writes the bytes the same launch writes eagerly");
+	CHECK(SparkDeviceKernelDestroy(write) == SPARK_STATUS_BUSY,"a live program keeps the kernels it launches");
+	CHECK(program != 0 && SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the kernel program");
+	CHECK(SparkDeviceFree(&program_out) == SPARK_STATUS_OK && SparkDeviceFree(&eager_out) == SPARK_STATUS_OK,"free the outputs");
 }
 
 static void TestKernelAcrossQueues(SparkDeviceKernel *write, SparkDeviceKernel *read)
@@ -611,6 +808,273 @@ static void TestKernelBusy(SparkDeviceQueue *queue, SparkDeviceLibrary *library,
 	CHECK(SparkDeviceFree(&out) == SPARK_STATUS_OK,"free after the launch completes");
 }
 
+#ifndef SPARK_DEVICE_TEST_PARAMETER_KERNEL
+#define SPARK_DEVICE_TEST_PARAMETER_KERNEL "SparkNvrmFirstLight"
+#endif
+#ifndef SPARK_DEVICE_TEST_LARGE_KERNEL
+#define SPARK_DEVICE_TEST_LARGE_KERNEL "SparkNvrmLargeParameter"
+#endif
+#ifndef SPARK_DEVICE_TEST_HUGE_KERNEL
+#define SPARK_DEVICE_TEST_HUGE_KERNEL "SparkNvrmHugeParameter"
+#endif
+#ifndef SPARK_DEVICE_TEST_LONG_KERNEL
+#define SPARK_DEVICE_TEST_LONG_KERNEL ""
+#endif
+
+#define CONTRACT_LONG_NAME_BYTES 152u
+#define CONTRACT_WORD_THREADS 1024u
+#define CONTRACT_LONG_ROUNDS 1100u
+#define CONTRACT_HUGE_ROUNDS 256u
+#define CONTRACT_LARGE_BLOCK_BYTES (4096u + (uint32_t)sizeof(uint64_t))
+
+typedef struct ParameterBlock
+{
+	uint64_t output;
+	uint32_t value;
+} ParameterBlock;
+
+#define CONTRACT_HOLD_NS 300000000l
+
+static void *GateOpenLater(void *context)
+{
+	struct timespec pause = {0, CONTRACT_HOLD_NS};
+	nanosleep(&pause,0);
+	GateOpen((Gate *)context);
+	return(0);
+}
+
+static void HoldQueue(SparkDeviceQueue *queue, Gate *gate, pthread_t *opener)
+{
+	GateInit(gate);
+	CHECK(SparkDeviceQueueHostCallback(queue,GateWaitCallback,gate) == SPARK_STATUS_OK && pthread_create(opener,0,GateOpenLater,gate) == 0,
+		"hold the queue behind host work so launches pile up");
+}
+
+static void TestKernelNameLimit(void)
+{
+	char *name = (char *)malloc(SPARK_DEVICE_KERNEL_NAME_LIMIT + 2u);
+	SparkDeviceKernel *kernel = (SparkDeviceKernel *)&kernel;
+	char length[32];
+	CHECK(name != 0,"allocate an over-long kernel name");
+	if ( name == 0 )
+		return;
+	memset(name,'k',SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u);
+	name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u] = '\0';
+	snprintf(length,sizeof(length),"%u bytes",SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u);
+	CHECK(SparkDeviceKernelCreate(&kernel,0,name) == SPARK_STATUS_INVALID_ARGUMENT && kernel == 0 &&
+		strstr(SparkDeviceLastError()->text,length) != 0 && strstr(SparkDeviceLastError()->text,"kkkkkkkk") != 0,
+		"a kernel name over the limit is refused, naming its length and its first bytes");
+	free(name);
+}
+
+static void TestLongKernelName(SparkDeviceQueue *queue, SparkDeviceLibrary *library)
+{
+	enum { THREADS = 128 };
+	SparkDeviceKernel *kernel = 0;
+	SparkDeviceKernelInfo info;
+	SparkDeviceBuffer output;
+	SparkDeviceLaunch launch;
+	ParameterBlock block;
+	Gate gate;
+	pthread_t opener;
+	uint32_t index, round, launched = 0u, wrong = 0u;
+	char caller[SPARK_DEVICE_KERNEL_NAME_LIMIT + 2u];
+	SparkDeviceKernel *refused = 0;
+	CHECK(strlen(SPARK_DEVICE_TEST_LONG_KERNEL) == CONTRACT_LONG_NAME_BYTES,"the build names a kernel whose mangled name is 152 characters long");
+	if ( strlen(SPARK_DEVICE_TEST_LONG_KERNEL) != CONTRACT_LONG_NAME_BYTES )
+		return;
+	memset(caller,'k',SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u);
+	caller[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u] = '\0';
+	CHECK(SparkDeviceKernelCreate(&refused,library,caller) == SPARK_STATUS_INVALID_ARGUMENT && refused == 0 && strstr(SparkDeviceLastError()->text,"65 bytes") != 0,
+		"a 65-character name that is no kernel's symbol is refused, naming its length");
+	CHECK(SparkDeviceKernelCreate(&kernel,library,SPARK_DEVICE_TEST_LONG_KERNEL) == SPARK_STATUS_OK,
+		"a kernel is created by its 152-character mangled symbol, which resolves through its short name");
+	if ( kernel == 0 )
+		return;
+	CHECK(SparkDeviceKernelGetInfo(kernel,&info) == SPARK_STATUS_OK && info.parameter_bytes == 12u,"the long-named kernel reports its parameter block");
+	CHECK(SparkDeviceAllocate(&output,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)CONTRACT_LONG_ROUNDS * THREADS * sizeof(uint32_t),"long name output") ==
+		SPARK_STATUS_OK,"allocate the output");
+	memset(&launch,0,sizeof(launch));
+	launch.groups.x = launch.groups.y = launch.groups.z = 1u;
+	launch.threads.x = THREADS;
+	launch.threads.y = launch.threads.z = 1u;
+	launch.constants = &block;
+	launch.constant_bytes = info.parameter_bytes;
+	HoldQueue(queue,&gate,&opener);
+	for ( round = 0u; round < CONTRACT_LONG_ROUNDS; round++ )
+	{
+		memset(&block,0,sizeof(block));
+		block.output = output.device + (uint64_t)round * THREADS * sizeof(uint32_t);
+		block.value = round << 12;
+		launched += SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_OK;
+	}
+	CHECK(launched == CONTRACT_LONG_ROUNDS && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
+		"queue 1100 launches of the long-named kernel behind held host work");
+	pthread_join(opener,0);
+	for ( round = 0u; round < CONTRACT_LONG_ROUNDS; round++ )
+		for ( index = 0u; index < THREADS; index++ )
+			wrong += ((const uint32_t *)output.host)[round * THREADS + index] != (round << 12) + index;
+	CHECK(wrong == 0u,"every launch of the long-named kernel ran with its own parameter block");
+	CHECK(SparkDeviceKernelDestroy(kernel) == SPARK_STATUS_OK,"destroy the long-named kernel");
+	CHECK(SparkDeviceFree(&output) == SPARK_STATUS_OK,"free the long name output");
+}
+
+static uint32_t ContractWord(uint32_t index, uint32_t round)
+{
+	return((0xc0de0000u ^ (index * 2654435761u)) + round);
+}
+
+static void TestWordBlock(SparkDeviceQueue *queue, SparkDeviceLibrary *library, const char *name, uint32_t pointer, uint32_t expected_bytes, uint32_t rounds)
+{
+	const uint32_t data = 1u - pointer;
+	SparkDeviceKernel *kernel = 0;
+	SparkDeviceKernelInfo info;
+	SparkDeviceBuffer output;
+	SparkDeviceLaunch launch;
+	uint8_t *block;
+	Gate gate;
+	pthread_t opener;
+	uint32_t index, round, words, launched = 0u, wrong = 0u;
+	char what[192];
+	snprintf(what,sizeof(what),"create %s",name);
+	CHECK(SparkDeviceKernelCreate(&kernel,library,name) == SPARK_STATUS_OK,what);
+	if ( kernel == 0 )
+		return;
+	snprintf(what,sizeof(what),"%s takes an output pointer and a word block, %u bytes in all, and runs %u threads",name,expected_bytes,CONTRACT_WORD_THREADS);
+	CHECK(SparkDeviceKernelGetInfo(kernel,&info) == SPARK_STATUS_OK && info.parameter_count == 2u && info.parameter_bytes == expected_bytes &&
+		info.parameters[pointer].bytes == sizeof(uint64_t) && info.parameters[data].bytes % sizeof(uint32_t) == 0u &&
+		info.max_threads >= CONTRACT_WORD_THREADS,what);
+	if ( info.parameter_count != 2u || info.parameter_bytes != expected_bytes )
+	{
+		SparkDeviceKernelDestroy(kernel);
+		return;
+	}
+	words = info.parameters[data].bytes / (uint32_t)sizeof(uint32_t);
+	block = (uint8_t *)calloc(1u,info.parameter_bytes);
+	CHECK(block != 0 && SparkDeviceAllocate(&output,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)rounds * words * sizeof(uint32_t),"word block output") ==
+		SPARK_STATUS_OK,"allocate the word block and its output");
+	if ( block == 0 )
+	{
+		SparkDeviceKernelDestroy(kernel);
+		return;
+	}
+	memset(&launch,0,sizeof(launch));
+	launch.groups.x = launch.groups.y = launch.groups.z = 1u;
+	launch.threads.x = CONTRACT_WORD_THREADS;
+	launch.threads.y = launch.threads.z = 1u;
+	launch.constants = block;
+	launch.constant_bytes = info.parameter_bytes;
+	HoldQueue(queue,&gate,&opener);
+	for ( round = 0u; round < rounds; round++ )
+	{
+		const uint64_t address = output.device + (uint64_t)round * words * sizeof(uint32_t);
+		for ( index = 0u; index < words; index++ )
+		{
+			const uint32_t word = ContractWord(index,round);
+			memcpy(block + info.parameters[data].offset + index * sizeof(uint32_t),&word,sizeof(word));
+		}
+		memcpy(block + info.parameters[pointer].offset,&address,sizeof(address));
+		launched += SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_OK;
+	}
+	snprintf(what,sizeof(what),"queue %u launches of %s with its %u-byte parameter block behind held host work",rounds,name,info.parameter_bytes);
+	CHECK(launched == rounds && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,what);
+	pthread_join(opener,0);
+	for ( round = 0u; round < rounds; round++ )
+		for ( index = 0u; index < words; index++ )
+			wrong += ((const uint32_t *)output.host)[(uint64_t)round * words + index] != ContractWord(index,round);
+	snprintf(what,sizeof(what),"every word of every %u-byte parameter block reaches its launch",info.parameter_bytes);
+	CHECK(wrong == 0u,what);
+	launch.constant_bytes = SparkDeviceGetProperties()->max_constant_bytes + 4u;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"backend's") != 0,
+		"a parameter block over the backend's limit is refused, naming the limit");
+	CHECK(SparkDeviceKernelDestroy(kernel) == SPARK_STATUS_OK && SparkDeviceFree(&output) == SPARK_STATUS_OK,"destroy the word block kernel and free its output");
+	free(block);
+}
+
+
+static void TestParameterBlockProgram(SparkDeviceQueue *queue, SparkDeviceKernel *kernel, SparkDeviceLaunch *launch, ParameterBlock *block)
+{
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkDevicePatch patch;
+	const uint64_t value = 0x12340000u;
+	CHECK(SparkDeviceProgramRecord(queue,"contract parameter program") == SPARK_STATUS_OK && SparkDeviceKernelLaunch(queue,kernel,launch) == SPARK_STATUS_OK,
+		"record a parameter-block launch");
+	memset(&patch,0,sizeof(patch));
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_ARGUMENT;
+	patch.argument = 2u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_INVALID_ARGUMENT,"a patch names one of the kernel's parameters");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_INVALID_ARGUMENT && program == 0,"the refused patch breaks that recording");
+	CHECK(SparkDeviceProgramRecord(queue,"contract parameter program") == SPARK_STATUS_OK && SparkDeviceKernelLaunch(queue,kernel,launch) == SPARK_STATUS_OK,
+		"record the launch again");
+	patch.argument = 1u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the kernel's value argument");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK &&
+		info.kernels == 1u && info.values == 1u && info.places == 1u,"finish a one-kernel program with one patch");
+	CHECK(SparkDeviceProgramRun(program,queue,&value,1u) == (ProgramsRun() != 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED),
+		"a backend runs a program only when it reports that it runs programs");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,
+		"destroy the parameter-block program");
+	(void)block;
+}
+
+static void TestParameterBlockKernels(SparkDeviceQueue *queue)
+{
+	enum { GROUPS = 4, THREADS = 128, WORDS = GROUPS * THREADS };
+	SparkDeviceLibrary *library = 0;
+	SparkDeviceKernel *kernel = 0, *missing = 0;
+	SparkDeviceKernelInfo info;
+	SparkDeviceBuffer output;
+	SparkDeviceBinding binding;
+	SparkDeviceLaunch launch;
+	ParameterBlock block;
+	uint32_t index, wrong = 0u;
+	CHECK(SparkDeviceLibraryLoad(&library,"/nonexistent/kernels.cubin","contract kernels") == SPARK_STATUS_NOT_FOUND && library == 0,"a missing library is refused");
+	CHECK(SparkDeviceLibraryLoad(&library,SPARK_DEVICE_TEST_LIBRARY,"contract kernels") == SPARK_STATUS_OK,"load a kernel library with its manifest");
+	CHECK(SparkDeviceKernelCreate(&missing,library,"contract_absent") == SPARK_STATUS_NOT_FOUND && missing == 0,"an absent kernel is refused");
+	CHECK(SparkDeviceKernelCreate(&kernel,library,SPARK_DEVICE_TEST_PARAMETER_KERNEL) == SPARK_STATUS_OK,"create a kernel by its name");
+	if ( kernel == 0 )
+	{
+		SparkDeviceLibraryUnload(library);
+		return;
+	}
+	CHECK(SparkDeviceKernelGetInfo(kernel,&info) == SPARK_STATUS_OK && info.parameter_count == 2u && info.parameter_bytes == 12u &&
+		info.parameters != 0 && info.parameters[0].offset == 0u && info.parameters[0].bytes == 8u && info.parameters[1].offset == 8u &&
+		info.parameters[1].bytes == 4u && info.parameters[1].align == 4u,"the kernel reports its parameter layout");
+	CHECK(SparkDeviceAllocate(&output,SPARK_DEVICE_SPACE_SHARED_COHERENT,WORDS * sizeof(uint32_t),"parameter block output") == SPARK_STATUS_OK,"allocate the output");
+	memset(&block,0,sizeof(block));
+	block.output = output.device;
+	block.value = 0x5a5a0000u;
+	memset(&launch,0,sizeof(launch));
+	launch.groups.x = GROUPS;
+	launch.groups.y = launch.groups.z = 1u;
+	launch.threads.x = THREADS;
+	launch.threads.y = launch.threads.z = 1u;
+	launch.constants = &block;
+	launch.constant_bytes = info.parameter_bytes;
+	binding = Bind(&output,0u,WORDS * sizeof(uint32_t),SPARK_DEVICE_BIND_WRITE);
+	launch.bindings = &binding;
+	launch.binding_count = 1u;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_UNSUPPORTED,"a kernel that takes its arguments in its parameter block refuses bindings");
+	launch.bindings = 0;
+	launch.binding_count = 0u;
+	launch.constant_bytes = info.parameter_bytes + 4u;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_INVALID_ARGUMENT,"a parameter block of the wrong size is refused");
+	launch.constant_bytes = info.parameter_bytes;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
+		"launch the kernel with its parameter block");
+	for ( index = 0u; index < WORDS; index++ )
+		wrong += ((const uint32_t *)output.host)[index] != (block.value ^ index);
+	CHECK(wrong == 0u,"every thread wrote what its parameter block asked for");
+	TestParameterBlockProgram(queue,kernel,&launch,&block);
+	TestLongKernelName(queue,library);
+	TestWordBlock(queue,library,SPARK_DEVICE_TEST_LARGE_KERNEL,1u,CONTRACT_LARGE_BLOCK_BYTES,1u);
+	TestWordBlock(queue,library,SPARK_DEVICE_TEST_HUGE_KERNEL,0u,SparkDeviceGetProperties()->max_constant_bytes,CONTRACT_HUGE_ROUNDS);
+	CHECK(SparkDeviceLibraryUnload(library) == SPARK_STATUS_BUSY,"a library with a live kernel stays loaded");
+	CHECK(SparkDeviceKernelDestroy(kernel) == SPARK_STATUS_OK && SparkDeviceLibraryUnload(library) == SPARK_STATUS_OK,"destroy the kernel, then unload");
+	CHECK(SparkDeviceFree(&output) == SPARK_STATUS_OK,"free the output");
+}
+
 static void TestKernels(SparkDeviceQueue *queue)
 {
 	SparkDeviceLibrary *library = 0;
@@ -621,7 +1085,14 @@ static void TestKernels(SparkDeviceQueue *queue)
 		CHECK(0,"kernel tests need an initialized device");
 		return;
 	}
-	if ( strcmp(SparkDeviceGetProperties()->backend,"metal") != 0 )
+	TestKernelNameLimit();
+	if ( (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES) != 0u &&
+		(SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS) != 0u )
+	{
+		TestParameterBlockKernels(queue);
+		return;
+	}
+	if ( (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES) == 0u )
 	{
 		CHECK(SparkDeviceLibraryLoad(&library,SPARK_DEVICE_TEST_LIBRARY,"contract kernels") == SPARK_STATUS_UNSUPPORTED && library == 0,
 			"a backend without device kernels refuses to load a kernel library");
@@ -634,17 +1105,323 @@ static void TestKernels(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceKernelCreate(&write,library,"contract_write") == SPARK_STATUS_OK &&
 		SparkDeviceKernelCreate(&read,library,"contract_read") == SPARK_STATUS_OK &&
 		SparkDeviceKernelCreate(&shared,library,"contract_shared") == SPARK_STATUS_OK,"create the contract kernels");
+	if ( write == 0 || read == 0 || shared == 0 )
+	{
+		if ( write != 0 )
+			SparkDeviceKernelDestroy(write);
+		if ( read != 0 )
+			SparkDeviceKernelDestroy(read);
+		if ( shared != 0 )
+			SparkDeviceKernelDestroy(shared);
+		CHECK(SparkDeviceLibraryUnload(library) == SPARK_STATUS_OK,"unload the library its kernels could not be created from");
+		return;
+	}
 	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,4096u,"kernel device") == SPARK_STATUS_OK,"allocate");
 	TestKernelRefusals(queue,write,&device);
 	TestKernelOrdering(queue,write,read);
 	TestKernelAcrossQueues(write,read);
 	TestKernelBusy(queue,library,shared);
+	TestKernelPrograms(queue,write);
 	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the device buffer");
 	CHECK(SparkDeviceShutdown() == SPARK_STATUS_BUSY,"shutdown refuses while a kernel library is loaded");
 	CHECK(SparkDeviceKernelDestroy(write) == SPARK_STATUS_OK && SparkDeviceKernelDestroy(read) == SPARK_STATUS_OK &&
 		SparkDeviceKernelDestroy(shared) == SPARK_STATUS_OK,"destroy the kernels");
 	CHECK(SparkDeviceKernelDestroy(write) == SPARK_STATUS_INVALID_ARGUMENT,"a destroyed kernel is refused");
 	CHECK(SparkDeviceLibraryUnload(library) == SPARK_STATUS_OK,"unload the library");
+}
+
+
+
+static void TestProgramRefusals(SparkDeviceQueue *queue, SparkDeviceBuffer *target)
+{
+	SparkDeviceProgram *program = 0;
+	SparkDevicePatch patch;
+	memset(&patch,0,sizeof(patch));
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_GRID_X;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_INVALID_ARGUMENT,"a patch needs a recording queue");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_INVALID_ARGUMENT && program == 0,"finishing needs a recording queue");
+	CHECK(SparkDeviceProgramRecord(queue,"contract refusals") == SPARK_STATUS_OK,"start a recording");
+	CHECK(SparkDeviceProgramRecord(queue,"contract twice") == SPARK_STATUS_BUSY,"a queue records one program at a time");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_BUSY && SparkDeviceQueueQuery(queue) == SPARK_STATUS_BUSY &&
+		SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_BUSY,"a recording queue is neither waited on nor synchronized");
+	CHECK(SparkDeviceFill(queue,At(target,0u),1u,64u) == SPARK_STATUS_OK,"record a fill");
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_INVALID_ARGUMENT,"a patch must follow a kernel launch");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_INVALID_ARGUMENT && program == 0,
+		"a program with a refused step is refused at finish, so a broken program never runs");
+	CHECK(SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"the queue answers again once its recording ends");
+}
+
+typedef struct RecordingWait
+{
+	SparkDeviceQueue *queue;
+	uint32_t kind;
+	uint32_t done;
+	SparkStatus status;
+} RecordingWait;
+
+static void *RecordingWaitMain(void *argument)
+{
+	RecordingWait *wait = (RecordingWait *)argument;
+	if ( wait->kind == 0u )
+		wait->status = SparkDeviceQueueWait(wait->queue,SPARK_DEVICE_WAIT_FOREVER);
+	else if ( wait->kind == 1u )
+		wait->status = SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER);
+	else
+		wait->status = SparkDeviceQueueQuery(wait->queue);
+	__atomic_store_n(&wait->done,1u,__ATOMIC_RELEASE);
+	return(0);
+}
+
+static void TestRecordingWaits(SparkDeviceQueue *queue)
+{
+	enum { WAITERS = 3 };
+	const struct timespec pause = {0, 20000000};
+	RecordingWait waits[WAITERS];
+	pthread_t threads[WAITERS];
+	SparkDeviceProgram *program = 0;
+	uint32_t index,started = 0u;
+	CHECK(SparkDeviceProgramRecord(queue,"contract waits") == SPARK_STATUS_OK,"start a recording for other threads to wait on");
+	memset(waits,0,sizeof(waits));
+	for ( index = 0u; index < WAITERS; index++ )
+	{
+		waits[index].queue = queue;
+		waits[index].kind = index;
+		started += pthread_create(&threads[index],0,RecordingWaitMain,&waits[index]) == 0 ? 1u : 0u;
+	}
+	nanosleep(&pause,0);
+	CHECK(started == WAITERS && __atomic_load_n(&waits[0].done,__ATOMIC_ACQUIRE) == 0u && __atomic_load_n(&waits[1].done,__ATOMIC_ACQUIRE) == 0u,
+		"another thread's wait on the recording queue and its device synchronize wait while the queue records");
+	CHECK(__atomic_load_n(&waits[2].done,__ATOMIC_ACQUIRE) == 1u && waits[2].status == SPARK_STATUS_PENDING,
+		"another thread's query of the recording queue answers pending");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"finish the recording");
+	for ( index = 0u; index < started; index++ )
+		pthread_join(threads[index],0);
+	CHECK(waits[0].status == SPARK_STATUS_OK && waits[1].status == SPARK_STATUS_OK,"the waiting threads return once the recording ends");
+	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the empty program");
+}
+
+typedef struct ProgramCopyShape
+{
+	uint32_t fill;
+	uint64_t to;
+	uint64_t from;
+	uint64_t bytes;
+	uint8_t value;
+} ProgramCopyShape;
+
+static SparkStatus ProgramCopyShapeIssue(SparkDeviceQueue *queue, const ProgramCopyShape *shape, SparkDeviceBuffer *target, SparkDeviceBuffer *source)
+{
+	return(shape->fill != 0u ? SparkDeviceFill(queue,At(target,shape->to),shape->value,shape->bytes) :
+		SparkDeviceCopy(queue,At(target,shape->to),At(source,shape->from),shape->bytes));
+}
+
+static void TestProgramCopyShapes(SparkDeviceQueue *queue)
+{
+	enum { MIB = 1 << 20, BYTES = 4 * MIB, SHAPES = 9, RUNS = 2 };
+	static const ProgramCopyShape shapes[SHAPES] = {
+		{1u,0u,0u,1u,0x11},
+		{1u,3u,0u,7u,0x22},
+		{1u,17u,0u,4099u,0x33},
+		{0u,5000u,5000u,1u,0},
+		{0u,6001u,6001u,4096u + 13u,0},
+		{0u,16384u,16385u,777u,0},
+		{0u,65536u,3u,MIB + 7u,0},
+		{1u,2u * MIB + 1u,0u,MIB - 3u,0x44},
+		{0u,3u * MIB + 48u,3u * MIB + 16u,MIB / 2u + 5u,0}};
+	SparkDeviceBuffer source,recorded,eager;
+	SparkDeviceProgram *program = 0;
+	uint8_t *model;
+	uint32_t shape,run,issued = 1u;
+	uint64_t index,wrong = 0u,off_model = 0u;
+	if ( ProgramsRecord() == 0u || ProgramsRun() == 0u )
+		return;
+	model = (uint8_t *)malloc(BYTES);
+	CHECK(model != 0 && SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"copy shapes source") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&recorded,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"copy shapes program") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&eager,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"copy shapes eager") == SPARK_STATUS_OK,"allocate the copy shape buffers");
+	if ( model == 0 || source.host == 0 || recorded.host == 0 || eager.host == 0 )
+	{
+		free(model);
+		return;
+	}
+	Pattern((uint8_t *)source.host,BYTES,29u);
+	memset(recorded.host,0xee,BYTES);
+	memset(eager.host,0xee,BYTES);
+	memset(model,0xee,BYTES);
+	for ( shape = 0u; shape < SHAPES; shape++ )
+		if ( shapes[shape].fill != 0u )
+			memset(model + shapes[shape].to,shapes[shape].value,(size_t)shapes[shape].bytes);
+		else
+			memcpy(model + shapes[shape].to,(const uint8_t *)source.host + shapes[shape].from,(size_t)shapes[shape].bytes);
+	CHECK(SparkDeviceProgramRecord(queue,"copy shapes") == SPARK_STATUS_OK,"record copies and fills of odd sizes and alignments");
+	for ( shape = 0u; shape < SHAPES; shape++ )
+		issued &= ProgramCopyShapeIssue(queue,&shapes[shape],&recorded,&source) == SPARK_STATUS_OK ? 1u : 0u;
+	CHECK(issued != 0u && SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,
+		"a program holds fills and copies of 1 byte to over a MiB, at offsets that share or differ in their alignment");
+	for ( run = 0u; program != 0 && run < RUNS; run++ )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_OK,"run the copy shapes program");
+	for ( shape = 0u, issued = 1u; shape < SHAPES; shape++ )
+		issued &= ProgramCopyShapeIssue(queue,&shapes[shape],&eager,&source) == SPARK_STATUS_OK ? 1u : 0u;
+	CHECK(issued != 0u && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"issue the same copies and fills eagerly and wait");
+	for ( index = 0u; index < BYTES; index++ )
+	{
+		wrong += ((const uint8_t *)recorded.host)[index] != ((const uint8_t *)eager.host)[index] ? 1u : 0u;
+		off_model += ((const uint8_t *)recorded.host)[index] != model[index] ? 1u : 0u;
+	}
+	CHECK(wrong == 0u && off_model == 0u,"every program run writes the bytes the eager copies and fills write, and only those");
+	CHECK(program == 0 || SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the copy shapes program");
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&recorded) == SPARK_STATUS_OK && SparkDeviceFree(&eager) == SPARK_STATUS_OK,
+		"free the copy shape buffers");
+	free(model);
+}
+
+static void TestPrograms(SparkDeviceQueue *queue)
+{
+	enum { BYTES = 4096, RUNS = 3 };
+	SparkDeviceBuffer source, target;
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkDeviceEvent *mark = 0;
+	uint32_t calls = 0u, run, index, wrong = 0u;
+	uint64_t value = 0u;
+	if ( ProgramsRecord() == 0u )
+	{
+		CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"eagerly") != 0 &&
+			SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"a backend that records no programs refuses the recording, naming why, and its queue stays usable");
+		return;
+	}
+	CHECK(SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program source") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&target,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program target") == SPARK_STATUS_OK &&
+		SparkDeviceEventCreate(&mark) == SPARK_STATUS_OK,"allocate the program's buffers and event");
+	TestProgramRefusals(queue,&target);
+	TestRecordingWaits(queue);
+	Pattern((uint8_t *)source.host,BYTES,11u);
+	memset(target.host,0xee,BYTES);
+	CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_OK,"start recording");
+	CHECK(SparkDeviceFill(queue,At(&target,0u),0x5a,BYTES / 2u) == SPARK_STATUS_OK &&
+		SparkDeviceCopy(queue,At(&target,BYTES / 2u),At(&source,0u),BYTES / 2u) == SPARK_STATUS_OK,"record a fill and a copy");
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_BUSY,"a buffer the recording uses is not freed under it");
+	CHECK(SparkDeviceQueueHostCallback(queue,CountCallback,&calls) == SPARK_STATUS_OK && SparkDeviceEventRecord(mark,queue) == SPARK_STATUS_OK &&
+		SparkDeviceQueueWaitEvent(queue,mark) == SPARK_STATUS_OK,"record a host callback, an event and a wait on it");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"finish the program");
+	CHECK(((const uint8_t *)target.host)[0] == 0xee && ((const uint8_t *)target.host)[BYTES - 1u] == 0xee && __atomic_load_n(&calls,__ATOMIC_SEQ_CST) == 0u,
+		"recording runs nothing");
+	CHECK(SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK && info.nodes == 5u && info.kernels == 0u && info.values == 0u &&
+		info.places == 0u,"the program holds the five recorded operations and no patch");
+	CHECK(SparkDeviceFree(&target) == SPARK_STATUS_BUSY && SparkDeviceEventDestroy(mark) == SPARK_STATUS_BUSY,
+		"a live program keeps the buffers and events it uses");
+	CHECK(SparkDeviceProgramRun(program,queue,&value,1u) == SPARK_STATUS_INVALID_ARGUMENT,"a run passes exactly the program's patch values");
+	if ( ProgramsRun() == 0u )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_UNSUPPORTED,"a backend that does not run programs refuses the run");
+	for ( run = 0u; ProgramsRun() != 0u && run < RUNS; run++ )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_OK,"run the program");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"wait for the runs");
+	for ( index = 0u; ProgramsRun() != 0u && index < BYTES; index++ )
+		wrong += ((const uint8_t *)target.host)[index] != (index < BYTES / 2u ? 0x5au : ((const uint8_t *)source.host)[index - BYTES / 2u]);
+	CHECK(wrong == 0u && __atomic_load_n(&calls,__ATOMIC_SEQ_CST) == (ProgramsRun() != 0u ? RUNS : 0u),
+		"each run does the recorded fill, copy and host callback");
+	CHECK(SparkDeviceShutdown() == SPARK_STATUS_BUSY,"shutdown refuses while a program is live");
+	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK && SparkDeviceProgramDestroy(program) == SPARK_STATUS_INVALID_ARGUMENT,
+		"destroy the program once");
+	CHECK(SparkDeviceEventDestroy(mark) == SPARK_STATUS_OK && SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&target) == SPARK_STATUS_OK,
+		"free the program's buffers and event");
+}
+
+static void TestTransforms(void)
+{
+	SparkDeviceTransform rows = {1, 0, 64u, 1, 0}, affine = {3, -2, 1u, 2, 5}, both = {2, 1, 8u, 3, 1}, negative = {1, -10, 1u, 1, 0};
+	uint32_t fits = 0u;
+	CHECK(SparkDeviceTransformApply(0,77u,&fits) == 77u && fits == 1u,"no transform keeps the value");
+	CHECK(SparkDeviceTransformApply(&rows,1u,&fits) == 1u && fits == 1u && SparkDeviceTransformApply(&rows,64u,&fits) == 1u &&
+		SparkDeviceTransformApply(&rows,65u,&fits) == 2u,"a grid width from rows is a ceiling division");
+	CHECK(SparkDeviceTransformApply(&affine,4u,&fits) == 25u && fits == 1u,"value times a plus b, scaled and offset");
+	CHECK(SparkDeviceTransformApply(&both,7u,&fits) == 7u && fits == 1u,"ceil((7 * 2 + 1) / 8) * 3 + 1 is 7");
+	CHECK(SparkDeviceTransformApply(&negative,3u,&fits) == 0u && fits == 0u,"a negative intermediate does not fit");
+}
+
+static SparkDeviceTensorMapRequest TensorMapRequest(SparkDeviceAddress address)
+{
+	SparkDeviceTensorMapRequest request;
+	memset(&request,0,sizeof(request));
+	request.address = address;
+	request.rank = 3u;
+	request.swizzle_bytes = 128u;
+	request.dimension[0] = 256u;
+	request.dimension[1] = 24u;
+	request.dimension[2] = 2u;
+	request.stride_bytes[0] = 256u;
+	request.stride_bytes[1] = 256u * 24u;
+	request.box[0] = 128u;
+	request.box[1] = 16u;
+	request.box[2] = 1u;
+	request.element_stride[0] = request.element_stride[1] = request.element_stride[2] = 1u;
+	return(request);
+}
+
+static void TensorMapRefused(SparkDeviceTensorMapRequest request, const char *reason, const char *what)
+{
+	static SparkDeviceTensorMap map;
+	const SparkStatus status = SparkDeviceTensorMapEncode(&request,1u,&map,"contract tensor map");
+	CHECK(status == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,reason) != 0,what);
+}
+
+static void TestTensorMaps(void)
+{
+	static SparkDeviceTensorMap maps[3];
+	const uint32_t supported = (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_TENSOR_MAPS) != 0u;
+	SparkDeviceTensorMapRequest requests[3],request;
+	SparkDeviceBuffer tensor;
+	SparkStatus status;
+	memset(&tensor,0,sizeof(tensor));
+	CHECK(SparkDeviceAllocate(&tensor,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,256u * 24u * 2u,"contract tensor") == SPARK_STATUS_OK,"allocate a tensor for maps");
+	requests[0] = TensorMapRequest(tensor.device != 0u ? tensor.device : 4096u);
+	requests[1] = requests[0];
+	requests[1].rank = 2u;
+	requests[1].swizzle_bytes = 64u;
+	requests[1].box[0] = 64u;
+	requests[2] = requests[0];
+	requests[2].swizzle_bytes = 0u;
+	requests[2].box[0] = 16u;
+	request = requests[0];
+	request.address += 8u;
+	TensorMapRefused(request,"16-byte aligned","a tensor map refuses an address off 16 bytes");
+	request = requests[0];
+	request.rank = 4u;
+	TensorMapRefused(request,"rank","a tensor map refuses a rank the engine never plans");
+	request = requests[0];
+	request.swizzle_bytes = 96u;
+	TensorMapRefused(request,"swizzle must be","a tensor map refuses a swizzle span other than 0, 32, 64 or 128 bytes");
+	request = requests[0];
+	request.dimension[1] = 0u;
+	TensorMapRefused(request,"every dimension","a tensor map refuses an empty dimension");
+	request = requests[0];
+	request.box[1] = 257u;
+	TensorMapRefused(request,"box edge","a tensor map refuses a box edge over 256 elements");
+	request = requests[0];
+	request.element_stride[2] = 9u;
+	TensorMapRefused(request,"element stride","a tensor map refuses an element stride over 8");
+	request = requests[2];
+	request.box[0] = 24u;
+	TensorMapRefused(request,"multiple of 16 bytes","a tensor map refuses a box whose inner edge is not whole 16-byte chunks");
+	request = requests[0];
+	request.swizzle_bytes = 64u;
+	TensorMapRefused(request,"swizzle span","a tensor map refuses a box wider than its swizzle span");
+	request = requests[0];
+	request.stride_bytes[0] = 264u;
+	TensorMapRefused(request,"multiple of 16 bytes below","a tensor map refuses a stride off 16 bytes");
+	request = requests[0];
+	request.stride_bytes[1] = 256u * 23u;
+	TensorMapRefused(request,"cover the dimensions","a tensor map refuses a stride that overlaps the dimension below it");
+	CHECK(SparkDeviceTensorMapEncode(requests,0u,maps,"contract tensor map") == SPARK_STATUS_INVALID_ARGUMENT,"a tensor map batch is never empty");
+	CHECK(SparkDeviceTensorMapEncode(requests,3u,(SparkDeviceTensorMap *)(void *)((uint8_t *)maps + 16u),"contract tensor map") ==
+		SPARK_STATUS_INVALID_ARGUMENT,"tensor maps are written only to 64-byte aligned room");
+	status = SparkDeviceTensorMapEncode(requests,3u,maps,"contract tensor map");
+	if ( supported != 0u )
+		CHECK(status == SPARK_STATUS_OK,"a device with tensor maps encodes a batch of rank 2 and 3 maps with each swizzle");
+	else
+		CHECK(status == SPARK_STATUS_UNSUPPORTED,"a device without tensor maps refuses to encode them");
+	if ( tensor.bytes != 0u )
+		CHECK(SparkDeviceFree(&tensor) == SPARK_STATUS_OK,"free the tensor");
 }
 
 static void TestLifecycle(void)
@@ -669,7 +1446,11 @@ int main(void)
 	const SparkDeviceProperties *properties;
 	char backend[sizeof(properties->backend)] = "?";
 	CHECK(SparkDeviceGetProperties() == 0,"no properties before initialize");
-	CHECK(SparkDeviceInitialize(0) == SPARK_STATUS_OK,"initialize");
+	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK )
+	{
+		printf("FAIL initialize: %s %s\n",SparkDeviceLastError()->operation,SparkDeviceLastError()->text);
+		return 1;
+	}
 	CHECK(SparkDeviceInitialize(0) == SPARK_STATUS_DUPLICATE,"one device per process");
 	properties = SparkDeviceGetProperties();
 	CHECK(properties != 0 && properties->backend[0] != '\0' && properties->page_bytes != 0u &&
@@ -677,6 +1458,8 @@ int main(void)
 	if ( properties != 0 )
 		memcpy(backend,properties->backend,sizeof(backend));
 	CHECK(SparkDeviceQueueCreate(&queue,"contract") == SPARK_STATUS_OK,"create a queue");
+	CHECK(SparkDeviceQueueCapture(queue,1u) == SPARK_STATUS_UNSUPPORTED && SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,
+		"a queue the device API created is never marked as recorded into a graph, and stays answerable");
 	TestSpaces();
 	TestAdopt();
 	TestCopies(queue);
@@ -684,11 +1467,17 @@ int main(void)
 	TestOrdering();
 	TestBusy(queue);
 	TestEventLifetime();
+	TestLongHold();
 	TestRecordedEventDestroy(queue);
 	TestTiming(queue);
 	TestResolve();
 	TestFileAndRegister(queue);
+	TestTransforms();
+	TestPrograms(queue);
+	TestProgramCopyShapes(queue);
+	TestHostMemoryShare();
 	TestKernels(queue);
+	TestTensorMaps();
 	CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"destroy the queue");
 	TestLifecycle();
 	if ( failures != 0 )

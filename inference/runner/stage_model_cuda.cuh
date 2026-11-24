@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 #include "inference/kernels/kv_shard.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define CUDA_STAGE_SLICE_ALIGNMENT 256u
 #define CUDA_STAGE_MAX_TENSORS 48u
@@ -140,7 +141,7 @@ static inline uint64_t CudaStagePlace(const CudaStageSlice (&slices)[N], uint8_t
 	return cursor;
 }
 
-static inline SparkStatus CudaStageRound(const CudaStageState *state, cudaStream_t stream, uint32_t operation, uint32_t rows, uint32_t row_elements,
+static inline SparkStatus CudaStageRound(const CudaStageState *state, SparkGpuStream stream, uint32_t operation, uint32_t rows, uint32_t row_elements,
 	const void *local, void *full)
 {
 	return state->services->round(state->services->context, (void *)stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, row_elements, local, full);
@@ -148,7 +149,7 @@ static inline SparkStatus CudaStageRound(const CudaStageState *state, cudaStream
 
 static inline SparkStatus CudaStageLaunched(void)
 {
-	return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static inline void CudaStageRowState(const CudaStageState *state, uint32_t layer, uint32_t phase)
@@ -175,25 +176,25 @@ static inline SparkStatus CudaStageRecurrentCopy(const char *tag, const CudaStag
 	uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 {
 	uint8_t *packed = (uint8_t *)buffer;
-	cudaError_t error = cudaSuccess;
+	SparkGpuError error = SPARK_GPU_SUCCESS;
 	if ( count == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( slot >= slots || buffer == 0 || bytes != CudaStageRecurrentBytes(parts, count) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for ( uint32_t part = 0u; part < count && error == cudaSuccess; ++part )
+	for ( uint32_t part = 0u; part < count && error == SPARK_GPU_SUCCESS; ++part )
 	{
 		uint8_t *pool = parts[part].pool + (uint64_t)slot * parts[part].width;
 		const size_t width = (size_t)parts[part].width, pitch = (size_t)(parts[part].width * slots);
 		error = to_buffer != 0u ?
-			cudaMemcpy2DAsync(packed, width, pool, pitch, width, parts[part].layers, cudaMemcpyDefault, (cudaStream_t)stream) :
-			cudaMemcpy2DAsync(pool, pitch, packed, width, width, parts[part].layers, cudaMemcpyDefault, (cudaStream_t)stream);
+			SparkGpuMemcpy2DAsync(packed, width, pool, pitch, width, parts[part].layers, SPARK_GPU_COPY_DEFAULT, (SparkGpuStream)stream) :
+			SparkGpuMemcpy2DAsync(pool, pitch, packed, width, width, parts[part].layers, SPARK_GPU_COPY_DEFAULT, (SparkGpuStream)stream);
 		packed += parts[part].width * parts[part].layers;
 	}
-	if ( error == cudaSuccess && stream == 0 )
-		error = cudaStreamSynchronize(0);
-	if ( error != cudaSuccess )
+	if ( error == SPARK_GPU_SUCCESS && stream == 0 )
+		error = SparkGpuStreamSynchronize(0);
+	if ( error != SPARK_GPU_SUCCESS )
 	{
-		fprintf(stderr, "%s: recurrent copy failed slot=%u cuda=%s\n", tag, slot, cudaGetErrorString(error));
+		fprintf(stderr, "%s: recurrent copy failed slot=%u cuda=%s\n", tag, slot, SparkGpuGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	return SPARK_STATUS_OK;
@@ -201,15 +202,15 @@ static inline SparkStatus CudaStageRecurrentCopy(const char *tag, const CudaStag
 
 static inline SparkStatus CudaStageRecurrentReset(const CudaStageRecurrent *parts, uint32_t count, uint32_t slots, uint32_t slot, void *stream)
 {
-	cudaError_t error = cudaSuccess;
+	SparkGpuError error = SPARK_GPU_SUCCESS;
 	if ( count == 0u )
 		return SPARK_STATUS_OK;
 	if ( slot >= slots )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for ( uint32_t part = 0u; part < count && error == cudaSuccess; ++part )
-		error = cudaMemset2DAsync(parts[part].pool + (uint64_t)slot * parts[part].width, (size_t)(parts[part].width * slots), 0,
-			(size_t)parts[part].width, parts[part].layers, (cudaStream_t)stream);
-	if ( error != cudaSuccess )
+	for ( uint32_t part = 0u; part < count && error == SPARK_GPU_SUCCESS; ++part )
+		error = SparkGpuMemset2DAsync(parts[part].pool + (uint64_t)slot * parts[part].width, (size_t)(parts[part].width * slots), 0,
+			(size_t)parts[part].width, parts[part].layers, (SparkGpuStream)stream);
+	if ( error != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -386,7 +387,7 @@ struct CudaStage
 		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		frame->step = step;
-		frame->stream = (cudaStream_t)stream;
+		frame->stream = (SparkGpuStream)stream;
 		return SPARK_STATUS_OK;
 	}
 
@@ -624,23 +625,23 @@ struct CudaStage
 		SparkStatus status = F::Arrange(state);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
+		if ( SparkGpuMalloc(&state->arena, state->arena_bytes) != SPARK_GPU_SUCCESS )
 		{
 			state->arena = 0;
 			fprintf(stderr, "%s: the %llu-byte rank state could not be allocated\n", F::Tag(), (unsigned long long)state->arena_bytes);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || F::Plan(state, (uint8_t *)state->arena, 0u) != state->arena_bytes )
+		if ( SparkGpuMemset(state->arena, 0, state->arena_bytes) != SPARK_GPU_SUCCESS || F::Plan(state, (uint8_t *)state->arena, 0u) != state->arena_bytes )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if constexpr ( F::kLanes )
 		{
-			if ( cudaMalloc(&state->lane_arena, state->lane_bytes) != cudaSuccess )
+			if ( SparkGpuMalloc(&state->lane_arena, state->lane_bytes) != SPARK_GPU_SUCCESS )
 			{
 				state->lane_arena = 0;
 				fprintf(stderr, "%s: the %llu-byte second lane state could not be allocated\n", F::Tag(), (unsigned long long)state->lane_bytes);
 				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 			}
-			if ( cudaMemset(state->lane_arena, 0, state->lane_bytes) != cudaSuccess )
+			if ( SparkGpuMemset(state->lane_arena, 0, state->lane_bytes) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
 				if ( (state->lane_states[lane] = calloc(1u, sizeof(S))) == 0 )
@@ -720,9 +721,9 @@ struct CudaStage
 			return;
 		F::Release(state);
 		if ( state->arena != 0 )
-			(void)cudaFree(state->arena);
+			(void)SparkGpuFree(state->arena);
 		if ( state->lane_arena != 0 )
-			(void)cudaFree(state->lane_arena);
+			(void)SparkGpuFree(state->lane_arena);
 		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
 			free(state->lane_states[lane]);
 		if constexpr ( std::is_base_of<CudaStagePackState, State>::value )

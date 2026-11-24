@@ -47,13 +47,13 @@ peer's data lands, measured from its own wait start
 (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`), and
 the stage runner logs the sums per step. For each wave, a rank is late by the
 median, over the other 15 ranks, of how long they waited for its data, minus
-that of the median rank (`stall_map.py`, `late_rank.py`). The hub's fleet
+that of the median rank (`tools/k31_tp16_stalls/stall_map.py`, `tools/k31_tp16_stalls/late_rank.py`). The hub's fleet
 telemetry (`~/fleet-telemetry`: GPU clocks and throttle counters at 1 Hz,
 CPU and memory at 1 Hz, ping at 1 Hz, dmesg) covers the same window. A
 wave's wall-clock window is rebuilt from the probe's start and the API's
-per-wave service times (`wave_clock.py`), which places each node's
-recurrent-state writes (`state_align.py`) and its periodic host jobs from
-the system journal (`event_align.py`) in a wave.
+per-wave service times (`tools/k31_tp16_stalls/wave_clock.py`), which places each node's
+recurrent-state writes (`tools/k31_tp16_stalls/state_align.py`) and its periodic host jobs from
+the system journal (`tools/k31_tp16_stalls/event_align.py`) in a wave.
 
 ## Findings
 
@@ -148,6 +148,7 @@ the system journal (`event_align.py`) in a wave.
   rank in KD4 and KD5.
 - `snapshot-spark4-KD{4,5}.txt`, `snapshot_writes-spark4-KD{4,5}.txt`:
   spark4's snapshot store lines and its file writes in 10-second bins.
-- `stall_map.py`, `late_rank.py`, `telemetry_window.py`, `wave_clock.py`,
-  `state_align.py`, `event_align.py`, `late_parts.py`: the analyses (run on
-  the hub).
+- `tools/k31_tp16_stalls/stall_map.py`, `tools/k31_tp16_stalls/late_rank.py`,
+  `tools/k31_tp16_stalls/telemetry_window.py`, `tools/k31_tp16_stalls/wave_clock.py`,
+  `tools/k31_tp16_stalls/state_align.py`, `tools/k31_tp16_stalls/event_align.py`,
+  `tools/k31_tp16_stalls/late_parts.py`: the analyses (run on the hub).

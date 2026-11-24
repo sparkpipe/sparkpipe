@@ -7,8 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include "sparkpipe/spark_weightd_device.h"
+#include "sparkpipe/spark_gpu.h"
 
 static void SparkWeightdAttachSetReason(char *reason, const char *text)
 {
@@ -204,8 +204,8 @@ static void SparkWeightdAttachCloseBatchFds(SparkWeightdExportBatch *batch)
 static int SparkWeightdAttachDeviceId(void)
 {
     int device = 0;
-    (void)cudaFree(0);
-    (void)cudaGetDevice(&device);
+    (void)SparkGpuFree(0);
+    (void)SparkGpuGetDevice(&device);
     return device;
 }
 
@@ -213,20 +213,20 @@ static void SparkWeightdAttachMapUndo(SparkWeightdAttachOutcome *outcome)
 {
     if (outcome->map_base != 0)
     {
-        CUdeviceptr base = (CUdeviceptr)(uintptr_t)outcome->map_base;
+        SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)outcome->map_base;
         uint32_t index;
         for (index = 0u; index < outcome->map_mapped_count; index++)
         {
-            (void)cuMemUnmap(base + (CUdeviceptr)index *
+            (void)SparkDeviceMemoryUnmap(base + (SparkDeviceAddress)index *
                     outcome->map_chunk_bytes,
-                (size_t)outcome->map_chunk_bytes);
+                outcome->map_chunk_bytes);
         }
         for (index = 0u; index < outcome->map_handle_count; index++)
         {
-            (void)cuMemRelease(
-                (CUmemGenericAllocationHandle)outcome->map_handles[index]);
+            (void)SparkDeviceMemoryRelease(
+                SparkWeightdMemoryOf(outcome->map_handles[index]));
         }
-        (void)cuMemAddressFree(base, (size_t)outcome->map_span_bytes);
+        (void)SparkDeviceAddressRelease(base, outcome->map_span_bytes);
     }
     free(outcome->map_handles);
     outcome->map_handles = 0;
@@ -248,12 +248,18 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     uint64_t covered_bytes = 0ull;
     uint32_t chunk_count = 0u;
     uint32_t batch_offset = 0u;
-    CUmemAccessDesc access;
-    CUdeviceptr base = 0;
+    SparkDeviceAddress base = 0;
+    SparkStatus device_status;
 
     if (outcome == 0 || reason == 0)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    device_status = SparkWeightdDeviceOpen();
+    if (device_status != SPARK_STATUS_OK)
+    {
+        SparkWeightdAttachSetReason(reason, "device_open");
+        SPARK_FAIL(device_status);
     }
     (void)SparkWeightdAttachDeviceId();
     if (outcome->client == 0)
@@ -345,15 +351,14 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         }
         for (index = 0u; index < batch.batch_count; index++)
         {
-            CUmemGenericAllocationHandle handle = 0;
-            CUresult import_rc;
-            import_rc = cuMemImportFromShareableHandle(&handle,
-                    (void *)(uintptr_t)batch.fds[index],
-                    CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-            if (import_rc != CUDA_SUCCESS)
+            SparkDeviceMemoryHandle handle = 0u;
+            SparkStatus import_status;
+            import_status = SparkDeviceMemoryImport(&handle,
+                    batch.fds[index], "weightd attach");
+            if (import_status != SPARK_STATUS_OK)
             {
-                fprintf(stderr,"weightd import failed: fd=%d curesult=%d\n",
-                    batch.fds[index], (int)import_rc);
+                fprintf(stderr,"weightd import failed: fd=%d status=%s\n",
+                    batch.fds[index], SparkStatusToString(import_status));
                 SparkWeightdAttachCloseBatchFds(&batch);
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
@@ -362,7 +367,7 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
             }
             (void)close(batch.fds[index]);
             batch.fds[index] = -1;
-            outcome->map_handles[outcome->map_handle_count] = (void *)handle;
+            outcome->map_handles[outcome->map_handle_count] = (void *)(uintptr_t)handle;
             outcome->map_handle_count++;
         }
         batch_offset += batch.batch_count;
@@ -370,8 +375,8 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
     }
 
     outcome->map_span_bytes = covered_bytes;
-    if (cuMemAddressReserve(&base, (size_t)covered_bytes, 0u, 0ull, 0ull) !=
-        CUDA_SUCCESS)
+    if (SparkDeviceAddressReserve(&base, covered_bytes, "weightd attach") !=
+        SPARK_STATUS_OK)
     {
         SparkWeightdAttachMapUndo(outcome);
         SparkWeightdAttachRelease(outcome);
@@ -383,10 +388,10 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
         uint32_t index;
         for (index = 0u; index < chunk_count; index++)
         {
-            if (cuMemMap(base + (CUdeviceptr)index * chunk_bytes,
-                    (size_t)chunk_bytes, 0u,
-                    (CUmemGenericAllocationHandle)outcome->map_handles[index],
-                    0ull) != CUDA_SUCCESS)
+            if (SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * chunk_bytes,
+                    chunk_bytes,
+                    SparkWeightdMemoryOf(outcome->map_handles[index]),
+                    0u, SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK)
             {
                 SparkWeightdAttachMapUndo(outcome);
                 SparkWeightdAttachRelease(outcome);
@@ -395,17 +400,6 @@ SparkStatus SparkWeightdAttachImportMap(SparkWeightdAttachOutcome *outcome,
             }
             outcome->map_mapped_count++;
         }
-    }
-    access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    access.location.id = SparkWeightdAttachDeviceId();
-    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    if (cuMemSetAccess(base, (size_t)covered_bytes, &access, 1u) !=
-        CUDA_SUCCESS)
-    {
-        SparkWeightdAttachMapUndo(outcome);
-        SparkWeightdAttachRelease(outcome);
-        SparkWeightdAttachSetReason(reason, "import_access");
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
 
     outcome->device_handle = (uint64_t)(uintptr_t)base;
@@ -446,20 +440,20 @@ void SparkWeightdAttachRelease(SparkWeightdAttachOutcome *outcome)
     }
     if (outcome->map_base != 0 && outcome->map_handles != 0)
     {
-        CUdeviceptr base = (CUdeviceptr)(uintptr_t)outcome->map_base;
+        SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)outcome->map_base;
         uint32_t index;
         for (index = 0u; index < outcome->map_mapped_count; index++)
         {
-            (void)cuMemUnmap(base + (CUdeviceptr)index *
+            (void)SparkDeviceMemoryUnmap(base + (SparkDeviceAddress)index *
                     outcome->map_chunk_bytes,
-                (size_t)outcome->map_chunk_bytes);
+                outcome->map_chunk_bytes);
         }
         for (index = 0u; index < outcome->map_handle_count; index++)
         {
-            (void)cuMemRelease(
-                (CUmemGenericAllocationHandle)outcome->map_handles[index]);
+            (void)SparkDeviceMemoryRelease(
+                SparkWeightdMemoryOf(outcome->map_handles[index]));
         }
-        (void)cuMemAddressFree(base, (size_t)outcome->map_span_bytes);
+        (void)SparkDeviceAddressRelease(base, outcome->map_span_bytes);
     }
     free(outcome->map_handles);
     outcome->map_handles = 0;

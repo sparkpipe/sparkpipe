@@ -23,7 +23,6 @@
 
 #define SPARK_KV_SNAPSHOT_NO_ENTRY UINT32_MAX
 #define SPARK_KV_SNAPSHOT_SPARE_SHARE 4u
-#define SPARK_KV_SNAPSHOT_EXPIRY_BATCH_FILES 1024u
 
 typedef struct SparkKvSnapshotIndexEntry
 {
@@ -565,38 +564,6 @@ static void SparkKvSnapshotUnlinkEntryLocked(SparkKvSnapshotStore *store,uint32_
 	SparkKvSnapshotIndexRemoveAt(store,index);
 }
 
-static uint32_t SparkKvSnapshotEntryExpired(const SparkKvSnapshotIndexEntry *entry,uint64_t now_seconds)
-{
-	return(entry->live != 0u && entry->pins == 0u && entry->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ? 1u : 0u);
-}
-
-static uint32_t SparkKvSnapshotExpireLocked(SparkKvSnapshotStore *store,uint64_t now_seconds,uint64_t file_limit)
-{
-	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	uint64_t files = 0u,bytes = 0u;
-	uint32_t index,link,parent,with_children;
-	store->expiry_sweep_seconds = now_seconds;
-	for (with_children=0u; with_children<2u && files<file_limit; with_children++)
-		for (index=0u; index<runtime->entry_capacity && files<file_limit; index++)
-			for (link=index; files<file_limit && SparkKvSnapshotEntryExpired(&runtime->entries[link],now_seconds) != 0u &&
-				(with_children != 0u || runtime->entries[link].children == 0u); link=parent)
-			{
-				parent = runtime->entries[link].parent;
-				files++;
-				bytes += runtime->entries[link].bytes;
-				SparkKvSnapshotUnlinkEntryLocked(store,link);
-				if ( parent == SPARK_KV_SNAPSHOT_NO_ENTRY )
-					break;
-			}
-	if ( files == 0u )
-		return(0u);
-	store->expired_count += files;
-	store->expired_bytes += bytes;
-	fprintf(stderr,"KV-SNAPSHOT expired files=%llu bytes=%llu unused_for_s=%llu store=%s\n",(unsigned long long)files,(unsigned long long)bytes,
-		(unsigned long long)SPARK_KV_RETENTION_SECONDS,store->directory);
-	return(files >= file_limit ? 1u : 0u);
-}
-
 static uint64_t SparkKvSnapshotOldestLocked(SparkKvSnapshotStore *store)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
@@ -994,9 +961,6 @@ static void *SparkKvSnapshotWriterMain(void *context)
 	for (;;)
 	{
 		now = SparkKvSnapshotWallSeconds();
-		if ( now >= store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS &&
-			SparkKvSnapshotExpireLocked(store,now,SPARK_KV_SNAPSHOT_EXPIRY_BATCH_FILES) != 0u )
-			store->expiry_sweep_seconds = now - SPARK_KV_EXPIRY_SWEEP_SECONDS;
 		if ( now != runtime->ledger_seconds )
 		{
 			runtime->ledger_seconds = now;
@@ -1014,8 +978,7 @@ static void *SparkKvSnapshotWriterMain(void *context)
 				pthread_cond_wait(&runtime->wake,&runtime->mutex);
 				continue;
 			}
-			deadline.tv_sec = (time_t)(store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS < now + SPARK_KV_LEDGER_POLL_SECONDS ?
-				store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS : now + SPARK_KV_LEDGER_POLL_SECONDS);
+			deadline.tv_sec = (time_t)(now + SPARK_KV_LEDGER_POLL_SECONDS);
 			deadline.tv_nsec = 0;
 			(void)pthread_cond_timedwait(&runtime->wake,&runtime->mutex,&deadline);
 			continue;
@@ -1037,9 +1000,6 @@ static void *SparkKvSnapshotWriterMain(void *context)
 typedef struct SparkKvSnapshotScanWork
 {
 	SparkKvSnapshotStore *store;
-	uint64_t now;
-	uint64_t expired_files;
-	uint64_t expired_bytes;
 	uint64_t removed_temporary;
 	uint64_t removed_misplaced;
 	uint32_t first;
@@ -1086,15 +1046,6 @@ static void SparkKvSnapshotScanShard(SparkKvSnapshotScanWork *work,uint32_t shar
 		}
 		if ( fstatat(descriptor,item->d_name,&info,AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(info.st_mode) )
 			continue;
-		if ( (uint64_t)info.st_mtime + SPARK_KV_RETENTION_SECONDS <= work->now )
-		{
-			if ( unlinkat(descriptor,item->d_name,0) == 0 )
-			{
-				work->expired_files++;
-				work->expired_bytes += (uint64_t)info.st_size;
-			}
-			continue;
-		}
 		pthread_mutex_lock(&runtime->mutex);
 		work->status = SparkKvSnapshotIndexInsert(store,&key,&parent,(uint64_t)info.st_size,(uint64_t)info.st_mtime,(uint64_t)info.st_mtime,0u);
 		pthread_mutex_unlock(&runtime->mutex);
@@ -1139,7 +1090,6 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 	SparkKvSnapshotIndexEntry **order;
 	struct dirent *item;
 	SparkStatus status = SPARK_STATUS_OK;
-	uint64_t now = SparkKvSnapshotWallSeconds(),expired_files = 0u,expired_bytes = 0u;
 	uint32_t index,count = 0u;
 	DIR *listing = opendir(store->directory);
 	if ( listing == 0 )
@@ -1162,7 +1112,6 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 	{
 		memset(&work[index],0,sizeof(work[index]));
 		work[index].store = store;
-		work[index].now = now;
 		work[index].first = index;
 		work[index].status = SPARK_STATUS_OK;
 		started[index] = pthread_create(&threads[index],0,SparkKvSnapshotScanShards,&work[index]) == 0 ? 1u : 0u;
@@ -1175,17 +1124,9 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 			(void)SparkKvSnapshotScanShards(&work[index]);
 		if ( status == SPARK_STATUS_OK )
 			status = work[index].status;
-		expired_files += work[index].expired_files;
-		expired_bytes += work[index].expired_bytes;
 		store->removed_temporary_count += work[index].removed_temporary;
 		store->removed_legacy_count += work[index].removed_misplaced;
 	}
-	store->expired_count += expired_files;
-	store->expired_bytes += expired_bytes;
-	store->expiry_sweep_seconds = now;
-	if ( expired_files != 0u )
-		fprintf(stderr,"KV-SNAPSHOT expired files=%llu bytes=%llu unused_for_s=%llu store=%s\n",(unsigned long long)expired_files,(unsigned long long)expired_bytes,
-			(unsigned long long)SPARK_KV_RETENTION_SECONDS,store->directory);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	for (index=0u; index<runtime->entry_capacity; index++)
@@ -1565,20 +1506,17 @@ uint32_t SparkKvSnapshotContains(SparkKvSnapshotStore *store,const SparkKvSnapsh
 	return(found);
 }
 
-SparkStatus SparkKvSnapshotExpire(SparkKvSnapshotStore *store,uint64_t now_seconds)
+uint32_t SparkKvSnapshotStored(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
 {
 	SparkKvSnapshotRuntime *runtime;
-	uint32_t more;
-	if ( SparkKvSnapshotStoreIsValid(store) == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	uint32_t found;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || key == 0 )
+		return(0u);
 	runtime = SparkKvSnapshotRuntimeOf(store);
-	do
-	{
-		pthread_mutex_lock(&runtime->mutex);
-		more = SparkKvSnapshotExpireLocked(store,now_seconds,SPARK_KV_SNAPSHOT_EXPIRY_BATCH_FILES);
-		pthread_mutex_unlock(&runtime->mutex);
-	} while ( more != 0u );
-	return(SPARK_STATUS_OK);
+	pthread_mutex_lock(&runtime->mutex);
+	found = SparkKvSnapshotIndexFind(runtime,key) != SPARK_KV_SNAPSHOT_NO_ENTRY ? 1u : 0u;
+	pthread_mutex_unlock(&runtime->mutex);
+	return(found);
 }
 
 SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)

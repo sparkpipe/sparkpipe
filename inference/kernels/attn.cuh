@@ -5,6 +5,7 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 static __device__ __forceinline__ void LmRopePair(float *low, float *high, float angle, float scale = 1.0f)
 {
@@ -77,7 +78,7 @@ void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__
 
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
-void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
+void LmRopeOffsetPerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,half = rope_dimension / 2u,index;
 	uint64_t base;
@@ -158,6 +159,55 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 	}
 }
 
+#define LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS 16u
+#define LM_LATENT_ATTN_SPLIT_CTAS_PER_SM 4u
+#define LM_LATENT_ATTN_SPLIT_BLOCK_FLOATS(l) ((l) + 2u)
+
+#define LM_LATENT_ATTN_SPLIT_GROUP 16u
+#define LM_LATENT_ATTN_SPLIT_VALUES(width, threads) (((width) + (threads) - 1u) / (threads))
+
+template<uint32_t THREADS, uint32_t GROUP>
+static __device__ __forceinline__ void LmBlockSumGroupOnce(float *values, float (*reduction)[THREADS / LM_WARP_LANES])
+{
+    constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+    const uint32_t lane = threadIdx.x & (LM_WARP_LANES - 1u), warp = threadIdx.x >> 5u;
+    uint32_t offset, group;
+    float value;
+    #pragma unroll
+    for (group = 0u; group < GROUP; ++group)
+    {
+        value = values[group];
+        #pragma unroll
+        for (offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        if constexpr ( warps == 1u )
+            values[group] = __shfl_sync(0xffffffffu, value, 0u);
+        else if (lane == 0u)
+            reduction[group][warp] = value;
+    }
+    if constexpr ( warps == 1u )
+        return;
+    __syncthreads();
+    #pragma unroll
+    for (group = 0u; group < GROUP; ++group)
+    {
+        value = lane < warps ? reduction[group][lane] : 0.0f;
+        #pragma unroll
+        for (offset = warps / 2u; offset > 0u; offset >>= 1u)
+            value += __shfl_down_sync(0xffffffffu, value, offset);
+        values[group] = __shfl_sync(0xffffffffu, value, 0u);
+    }
+}
+
+template<uint32_t THREADS, uint32_t GROUP>
+static __device__ __forceinline__ void LmBlockSumGroup(float *values, float (*reduction)[THREADS / LM_WARP_LANES], float *)
+{
+    constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+    LmBlockSumGroupOnce<THREADS, GROUP>(values, reduction);
+    if constexpr ( warps > 1u )
+        __syncthreads();
+}
+
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLatentAttentionDecodeKernel(
@@ -176,13 +226,15 @@ void LmLatentAttentionDecodeKernel(
     static_assert(
         LATENT <= 8u * THREADS,
         "the latent must fit the per-thread accumulator");
-    __shared__ float reduction[THREADS / LM_WARP_LANES];
-    __shared__ float shared_query[LATENT + ROPE];
+    constexpr uint32_t kValues = LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS);
+    __shared__ float group_reduction[2u][LM_LATENT_ATTN_SPLIT_GROUP][THREADS / LM_WARP_LANES];
+    float query_reg[kValues];
     float accumulator[8];
     uint32_t row = blockIdx.x;
     uint32_t head = blockIdx.y;
     uint32_t index;
-    uint32_t step;
+    uint32_t step = 0u;
+    uint32_t phase = 0u;
     uint32_t position_count;
     uint32_t sequence = sequence_of_row[row];
     uint64_t latent_base = ((uint64_t)row * heads + head) * LATENT;
@@ -205,66 +257,123 @@ void LmLatentAttentionDecodeKernel(
         return;
     }
 
+    #pragma unroll
     for (index = 0u; index < 8u; ++index)
     {
         accumulator[index] = 0.0f;
     }
-    for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+    #pragma unroll
+    for (index = 0u; index < kValues; ++index)
     {
-        shared_query[index] = index < LATENT
-            ? LmBf16ToFloat(query_latent_bf16[latent_base + index])
-            : LmBf16ToFloat(query_rope_bf16[rope_base + index - LATENT]);
+        const uint32_t element = (index * THREADS) + threadIdx.x;
+        query_reg[index] = element < LATENT
+            ? LmBf16ToFloat(query_latent_bf16[latent_base + element])
+            : (element < LATENT + ROPE
+                ? LmBf16ToFloat(query_rope_bf16[rope_base + element - LATENT])
+                : 0.0f);
     }
-    __syncthreads();
 
     position_count = selected_positions != 0
         ? selected_count
         : context_length[sequence];
-    for (step = 0u; step < position_count; ++step)
+    while (step < position_count)
     {
-        uint32_t position = selected_positions != 0
-            ? selected_positions[(row * selected_count) + step]
-            : step;
-        const uint8_t *slot;
-        float score = 0.0f;
-        float scaled_previous;
-        float scaled_current;
-        float previous_max;
+        const uint8_t *slots[LM_LATENT_ATTN_SPLIT_GROUP];
+        uint16_t values[LM_LATENT_ATTN_SPLIT_GROUP][kValues];
+        float scores[LM_LATENT_ATTN_SPLIT_GROUP];
+        uint32_t count = 0u, missing = 0u, group, value;
 
-        if (row_position != 0 && position > row_position[row])
+        while (count < LM_LATENT_ATTN_SPLIT_GROUP && step < position_count)
         {
-            continue;
+            uint32_t position = selected_positions != 0
+                ? selected_positions[(row * selected_count) + step]
+                : step;
+            const uint8_t *slot;
+
+            ++step;
+            if (row_position != 0 && position > row_position[row])
+            {
+                continue;
+            }
+            slot = LmKvSlotRequired<Geometry>(
+                cache, sequence, position, row, LM_KV_ACCESS_READ);
+            if (slot == 0)
+            {
+                missing = 1u;
+                break;
+            }
+            slots[count++] = slot;
         }
-        slot = LmKvSlotRequired<Geometry>(
-            cache, sequence, position, row, LM_KV_ACCESS_READ);
-        if (slot == 0)
+        if (missing != 0u)
         {
             return;
         }
-        for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+        if (count == 0u)
         {
-            score += shared_query[index] *
-                LmBf16ToFloat(((const uint16_t *)slot)[index]);
+            continue;
         }
-        score = LmBlockSum<THREADS>(score, reduction) * qk_scale;
-        previous_max = running_max;
-        running_max = fmaxf(running_max, score);
-        scaled_previous = __expf(previous_max - running_max);
-        scaled_current = __expf(score - running_max);
-        running_sum = (running_sum * scaled_previous) + scaled_current;
-        for (index = 0u; index < 8u; ++index)
+        #pragma unroll
+        for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
         {
-            uint32_t element = (index * THREADS) + threadIdx.x;
-
-            if (element < LATENT)
+            #pragma unroll
+            for (value = 0u; value < kValues; ++value)
             {
-                accumulator[index] =
-                    (accumulator[index] * scaled_previous) +
-                    (SparkMathAttentionValueWeight(scaled_current) *
-                        LmBf16ToFloat(((const uint16_t *)slot)[element]));
+                const uint32_t element = (value * THREADS) + threadIdx.x;
+                values[group][value] = group < count && element < LATENT + ROPE
+                    ? ((const uint16_t *)slots[group])[element]
+                    : (uint16_t)0u;
+            }
+        }
+        #pragma unroll
+        for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
+        {
+            float dot = 0.0f;
+            #pragma unroll
+            for (value = 0u; value < kValues; ++value)
+            {
+                dot = fmaf(query_reg[value], LmBf16ToFloat(values[group][value]), dot);
+            }
+            scores[group] = dot;
+        }
+        LmBlockSumGroupOnce<THREADS, LM_LATENT_ATTN_SPLIT_GROUP>(scores, group_reduction[phase]);
+        phase ^= 1u;
+        #pragma unroll
+        for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
+        {
+            float score;
+            float scaled_previous;
+            float scaled_current;
+            float previous_max;
+            float weight;
+
+            if (group >= count)
+            {
+                continue;
+            }
+            score = scores[group] * qk_scale;
+            previous_max = running_max;
+            running_max = fmaxf(running_max, score);
+            scaled_previous = __expf(previous_max - running_max);
+            scaled_current = __expf(score - running_max);
+            running_sum = (running_sum * scaled_previous) + scaled_current;
+            weight = SparkMathAttentionValueWeight(scaled_current);
+            #pragma unroll
+            for (index = 0u; index < 8u; ++index)
+            {
+                uint32_t element = (index * THREADS) + threadIdx.x;
+
+                if (index < kValues && element < LATENT)
+                {
+                    accumulator[index] = fmaf(
+                        weight,
+                        LmBf16ToFloat(values[group][index]),
+                        accumulator[index] * scaled_previous);
+                }
             }
         }
     }
+    const float denom = fmaxf(running_sum, 1.0e-20f);
+    #pragma unroll
     for (index = 0u; index < 8u; ++index)
     {
         uint32_t element = (index * THREADS) + threadIdx.x;
@@ -273,49 +382,9 @@ void LmLatentAttentionDecodeKernel(
         {
             output_bf16[
                 (((uint64_t)row * heads) + head) * LATENT + element] =
-                LmFloatToBf16(
-                    accumulator[index] / fmaxf(running_sum, 1.0e-20f));
+                LmFloatToBf16(accumulator[index] / denom);
         }
     }
-}
-
-#define LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS 16u
-#define LM_LATENT_ATTN_SPLIT_CTAS_PER_SM 4u
-#define LM_LATENT_ATTN_SPLIT_BLOCK_FLOATS(l) ((l) + 2u)
-
-#define LM_LATENT_ATTN_SPLIT_GROUP 16u
-#define LM_LATENT_ATTN_SPLIT_VALUES(width, threads) (((width) + (threads) - 1u) / (threads))
-
-template<uint32_t THREADS, uint32_t GROUP>
-static __device__ __forceinline__ void LmBlockSumGroup(float *values, float (*reduction)[THREADS / LM_WARP_LANES], float *total)
-{
-    const uint32_t warps = THREADS / LM_WARP_LANES;
-    uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES, offset, group;
-    float value;
-    #pragma unroll
-    for (group = 0u; group < GROUP; ++group)
-    {
-        value = values[group];
-        for (offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
-            value += __shfl_down_sync(0xffffffffu, value, offset);
-        if (lane == 0u)
-            reduction[group][warp] = value;
-    }
-    __syncthreads();
-    #pragma unroll
-    for (group = 0u; group < GROUP; ++group)
-    {
-        value = threadIdx.x < warps ? reduction[group][threadIdx.x] : 0.0f;
-        if (warp == 0u)
-            for (offset = warps / 2u; offset > 0u; offset >>= 1u)
-                value += __shfl_down_sync(0xffffffffu, value, offset);
-        if (threadIdx.x == 0u)
-            total[group] = value;
-    }
-    __syncthreads();
-    #pragma unroll
-    for (group = 0u; group < GROUP; ++group)
-        values[group] = total[group];
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
@@ -337,15 +406,16 @@ void LmLatentAttentionDecodeSplitKernel(
     static_assert(
         LATENT <= 8u * THREADS,
         "the latent must fit the per-thread accumulator");
-    __shared__ float group_reduction[LM_LATENT_ATTN_SPLIT_GROUP][THREADS / LM_WARP_LANES];
-    __shared__ float group_total[LM_LATENT_ATTN_SPLIT_GROUP];
-    __shared__ float shared_query[LATENT + ROPE];
+    constexpr uint32_t kValues = LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS);
+    __shared__ float group_reduction[2u][LM_LATENT_ATTN_SPLIT_GROUP][THREADS / LM_WARP_LANES];
+    float query_reg[kValues];
     float accumulator[8];
     uint32_t row = blockIdx.x;
     uint32_t head = blockIdx.y;
     uint32_t partition = blockIdx.z;
     uint32_t index;
     uint32_t step;
+    uint32_t phase = 0u;
     uint32_t position_count;
     uint32_t first_position;
     uint32_t last_position;
@@ -376,17 +446,21 @@ void LmLatentAttentionDecodeSplitKernel(
         return;
     }
 
+    #pragma unroll
     for (index = 0u; index < 8u; ++index)
     {
         accumulator[index] = 0.0f;
     }
-    for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+    #pragma unroll
+    for (index = 0u; index < kValues; ++index)
     {
-        shared_query[index] = index < LATENT
-            ? LmBf16ToFloat(query_latent_bf16[latent_base + index])
-            : LmBf16ToFloat(query_rope_bf16[rope_base + index - LATENT]);
+        const uint32_t element = (index * THREADS) + threadIdx.x;
+        query_reg[index] = element < LATENT
+            ? LmBf16ToFloat(query_latent_bf16[latent_base + element])
+            : (element < LATENT + ROPE
+                ? LmBf16ToFloat(query_rope_bf16[rope_base + element - LATENT])
+                : 0.0f);
     }
-    __syncthreads();
 
     position_count = selected_positions != 0
         ? selected_count
@@ -422,7 +496,7 @@ void LmLatentAttentionDecodeSplitKernel(
     while (step < last_position)
     {
         const uint8_t *slots[LM_LATENT_ATTN_SPLIT_GROUP];
-        uint16_t values[LM_LATENT_ATTN_SPLIT_GROUP][LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS)];
+        uint16_t values[LM_LATENT_ATTN_SPLIT_GROUP][kValues];
         float scores[LM_LATENT_ATTN_SPLIT_GROUP];
         uint32_t count = 0u, missing = 0u, group, value;
 
@@ -451,7 +525,7 @@ void LmLatentAttentionDecodeSplitKernel(
         for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
         {
             #pragma unroll
-            for (value = 0u; value < LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS); ++value)
+            for (value = 0u; value < kValues; ++value)
             {
                 index = threadIdx.x + value * THREADS;
                 values[group][value] = group < count && index < LATENT + ROPE
@@ -462,19 +536,16 @@ void LmLatentAttentionDecodeSplitKernel(
         #pragma unroll
         for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
         {
-            scores[group] = 0.0f;
+            float dot = 0.0f;
             #pragma unroll
-            for (value = 0u; value < LM_LATENT_ATTN_SPLIT_VALUES(LATENT + ROPE, THREADS); ++value)
+            for (value = 0u; value < kValues; ++value)
             {
-                index = threadIdx.x + value * THREADS;
-                if (index < LATENT + ROPE)
-                {
-                    scores[group] += shared_query[index] *
-                        LmBf16ToFloat(values[group][value]);
-                }
+                dot = fmaf(query_reg[value], LmBf16ToFloat(values[group][value]), dot);
             }
+            scores[group] = dot;
         }
-        LmBlockSumGroup<THREADS, LM_LATENT_ATTN_SPLIT_GROUP>(scores, group_reduction, group_total);
+        LmBlockSumGroupOnce<THREADS, LM_LATENT_ATTN_SPLIT_GROUP>(scores, group_reduction[phase]);
+        phase ^= 1u;
         #pragma unroll
         for (group = 0u; group < LM_LATENT_ATTN_SPLIT_GROUP; ++group)
         {
@@ -782,17 +853,17 @@ static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
-static inline cudaError_t LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
+static inline SparkGpuError LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, SparkGpuStream stream)
 {
     LM_LAUNCH((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, partitions), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position);
-    if (cudaPeekAtLastError() != cudaSuccess || partitions == 1u)
-        return cudaPeekAtLastError();
+    if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS || partitions == 1u)
+        return SparkGpuPeekAtLastError();
     LM_LAUNCH((LmLatentAttentionDecodeSplitCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t LATENT>
-static inline cudaError_t LmLatentAttentionHeadsLaunch(
+static inline SparkGpuError LmLatentAttentionHeadsLaunch(
     const uint16_t *query_latent_bf16,
     LmKvView cache,
     const uint32_t *sequence_of_row,
@@ -809,7 +880,7 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
     float *split_partials,
     uint32_t split_partial_blocks,
     uint32_t multiprocessor_count,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     uint32_t partitions;
     partitions = rows == 0u || multiprocessor_count == 0u ? 1u : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM + rows - 1u) / rows;
@@ -822,11 +893,11 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 2u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
     if (heads == 4u)
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 4u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    return cudaErrorNotSupported;
+    return SPARK_GPU_ERROR_NOT_SUPPORTED;
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
-static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
+static inline SparkGpuError LmLatentAttentionDecodeSplitLaunch(
     const uint16_t *query_latent_bf16,
     const uint16_t *query_rope_bf16,
     LmKvView cache,
@@ -844,7 +915,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     float *split_partials,
     uint32_t split_partial_blocks,
     uint32_t multiprocessor_count,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     uint32_t blocks;
     uint32_t wanted;
@@ -887,7 +958,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
             qk_scale,
             output_bf16,
             row_position);
-        return cudaPeekAtLastError();
+        return SparkGpuPeekAtLastError();
     }
     LM_LAUNCH(
         (LmLatentAttentionDecodeSplitKernel<
@@ -908,9 +979,9 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
         qk_scale,
         split_partials,
         row_position);
-    if (cudaPeekAtLastError() != cudaSuccess)
+    if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS)
     {
-        return cudaPeekAtLastError();
+        return SparkGpuPeekAtLastError();
     }
     LM_LAUNCH(
         (LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>),
@@ -922,7 +993,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
         output_bf16,
         heads,
         partitions);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>

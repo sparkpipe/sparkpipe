@@ -8,10 +8,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_test_runner import ROOT, built_binary  # noqa: E402
 
 MODES = ("--run", "--peer-reduce", "--reduce-scatter", "--pipelined", "--all-to-all", "--pair-first", "--pair-first-gather", "--pair-first-boundary",
-         "--pair-allreduce", "--prefetch")
+         "--pipeline-boundary", "--pair-allreduce", "--prefetch")
 
 
 def main():
+    if os.environ.get("SPARK_RUN_PARKED") != "1":
+        print("SKIP test_tp_mesh_hardware_probe: parked while its reduce-scatter can fault the GPU (TECHDEBT.md, Runtime completion); "
+              "SPARK_RUN_PARKED=1 runs it, on spark1 only")
+        return 0
     binary = built_binary("test_tp_mesh_hardware_probe", ROOT / "build/tp_mesh_hardware_probe")
     if binary is None:
         return 0

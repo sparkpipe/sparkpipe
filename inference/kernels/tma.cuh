@@ -70,7 +70,7 @@ static __device__ __forceinline__ void LmMbarrierWait(uint64_t *barrier, uint32_
 
 static __device__ __forceinline__ void LmTmaLoad2d(void *shared_destination, const void *tensor_map, uint64_t *barrier, int32_t coordinate_0, int32_t coordinate_1)
 {
-	asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];\n"
+	asm volatile("cp.async.bulk.tensor.2d.shared::cta.global.tile.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];\n"
 		:: "r"(LmTmaSharedAddress(shared_destination)), "l"(tensor_map),
 		   "r"(LmTmaSharedAddress(barrier)), "r"(coordinate_0), "r"(coordinate_1)
 		: "memory");
@@ -78,7 +78,7 @@ static __device__ __forceinline__ void LmTmaLoad2d(void *shared_destination, con
 
 static __device__ __forceinline__ void LmTmaLoad3d(void *shared_destination, const void *tensor_map, uint64_t *barrier, int32_t coordinate_0, int32_t coordinate_1, int32_t coordinate_2)
 {
-	asm volatile("cp.async.bulk.tensor.3d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4, %5}], [%2];\n"
+	asm volatile("cp.async.bulk.tensor.3d.shared::cta.global.tile.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4, %5}], [%2];\n"
 		:: "r"(LmTmaSharedAddress(shared_destination)), "l"(tensor_map),
 		   "r"(LmTmaSharedAddress(barrier)), "r"(coordinate_0), "r"(coordinate_1), "r"(coordinate_2)
 		: "memory");
@@ -86,7 +86,7 @@ static __device__ __forceinline__ void LmTmaLoad3d(void *shared_destination, con
 
 static __device__ __forceinline__ void LmTmaLoadBulk1d(void *shared_destination, const void *global_source, uint64_t *barrier, uint32_t bytes)
 {
-	asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];\n"
+	asm volatile("cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];\n"
 		:: "r"(LmTmaSharedAddress(shared_destination)), "l"(global_source),
 		   "r"(bytes), "r"(LmTmaSharedAddress(barrier))
 		: "memory");

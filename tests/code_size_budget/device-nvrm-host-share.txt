@@ -1,0 +1,2 @@
++60
+nvrm exportable host memory: SparkDeviceMemoryCreateHost in write-back system memory, host access in a mapping through the module's own CPU mapping at the mapped address, and the shared write-back page rule that keeps such objects whole past 4 GiB.

@@ -20,7 +20,7 @@ the device collective and the KV binding in their configurations. A lane's
 mesh lane, rank map, expert pool cap and read-only arena share are stage
 config members (`device_collective.mesh_lane`, `device_collective.mesh_ranks`,
 `expert_pool_cap_bytes`, `weights_share`; [LANES.md](LANES.md)). The PP stage
-boundary transport (`ring/transport/rdma.cu`), loaded only for `HYBRID_TP_PP`
+boundary transport (`ring/transport/rdma.c`), loaded only for `HYBRID_TP_PP`
 adapters, reads the same socket handoff.
 
 `sparkpipe_model_api` reads nothing from the environment.
@@ -55,7 +55,7 @@ environment to weightd, and it refuses a root whose environment files name a
 | --- | --- |
 | `SPARK_MODEL_BATCH_SEQUENTIAL` | `sparkpipe_model_batch`: run the requests one at a time |
 | `SPARK_WEIGHTD_SOCKET`, `SPARK_WEIGHTD_PACK_SHA256`, `SPARK_WEIGHTD_IDENTITY_MODEL`, `SPARK_WEIGHTD_IDENTITY_REVISION`, `SPARK_WEIGHTD_ATTACH_LAZY` | `weightdctl` and the eager attach it uses (`SparkWeightdAttachPack`), and the weightd probes |
-| `SPARK_MESH_PAIR_INTERFACE` | the fleet agent: the point-to-point verbs device (default `roceP2p1s0f0`) |
+| `SPARK_MESH_PAIR_INTERFACE` | the fleet agent: the second port's verbs device (default `roceP2p1s0f0`); weightd leaves it out while it is down |
 | `SPARK_LANES` | `tools/stage_lane.py` and `tools/lane_config.py`: a candidate lane file in place of `deployment/lanes.json` |
 
 ## DEBUG builds only
@@ -70,7 +70,6 @@ turn graphs off) exist only in `DEBUG` builds.
 | `SPARK_QWEN38_27B_LAYER_DUMP`, `SPARK_QWEN38_MAX_LAYER_DUMP`, `SPARK_QWEN38_FLASH_LAYER_DUMP` | the Qwen hybrid family's per-layer dump file |
 | `SPARK_TP_ROUND_TRACE` | one line per device collective round |
 | `SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL` | `sparkpipe_model_batch` holds decode until every prefill ends |
-| `SPARK_WEIGHTD_MESH_DEVICE_PROBE` | weightd registers each pool with the NIC once to check the address range |
 
 ## Retired
 

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "first_port": {
+    "interface": "enp1s0f1np1",
+    "prefix": "10.10.100",
+    "address_base": 10
+  },
+  "second_port": {
+    "interface": "enP2p1s0f0np0",
+    "prefix": "10.10.201"
+  }
+}

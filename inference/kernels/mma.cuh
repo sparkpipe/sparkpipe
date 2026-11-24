@@ -8,10 +8,13 @@
 
 #define LM_WARP_LANES 32u
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1210)
-#define LM_SM121_NATIVE_COMPUTE_PTX 1
+#if defined(__CUDA_ARCH__)
+#if __CUDA_ARCH__ != 1200 && __CUDA_ARCH__ != 1210
+#error "inference/kernels/mma.cuh: the block-scaled MMA (mma.sync.aligned.m16n8k32 kind::mxf8f6f4.block_scale.scale_vec::1X with ue8m0 scales) exists only on sm_120a and sm_121a; build for one of them"
+#endif
+#define LM_BLOCK_SCALED_MMA_PTX 1
 #else
-#define LM_SM121_NATIVE_COMPUTE_PTX 0
+#define LM_BLOCK_SCALED_MMA_PTX 0
 #endif
 
 
@@ -65,15 +68,16 @@ static __device__ __forceinline__ void LmMmaMxf8Mxf4(
 	uint32_t scale_a,
 	uint32_t scale_b)
 {
-#if LM_SM121_NATIVE_COMPUTE_PTX
+#if LM_BLOCK_SCALED_MMA_PTX
 	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
 		".block_scale.scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 "
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, "
-		"%10, {0, 0}, %11, {0, 0};\n"
+		"{%10}, {%11,%12}, {%13}, {%14,%15};\n"
 		: "+f"(accumulator[0]), "+f"(accumulator[1]),
 		  "+f"(accumulator[2]), "+f"(accumulator[3])
 		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
-		  "r"(b[0]), "r"(b[1]), "r"(scale_a), "r"(scale_b));
+		  "r"(b[0]), "r"(b[1]), "r"(scale_a), "h"((uint16_t)0u), "h"((uint16_t)0u),
+		  "r"(scale_b), "h"((uint16_t)0u), "h"((uint16_t)0u));
 #else
 	(void)accumulator;
 	(void)a;
@@ -91,15 +95,16 @@ static __device__ __forceinline__ void LmMmaMxf8Mxf8(
 	uint32_t scale_a,
 	uint32_t scale_b)
 {
-#if LM_SM121_NATIVE_COMPUTE_PTX
+#if LM_BLOCK_SCALED_MMA_PTX
 	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
 		".block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 "
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, "
-		"%10, {0, 0}, %11, {0, 0};\n"
+		"{%10}, {%11,%12}, {%13}, {%14,%15};\n"
 		: "+f"(accumulator[0]), "+f"(accumulator[1]),
 		  "+f"(accumulator[2]), "+f"(accumulator[3])
 		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
-		  "r"(b[0]), "r"(b[1]), "r"(scale_a), "r"(scale_b));
+		  "r"(b[0]), "r"(b[1]), "r"(scale_a), "h"((uint16_t)0u), "h"((uint16_t)0u),
+		  "r"(scale_b), "h"((uint16_t)0u), "h"((uint16_t)0u));
 #else
 	(void)accumulator;
 	(void)a;
@@ -110,6 +115,66 @@ static __device__ __forceinline__ void LmMmaMxf8Mxf8(
 #endif
 }
 
+static __device__ __forceinline__ void LmMmaMxf8Block(
+	float out[4],
+	const uint32_t a[4],
+	const uint32_t b[2],
+	uint32_t scale_a,
+	uint16_t byte_a,
+	uint32_t scale_b,
+	uint16_t byte_b)
+{
+#if LM_BLOCK_SCALED_MMA_PTX
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
+		".block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
+		"{%14}, {%15,%16}, {%17}, {%18,%19};\n"
+		: "=f"(out[0]), "=f"(out[1]), "=f"(out[2]), "=f"(out[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+		  "r"(b[0]), "r"(b[1]), "f"(0.0f), "f"(0.0f), "f"(0.0f), "f"(0.0f),
+		  "r"(scale_a), "h"(byte_a), "h"((uint16_t)0u),
+		  "r"(scale_b), "h"(byte_b), "h"((uint16_t)0u));
+#else
+	(void)a;
+	(void)b;
+	(void)scale_a;
+	(void)byte_a;
+	(void)scale_b;
+	(void)byte_b;
+	out[0] = out[1] = out[2] = out[3] = 0.0f;
+	asm volatile("trap;\n");
+#endif
+}
+
+
+template<uint32_t BYTE_A>
+static __device__ __forceinline__ void LmMmaMxf8Mxf4Block(
+	float out[4],
+	const uint32_t a[4],
+	const uint32_t b[2],
+	uint32_t scale_a,
+	uint32_t scale_b)
+{
+	static_assert(BYTE_A < 4u, "a scale word holds four 32-wide blocks");
+#if LM_BLOCK_SCALED_MMA_PTX
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
+		".block_scale.scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
+		"{%14}, {%15,%16}, {%17}, {%18,%19};\n"
+		: "=f"(out[0]), "=f"(out[1]), "=f"(out[2]), "=f"(out[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+		  "r"(b[0]), "r"(b[1]), "f"(0.0f), "f"(0.0f), "f"(0.0f), "f"(0.0f),
+		  "r"(scale_a), "n"(BYTE_A), "n"(0),
+		  "r"(scale_b), "n"(0), "n"(0));
+#else
+	(void)a;
+	(void)b;
+	(void)scale_a;
+	(void)scale_b;
+	out[0] = out[1] = out[2] = out[3] = 0.0f;
+	asm volatile("trap;\n");
+#endif
+}
 
 #define LM_MMA4_M 16u
 #define LM_MMA4_N 8u

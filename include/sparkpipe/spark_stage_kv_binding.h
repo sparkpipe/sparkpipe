@@ -23,6 +23,8 @@
 #define SPARK_STAGE_KV_MAX_REGIONS 2u
 #define SPARK_STAGE_KV_SNAPSHOT_QUEUE_PAGES 64u
 #define SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS 20000000000ull
+#define SPARK_STAGE_KV_SAVE_IDLE_WAKE_NS 60000000000ull
+#define SPARK_STAGE_KV_UNREAD_LIMIT (UINT64_C(1) << 21)
 
 #define SPARK_STAGE_KV_LOCK_SITE_ADMIT 0u
 #define SPARK_STAGE_KV_LOCK_SITE_RESET 1u
@@ -294,7 +296,6 @@ struct SparkStageKvBinding
 	uint64_t restore_imported_pages;
 	uint32_t save_stop;
 	uint32_t save_held;
-	uint64_t expiry_sweep_seconds;
 	uint32_t save_running;
 	uint32_t sync_initialized;
 	SparkStageKvBindingCounters counters;
@@ -343,6 +344,7 @@ struct SparkStageKvBinding
 	SparkDeviceBuffer snapshot_page;
 	uint32_t *snapshot_pending;
 	SparkKvPageCacheSaveOrder *save_order;
+	SparkKvPageCacheUnread *unread;
 	SparkStageKvRecurrent recurrent;
 	SparkKvPageStore state_store;
 	uint8_t *state_staging;
@@ -371,6 +373,7 @@ static inline uint32_t SparkStageKvBindingAddressablePageCount(const SparkStageK
 }
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
+uint32_t SparkStageKvPoolMinimumChunks(uint32_t minimum,uint32_t chunks,uint32_t device_properties);
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding);
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision);
 SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t generation);

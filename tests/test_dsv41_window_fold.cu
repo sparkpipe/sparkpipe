@@ -6,11 +6,15 @@
 #include <string.h>
 #include <vector>
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
+#include "model-families/dsv41_flash/source/dsv41_flash_attend.cuh"
+#include "inference/kernels/mx_gemm.cuh"
 
 #define DEGREE 16u
 #define LATENT 512u
 #define RING 8u
 #define WINDOW 128u
+#define WAVE_WORST 0.03125
+#define WAVE_MEAN 0.001
 
 #define REQUIRE(condition) do { if ( !(condition) ) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #condition); exit(1); } } while ( 0 )
 #define CUDA(call) REQUIRE((call) == cudaSuccess)
@@ -104,7 +108,7 @@ static T *Device(const std::vector<T> &host)
 
 struct Case
 {
-	uint32_t rows, heads, heads_per_destination, record_heads, record_copies, rank, first_position, ring_stride;
+	uint32_t rows, heads, heads_per_destination, record_heads, record_copies, rank, first_position, ring_stride, whole;
 };
 
 static uint32_t RunCase(const Case &c, uint32_t perturb)
@@ -115,7 +119,8 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	const uint64_t record_floats = (uint64_t)(c.heads / c.record_heads) * c.record_copies * destination_stride;
 	std::vector<uint16_t> query = Values((size_t)destinations * query_rank_stride, 11u + c.rows);
 	std::vector<uint16_t> wave = Values((size_t)c.rows * LATENT, 23u + c.rank);
-	std::vector<uint16_t> ring = Values((size_t)2u * RING * LATENT, 37u + c.first_position);
+	const uint32_t degree = c.whole != 0u ? 1u : DEGREE, ring_rows = c.whole != 0u ? WINDOW : RING;
+	std::vector<uint16_t> ring = Values((size_t)2u * ring_rows * LATENT, 37u + c.first_position);
 	std::vector<uint32_t> positions(c.rows), lanes(c.rows, 0u), ordinals(c.rows), begin = {0u, c.rows}, indices(c.rows), slot = {1u};
 	for ( uint32_t row = 0u; row < c.rows; ++row )
 	{
@@ -138,7 +143,7 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	float *reference_d = Device(records), *candidate_d = Device(records);
 	const float scale = 1.0f / sqrtf((float)LATENT);
 	ReferenceWindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(reference_d, destination_stride, c.heads_per_destination, query_d,
-		query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, RING, WINDOW, DEGREE, c.rank,
+		query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, ring_rows, WINDOW, degree, c.rank,
 		scale, c.record_heads, c.record_copies);
 	CUDA(cudaGetLastError());
 	if ( perturb != 0u )
@@ -148,9 +153,16 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 		bumped = (uint16_t)(wave[3u] ^ 0x0100u);
 		CUDA(cudaMemcpy(wave_d + 3u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
 	}
-	D41WindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, destination_stride, c.heads_per_destination, query_d,
-		query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, RING, WINDOW, DEGREE, c.rank,
-		scale, c.record_heads, c.record_copies);
+	if ( c.whole == 1u )
+		D41WindowFoldWholeKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d, lanes_d,
+			ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
+	else if ( c.whole == 3u )
+		D41WindowFoldClusterKernel<<<dim3(D41K_WINDOW_PARTS, c.heads, c.rows), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d,
+			lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
+	else
+		D41WindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, destination_stride, c.heads_per_destination, query_d,
+			query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, ring_rows, WINDOW, degree,
+			c.rank, scale, c.record_heads, c.record_copies);
 	CUDA(cudaGetLastError());
 	CUDA(cudaDeviceSynchronize());
 	std::vector<float> reference(record_floats), candidate(record_floats);
@@ -161,10 +173,196 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 		differing += memcmp(&reference[index], &candidate[index], sizeof(float)) != 0 ? 1u : 0u;
 	cudaFree(query_d); cudaFree(wave_d); cudaFree(ring_d); cudaFree(positions_d); cudaFree(lanes_d); cudaFree(ordinals_d);
 	cudaFree(begin_d); cudaFree(indices_d); cudaFree(slot_d); cudaFree(reference_d); cudaFree(candidate_d);
-	printf("case rows %u heads %u record_heads %u copies %u rank %u first %u%s: %llu of %llu floats differ\n", c.rows, c.heads, c.record_heads,
-		c.record_copies, c.rank, c.first_position, perturb != 0u ? " (perturbed keys)" : "", (unsigned long long)differing,
-		(unsigned long long)record_floats);
+	printf("case rows %u heads %u record_heads %u copies %u rank %u first %u%s%s: %llu of %llu floats differ\n", c.rows, c.heads, c.record_heads,
+		c.record_copies, c.rank, c.first_position, c.whole == 1u ? " (whole window, one pass)" : c.whole == 2u ? " (whole window, chunks)" : c.whole == 3u ? " (whole window, cluster)" : "",
+		perturb != 0u ? " (perturbed keys)" : "",
+		(unsigned long long)differing, (unsigned long long)record_floats);
 	return differing != 0u ? 1u : 0u;
+}
+
+struct Wave
+{
+	uint32_t lanes, count[2], first[2], heads;
+};
+
+static float FromBf16(uint16_t value)
+{
+	const uint32_t bits = (uint32_t)value << 16u;
+	float result;
+	memcpy(&result, &bits, 4u);
+	return result;
+}
+
+template<class T>
+static T *Scratch(size_t count)
+{
+	T *device;
+	CUDA(cudaMalloc((void **)&device, count * sizeof(T) + 16u));
+	CUDA(cudaMemset(device, 0x5a, count * sizeof(T)));
+	return device;
+}
+
+static uint32_t coded_mismatch = 0u;
+
+static uint32_t RunWave(const Wave &w, uint32_t perturb)
+{
+	const uint32_t rows = w.count[0] + (w.lanes > 1u ? w.count[1] : 0u), heads = w.heads, packed = rows * heads;
+	const uint64_t stride = (uint64_t)rows * heads * D41K_RECORD;
+	std::vector<uint16_t> query = Values((size_t)packed * LATENT, 41u + rows);
+	std::vector<uint16_t> wave = Values((size_t)rows * LATENT, 43u + w.first[0]);
+	std::vector<uint16_t> ring = Values((size_t)2u * WINDOW * LATENT, 47u + w.first[1]);
+	std::vector<uint32_t> positions(rows), lanes(rows), ordinals(rows), begin = {0u, w.count[0], rows}, indices(rows), slot = {1u, 0u};
+	std::vector<float> sink(heads), records(stride, 0.0f);
+	for ( uint32_t lane = 0u, at = 0u; lane < w.lanes; ++lane )
+		for ( uint32_t ordinal = 0u; ordinal < w.count[lane]; ++ordinal, ++at )
+		{
+			const uint32_t row = rows - 1u - at;
+			indices[at] = row;
+			positions[row] = w.first[lane] + ordinal;
+			lanes[row] = lane;
+			ordinals[row] = ordinal;
+		}
+	for ( uint32_t head = 0u; head < heads; ++head )
+		sink[head] = (float)((int32_t)(Mix(head ^ 0x77u) & 0xffu) - 128) / 32.0f;
+	for ( uint64_t base = 0u; base < stride; base += D41K_RECORD )
+		records[base] = -INFINITY;
+	uint16_t *query_d = Device(query), *wave_d = Device(wave), *ring_d = Device(ring);
+	uint32_t *positions_d = Device(positions), *lanes_d = Device(lanes), *ordinals_d = Device(ordinals), *begin_d = Device(begin),
+		*indices_d = Device(indices), *slot_d = Device(slot);
+	float *sink_d = Device(sink), *sequential_d = Device(records);
+	uint16_t *expected_d = Scratch<uint16_t>((size_t)packed * LATENT), *merged_d = Scratch<uint16_t>((size_t)packed * LATENT);
+	const float scale = 1.0f / sqrtf((float)LATENT);
+	LmKvShardView none;
+	memset(&none, 0, sizeof(none));
+	ReferenceWindowFoldKernel<<<dim3(rows, heads), D41K_THREADS>>>(sequential_d, stride, heads, query_d, (uint64_t)packed * LATENT, wave_d, ring_d,
+		positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, WINDOW * LATENT, WINDOW, WINDOW, 1u, 0u, scale, heads, 1u);
+	D41MergeSinkKernel<<<dim3(rows, heads), D41K_THREADS>>>(sequential_d, stride, 1u, heads, sink_d, expected_d);
+	CUDA(cudaGetLastError());
+	if ( perturb != 0u )
+	{
+		const uint16_t bumped = (uint16_t)(wave[(size_t)(rows / 2u) * LATENT + 5u] ^ 0x0100u);
+		CUDA(cudaMemcpy(wave_d + (size_t)(rows / 2u) * LATENT + 5u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
+	}
+	std::vector<float> frequency(D41K_ROPE_PAIRS);
+	for ( uint32_t pair = 0u; pair < D41K_ROPE_PAIRS; ++pair )
+		frequency[pair] = powf(10000.0f, -(float)pair / (float)D41K_ROPE_PAIRS);
+	float *frequency_d = Device(frequency);
+	const uint32_t group_heads = heads / 2u, width = group_heads * LATENT;
+	uint8_t *codes_d = Scratch<uint8_t>((size_t)rows * heads * LATENT + (size_t)rows * heads * LATENT / 32u);
+	uint8_t *reference_d = Scratch<uint8_t>((size_t)rows * heads * LATENT + (size_t)rows * heads * LATENT / 32u);
+	uint16_t *roped_d = Scratch<uint16_t>((size_t)packed * LATENT);
+	CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
+		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, merged_d,
+		(const float *)0, 0u, 0u, (uint8_t *)0, rows, rows, 0u, 0)));
+	CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
+		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, (uint16_t *)0,
+		frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, rows, 0u, 0)));
+	CUDA(cudaMemcpy(roped_d, merged_d, (size_t)packed * LATENT * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+	D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(roped_d, heads, LATENT, LATENT - 2u * D41K_ROPE_PAIRS, positions_d, 0, frequency_d, 1u,
+		(const uint32_t *)0);
+	for ( uint32_t group = 0u; group < 2u; ++group )
+		REQUIRE(LmMxQuantizeRows(roped_d + (size_t)group * width, (uint64_t)heads * LATENT, reference_d + (size_t)group * rows * width,
+			reference_d + (size_t)2u * rows * width + (size_t)group * rows * (width / 32u), rows, width, 0) == LM_LAUNCH_OK);
+	CUDA(cudaGetLastError());
+	CUDA(cudaDeviceSynchronize());
+	if ( perturb == 0u )
+	{
+		const size_t bytes = (size_t)rows * heads * LATENT + (size_t)rows * heads * LATENT / 32u;
+		std::vector<uint8_t> coded(bytes), reference(bytes);
+		CUDA(cudaMemcpy(coded.data(), codes_d, bytes, cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(reference.data(), reference_d, bytes, cudaMemcpyDeviceToHost));
+		uint64_t differ = 0u;
+		for ( size_t index = 0u; index < bytes; ++index )
+			differ += coded[index] != reference[index] ? 1u : 0u;
+		printf("attend codes lanes %u rows %u: %llu of %llu code and scale bytes differ from rope then quantize\n", w.lanes, rows,
+			(unsigned long long)differ, (unsigned long long)bytes);
+		coded_mismatch += differ != 0u ? 1u : 0u;
+		const uint32_t live = rows - rows / 3u;
+		std::vector<uint8_t> partial(bytes);
+		CUDA(cudaMemset(codes_d, 0xa5, bytes));
+		CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
+			(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, (uint16_t *)0,
+			frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, live, 0u, 0)));
+		CUDA(cudaDeviceSynchronize());
+		CUDA(cudaMemcpy(partial.data(), codes_d, bytes, cudaMemcpyDeviceToHost));
+		uint64_t wrong = 0u;
+		for ( uint32_t group = 0u; group < 2u; ++group )
+			for ( uint32_t row = 0u; row < rows; ++row )
+			{
+				const size_t code = ((size_t)group * rows + row) * width, scale_at = (size_t)2u * rows * width + ((size_t)group * rows + row) * (width / 32u);
+				for ( size_t byte = 0u; byte < width; ++byte )
+					wrong += partial[code + byte] != (row < live ? coded[code + byte] : (uint8_t)0xa5u) ? 1u : 0u;
+				for ( size_t byte = 0u; byte < width / 32u; ++byte )
+					wrong += partial[scale_at + byte] != (row < live ? coded[scale_at + byte] : (uint8_t)0xa5u) ? 1u : 0u;
+			}
+		printf("attend codes lanes %u rows %u live %u: %llu bytes differ from the full launch or touch rows past the live count\n", w.lanes, rows, live,
+			(unsigned long long)wrong);
+		coded_mismatch += wrong != 0u ? 1u : 0u;
+		const size_t part_elements = (size_t)packed * LATENT;
+		std::vector<uint16_t> pair_query = query, second = Values(part_elements, 53u + rows);
+		pair_query.insert(pair_query.end(), second.begin(), second.end());
+		std::vector<float> pair_sink = sink;
+		for ( uint32_t head = 0u; head < heads; ++head )
+			pair_sink.push_back((float)((int32_t)(Mix(head ^ 0x99u) & 0xffu) - 128) / 32.0f);
+		uint16_t *pair_query_d = Device(pair_query), *single_out_d = Scratch<uint16_t>(2u * part_elements), *pair_out_d = Scratch<uint16_t>(2u * part_elements);
+		float *pair_sink_d = Device(pair_sink);
+		uint8_t *single_codes_d = Scratch<uint8_t>(2u * bytes), *pair_codes_d = Scratch<uint8_t>(2u * bytes);
+		for ( uint32_t part = 0u; part < 2u; ++part )
+		{
+			CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, pair_query_d + part * part_elements, (const uint32_t *)0,
+				(const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d,
+				indices_d, slot_d, pair_sink_d + part * heads, scale, single_out_d + part * part_elements, (const float *)0, 0u, 0u, (uint8_t *)0, rows, rows,
+				0u, 0)));
+			CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, pair_query_d + part * part_elements, (const uint32_t *)0,
+				(const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d,
+				indices_d, slot_d, pair_sink_d + part * heads, scale, (uint16_t *)0, frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads,
+				single_codes_d + part * bytes, rows, rows, 0u, 0)));
+		}
+		CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT, 2u>(none, 0u, pair_query_d, (const uint32_t *)0, (const uint32_t *)0,
+			(const uint32_t *)0, (const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d,
+			pair_sink_d, scale, pair_out_d, (const float *)0, 0u, 0u, (uint8_t *)0, rows, rows, 0u, 0, part_elements, part_elements, 0u)));
+		CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT, 2u>(none, 0u, pair_query_d, (const uint32_t *)0, (const uint32_t *)0,
+			(const uint32_t *)0, (const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d,
+			pair_sink_d, scale, (uint16_t *)0, frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, pair_codes_d, rows, rows, 0u, 0, part_elements, 0u,
+			bytes)));
+		CUDA(cudaDeviceSynchronize());
+		std::vector<uint16_t> single_out(2u * part_elements), pair_out(2u * part_elements);
+		std::vector<uint8_t> single_codes(2u * bytes), pair_codes(2u * bytes);
+		CUDA(cudaMemcpy(single_out.data(), single_out_d, single_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(pair_out.data(), pair_out_d, pair_out.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(single_codes.data(), single_codes_d, single_codes.size(), cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(pair_codes.data(), pair_codes_d, pair_codes.size(), cudaMemcpyDeviceToHost));
+		uint64_t outputs_differ = 0u, codes_differ = 0u;
+		for ( size_t index = 0u; index < single_out.size(); ++index )
+			outputs_differ += single_out[index] != pair_out[index] ? 1u : 0u;
+		for ( size_t index = 0u; index < single_codes.size(); ++index )
+			codes_differ += single_codes[index] != pair_codes[index] ? 1u : 0u;
+		printf("attend two query tiles a pass lanes %u rows %u: %llu of %llu outputs and %llu of %llu code bytes differ from one tile a launch\n", w.lanes,
+			rows, (unsigned long long)outputs_differ, (unsigned long long)single_out.size(), (unsigned long long)codes_differ,
+			(unsigned long long)single_codes.size());
+		coded_mismatch += outputs_differ + codes_differ != 0u ? 1u : 0u;
+		cudaFree(pair_query_d); cudaFree(single_out_d); cudaFree(pair_out_d); cudaFree(pair_sink_d); cudaFree(single_codes_d); cudaFree(pair_codes_d);
+	}
+	cudaFree(frequency_d); cudaFree(codes_d); cudaFree(reference_d); cudaFree(roped_d);
+	std::vector<uint16_t> expected((size_t)packed * LATENT), merged((size_t)packed * LATENT);
+	CUDA(cudaMemcpy(expected.data(), expected_d, expected.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+	CUDA(cudaMemcpy(merged.data(), merged_d, merged.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+	double worst = 0.0, total = 0.0;
+	uint64_t same = 0u;
+	for ( size_t index = 0u; index < expected.size(); ++index )
+	{
+		const double difference = fabs((double)FromBf16(expected[index]) - (double)FromBf16(merged[index]));
+		worst = difference > worst ? difference : worst;
+		total += difference;
+		same += expected[index] == merged[index] ? 1u : 0u;
+	}
+	const double mean = total / (double)expected.size();
+	cudaFree(query_d); cudaFree(wave_d); cudaFree(ring_d); cudaFree(positions_d); cudaFree(lanes_d); cudaFree(ordinals_d); cudaFree(begin_d);
+	cudaFree(indices_d); cudaFree(slot_d); cudaFree(sink_d); cudaFree(sequential_d); cudaFree(expected_d); cudaFree(merged_d);
+	printf("attend lanes %u rows %u+%u first %u/%u heads %u%s: worst %.5f mean %.6f, %llu of %llu outputs the same bits\n", w.lanes, w.count[0],
+		w.lanes > 1u ? w.count[1] : 0u, w.first[0], w.first[1], heads, perturb != 0u ? " (perturbed key)" : "", worst, mean,
+		(unsigned long long)same, (unsigned long long)expected.size());
+	return worst > WAVE_WORST || mean > WAVE_MEAN ? 1u : 0u;
 }
 
 static uint32_t InitCase(uint32_t rows, uint32_t heads, uint32_t destinations, uint32_t pad)
@@ -192,25 +390,53 @@ static uint32_t InitCase(uint32_t rows, uint32_t heads, uint32_t destinations, u
 int main(void)
 {
 	const Case cases[] = {
-		{1u, 64u, 4u, 4u, 1u, 0u, 9999u, RING * LATENT},
-		{1u, 64u, 4u, 8u, 2u, 7u, 70000u, RING * LATENT},
-		{6u, 64u, 4u, 8u, 2u, 15u, 4096u, RING * LATENT},
-		{17u, 64u, 4u, 4u, 1u, 3u, 123457u, RING * LATENT},
-		{1024u, 4u, 4u, 4u, 1u, 9u, 33000u, 0u},
-		{256u, 4u, 4u, 4u, 1u, 0u, 5u, 0u},
-		{3u, 64u, 4u, 4u, 1u, 14u, 2u, RING * LATENT},
+		{1u, 64u, 4u, 4u, 1u, 0u, 9999u, RING * LATENT, 0u},
+		{1u, 64u, 4u, 8u, 2u, 7u, 70000u, RING * LATENT, 0u},
+		{6u, 64u, 4u, 8u, 2u, 15u, 4096u, RING * LATENT, 0u},
+		{17u, 64u, 4u, 4u, 1u, 3u, 123457u, RING * LATENT, 0u},
+		{1024u, 4u, 4u, 4u, 1u, 9u, 33000u, 0u, 0u},
+		{256u, 4u, 4u, 4u, 1u, 0u, 5u, 0u, 0u},
+		{3u, 64u, 4u, 4u, 1u, 14u, 2u, RING * LATENT, 0u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 9999u, WINDOW * LATENT, 1u},
+		{6u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 1u},
+		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 1u},
+		{2u, 8u, 8u, 8u, 1u, 0u, 0u, WINDOW * LATENT, 1u},
+		{1024u, 16u, 16u, 16u, 1u, 0u, 33000u, 0u, 1u},
+		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 2u},
+		{1024u, 16u, 16u, 16u, 1u, 0u, 33000u, 0u, 2u},
+		{17u, 8u, 8u, 8u, 1u, 0u, 123457u, WINDOW * LATENT, 2u},
+		{1u, 4u, 4u, 4u, 1u, 0u, 9999u, WINDOW * LATENT, 3u},
+		{1u, 4u, 4u, 4u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
+		{1u, 4u, 4u, 4u, 1u, 0u, 5u, WINDOW * LATENT, 3u},
+		{6u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
+		{2u, 8u, 8u, 8u, 1u, 0u, 0u, WINDOW * LATENT, 3u},
+		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 3u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 9999u, WINDOW * LATENT, 3u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 1u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
 	};
 	uint32_t failures = 0u;
 	for ( const Case &c : cases )
 		failures += RunCase(c, 0u);
-	const uint32_t sensitive = RunCase(cases[1], 1u);
+	const uint32_t sensitive = RunCase(cases[1], 1u) != 0u && RunCase(cases[8], 1u) != 0u && RunCase(cases[18], 1u) != 0u ? 1u : 0u;
+	const Wave waves[] = {
+		{1u, {17u, 0u}, {0u, 0u}, 16u},
+		{1u, {128u, 0u}, {5u, 0u}, 16u},
+		{1u, {1024u, 0u}, {33000u, 0u}, 16u},
+		{2u, {300u, 77u}, {5u, 70000u}, 16u},
+		{2u, {129u, 255u}, {126u, 127u}, 16u},
+	};
+	uint32_t waves_off = 0u;
+	for ( const Wave &w : waves )
+		waves_off += RunWave(w, 0u);
+	const uint32_t wave_sensitive = RunWave(waves[3], 1u);
 	const uint32_t unset = InitCase(2048u, 4u, 16u, 0u) + InitCase(4100u, 4u, 16u, 0u) + InitCase(3u, 8u, 16u, 37u);
-	if ( failures != 0u || sensitive == 0u || unset != 0u )
+	if ( failures != 0u || sensitive == 0u || unset != 0u || waves_off != 0u || wave_sensitive == 0u || coded_mismatch != 0u )
 	{
-		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten\n",
-			failures, sensitive != 0u ? "detected" : "not detected", unset);
+		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten, %u fused waves off the sequential fold's attention output, a perturbed wave key %s, %u coded waves off rope then quantize or off one tile a launch\n",
+			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected", coded_mismatch);
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank, one block a head or eight clustered blocks a head; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte, also over fewer live rows with the rest untouched, and two query tiles a pass give one tile a launch's outputs and codes bit for bit; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }

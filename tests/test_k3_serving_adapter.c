@@ -2,6 +2,7 @@
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 
 #include "model-families/k3/source/generated_config.h"
+#include "runtime/device/device_backend.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident_tp16.json"
@@ -557,6 +558,24 @@ static int32_t TestK3ResetAfterStreamedFailure(void)
 	return(failures);
 }
 
+static int32_t TestK3DeviceFaultIsLaneFatal(void)
+{
+	SparkStageServingState state;
+	SparkModelServingAdapterSnapshot snapshot;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	failures += TestK3Check(SparkDeviceFaulted() == 0u && StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) == 0u, "a lane on a healthy device is not lane-fatal");
+	(void)SparkDeviceRecordError(SPARK_STATUS_IO_ERROR, "queue_wait", "k3 test queue", 2, "injected device failure");
+	failures += TestK3Check(SparkDeviceFaulted() != 0u && SparkDeviceSynchronize(0u) == SPARK_STATUS_IO_ERROR,
+		"a backend's IO_ERROR faults the device, and every later device call fails");
+	failures += TestK3Check(StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) != 0u,
+		"after a device fault the snapshot reports the lane fatal, so residentd exits after the failed route instead of failing every request");
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Check(SparkDeviceInitialize(0) == SPARK_STATUS_OK, "the device API opens");
@@ -573,6 +592,7 @@ int main(int argc, char **argv)
 		failures += TestK3Deployment(TEST_K3_DEPLOYMENT);
 	for (index = 1; index < argc; index++)
 		failures += TestK3Deployment(argv[index]);
+	failures += TestK3DeviceFaultIsLaneFatal();
 	printf("test_k3_serving_adapter: %d failures\n", (int)failures);
 	return(failures != 0 ? 1 : 0);
 }

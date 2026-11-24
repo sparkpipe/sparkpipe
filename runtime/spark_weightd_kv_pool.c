@@ -10,38 +10,30 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include "sparkpipe/spark_weightd_device.h"
+#include "sparkpipe/spark_gpu.h"
 
 SparkStatus SparkWeightdKvPoolGranularity(uint64_t *bytes)
 {
-	CUmemAllocationProp prop;
-	size_t granularity = 0u;
-	int device = 0;
+	uint64_t granularity = 0u;
 	if ( bytes == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*bytes = 0u;
-	if ( cudaGetDevice(&device) != cudaSuccess )
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK ||
+		SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity) != SPARK_STATUS_OK || granularity == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	memset(&prop,0,sizeof(prop));
-	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	prop.location.id = device;
-	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-	if ( cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || granularity == 0u )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	*bytes = (uint64_t)granularity;
+	*bytes = granularity;
 	return(SPARK_STATUS_OK);
 }
 
 static void SparkWeightdKvPoolUnmapFrom(SparkWeightdKvPoolMapping *mapping,uint32_t first)
 {
-	CUdeviceptr base = (CUdeviceptr)(uintptr_t)mapping->device_base;
+	SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)mapping->device_base;
 	while ( mapping->mapped_count > first )
 	{
 		mapping->mapped_count--;
-		(void)cuMemUnmap(base + (CUdeviceptr)mapping->chunk_offsets[mapping->mapped_count],(size_t)mapping->chunk_bytes);
-		(void)cuMemRelease((CUmemGenericAllocationHandle)mapping->chunk_handles[mapping->mapped_count]);
+		(void)SparkDeviceMemoryUnmap(base + mapping->chunk_offsets[mapping->mapped_count],mapping->chunk_bytes);
+		(void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(mapping->chunk_handles[mapping->mapped_count]));
 		mapping->chunk_handles[mapping->mapped_count] = 0;
 	}
 }
@@ -53,7 +45,7 @@ void SparkWeightdKvPoolUnmap(SparkWeightdKvPoolMapping *mapping)
 	if ( mapping->chunk_handles != 0 && mapping->chunk_offsets != 0 )
 		SparkWeightdKvPoolUnmapFrom(mapping,0u);
 	if ( mapping->device_base != 0 && mapping->external_reservation == 0u )
-		(void)cuMemAddressFree((CUdeviceptr)(uintptr_t)mapping->device_base,(size_t)mapping->device_bytes);
+		(void)SparkDeviceAddressRelease((SparkDeviceAddress)(uintptr_t)mapping->device_base,mapping->device_bytes);
 	if ( mapping->metadata != 0 )
 		(void)munmap(mapping->metadata,(size_t)mapping->metadata_bytes);
 	if ( mapping->client != 0 )
@@ -66,14 +58,12 @@ void SparkWeightdKvPoolUnmap(SparkWeightdKvPoolMapping *mapping)
 static SparkStatus SparkWeightdKvMapChunks(SparkWeightdClient *client,uint64_t generation,uintptr_t device_base,const uint64_t *offsets,void **handles,uint64_t chunk_bytes,int device,uint32_t *mapped_count,uint32_t end,uint64_t timeout_nanoseconds)
 {
 	int fds[SPARK_WEIGHTD_KV_POOL_EXPORT_MAX];
-	CUmemAccessDesc access;
-	CUdeviceptr at;
+	SparkDeviceAddress at;
 	uint32_t batch,index;
-	SparkStatus status = SPARK_STATUS_OK;
-	memset(&access,0,sizeof(access));
-	access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	access.location.id = device;
-	access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+	SparkStatus status = SparkWeightdDeviceOpen();
+	(void)device;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	while ( status == SPARK_STATUS_OK && *mapped_count < end )
 	{
 		batch = end - *mapped_count < SPARK_WEIGHTD_KV_POOL_EXPORT_MAX ? end - *mapped_count : SPARK_WEIGHTD_KV_POOL_EXPORT_MAX;
@@ -82,22 +72,20 @@ static SparkStatus SparkWeightdKvMapChunks(SparkWeightdClient *client,uint64_t g
 			SPARK_RETURN(status);
 		for (index=0u; index<batch; index++)
 		{
-			CUmemGenericAllocationHandle handle = 0;
-			if ( status == SPARK_STATUS_OK && cuMemImportFromShareableHandle(&handle,(void *)(uintptr_t)fds[index],CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) != CUDA_SUCCESS )
+			SparkDeviceMemoryHandle handle = 0u;
+			if ( status == SPARK_STATUS_OK && SparkDeviceMemoryImport(&handle,fds[index],"weightd kv pool") != SPARK_STATUS_OK )
 				status = SPARK_STATUS_IO_ERROR;
 			(void)close(fds[index]);
 			if ( status != SPARK_STATUS_OK )
 				continue;
-			at = (CUdeviceptr)device_base + (CUdeviceptr)offsets[*mapped_count];
-			if ( cuMemMap(at,(size_t)chunk_bytes,0u,handle,0ull) != CUDA_SUCCESS )
+			at = (SparkDeviceAddress)device_base + offsets[*mapped_count];
+			if ( SparkDeviceMemoryMap(at,chunk_bytes,handle,0u,SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK )
 			{
-				(void)cuMemRelease(handle);
+				(void)SparkDeviceMemoryRelease(handle);
 				status = SPARK_STATUS_IO_ERROR;
 				continue;
 			}
-			handles[(*mapped_count)++] = (void *)handle;
-			if ( cuMemSetAccess(at,(size_t)chunk_bytes,&access,1u) != CUDA_SUCCESS )
-				status = SPARK_STATUS_IO_ERROR;
+			handles[(*mapped_count)++] = (void *)(uintptr_t)handle;
 		}
 	}
 	SPARK_RETURN(status);
@@ -144,7 +132,7 @@ static SparkStatus SparkWeightdKvPoolAwaitMinimum(const SparkWeightdKvPoolReques
 
 static SparkStatus SparkWeightdKvPoolPlace(SparkWeightdKvPoolMapping *mapping,const SparkWeightdKvPoolGrant *grant,const uint64_t *chunk_offsets,const SparkWeightdKvPoolRequest *request)
 {
-	CUdeviceptr base = 0;
+	SparkDeviceAddress base = 0u;
 	uint64_t granularity = grant->chunk_bytes,limit = grant->device_bytes;
 	uint32_t index;
 	mapping->chunk_offsets = (uint64_t *)malloc((size_t)grant->chunk_capacity * sizeof(uint64_t));
@@ -163,7 +151,7 @@ static SparkStatus SparkWeightdKvPoolPlace(SparkWeightdKvPoolMapping *mapping,co
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		mapping->chunk_offsets[index] = chunk_offsets[index];
 	}
-	if ( cudaGetDevice(&mapping->device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&mapping->device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->device_base != 0 )
 	{
@@ -172,7 +160,7 @@ static SparkStatus SparkWeightdKvPoolPlace(SparkWeightdKvPoolMapping *mapping,co
 	}
 	else
 	{
-		if ( cuMemAddressReserve(&base,(size_t)grant->device_bytes,0u,0ull,0ull) != CUDA_SUCCESS )
+		if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK || SparkDeviceAddressReserve(&base,grant->device_bytes,"weightd kv pool") != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		mapping->device_base = (void *)(uintptr_t)base;
 	}
@@ -287,15 +275,15 @@ SparkStatus SparkWeightdKvPoolStatus(SparkWeightdKvPoolMapping *mapping,SparkWei
 
 void SparkWeightdKvSharedUnmap(SparkWeightdKvSharedMapping *mapping)
 {
-	CUdeviceptr base;
+	SparkDeviceAddress base;
 	if ( mapping == 0 )
 		return;
-	base = (CUdeviceptr)(uintptr_t)mapping->device_base;
+	base = (SparkDeviceAddress)(uintptr_t)mapping->device_base;
 	while ( mapping->chunk_handles != 0 && mapping->chunk_offsets != 0 && mapping->mapped_count != 0u )
 	{
 		mapping->mapped_count--;
-		(void)cuMemUnmap(base + (CUdeviceptr)mapping->chunk_offsets[mapping->mapped_count],(size_t)mapping->chunk_bytes);
-		(void)cuMemRelease((CUmemGenericAllocationHandle)mapping->chunk_handles[mapping->mapped_count]);
+		(void)SparkDeviceMemoryUnmap(base + mapping->chunk_offsets[mapping->mapped_count],mapping->chunk_bytes);
+		(void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(mapping->chunk_handles[mapping->mapped_count]));
 	}
 	if ( mapping->metadata != 0 )
 		(void)munmap(mapping->metadata,(size_t)mapping->metadata_bytes);
@@ -354,7 +342,7 @@ SparkStatus SparkWeightdKvSharedMapChunks(SparkWeightdKvSharedMapping *mapping,v
 	if ( mapping->chunk_offsets == 0 || mapping->chunk_handles == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memcpy(mapping->chunk_offsets,chunk_offsets,(size_t)mapping->chunk_count * sizeof(uint64_t));
-	if ( cudaGetDevice(&mapping->device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&mapping->device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	mapping->device_base = device_base;
 	return(SparkWeightdKvMapChunks(mapping->client,mapping->pool_generation,(uintptr_t)device_base,mapping->chunk_offsets,mapping->chunk_handles,mapping->chunk_bytes,
@@ -363,11 +351,11 @@ SparkStatus SparkWeightdKvSharedMapChunks(SparkWeightdKvSharedMapping *mapping,v
 
 SparkStatus SparkWeightdKvReserveAddress(uint64_t bytes,void **base_out)
 {
-	CUdeviceptr base = 0;
+	SparkDeviceAddress base = 0u;
 	if ( base_out == 0 || bytes == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*base_out = 0;
-	if ( cuMemAddressReserve(&base,(size_t)bytes,0u,0ull,0ull) != CUDA_SUCCESS )
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK || SparkDeviceAddressReserve(&base,bytes,"weightd kv reservation") != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	*base_out = (void *)(uintptr_t)base;
 	return(SPARK_STATUS_OK);
@@ -376,5 +364,5 @@ SparkStatus SparkWeightdKvReserveAddress(uint64_t bytes,void **base_out)
 void SparkWeightdKvFreeAddress(void *base,uint64_t bytes)
 {
 	if ( base != 0 )
-		(void)cuMemAddressFree((CUdeviceptr)(uintptr_t)base,(size_t)bytes);
+		(void)SparkDeviceAddressRelease((SparkDeviceAddress)(uintptr_t)base,bytes);
 }

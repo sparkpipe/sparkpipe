@@ -87,6 +87,8 @@ SPARK_KV_SHARD_FN uint32_t SparkKvShardLocalKeys(SparkKvShard shard,uint32_t key
 
 SPARK_KV_SHARD_FN uint32_t SparkKvShardLocalPosition(SparkKvShard shard,uint32_t local)
 {
+	if ( shard.degree == 1u )
+		return(local);
 	return(((local / shard.grain) * shard.degree + shard.rank) * shard.grain + local % shard.grain);
 }
 

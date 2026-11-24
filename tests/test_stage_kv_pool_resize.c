@@ -365,9 +365,20 @@ static void TestVacatedPagesStillServe(void)
 	printf("after a shrink the smaller pool keeps serving: new pages admit by evicting within the granted limit\n");
 }
 
+static void TestWholePoolWithoutPageFallback(void)
+{
+	assert(SparkStageKvPoolMinimumChunks(3u,8u,0u) == 3u);
+	assert(SparkStageKvPoolMinimumChunks(3u,8u,SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY | SPARK_DEVICE_PROPERTY_SHARED_ADDRESS) == 3u);
+	assert(SparkStageKvPoolMinimumChunks(3u,8u,SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK) == 8u);
+	assert(SparkStageKvPoolMinimumChunks(8u,8u,SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK) == 8u);
+	assert((SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK) == 0u);
+	printf("whole pool: a backend without a smaller-page fallback attaches every chunk of the pool as its minimum, so serving never maps another; other backends keep the slot-derived minimum\n");
+}
+
 int main(void)
 {
 	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
+	TestWholePoolWithoutPageFallback();
 	TestKvServerStart((uint64_t)TEST_MINIMUM_CHUNKS * TEST_CHUNK_BYTES);
 	EngineConfigure(&ENGINE_A,"kvpoolm");
 	TestPoolAtMinimumParksEveryPage();

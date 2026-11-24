@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 import pathlib
 import sys
 import tempfile
@@ -114,6 +115,18 @@ def main():
                 if "kv_snapshot_maximum_bytes" in rank or "kv_partition_reserve_bytes" in rank or rank["kv_backing_maximum_bytes"] != need:
                     failures.append(f"{record_id}: rank {rank['rank_index']} renders a per-lane snapshot cap, a partition reserve or a {rank['kv_backing_maximum_bytes']}-byte backing instead of the {need} bytes its spilled pages need")
                     break
+            fabric, second = stage_lane.FABRIC["first_port"], stage_lane.FABRIC["second_port"]
+            first_node = record.get("first_node", 0)
+            for rendered_name, rendered in (("deployment.json", node), ("model_resident.json", hub)):
+                for rank in rendered["nodes"]:
+                    wanted = f"{fabric['prefix']}.{fabric['address_base'] + first_node + rank['rank_index']}"
+                    if rank["control_endpoint"]["host"] != wanted:
+                        failures.append(f"{record_id}: {rendered_name} rank {rank['rank_index']} control endpoint {rank['control_endpoint']['host']}, "
+                                        f"not its first-port address {wanted}: one switch is the network every lane can count on")
+                        break
+            stream = (record.get("taps") or {}).get("stream", "")
+            if stream.startswith(second["prefix"] + "."):
+                failures.append(f"{record_id}: taps.stream {stream} is on the optional second port's subnet")
             if "tokenizer" in node or "draft_server" in node or hub["tokenizer"]["sha256"] != record["tokenizer_sha256"]:
                 failures.append(f"{record_id}: the tokenizer and draft server belong to the hub model_resident.json only")
             prefix = record.get("text_prompt_prefix_token_ids")
@@ -129,6 +142,11 @@ def main():
                     failures.append(f"{record_id}: deployment/hub/model_swap.json {key} differs from the lane record's swap entry")
         elif swap.get(record_id, {}).get("node_memory_bytes") != model["node_memory_bytes"]:
             failures.append(f"{record_id}: deployment/hub/model_swap.json node_memory_bytes differs from tools/stage_lane.py")
+        root = record["runtime_root"].split("/home/{host}/", 1)[-1]
+        for key, value in swap.get(record_id, {}).items():
+            for named in re.findall(r"(?:stage-lanes/[A-Za-z0-9_]+|k3-lanes)/lane[0-9]+/root", value) if isinstance(value, str) else ():
+                if named != root:
+                    failures.append(f"{record_id}: deployment/hub/model_swap.json {key} names {named}, not the record's root {root}")
         if record_id in chat and chat[record_id].get("context_tokens") != context:
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
         if record_id in chat and chat[record_id].get("sequences") != record.get("sequences"):

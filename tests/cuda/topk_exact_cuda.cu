@@ -22,11 +22,20 @@ __global__ void ProbeScoresKernel(float *scores,uint64_t count,uint64_t salt,uin
 		z ^= z >> 31u;
 		if ( masked_every != 0u && (z >> 40u) % masked_every == 0u )
 			scores[index] = -INFINITY;
+		else if ( levels == 2u )
+			scores[index] = 1.0f + (float)(z >> 41u) * 0x1p-26f;
 		else if ( levels != 0u )
 			scores[index] = (float)((int32_t)(z % levels) - (int32_t)(levels / 2u)) * 0.25f;
 		else
 			scores[index] = (float)((int64_t)(z >> 11u) - (int64_t)(1ull << 52u)) * 0x1p-50f;
 	}
+}
+
+__global__ void ProbeCausalKernel(float *scores,uint32_t rows,uint32_t n)
+{
+	const uint32_t row = blockIdx.x,bound = n / 2u + (uint32_t)((uint64_t)(n / 2u) * row / rows);
+	for (uint32_t index = bound + threadIdx.x; index < n; index += blockDim.x)
+		scores[(uint64_t)row * n + index] = -INFINITY;
 }
 
 static void ProbeCase(uint32_t rows,uint32_t n,uint32_t k,uint32_t levels,uint32_t masked_every)
@@ -39,7 +48,9 @@ static void ProbeCase(uint32_t rows,uint32_t n,uint32_t k,uint32_t levels,uint32
 	snprintf(label,sizeof(label),"rows%u n%u k%u levels%u masked_every%u cluster%u",rows,n,k,levels,masked_every,LmTopkExactClusterFits(rows,n,k));
 	PROBE_CUDA(cudaMalloc((void **)&scores,count * sizeof(float)));
 	PROBE_CUDA(cudaMalloc((void **)&out,(uint64_t)rows * k * sizeof(uint32_t)));
-	ProbeScoresKernel<<<128,256>>>(scores,count,(uint64_t)n * 131u + k + levels,levels,masked_every);
+	ProbeScoresKernel<<<128,256>>>(scores,count,(uint64_t)n * 131u + k + levels,levels == 1u ? 0u : levels,masked_every);
+	if ( levels == 1u )
+		ProbeCausalKernel<<<rows,256>>>(scores,rows,n);
 	PROBE_CUDA(cudaMemset(out,0xa5,(uint64_t)rows * k * sizeof(uint32_t)));
 	LmTopkExactKernel<PROBE_THREADS><<<rows,PROBE_THREADS>>>(scores,n,k,out);
 	PROBE_CUDA(cudaDeviceSynchronize());
@@ -63,15 +74,17 @@ static void ProbeCase(uint32_t rows,uint32_t n,uint32_t k,uint32_t levels,uint32
 	cudaFree(out);
 }
 
-static void ProbeTime(uint32_t n,uint32_t k)
+static void ProbeTime(uint32_t rows,uint32_t n,uint32_t k,uint32_t causal,uint32_t levels)
 {
-	const uint32_t repeats = 500u;
+	const uint32_t repeats = rows > 1u ? 5u : 500u;
 	float *scores,elapsed[2];
 	uint32_t *out,kernel,repeat;
 	cudaEvent_t start,stop;
-	PROBE_CUDA(cudaMalloc((void **)&scores,(uint64_t)n * sizeof(float)));
-	PROBE_CUDA(cudaMalloc((void **)&out,(uint64_t)k * sizeof(uint32_t)));
-	ProbeScoresKernel<<<128,256>>>(scores,n,7u,0u,0u);
+	PROBE_CUDA(cudaMalloc((void **)&scores,(uint64_t)rows * n * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&out,(uint64_t)rows * k * sizeof(uint32_t)));
+	ProbeScoresKernel<<<128,256>>>(scores,(uint64_t)rows * n,7u,levels,0u);
+	if ( causal != 0u )
+		ProbeCausalKernel<<<rows,256>>>(scores,rows,n);
 	PROBE_CUDA(cudaEventCreate(&start));
 	PROBE_CUDA(cudaEventCreate(&stop));
 	for (kernel=0u; kernel<2u; kernel++)
@@ -79,14 +92,17 @@ static void ProbeTime(uint32_t n,uint32_t k)
 		PROBE_CUDA(cudaEventRecord(start));
 		for (repeat=0u; repeat<repeats; repeat++)
 			if ( kernel == 0u )
-				LmTopkExactKernel<PROBE_THREADS><<<1,PROBE_THREADS>>>(scores,n,k,out);
+				LmTopkExactKernel<PROBE_THREADS><<<rows,PROBE_THREADS>>>(scores,n,k,out);
 			else
-				PROBE_CUDA(LmTopkExactRowsLaunch<PROBE_THREADS>(scores,1u,n,k,out,0));
+				PROBE_CUDA(LmTopkExactRowsLaunch<PROBE_THREADS>(scores,rows,n,k,out,0));
 		PROBE_CUDA(cudaEventRecord(stop));
 		PROBE_CUDA(cudaEventSynchronize(stop));
 		PROBE_CUDA(cudaEventElapsedTime(&elapsed[kernel],start,stop));
 	}
-	printf("TIME rows1 n%u k%u exact top-k: single block %.2f us, cluster %.2f us per call (back to back)\n",n,k,1000.0f * elapsed[0] / repeats,1000.0f * elapsed[1] / repeats);
+	printf("TIME rows%u n%u k%u%s%s exact top-k: single block %.2f us, row launcher %.2f us per call (back to back)\n",rows,n,k,causal != 0u ? " causal" : "",
+		levels == 2u ? " narrow" : "",
+		1000.0f * elapsed[0] / repeats,
+		1000.0f * elapsed[1] / repeats);
 	cudaFree(scores);
 	cudaFree(out);
 }
@@ -94,15 +110,24 @@ static void ProbeTime(uint32_t n,uint32_t k)
 int main(void)
 {
 	const uint32_t shapes[][3] = {{1u,65536u,512u},{1u,16384u,512u},{1u,8192u,2048u},{1u,2049u,2048u},{1u,600u,512u},{2u,65536u,2048u},
-		{4u,3000u,2048u},{8u,40000u,64u},{64u,9000u,256u},{3u,513u,512u},{1u,65535u,1u},{65u,4096u,256u}};
-	const uint32_t variants[][2] = {{0u,0u},{7u,0u},{3u,0u},{0u,5u},{5u,3u}};
+		{4u,3000u,2048u},{8u,40000u,64u},{64u,9000u,256u},{3u,513u,512u},{1u,65535u,1u},{65u,4096u,256u},{96u,30000u,512u},{70u,65536u,2048u},
+		{80u,20049u,2048u},{72u,30000u,512u},{100u,17000u,512u},{66u,16385u,512u},{90u,131072u,512u},{67u,20000u,1u},{68u,16384u,512u}};
+	const uint32_t variants[][2] = {{0u,0u},{7u,0u},{3u,0u},{0u,5u},{5u,3u},{1u,0u},{2u,0u},{2u,3u}};
 	uint32_t shape,variant;
 	for (shape=0u; shape<sizeof(shapes) / sizeof(shapes[0]); shape++)
 		for (variant=0u; variant<sizeof(variants) / sizeof(variants[0]); variant++)
 			ProbeCase(shapes[shape][0],shapes[shape][1],shapes[shape][2],variants[variant][0],variants[variant][1]);
-	ProbeTime(65536u,512u);
-	ProbeTime(16384u,512u);
-	ProbeTime(4096u,512u);
+	ProbeTime(1u,65536u,512u,0u,0u);
+	ProbeTime(1u,16384u,512u,0u,0u);
+	ProbeTime(1u,4096u,512u,0u,0u);
+	ProbeTime(1024u,28672u,512u,0u,0u);
+	ProbeTime(2048u,4096u,512u,1u,2u);
+	ProbeTime(2048u,8192u,512u,1u,2u);
+	ProbeTime(1024u,16384u,512u,1u,2u);
+	ProbeTime(1024u,16384u,512u,1u,0u);
+	ProbeTime(1024u,28672u,512u,1u,2u);
+	ProbeTime(1024u,65536u,512u,1u,2u);
+	ProbeTime(4096u,8192u,2048u,1u,2u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);

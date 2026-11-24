@@ -204,12 +204,15 @@ static SparkStatus AcquireExperts(void *context,const uint32_t *keys,uint32_t co
 		if ( cudaMemcpy(rank->pool + offset,rank->master + offset,HIDDEN * sizeof(float),cudaMemcpyHostToDevice) != cudaSuccess )
 			return(SPARK_STATUS_IO_ERROR);
 	}
+	if ( cudaDeviceSynchronize() != cudaSuccess )
+		return(SPARK_STATUS_IO_ERROR);
 	return(SPARK_STATUS_OK);
 }
 
 static void UploadCover(Rank *rank)
 {
 	CUDA_CHECK(cudaMemcpy(rank->cover,rank->set.cover,SparkExpertWorkingSetCoverBytes(&rank->set),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 static void RankCreate(Rank *rank,uint32_t index,uint32_t partial)
@@ -246,8 +249,11 @@ static void RankCreate(Rank *rank,uint32_t index,uint32_t partial)
 	CUDA_CHECK(cudaMalloc((void **)&rank->tokens_device,ROWS * sizeof(uint32_t)));
 	CUDA_CHECK(cudaHostAlloc((void **)&rank->tokens_host,ROWS * sizeof(uint32_t),cudaHostAllocDefault));
 	CUDA_CHECK(cudaMemcpy(rank->decay,decay,LAYERS * HIDDEN * sizeof(float),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	CUDA_CHECK(cudaMemcpy(rank->state,state,(uint64_t)LAYERS * STATE_ROWS * HIDDEN * sizeof(float),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	CUDA_CHECK(cudaMemcpy(rank->pool,partial != 0u ? nan_pool : rank->master,count * sizeof(float),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	if ( partial != 0u )
 	{
 		CUDA_CHECK(cudaMalloc((void **)&rank->cover,(uint64_t)LAYERS * COVER_STRIDE * sizeof(uint32_t)));
@@ -265,6 +271,7 @@ static void RankCreate(Rank *rank,uint32_t index,uint32_t partial)
 		CHECK(snapshot_bytes == (uint64_t)LAYERS * ROWS * HIDDEN * sizeof(float));
 		CUDA_CHECK(cudaMalloc((void **)&rank->spans,sizeof(spans)));
 		CUDA_CHECK(cudaMemcpy(rank->spans,spans,sizeof(spans),cudaMemcpyHostToDevice));
+		CUDA_CHECK(cudaDeviceSynchronize());
 		CUDA_CHECK(cudaMalloc((void **)&rank->snapshot,snapshot_bytes));
 		CHECK(SparkExpertWorkingSetCreate(&rank->set,LAYERS,EXPERTS,PACK_STRIDE,LAYERS * EXPERTS,AcquireExperts,rank) == SPARK_STATUS_OK);
 	}
@@ -361,9 +368,13 @@ static void WorldCreate(World *world,uint32_t partial,uint32_t lone,cudaStream_t
 	CUDA_CHECK(cudaMalloc((void **)&world->input_tokens,ROWS * sizeof(uint32_t)));
 	CUDA_CHECK(cudaMalloc((void **)&world->state_index,ROWS * sizeof(uint32_t)));
 	CUDA_CHECK(cudaMemcpy(world->partials,partials,sizeof(partials),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	CUDA_CHECK(cudaMemcpy(world->hiddens,hiddens,sizeof(hiddens),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	CUDA_CHECK(cudaMemcpy(world->maxlocs,maxlocs,sizeof(maxlocs),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	CUDA_CHECK(cudaMemcpy(world->state_index,state_index,sizeof(state_index),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	if ( partial != 0u )
 		WorldSeed(world,lone);
 	CUDA_CHECK(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
@@ -574,10 +585,12 @@ int main(void)
 		host[index] = Uniform(UINT64_C(0x20000000) + index);
 	CUDA_CHECK(cudaMalloc((void **)&EMBED,embed_count * sizeof(float)));
 	CUDA_CHECK(cudaMemcpy(EMBED,host,embed_count * sizeof(float),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	for (index=0u; index<router_count; index++)
 		host[index] = 0.5f * Uniform(UINT64_C(0x30000000) + index);
 	CUDA_CHECK(cudaMalloc((void **)&ROUTER,router_count * sizeof(float)));
 	CUDA_CHECK(cudaMemcpy(ROUTER,host,router_count * sizeof(float),cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaDeviceSynchronize());
 	WorldCreate(full,0u,0u,stream);
 	WorldCreate(pristine,0u,0u,stream);
 	WorldCreate(partial,1u,0u,stream);

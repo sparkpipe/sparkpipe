@@ -7,50 +7,102 @@
 #include <stdint.h>
 
 template<uint32_t THREADS>
-static __device__ float LmBlockSum(float value, float *shared)
+static __device__ __forceinline__ float LmBlockSumOnce(float value, float *shared)
 {
-	const uint32_t warps = THREADS / LM_WARP_LANES;
-	uint32_t lane = threadIdx.x % LM_WARP_LANES,warp = threadIdx.x / LM_WARP_LANES;
-	uint32_t offset;
-	for (offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
+	constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x & (LM_WARP_LANES - 1u), warp = threadIdx.x >> 5u;
+	#pragma unroll
+	for (uint32_t offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
 		value += __shfl_down_sync(0xffffffffu,value,offset);
+	if constexpr ( warps == 1u )
+		return(__shfl_sync(0xffffffffu,value,0u));
 	if ( lane == 0u )
 		shared[warp] = value;
 	__syncthreads();
-	value = threadIdx.x < warps ? shared[threadIdx.x] : 0.0f;
-	if ( warp == 0u )
-		for (offset = warps / 2u; offset > 0u; offset >>= 1u)
-			value += __shfl_down_sync(0xffffffffu,value,offset);
-	if ( threadIdx.x == 0u )
-		shared[0] = value;
-	__syncthreads();
-	value = shared[0];
-	__syncthreads();
+	value = lane < warps ? shared[lane] : 0.0f;
+	#pragma unroll
+	for (uint32_t offset = warps / 2u; offset > 0u; offset >>= 1u)
+		value += __shfl_down_sync(0xffffffffu,value,offset);
+	return(__shfl_sync(0xffffffffu,value,0u));
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ float LmBlockSum(float value, float *shared)
+{
+	constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+	value = LmBlockSumOnce<THREADS>(value,shared);
+	if constexpr ( warps > 1u )
+		__syncthreads();
 	return(value);
 }
 
 template<uint32_t THREADS>
-static __device__ float LmBlockMax(float value, float *shared)
+static __device__ __forceinline__ void LmBlockSum2Once(float *first, float *second, float *shared)
 {
-	const uint32_t warps = THREADS / LM_WARP_LANES;
-	uint32_t lane = threadIdx.x % LM_WARP_LANES,warp = threadIdx.x / LM_WARP_LANES;
-	uint32_t offset;
-	for (offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
+	constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x & (LM_WARP_LANES - 1u), warp = threadIdx.x >> 5u;
+	float a = *first, b = *second;
+	#pragma unroll
+	for (uint32_t offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
+	{
+		a += __shfl_down_sync(0xffffffffu,a,offset);
+		b += __shfl_down_sync(0xffffffffu,b,offset);
+	}
+	if constexpr ( warps == 1u )
+	{
+		*first = __shfl_sync(0xffffffffu,a,0u);
+		*second = __shfl_sync(0xffffffffu,b,0u);
+		return;
+	}
+	if ( lane == 0u )
+	{
+		shared[warp] = a;
+		shared[warps + warp] = b;
+	}
+	__syncthreads();
+	a = lane < warps ? shared[lane] : 0.0f;
+	b = lane < warps ? shared[warps + lane] : 0.0f;
+	#pragma unroll
+	for (uint32_t offset = warps / 2u; offset > 0u; offset >>= 1u)
+	{
+		a += __shfl_down_sync(0xffffffffu,a,offset);
+		b += __shfl_down_sync(0xffffffffu,b,offset);
+	}
+	*first = __shfl_sync(0xffffffffu,a,0u);
+	*second = __shfl_sync(0xffffffffu,b,0u);
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ float LmBlockMaxOnce(float value, float *shared)
+{
+	constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x & (LM_WARP_LANES - 1u), warp = threadIdx.x >> 5u;
+	#pragma unroll
+	for (uint32_t offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u)
 		value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
+	if constexpr ( warps == 1u )
+		return(__shfl_sync(0xffffffffu,value,0u));
 	if ( lane == 0u )
 		shared[warp] = value;
 	__syncthreads();
-	value = threadIdx.x < warps ? shared[threadIdx.x] : 0.0f;
-	if ( warp == 0u )
-		for (offset = warps / 2u; offset > 0u; offset >>= 1u)
-			value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
-	if ( threadIdx.x == 0u )
-		shared[0] = value;
-	__syncthreads();
-	value = shared[0];
-	__syncthreads();
+	value = lane < warps ? shared[lane] : 0.0f;
+	#pragma unroll
+	for (uint32_t offset = warps / 2u; offset > 0u; offset >>= 1u)
+		value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
+	return(__shfl_sync(0xffffffffu,value,0u));
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ float LmBlockMax(float value, float *shared)
+{
+	constexpr uint32_t warps = THREADS / LM_WARP_LANES;
+	value = LmBlockMaxOnce<THREADS>(value,shared);
+	if constexpr ( warps > 1u )
+		__syncthreads();
 	return(value);
 }
+
+#define LM_RMS_NORM_STAGED 24u
 
 template<uint32_t THREADS, class Weight, bool ROUND_FIRST = false>
 __global__ __launch_bounds__(THREADS, 1)
@@ -63,6 +115,45 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	uint32_t index;
 	float total = 0.0f,scale;
 	LmDependentRelease();
+	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+	{
+		uint16_t staged[LM_RMS_NORM_STAGED];
+		uint32_t slot;
+		#pragma unroll
+		for (slot = 0u; slot < LM_RMS_NORM_STAGED; slot++)
+		{
+			index = threadIdx.x + slot * THREADS;
+			if ( index < dimension )
+			{
+				uint16_t bits = input_bf16[base + index];
+				float value = LmBf16ToFloat(bits);
+				if ( residual_bf16 != 0 )
+				{
+					bits = LmFloatToBf16(value + LmBf16ToFloat(residual_bf16[base + index]));
+					value = LmBf16ToFloat(bits);
+				}
+				staged[slot] = bits;
+				total += value * value;
+			}
+			else
+				staged[slot] = 0u;
+		}
+		total = LmBlockSumOnce<THREADS>(total,reduction);
+		scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+		#pragma unroll
+		for (slot = 0u; slot < LM_RMS_NORM_STAGED; slot++)
+		{
+			index = threadIdx.x + slot * THREADS;
+			if ( index >= dimension )
+				continue;
+			if ( residual_out_bf16 != 0 )
+				residual_out_bf16[base + index] = staged[slot];
+			const float value = LmBf16ToFloat(staged[slot]);
+			output_bf16[base + index] = LmFloatToBf16(ROUND_FIRST ? SparkMathNormGainRounded(value * scale, LmScalarToFloat(weight[index])) :
+				value * scale * LmScalarToFloat(weight[index]));
+		}
+		return;
+	}
 	#pragma unroll 8
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
@@ -72,7 +163,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 		row[index] = value;
 		total += value * value;
 	}
-	total = LmBlockSum<THREADS>(total,reduction);
+	total = LmBlockSumOnce<THREADS>(total,reduction);
 	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	#pragma unroll 8
 	for (index = threadIdx.x; index < dimension; index += THREADS)
@@ -83,8 +174,6 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 			row[index] * scale * LmScalarToFloat(weight[index]));
 	}
 }
-
-#define LM_RMS_NORM_STAGED 16u
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
@@ -97,13 +186,12 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 	float total = 0.0f,scale,value;
 	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
 	{
-		uint16_t staged_input[LM_RMS_NORM_STAGED],staged_weight[LM_RMS_NORM_STAGED];
+		uint16_t staged_input[LM_RMS_NORM_STAGED];
 		#pragma unroll
 		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
 		{
 			index = threadIdx.x + slot * THREADS;
 			staged_input[slot] = index < dimension ? input[base + index] : (uint16_t)0u;
-			staged_weight[slot] = index < dimension ? weight[index] : (uint16_t)0u;
 		}
 		#pragma unroll
 		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
@@ -112,7 +200,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 			if ( threadIdx.x + slot * THREADS < dimension )
 				total += value * value;
 		}
-		total = LmBlockSum<THREADS>(total,reduction);
+		total = LmBlockSumOnce<THREADS>(total,reduction);
 		scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 		#pragma unroll
 		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
@@ -121,7 +209,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 			if ( index >= dimension )
 				continue;
 			value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(staged_input[slot]) * scale));
-			output[base + index] = LmFloatToBf16(value * LmBf16ToFloat(staged_weight[slot]));
+			output[base + index] = LmFloatToBf16(value * LmBf16ToFloat(weight[index]));
 		}
 		return;
 	}
@@ -131,7 +219,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 		row[index] = value;
 		total += value * value;
 	}
-	total = LmBlockSum<THREADS>(total,reduction);
+	total = LmBlockSumOnce<THREADS>(total,reduction);
 	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
@@ -145,11 +233,43 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmLayerNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, const Weight *__restrict__ bias, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
 	extern __shared__ float lm_norm_shared[];
+	__shared__ float pair_reduction[2u * (THREADS / LM_WARP_LANES)];
 	float *row = lm_norm_shared;
-	float *reduction = lm_norm_shared + dimension;
 	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index;
 	float value,total = 0.0f,total_squared = 0.0f,mean,variance,inverse;
+	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+	{
+		uint16_t staged[LM_RMS_NORM_STAGED];
+		uint32_t slot;
+		#pragma unroll
+		for (slot = 0u; slot < LM_RMS_NORM_STAGED; slot++)
+		{
+			index = threadIdx.x + slot * THREADS;
+			if ( index < dimension )
+			{
+				staged[slot] = input_bf16[base + index];
+				value = LmBf16ToFloat(staged[slot]);
+				total += value;
+				total_squared += value * value;
+			}
+			else
+				staged[slot] = 0u;
+		}
+		LmBlockSum2Once<THREADS>(&total,&total_squared,pair_reduction);
+		mean = total / (float)dimension;
+		variance = fmaxf((total_squared / (float)dimension) - (mean * mean),0.0f);
+		inverse = rsqrtf(variance + epsilon);
+		#pragma unroll
+		for (slot = 0u; slot < LM_RMS_NORM_STAGED; slot++)
+		{
+			index = threadIdx.x + slot * THREADS;
+			if ( index >= dimension )
+				continue;
+			output_bf16[base + index] = LmFloatToBf16(((LmBf16ToFloat(staged[slot]) - mean) * inverse * LmScalarToFloat(weight[index])) + LmScalarToFloat(bias[index]));
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]);
@@ -157,8 +277,7 @@ void LmLayerNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__
 		total += value;
 		total_squared += value * value;
 	}
-	total = LmBlockSum<THREADS>(total,reduction);
-	total_squared = LmBlockSum<THREADS>(total_squared,reduction);
+	LmBlockSum2Once<THREADS>(&total,&total_squared,pair_reduction);
 	mean = total / (float)dimension;
 	variance = fmaxf((total_squared / (float)dimension) - (mean * mean),0.0f);
 	inverse = rsqrtf(variance + epsilon);

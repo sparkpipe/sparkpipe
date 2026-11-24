@@ -54,25 +54,26 @@ The snapshot store keeps one file per KV page and one per recurrent state record
 - Eviction takes the least recently used file among state files and page files that no other page file names as its parent, so a chain is consumed from its tips and no live file loses its parent. A page whose parent is missing (`orphan_count`) is evicted first. When a page loses its last child it becomes the next victim, so a dead chain goes as a whole. The parent of a file being written is never evicted during the write.
 - Writes are queued and written in order. A write renames its finished file into place without a disk sync, so a save costs a file write rather than two journal commits. `SparkKvSnapshotSyncDisk` commits everything at once, and the binding calls it when it saves all at exit. A crash can lose files that were not synced yet. The next read of a lost or truncated file fails its size or hash check and counts as a miss, so a lost file costs a recompute and never wrong data. `SparkKvSnapshotParent` returns a page's parent key from the index, and `SparkKvSnapshotContains` reports whether a key is on disk or queued.
 - The page cache saves a chain root first, a page before its state, and checks the index for every saved page it walks, clearing a stale saved flag so the page is written again. A restore rebuilds the chain from parent keys and reads the target's state file.
-- Retention: a file not used for `SPARK_KV_RETENTION_SECONDS` (24 hours) is deleted. A file's last use is a read of it, a write of a page that names it as parent, or a write of it, which carries the time its content was last used (`SparkKvSnapshotWriteBegin`'s `used_seconds`, 0 for now). A duplicate write keeps the later of the two times. The time lives in the file's mtime, so a restart keeps it: the open scan deletes expired files before indexing them, and the writer thread sweeps the index every `SPARK_KV_EXPIRY_SWEEP_SECONDS` (60). `SparkKvSnapshotExpire(store, now_seconds)` runs the same sweep for a given time. Files being written as a parent are skipped. Deletions are counted in `expired_count` and `expired_bytes` and logged as `KV-SNAPSHOT expired`. No flag or configuration lengthens the retention.
+- Last use: no file is deleted for its age. A file's last use is a read of it, a write of a page that names it as parent, or a write of it, which carries the time its content was last used (`SparkKvSnapshotWriteBegin`'s `used_seconds`, 0 for now). A duplicate write keeps the later of the two times. The time lives in the file's mtime, so a restart keeps it, and the open scan indexes every file whatever its age. The quota (below) is the only thing that deletes a file, least recently used first.
 - Quota: the store has no byte budget of its own. `SparkKvSnapshotStoreOpen(store, directory, ledger, queue_maximum_bytes)` joins the node ledger (below) and every write reserves its file there first; a write that finds the node full takes the node's oldest file, whichever store holds it, and is refused (`quota_refusal_count`, logged `refused a ... file for the node KV quota`) only when nothing evictable is left or the store holding the oldest files frees nothing within `SPARK_KV_LEDGER_WAIT_NS` (3 s). A quota refusal is not a store failure: it does not open the failure gate. At open the store trims its own oldest files while the node is over its quota and its files are the oldest. The writer thread wakes at least every `SPARK_KV_LEDGER_POLL_SECONDS` (1), frees the bytes another store asked of it, oldest first and only files older than every other store's oldest, and publishes its bytes and oldest use.
-- Purge without a running model: `SparkKvSnapshotPurgeTree(ledger, root, now_seconds, &result)` walks `root` on one filesystem, without following links, to `SPARK_KV_PURGE_DEPTH_MAX` levels, and runs `SparkKvSnapshotPurgeDirectory` on every directory that holds cache files (`*.kvs`, `*.kvst`, `.kvs-writing-*`) or a store lock. A directory whose `.kvs-lock` another process holds is counted in `busy_stores` and left to that process's own sweep; otherwise the purge takes the lock, deletes every cache file unused for `SPARK_KV_RETENTION_SECONDS` by its mtime and every leftover temporary, whatever its layout or name format, and touches no other file. It then records the store's remaining bytes and oldest file in the ledger (`uncounted_stores` counts stores the ledger had no slot for) and forgets ledger slots whose directory is gone. weightd runs it every `SPARK_KV_PURGE_SECONDS` (60) under its owner's home directory and logs `weightd kv purge` when it deletes; a home directory it cannot resolve fails its startup. `SparkKvSnapshotStoreOpen` waits up to `SPARK_KV_SNAPSHOT_OPEN_WAIT_NS` (30 s) for a purge to release the lock before it answers `BUSY`.
+- Stores without a running model: `SparkKvSnapshotPurgeTree(ledger, root, &result)` walks `root` on one filesystem, without following links, to `SPARK_KV_PURGE_DEPTH_MAX` levels, and runs `SparkKvSnapshotPurgeDirectory` on every directory that holds cache files (`*.kvs`, `*.kvst`, `.kvs-writing-*`) or a store lock. A directory whose `.kvs-lock` another process holds is counted in `busy_stores` and left to that process; otherwise the purge takes the lock, deletes every leftover temporary and touches no other file: a cache file stays whatever its age. It then records the store's bytes and oldest file in the ledger (`uncounted_stores` counts stores the ledger had no slot for) and forgets ledger slots whose directory is gone, so a closed store's files still count against the node quota and can be cut for it. weightd runs it every `SPARK_KV_PURGE_SECONDS` (60) under the node KV root (below) and logs `weightd kv purge` when it deletes a temporary; a root it cannot resolve fails its startup. `SparkKvSnapshotStoreOpen` waits up to `SPARK_KV_SNAPSHOT_OPEN_WAIT_NS` (30 s) for a purge to release the lock before it answers `BUSY`.
 
 ## include/sparkpipe/spark_kv_ledger.h
 
 The node ledger holds the node's own KV on disk to one quota, shared by every lane and every resident model on the node.
 
-- The ledger is one file, `~/.sparkpipe-kv-ledger` of the serving user (`SparkKvLedgerDefaultPath`), mapped shared by every process and changed only under `flock` plus a process mutex. It holds the quota and 128 slots (`SPARK_KV_LEDGER_SLOTS`); a slot names a directory, its kind, its owner's pid and start time, its bytes, its oldest use and the bytes other stores asked of it. A ledger of another size or version is refused.
+- The ledger is one file, `.sparkpipe-kv-ledger` in the node KV root (`SparkKvLedgerDefaultPath`), mapped shared by every process and changed only under `flock` plus a process mutex. It holds the quota and 128 slots (`SPARK_KV_LEDGER_SLOTS`); a slot names a directory, its kind, its owner's pid and start time, its bytes, its oldest use and the bytes other stores asked of it. A ledger of another size or version is refused.
+- The quota is per node KV root (`SparkKvNodeRoot`). The root is the serving user's home directory, so every lane that user runs shares one ledger and one quota, and a deployment has one root: the release kit never sets `SPARK_KV_NODE_ROOT`. A process started with `SPARK_KV_NODE_ROOT` set uses that folder instead, for its ledger and, in weightd, for its purge walk. The setting is for a host that two owners share, such as a test lane beside another service. A second root is a second quota on the same disk, and whoever sets it answers for the disk. Started with its own root, its weightd and its ranks keep their own ledger with its own quota, walk only that folder and never open the home's ledger, so no file outside the folder is counted, asked for or cut. The value must be the full path of an existing directory, not of a link to one. Any other value fails the startup of weightd (`weightd kv purge: no node KV root`) and of a rank (`model_residentd: no node KV root holds the ledger`); it never falls back to the home. Both name the root they use when they start: weightd in `weightd kv ledger <root>/.sparkpipe-kv-ledger` and `weightd kv purge: every 60 s under <root>`, a rank in `node_kv_ledger=<root>/.sparkpipe-kv-ledger`. Every process of one lane needs the same value. The folder must not lie under the home of a user who serves on that host: a weightd without the setting walks its whole home and counts every closed store it finds there in the serving ledger.
 - The quota is `SPARK_KV_NODE_QUOTA_BYTES`, 500 GB: the owner's 2026-11-02 split of the 1 TB KV drive per node into 500 GB for the node's own KV and 500 GB for its pair partner's working-state mirror, which the mirror code holds and the ledger does not count. weightd sets the quota when it starts (`weightd kv ledger ... node quota`); a lane that starts first creates the ledger with the same quota, so startup order does not matter. `SparkKvLedgerOpen(ledger, path, 0)` keeps the file's quota.
 - Counted bytes: every snapshot store's files, whether its lane runs or not, because they stay on disk; and every running lane's spill backing, which the stage KV binding reserves before it creates the backing file (`kv backing ... node_quota= node_used=`) and gives back at destroy. A backing whose owner died is not counted: its file was a deleted temporary the kernel freed. The per-lane `kv_snapshot_maximum_bytes` and the 512 GiB `kv_partition_reserve_bytes` free-space floor are gone; a deployment that names either is refused. A backing's size is no lane setting either: the renderers derive it from the lane geometry (the parked pages plus two in flight).
 - `SparkKvLedgerMakeRoom(ledger, slot, incoming, wait_ns, ...)` reserves `incoming` bytes. While the node would pass its quota it finds the snapshot store with the oldest file: its own store evicts its oldest file; a running store is asked through its slot and frees the bytes within a second; a stopped store's files are cut directly (`SparkKvSnapshotPurgeOldest`: the oldest whole minutes of files, logged `was closed and held the node's oldest KV`). It answers `CAPACITY_EXCEEDED` when no snapshot file is left to evict or a running store frees nothing within `wait_ns`. Backing slots are never victims.
-- Retention is unchanged: 24 hours of disuse deletes a file, in its running store or by weightd's purge, and the ledger follows.
+- The quota is the only limit on the node's KV on disk: no file is deleted for its age, in a running store or a closed one.
 
 ## include/sparkpipe/spark_kv_page_cache.h
 
-### Retention
+### Last use
 
-Every entry records `used_seconds`, the wall-clock time it was last created, touched, restored or attached. `SparkKvPageCacheExpire(cache, now_seconds, &expired)` evicts every unreferenced entry whose page can be discarded and that was not used for `SPARK_KV_RETENTION_SECONDS` (24 hours), repeating until a pass evicts nothing, so a chain idle as a whole goes leaf by leaf; entries a live sequence holds stay. Expired entries are not saved to the snapshot store first. The stage KV binding's save thread runs it every `SPARK_KV_EXPIRY_SWEEP_SECONDS` under the binding mutex and logs `kv cache expired`; `expired_entry_count` counts them. A snapshot save passes the entry's `used_seconds`, so the file's retention starts from the content's last use, not from the save. Resident records sealed into the weightd pool carry `used_seconds` (`SPARK_STAGE_KV_POOL_SEAL_VERSION` 2; an older seal is not adopted), so adopted pages keep their age across a rank restart. Before sealing, the binding expires every entry that would pass the retention limit within `SPARK_KV_DETACHED_POOL_SECONDS` (one hour), and weightd releases a pool that has had no owner, or a shared window that has had no holder, for that long (`SparkWeightdServerExpireKv`, logged as `weightd kv pool released ... reason=detached_retention`), so a detached pool holds nothing past 24 hours.
+Every entry records `used_seconds`, the wall-clock time it was last created, touched, restored or attached. No entry is evicted for its age: an entry leaves the cache by eviction under pressure or by an explicit release. A snapshot save passes the entry's `used_seconds`, so the file's place in the node quota's eviction order follows the content's last use, not the save. Resident records sealed into the weightd pool carry `used_seconds` (`SPARK_STAGE_KV_POOL_SEAL_VERSION` 2; an older seal is not adopted), so adopted pages keep their age across a rank restart. weightd releases a pool that has had no owner, or a shared window that has had no holder, for `SPARK_KV_DETACHED_POOL_SECONDS` (one hour) (`SparkWeightdServerExpireKv`, logged as `weightd kv pool released ... reason=detached_retention`): that frees the node's memory for other models, and what the closing engine saved to the snapshot store stays on disk.
 
 ### State store
 
@@ -87,7 +88,7 @@ Every entry records `used_seconds`, the wall-clock time it was last created, tou
 - Attach before admitting any lane. The call returns `SPARK_STATUS_BUSY` once a sequence is live, a page has been published, or the store already holds backing pages.
 - A page's state record is keyed by the page's current arena generation. Hold the page's residency pin for the whole of a state transfer, so that the page cannot be evicted or freed during the transfer.
 - A publish whose lane carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS` needs no record and creates a stateless entry. A page sealed without a record also becomes a stateless entry. A stateless entry holds valid KV and can be shared, deduplicated and parked, but it is never a prefix: resolving a lane prefix that ends on it returns `SPARK_STATUS_NOT_FOUND`. The snapshot store saves it as a page file and writes no state file for it.
-- `SparkKvPageCachePromoteState(cache, logical_page)` turns the stateless entry on that page stateful once the caller has written its record. It returns `SPARK_STATUS_NOT_FOUND` unless the page holds a valid stateless entry. The entry is queued for a save of its state file; its page file, if any, is left as it is. A full save queue skips that save, as for any other save.
+- `SparkKvPageCachePromoteState(cache, logical_page)` turns the stateless entry on that page stateful once the caller has written its record. It returns `SPARK_STATUS_NOT_FOUND` unless the page holds a valid stateless entry. If a request has read the entry (see Disk writes follow reads), it is queued for a save of its state file; its page file, if any, is left as it is. A full save queue skips that save, as for any other save.
 
 ### Staged reply checkpoint
 
@@ -113,6 +114,64 @@ A stateful publish whose identity matches an existing stateless entry moves its 
 
 - Evicting an entry invalidates the page's records in the page store when the cache has one, and in the state store if one is attached. It then frees the page and drops one reference from the parent entry, which may make the parent evictable.
 - If no entry qualifies, the call returns `SPARK_STATUS_CAPACITY_EXCEEDED`.
+
+### Disk writes follow reads
+
+While an engine serves, the cache writes a prefix to disk (a snapshot save or a spill park) only after a request other than the one that computed it has read it. Most prefixes are never read again: on 2026-11-18 two single-node Qwen3.8-27B engines serving batches of distinct long prompts, one on an M5 Ultra and one on a Lenovo Spark, had restored no page from their snapshot stores, the Lenovo had read back 138 GB of the 1.28 TB it spilled, and their KV disks took 3.7 and 1.1 GB a minute.
+
+- An entry is read when a new sequence binds a lane prefix that ends on it, when a publish or seal deduplicates onto it, when a restore imports it from the snapshot store, or when it is imported from a peer's shared window. Reading marks the entry and every ancestor (`SPARK_KV_PAGE_CACHE_ENTRY_FLAG_REUSED`).
+- The read itself queues the save of the entry the new sequence resumes from, with its state record when it holds one. A release or publish wave queues the deepest read entry of its chain that can be resumed from (on a model with recurrent state, one that holds a record). The prompt checkpoint (`SparkKvPageCachePersistCheckpoint`), promotions, park saves, the saves eviction queues for entries it passes over, and the state spill all skip entries no request has read.
+- An unread entry is safe to discard: eviction takes it without a save, and when the device needs a slot the cache drops unread unreferenced prefix pages before the arena parks anything, so they cost no spill write either. A live sequence's pages, and pages a request has read, are parked as before.
+- A dropped unread entry leaves a fingerprint: 32 bits of its identity and token count with the entry's last use, in a direct-mapped table of `SparkKvPageCacheUnread` slots the caller attaches with `SparkKvPageCacheAttachUnread(cache, slots, capacity)` (a power of two; the call clears it). A later publish with the same identity and token count takes the fingerprint and marks the new entry read, so a prefix that comes back after it was dropped is computed once more and then saved. A fingerprint stays until another dropped entry takes its slot. `unread_discard_count` counts drops of unread entries and `unread_return_count` the prefixes that came back; `evicted_unsaved_count` now counts only read entries evicted before their save. A cache without a table never recognizes a return.
+- Closing an engine still saves every published chain, read or not (`SparkKvPageCacheMarkAllUnsaved` and `SparkKvPageCachePersistAllStates`), so a model swap or a clean restart keeps every conversation.
+- The stage KV binding gives each lane a table of one fingerprint per page the node KV quota holds, at least its logical page count and at most `SPARK_STAGE_KV_UNREAD_LIMIT` (2M fingerprints, 16 MB), so a dropped page is remembered for about as many later drops as the old store kept files, or half as many at fleet page sizes (about 120 KB a page per rank, so the 500 GB quota is 4.1M pages). It logs `kv binding unread prefixes` at load and `unread_discards=` and `unread_returns=` on its `kv binding arena` close line.
+- What this costs: the first return of a dropped prefix is recomputed; a conversation whose newest turn was dropped before the next turn recomputes that turn; an identical resend after a crash recomputes its prompt; the fingerprints live in memory, so a restart forgets them.
+
+### Prefix probe
+
+`SparkKvPageCacheProbePrefix` answers, for a prefix identity and its token
+count, what this rank has of it, and changes nothing: it marks no entry
+read, moves nothing in the LRU order, raises no priority and starts no
+restore.
+
+- `held_token_count`: the token count when the cache has an entry for the
+  prefix, else 0.
+- `resident_token_count`: tokens of the chain whose pages are on the device.
+- `saved_token_count`: tokens of the prefix, from token 0, whose page files
+  the snapshot store has now. Every count is checked against the store's
+  index (`SparkKvSnapshotStored`, `SparkKvSnapshotParent`), never taken from
+  a flag or inferred: the store cuts its oldest file first, whatever chain it
+  belongs to, so a leaf can outlive its root. For a held prefix it is the
+  deepest entry that is saved and stored together with every entry before
+  it. For a prefix the cache does not hold it is the token count when the
+  store's index leads from the prefix's last page file through every parent
+  to the first, and 0 when any link is missing. A file still being written
+  does not count.
+- `state_token_count`: the deepest entry on the chain that still has its
+  state, which is where a request for this prefix can resume. Without a
+  state store every entry is such a point. For a prefix the cache does not
+  hold it is the deepest page of a whole stored chain whose state file the
+  store has, and 0 when the chain is broken.
+- `read_token_count`: the deepest entry on the chain that a later request
+  has read, 0 when none has. Under the rule that a prefix is written only
+  after something reads it, this is the part the rank saves by itself; the
+  rest reaches the store only at close. It is 0 for a prefix the cache does
+  not hold. The three classes of `docs/PREFILL_ANTICIPATION.md` (tail, kept,
+  pinned) do not exist yet; read or unread is what a rank knows today.
+
+The probe reaches a rank as an admission with
+`SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE` and one prefix lane, the
+shape of a cache hint. The decision is accepted, takes no dispatch slot, and
+carries the five counts in its own member, `cache_probe`
+(`SparkModelDriverCacheProbe`, model-driver ABI 21); no other field of the
+decision changes its meaning for a probe. `SparkModelDriverStoreCacheProbe`
+and `SparkModelDriverLoadCacheProbe` write and read it. The adapter's `cache_probe` runs it, the rank daemon answers
+a `CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
+least of each count over the ranks (`SparkModelBatchEngineCacheStateBegin`,
+`...Poll`). An adapter without `cache_probe` answers `UNSUPPORTED` with
+zero counts, and so does a rank whose probe failed, with its status. The
+engine counts those answers in `failed_rank_count`, so a prefix no rank
+vouches for can be told from a prefix no rank has.
 
 ### Pinned lane transaction
 
@@ -247,6 +306,34 @@ rows in path order, `sequence_row_begin` delimits them per sequence and
 recurrent state and moves each kept branch slot to the trunk position the
 path gives it, so the lane continues as a chain.
 
+The stage runner keeps one captured graph per graph key, row count,
+sampling mode and `last_rows_only` (a prompt's last step sets it, a decode
+step does not), and replays it while the step equals the captured step with
+its host position, sequence, slot and parent pointers left out, so a
+request's last prompt step and its decode steps do not evict each other's
+graph. A verify
+step (key 2) also leaves out `gather_context` and `gather_sequence`, and so
+does every step of a model whose geometry sets `graph_ignores_gather`. A
+prompt's last token arrives as a one-row prefill step that carries the
+prompt's length in `gather_context`, while a decode step carries zero, so a
+model without the flag recaptures its decode graph whenever the prompt
+length changes and again on the decode step after it. A model may set the
+flag only if none of its sources reads either field;
+`tests/test_graph_ignores_gather.py` checks that for every family that sets
+it.
+
+A runner captures graphs when its device collective defers rounds to
+hardware waits, or when it runs alone (`tp_degree` 1) with no collective,
+as a single-GPU drafter does. Capture, launch and settle then make no
+collective calls.
+
+A model whose input rows are wider than its hidden width, such as a drafter
+that ingests several target taps per position, sets `input_width` in its
+geometry. The runner then sizes its hidden buffer for the wider row, and
+copies `rows x input_width` elements of a dispatch's `hidden_input_bf16`.
+A dispatch whose `hidden_input_bytes` is shorter than that is refused.
+`tests/cuda/stage_runner_single_gpu_cuda.cu` checks both behaviours.
+
 ## include/sparkpipe/spark_stagepack_format.h
 
 ### 4-bit weight formats
@@ -329,7 +416,7 @@ For `host-rdma`, the required mask is `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOS
 - The required mask is not `SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS`. That set adds batched submission, poll descriptors, multi-lane and the remote-completion doorbell.
 - A required mask must list only bits the daemon cannot run without. Recommended bits must not be promoted into it.
 
-The host RDMA backend in `ring/transport/rdma.cu` declares, in its default build:
+The host RDMA backend in `ring/transport/rdma.c` declares, in its default build:
 
 - `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS`;
 - `SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS`;

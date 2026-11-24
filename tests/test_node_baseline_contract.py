@@ -1,3 +1,4 @@
+import configparser
 import importlib.util
 import json
 import os
@@ -52,7 +53,7 @@ class NodeBaselineContractTest(unittest.TestCase):
         self.assertEqual(MODULE.EARLYOOM_DEFAULT,f'EARLYOOM_ARGS="{MODULE.EARLYOOM_ARGS}"\n')
 
     def test_factory_boot_units_are_masked_including_the_boot_splash_wait(self) -> None:
-        for unit in ("plymouth-quit-wait.service","srp_daemon.service","srptools.service","nvidia-spark-run-apt-upgrade-once.service","cloud-init.service"):
+        for unit in ("plymouth-quit-wait.service","srp_daemon.service","srptools.service","nvidia-spark-run-apt-upgrade-once.service","cloud-init.service","nvidia-spark-mlnx-firmware-manager.service"):
             self.assertIn(unit,MODULE.OPTIONAL_BOOT_UNITS)
         commands = []
         with mock.patch.object(MODULE,"has_configured_remote_storage",return_value=[]), \
@@ -63,6 +64,19 @@ class NodeBaselineContractTest(unittest.TestCase):
         with mock.patch.object(MODULE,"has_configured_remote_storage",return_value=["iscsi"]):
             with self.assertRaises(MODULE.BrickproofError):
                 MODULE.decouple_optional_boot_work()
+
+    def test_vendor_update_service_is_stopped_and_cannot_start_after_a_package_upgrade(self) -> None:
+        guard = MODULE.VENDOR_UPDATE_GUARD
+        self.assertTrue(guard.startswith(f"/etc/systemd/system/{MODULE.VENDOR_UPDATE_SERVICE}.d/"))
+        self.assertIn(guard,MODULE.STAGED_ASSET_DESTINATIONS)
+        source,mode = MODULE.ASSET_SOURCES[guard]
+        self.assertEqual(mode,0o644)
+        unit = configparser.ConfigParser()
+        unit.read_string((ROOT / source).read_text())
+        self.assertTrue(unit["Unit"]["ConditionPathExists"].startswith("/etc/sparkpipe/"))
+        with mock.patch.object(MODULE,"run") as run:
+            MODULE.stop_vendor_update_service()
+        self.assertEqual([call.args[0] for call in run.call_args_list],[["systemctl","disable","--now",MODULE.VENDOR_UPDATE_SERVICE]])
 
     def test_every_asset_has_a_repository_source_and_every_unit_runs_an_installed_program(self) -> None:
         sources = {**MODULE.ASSET_SOURCES,**MODULE.LINKED_RANK_ASSET_SOURCES}
@@ -190,6 +204,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                 self.assertLess(max(index for index,name in enumerate(order) if name == "install_assets"),network)
                 guard = order.index(f"{MODULE.DMA_GUARD_RUNTIME} install --notify {MODULE.HUB_NOTIFY}")
                 self.assertLess(order.index("enable_policy_services"),guard)
+                self.assertLess(order.index("enable_policy_services"),order.index(f"systemctl disable --now {MODULE.VENDOR_UPDATE_SERVICE}"))
                 self.assertLess(order.index("install_ceph_policy"),order.index("enable_policy_services"))
                 self.assertIn(("install_node_layout",(node,["extnvme"])),calls)
                 self.assertLess(max(index for index,name in enumerate(order) if name == "install_assets"),order.index("heal_time_sync"))
@@ -298,6 +313,7 @@ class NodeBaselineContractTest(unittest.TestCase):
         self.assertEqual([args for name,args in calls if name == "install_assets"],[tuple(sorted(MODULE.STAGED_ASSET_DESTINATIONS))])
         self.assertIn(("install_packages",("socks5h://127.0.0.1:1080",)),calls)
         self.assertIn(("enable_policy_services",(None,"spark11")),calls)
+        self.assertIn(("run",("systemctl","disable","--now",MODULE.VENDOR_UPDATE_SERVICE)),calls)
         self.assertLess(names.index("install_recovery_keys"),names.index("install_sshd_hardening"))
         self.assertIn(("run",(MODULE.DMA_GUARD_RUNTIME,"install","--notify",MODULE.HUB_NOTIFY)),calls)
         self.assertLess(names.index("enable_policy_services"),calls.index(("run",(MODULE.DMA_GUARD_RUNTIME,"install","--notify",MODULE.HUB_NOTIFY))))
@@ -345,6 +361,13 @@ class NodeBaselineContractTest(unittest.TestCase):
             "ETHTOOL -K enp1s0f1np1 tx-tcp-mangleid-segmentation off",
             "IP link set dev enp1s0f1np1 mtu 9000",
             "IP address replace 10.10.100.13/24 dev enp1s0f1np1"])
+
+    def test_the_baseline_addresses_follow_the_fabric_file(self) -> None:
+        fabric = json.loads((ROOT / "tools" / "spark_fabric.json").read_text())
+        self.assertEqual((MODULE.SWITCHED_INTERFACE, MODULE.SWITCHED_PREFIX, MODULE.SWITCHED_ADDRESS_BASE),
+                         (fabric["first_port"]["interface"], fabric["first_port"]["prefix"], fabric["first_port"]["address_base"]))
+        self.assertEqual((MODULE.RAIL2_INTERFACE, MODULE.RAIL2_PREFIX),
+                         (fabric["second_port"]["interface"], fabric["second_port"]["prefix"]))
 
     def test_node_layout_installs_every_missing_root_owned_by_the_node_user(self) -> None:
         self.assertEqual(MODULE.node_layout_roots((ROOT / "tools" / "spark_node_layout.json").read_text()),["extnvme","kvcache","sparkdata","srcdata"])

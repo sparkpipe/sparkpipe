@@ -191,7 +191,7 @@ static SparkStatus StageServingU32Member(const SparkStageServingState *state, Sp
 	if ( token >= 0 && SparkJsonGetUInt32(doc, token, value) == SPARK_STATUS_OK )
 		return SPARK_STATUS_OK;
 	fprintf(stderr, "%s adapter: %s needs \"%s\", an unsigned 32-bit integer\n", state->model->module_tag, where, name);
-	return SPARK_STATUS_SCHEMA_ERROR;
+	SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 }
 
 static SparkStatus StageServingOptionalU32Member(const SparkStageServingState *state, SparkJsonDocument *doc, int32_t object,
@@ -261,7 +261,7 @@ static SparkStatus StageServingKnownMembers(const SparkStageServingState *state,
 	fprintf(stderr, "%s adapter: %s has the unknown member \"%s\"; a stage config carries only the members this adapter reads\n",
 		state->model->module_tag, where, key != 0 ? key : "?");
 	free(key);
-	return SPARK_STATUS_SCHEMA_ERROR;
+	SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 }
 
 static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object, const char *name, char **out)
@@ -317,7 +317,7 @@ static SparkStatus StageServingLoadMeshRanks(SparkStageServingState *state, Spar
 	{
 		fprintf(stderr, "%s adapter: device_collective.mesh_ranks lists the physical mesh rank of each of the %u TP ranks\n",
 			state->model->module_tag, state->runner_config.tp_degree);
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	for ( index = 0u; index < count; ++index )
 	{
@@ -328,7 +328,7 @@ static SparkStatus StageServingLoadMeshRanks(SparkStageServingState *state, Spar
 		{
 			fprintf(stderr, "%s adapter: device_collective.mesh_ranks names distinct physical ranks below %u\n",
 				state->model->module_tag, SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE);
-			return SPARK_STATUS_SCHEMA_ERROR;
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		}
 		seen |= 1u << value;
 		state->device_config.mesh_ranks[index] = value;
@@ -344,7 +344,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	int32_t token;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(doc, dev, SPARK_JSON_TOKEN_OBJECT) )
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = StageServingKnownMembers(state, doc, dev, "device_collective", members, sizeof(members) / sizeof(members[0]));
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -361,7 +361,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	{
 		fprintf(stderr, "%s adapter: device_collective.wait_mode is required and names \"hardware\" or \"spin\"; a rank never picks a wait regime by default\n",
 			state->model->module_tag);
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	if ( SparkJsonStringEquals(doc, token, "hardware") )
 		config->wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
@@ -370,7 +370,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	else
 	{
 		fprintf(stderr, "%s adapter: device_collective.wait_mode names \"hardware\" or \"spin\"\n", state->model->module_tag);
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	status = StageServingU32Member(state, doc, dev, "device_collective", "connect_timeout_milli", &config->connect_timeout_milli);
 	if ( status == SPARK_STATUS_OK )
@@ -383,7 +383,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	{
 		fprintf(stderr, "%s adapter: device_collective needs positive timeouts and a mesh_lane below %u\n", state->model->module_tag,
 			SPARK_WEIGHTD_MESH_MAX_LANES);
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	status = StageServingLoadMeshRanks(state, doc, dev);
 	if ( status != SPARK_STATUS_OK )
@@ -401,7 +401,7 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 	const int32_t file = SparkJsonFindObjectMember(doc, taps, "file"), stream = SparkJsonFindObjectMember(doc, taps, "stream");
 	if ( !SparkJsonTokenIsType(doc, taps, SPARK_JSON_TOKEN_OBJECT) ||
 		StageServingKnownMembers(state, doc, taps, "taps", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK )
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK || (file >= 0) == (stream >= 0) ||
 		(file >= 0 && (StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0)) ||
 		(stream >= 0 && (StageServingCopyMember(doc, taps, "stream", &state->tap_stream) != SPARK_STATUS_OK || state->tap_stream == 0)) )
@@ -770,7 +770,7 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	int32_t token;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(doc, root, SPARK_JSON_TOKEN_OBJECT) )
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = StageServingKnownMembers(state, doc, root, "the stage config", members, sizeof(members) / sizeof(members[0]));
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -815,7 +815,7 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	{
 		fprintf(stderr, "%s adapter: tp_rank must name %u, the rank this config is loaded on (deployment rank %u at tp_degree %u)\n",
 			state->model->module_tag, config->tp_rank, configuration->stage_index, config->tp_degree);
-		return SPARK_STATUS_SCHEMA_ERROR;
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	status = StageServingU32Member(state, doc, root, "the stage config", "max_sequences", &config->max_active_sequence_count);
 	if ( status == SPARK_STATUS_OK )
@@ -1144,6 +1144,17 @@ static void StageServingBufferPlan(SparkStageServingState *state, SparkStageServ
 		{ &state->tokens_host, SPARK_DEVICE_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
 	};
 	memcpy(plan, plans, sizeof(plans));
+}
+
+static SparkStatus StageServingDeviceWait(const SparkStageServingState *state, SparkDeviceQueue *queue, const char *site)
+{
+	const SparkDeviceError *error;
+	if ( SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK )
+		return SPARK_STATUS_OK;
+	error = SparkDeviceLastError();
+	fprintf(stderr, "%s adapter: %s device wait failed: %s %s code=%d: %s\n", state->model->module_tag, site, error->operation, error->owner,
+		(int)error->backend_code, error->text);
+	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
 static SparkStatus StageServingAllocate(SparkStageServingState *state)
@@ -1886,8 +1897,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
 		status = StageServingReadTokens(state, queue, rows, steps);
 	marks[3] = SparkMonotonicNs();
-	if ( status == SPARK_STATUS_OK && SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingDeviceWait(state, queue, "step");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerCheck(&state->runner);
 	marks[4] = SparkMonotonicNs();
@@ -1900,8 +1911,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		else
 			status = state->tree_frame != 0u ? SparkStageRunnerKeepPath(&state->runner, state->path_rows, state->path_begin, kept, active) :
 				SparkStageRunnerKeepRows(&state->runner, kept, active);
-		if ( status == SPARK_STATUS_OK && SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
-			status = SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = StageServingDeviceWait(state, queue, "keep");
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageRunnerCheck(&state->runner);
 		keep_ns = SparkMonotonicNs() - keep_started;
@@ -1967,6 +1978,27 @@ static SparkStatus StageServingCacheHint(void *adapter_state,
 	return SparkServingCacheHintRun(&cache, identity, token_count);
 }
 
+static SparkStatus StageServingCacheProbe(void *adapter_state,
+	const SparkModelServingCacheIdentity *identity, uint32_t token_count, SparkModelServingCacheProbe *probe)
+{
+	SparkStageServingState *state = (SparkStageServingState *)adapter_state;
+	SparkServingCacheAdmission cache;
+	SparkModelDriverCacheProbe found;
+	SparkStatus status;
+	if ( state == 0 || probe == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = StageServingCacheContext(state, state->prefetch_lanes);
+	status = SparkServingCacheProbeRun(&cache, identity, token_count, &found);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	probe->held_token_count = found.held_token_count;
+	probe->resident_token_count = found.resident_token_count;
+	probe->saved_token_count = found.saved_token_count;
+	probe->state_token_count = found.state_token_count;
+	probe->read_token_count = found.read_token_count;
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageServingResolvePrefetch(void *adapter_state,
 	const SparkModelServingSubmission *submission, uint32_t resolution)
 {
@@ -2016,7 +2048,7 @@ static SparkStatus StageServingSnapshot(void *adapter_state,
 	snapshot->kv_token_capacity = (uint64_t)state->kv.logical_page_count * block;
 	snapshot->max_sequence_positions = state->runner_config.kv_pages_per_sequence * block;
 	SparkStageKvBindingKvStoreCounters(&state->kv, &snapshot->kv_store);
-	if ( stats.lane_fatal != 0u || state->streamed_failed != 0u )
+	if ( stats.lane_fatal != 0u || state->streamed_failed != 0u || SparkDeviceFaulted() != 0u )
 		snapshot->degraded_flags |= SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL;
 	return SPARK_STATUS_OK;
 }
@@ -2042,8 +2074,8 @@ static SparkStatus StageServingReset(void *adapter_state, uint64_t control_gener
 	status = SparkStageModuleIndexSetClaim(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, slots, count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( SparkDeviceQueueWait(SparkStageRunnerQueue(&state->runner), SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK ||
-		(state->kv.copy_queue != 0 && SparkDeviceQueueWait(state->kv.copy_queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK) )
+	if ( StageServingDeviceWait(state, SparkStageRunnerQueue(&state->runner), "reset") != SPARK_STATUS_OK ||
+		(state->kv.copy_queue != 0 && StageServingDeviceWait(state, state->kv.copy_queue, "reset copy") != SPARK_STATUS_OK) )
 	{
 		fprintf(stderr, "%s reset: execution stream failed; lanes stay claimed\n", state->model->module_tag);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -2068,6 +2100,7 @@ static SparkModelServingAdapterInterface StageServingInterface =
 	.submit = StageServingSubmit,
 	.prefetch = StageServingPrefetch,
 	.cache_hint = StageServingCacheHint,
+	.cache_probe = StageServingCacheProbe,
 	.resolve_prefetch = StageServingResolvePrefetch,
 	.progress = StageServingProgress,
 	.quiesce = StageServingQuiesce,

@@ -18,9 +18,8 @@ MODULE_TAGS = {
     "glm52": (ROOT / "modules" / "glm53_full_tp16_resident_decode_stage" /
               "source" / "spark_glm53_full_tp16_stage_model.cu",
               r'WeightdModel\(void\) \{ return "([^"]+)"'),
-    "dsv41_flash": (ROOT / "modules" / "dsv41_flash_resident_decode_stage" /
-                    "source" / "spark_dsv41_flash_stage_serving.c",
-                    r'\.module_tag = "([^"]+)"'),
+    "dsv41_flash": (ROOT / "Makefile",
+                    r'DSV41_FLASH_LINK,16u,[^,)]+,([a-z0-9_]+)\)'),
 }
 STUBS = """
 #include "sparkpipe/spark_weightd.h"

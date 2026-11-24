@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/topk.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_TOPK_WARP_PER_LANE 16u
 
@@ -66,14 +67,14 @@ __global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *_
 #define LM_TOPK_WARPS_PER_LANE 4u
 
 template<uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-__global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
+static __device__ __forceinline__ void LmTopkWarpsRow(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault, uint32_t row)
 {
 	constexpr uint32_t width = K <= 1u ? 1u : K <= 2u ? 2u : K <= 4u ? 4u : K <= 8u ? 8u : K <= 16u ? 16u : 32u;
 	constexpr uint32_t merged = (LM_TOPK_WARPS * K + LM_WARP_LANES - 1u) / LM_WARP_LANES;
 	static_assert(K <= LM_WARP_LANES, "one lane holds each chosen expert");
 	__shared__ uint64_t local[LM_TOPK_WARPS * K];
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES;
-	const uint64_t base = (uint64_t)blockIdx.x * n;
+	const uint64_t base = (uint64_t)row * n;
 	uint64_t candidate[LM_TOPK_WARPS_PER_LANE], pool[merged], best, winner;
 	uint32_t slot, round, high, low, step, chosen = 0u;
 	float value = 0.0f, tree, total;
@@ -120,7 +121,7 @@ __global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKern
 		LmTopkRouteFault(fault,high);
 	if ( lane < K )
 	{
-		out_indices[(uint64_t)blockIdx.x * K + lane] = chosen;
+		out_indices[(uint64_t)row * K + lane] = chosen;
 		value = LmTopkScore<SCORE_TRANSFORM>(scores,logits_bf16,base + chosen);
 	}
 	if ( out_values == 0 )
@@ -134,19 +135,25 @@ __global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKern
 	}
 	total = __shfl_sync(0xffffffffu,tree,0) + 1e-20f;
 	if ( lane < K )
-		out_values[(uint64_t)blockIdx.x * K + lane] = RENORMALISE ? (value / total) * mixture_scale : value * mixture_scale;
+		out_values[(uint64_t)row * K + lane] = RENORMALISE ? (value / total) * mixture_scale : value * mixture_scale;
+}
+
+template<uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
+__global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
+{
+	LmTopkWarpsRow<K,RENORMALISE,SCORE_TRANSFORM>(scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault,blockIdx.x);
 }
 
 template<uint32_t THREADS, uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-static cudaError_t LmTopkRouteLaunch(uint32_t rows, const float *scores, uint32_t n, uint32_t *out_indices, float *out_values, const float *selection_bias, const uint16_t *logits_bf16, float mixture_scale, uint32_t *fault, cudaStream_t stream)
+static SparkGpuError LmTopkRouteLaunch(uint32_t rows, const float *scores, uint32_t n, uint32_t *out_indices, float *out_values, const float *selection_bias, const uint16_t *logits_bf16, float mixture_scale, uint32_t *fault, SparkGpuStream stream)
 {
 	if ( fault == 0 || n < K )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( n <= LM_TOPK_WARP_PER_LANE * LM_WARP_LANES )
 		LM_LAUNCH((LmTopkWarpKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
 	else if ( n <= LM_TOPK_WARPS * LM_TOPK_WARPS_PER_LANE * LM_WARP_LANES )
 		LM_LAUNCH((LmTopkWarpsKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_TOPK_WARPS * LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
 	else
 		LM_LAUNCH((LmTopkSmallKernel<THREADS,K,RENORMALISE,1u,1u,SCORE_TRANSFORM>),rows,THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

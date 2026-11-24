@@ -28,6 +28,7 @@
 #include "sparkpipe/spark_motif_family.h"
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define MO_HIDDEN SPARK_MOTIF_MODEL_HIDDEN_DIMENSION
 #define MO_LAYERS SPARK_MOTIF_MODEL_LAYER_COUNT
@@ -173,7 +174,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 		const MotifLayer *layer;
 		uint32_t index;
 	};
@@ -210,14 +211,14 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	static SparkStatus Check(int32_t status, const char *site, uint32_t layer)
 	{
-		if ( status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess )
+		if ( status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS )
 			return SPARK_STATUS_OK;
-		fprintf(stderr, "%s: %s failed at layer %u status=%d cuda=%s\n", G::Tag(), site, layer, (int)status, cudaGetErrorString(cudaPeekAtLastError()));
+		fprintf(stderr, "%s: %s failed at layer %u status=%d cuda=%s\n", G::Tag(), site, layer, (int)status, SparkGpuGetErrorString(SparkGpuPeekAtLastError()));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-		uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+		uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 	{
 		if ( rows <= LM_SKINNY_ROWS_WIDE )
 		{
@@ -233,14 +234,15 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
-			LmSlowPath("motif linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+			LM_LAUNCH_REFUSE("motif linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows run on it, so the weight "
+				"and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 		}
 		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
 			0u, 0u, multiprocessors, stream);
 	}
 
 	static int32_t LinearFloat(const uint16_t *weight, const uint16_t *source, float *destination, uint32_t rows, uint32_t input_dimension,
-		uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+		uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 	{
 		if ( rows <= LM_SKINNY_ROWS_WIDE )
 		{
@@ -256,7 +258,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
-			LmSlowPath("motif linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+			LM_LAUNCH_REFUSE("motif linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows run on it, so the weight "
+				"and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 		}
 		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
 			0u, 0u, multiprocessors, stream);
@@ -264,11 +267,13 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	template<bool ROUND_FIRST>
 	static int32_t Norm(const uint16_t *input, const float *weight, uint16_t *output, uint32_t rows, uint32_t dimension, uint32_t stride,
-		cudaStream_t stream)
+		SparkGpuStream stream)
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<MO_THREADS, float, ROUND_FIRST>), rows, MO_THREADS, (dimension + 8u) * sizeof(float), stream, input,
 			(const uint16_t *)0, weight, (uint16_t *)0, output, dimension, stride, MO_EPS);
-		return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		if ( !(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return LM_LAUNCH_OK;
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
@@ -279,7 +284,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		frame->step = step;
-		frame->stream = (cudaStream_t)stream;
+		frame->stream = (SparkGpuStream)stream;
 		frame->layer = 0;
 		frame->index = 0u;
 		return SPARK_STATUS_OK;
@@ -287,7 +292,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	static SparkStatus HyperBegin(State *state, Frame &frame)
 	{
-		LmHcExpandStreamsKernel<MO_HIDDEN><<<dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, frame.step->rows), MO_THREADS, 0, frame.stream>>>(
+		LM_LAUNCH((LmHcExpandStreamsKernel<MO_HIDDEN>), dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, frame.step->rows), MO_THREADS, 0, frame.stream,
 			frame.step->hidden_bf16, state->streams, frame.step->rows);
 		return CudaStageLaunched();
 	}
@@ -305,7 +310,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		const bool attention = part == MOTIF_ATTENTION_PART;
 		if ( LmHcSite<MO_HIDDEN, MotifHcPolicy>(state->streams, attention ? w->hc_attn_fn : w->hc_ffn_fn, attention ? w->hc_attn_scale : w->hc_ffn_scale,
 				attention ? w->hc_attn_base : w->hc_ffn_base, state->hc_mixes, state->hc_pre, state->hc_post, state->hc_comb, state->collapsed,
-				state->snapshot, rows, frame.stream) != cudaSuccess )
+				state->snapshot, rows, frame.stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "hc site", layer);
 		return Check(Norm<true>(state->collapsed, attention ? w->attn_norm : w->ffn_norm, state->normed, rows, MO_HIDDEN, MO_HIDDEN, frame.stream), "norm", layer);
 	}
@@ -315,7 +320,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		const MotifLayer *w = frame.layer;
 		const SparkStageRunnerStep *step = frame.step;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, degree = state->tp_degree;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const float *inv_freq = window ? (const float *)0 : state->full_inv_freq;
 		const float theta = window ? SPARK_MOTIF_MODEL_WINDOW_ROPE_THETA : SPARK_MOTIF_MODEL_ROPE_THETA;
 		const uint64_t query_stride = (uint64_t)QuerySequences(rows) * MO_HIDDEN, record_stride = (uint64_t)RecordSequences(rows) * MO_HIDDEN / 2u;
@@ -340,13 +345,13 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			inv_freq, 1.0f, MO_NOPE);
 		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_BF16_TRIG>), dim3(rows, 1u), MO_THREADS, 0, stream, state->slot, step->positions, 1u, MO_SLOT, MO_ROPE, theta,
 			inv_freq, 1.0f, MO_LATENT);
-		if ( LmPerHeadProjectRowsLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream) != cudaSuccess )
+		if ( LmPerHeadProjectRowsLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "query absorb", layer);
-		MotifQueryPackKernel<<<dim3(rows, kHeads), MO_THREADS, 0, stream>>>(state->q_latent, state->q, state->query, kHeads);
+		LM_LAUNCH((MotifQueryPackKernel), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q_latent, state->q, state->query, kHeads);
 		LM_LAUNCH((LmKvShardStoreKernel<MotifKv, MO_THREADS>), rows, MO_THREADS, 0, stream, state->views[layer], state->slot, step->sequence_of_row,
 			step->positions, rows, MO_SLOT);
 		if ( window )
-			MotifWindowListKernel<<<rows, MO_THREADS, 0, stream>>>(step->positions, state->windows, rows);
+			LM_LAUNCH((MotifWindowListKernel), rows, MO_THREADS, 0, stream, step->positions, state->windows, rows);
 		status = Check(LM_LAUNCH_OK, "kv store", layer);
 		CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
@@ -356,15 +361,15 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		if ( LmLatentShardPartialLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer], state->gathered, query_stride, kHeads,
 				step->sequence_of_row, step->context_length, step->positions, window ? state->windows : (const uint32_t *)0, window ? MO_WINDOW : 0u,
 				window ? MO_WINDOW : 0u, window ? SPARK_MOTIF_MODEL_WINDOW_SOFTMAX_SCALE : SPARK_MOTIF_MODEL_FULL_SOFTMAX_SCALE, state->partials, record_stride,
-				rows, stream) != cudaSuccess )
+				rows, stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "attention partial", layer);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, RecordSequences(rows), 0u, state->partials, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( LmLatentShardMergeLaunch<MO_LATENT>(state->received, record_stride, degree, kHeads, state->merged, rows, stream) != cudaSuccess ||
-			LmPerHeadProjectRowsLaunch<MO_THREADS, MO_LATENT, MO_VALUE>(state->merged, w->uv, state->values, kHeads, rows, stream) != cudaSuccess ||
+		if ( LmLatentShardMergeLaunch<MO_LATENT>(state->received, record_stride, degree, kHeads, state->merged, rows, stream) != SPARK_GPU_SUCCESS ||
+			LmPerHeadProjectRowsLaunch<MO_THREADS, MO_LATENT, MO_VALUE>(state->merged, w->uv, state->values, kHeads, rows, stream) != SPARK_GPU_SUCCESS ||
 			LmDifferentialGateLaunch(state->values, state->lambda + (uint64_t)state->tp_rank * kSignal, MO_GROUPS * MO_SIGNAL, state->gate, state->diff,
-				rows, kGroups, MO_SIGNAL, MO_VALUE, stream) != cudaSuccess )
+				rows, kGroups, MO_SIGNAL, MO_VALUE, stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "attention merge", layer);
 		return Check(Linear(w->out, state->diff, state->partial, rows, kSignal * MO_VALUE, MO_HIDDEN, sms, stream), "attention out", layer);
 	}
@@ -387,7 +392,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static SparkStatus HyperPost(State *state, Frame &frame, uint32_t layer, uint32_t part)
 	{
 		(void)part;
-		LmHcPostF32Kernel<LM_HC_SITE_STREAMS><<<dim3(frame.step->rows, MO_HIDDEN / MO_THREADS), MO_THREADS, 0, frame.stream>>>(state->partial, state->snapshot,
+		LM_LAUNCH((LmHcPostF32Kernel<LM_HC_SITE_STREAMS>), dim3(frame.step->rows, MO_HIDDEN / MO_THREADS), MO_THREADS, 0, frame.stream, state->partial, state->snapshot,
 			state->hc_post, state->hc_comb, state->streams, frame.step->rows, LM_HC_SITE_STREAMS, MO_HIDDEN);
 		return Check(LM_LAUNCH_OK, "hc post", layer);
 	}
@@ -399,7 +404,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		SparkStatus status = Check(Linear(gate_up, state->normed, state->mlp_gate_up, rows, MO_HIDDEN, 2u * inter, sms, frame.stream), "mlp gate_up", layer);
 		if ( status == SPARK_STATUS_OK && LmPolyNormMulLaunch<false>(state->mlp_gate_up, poly, (const uint32_t *)0, state->mlp_act, rows, inter,
 				SPARK_MOTIF_MODEL_HIDDEN_CLAMP, SPARK_MOTIF_MODEL_POLYNORM_ROUTED_BIAS_CLAMP, SPARK_MOTIF_MODEL_POLYNORM_OUTPUT_SCALE,
-				SPARK_MOTIF_MODEL_POLYNORM_EPSILON, frame.stream) != cudaSuccess )
+				SPARK_MOTIF_MODEL_POLYNORM_EPSILON, frame.stream) != SPARK_GPU_SUCCESS )
 			status = Check(LM_LAUNCH_ERR_LAUNCH, "mlp polynorm", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = Check(Linear(down, state->mlp_act, output, rows, inter, MO_HIDDEN, sms, frame.stream), "mlp down", layer);
@@ -412,7 +417,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( w->owner != 0u )
 			status = OwnedMlp(state, frame, layer, w->ffn_gate_up, w->ffn_down, w->ffn_poly, MO_DENSE_INTER, state->partial);
-		else if ( cudaMemsetAsync(state->partial, 0, (uint64_t)frame.step->rows * MO_HIDDEN * sizeof(uint16_t), frame.stream) != cudaSuccess )
+		else if ( SparkGpuMemsetAsync(state->partial, 0, (uint64_t)frame.step->rows * MO_HIDDEN * sizeof(uint16_t), frame.stream) != SPARK_GPU_SUCCESS )
 			status = Check(LM_LAUNCH_ERR_LAUNCH, "dense mlp clear", layer);
 		if ( state->services->layer_done != 0 )
 			state->services->layer_done(state->services->context, layer);
@@ -423,23 +428,23 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	{
 		const MotifLayer *w = frame.layer;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * MO_TOP_K;
 		LmLocalExpertRoutes expert_routes;
 		SparkStatus status = Check(LinearFloat(w->router, state->normed, state->router_logits, rows, MO_HIDDEN, MO_EXPERTS, sms, stream), "router", layer);
 		if ( status == SPARK_STATUS_OK && LmTopkGroupLimitedLaunch<MO_THREADS, MO_EXPERTS, 1u, 1u, MO_TOP_K>(rows, state->router_logits, w->expert_bias,
-				state->route_expert, state->route_weight, SPARK_MOTIF_MODEL_MOE_ROUTED_SCALE, step->route_fault, stream) != cudaSuccess )
+				state->route_expert, state->route_weight, SPARK_MOTIF_MODEL_MOE_ROUTED_SCALE, step->route_fault, stream) != SPARK_GPU_SUCCESS )
 			status = Check(LM_LAUNCH_ERR_LAUNCH, "router top-k", layer);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global, routes,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
 			state->expert_first, kLocalExperts);
 		if ( LmRouteBuild<MO_THREADS, kLocalExperts + 1u>(state->route_expert, rows, routes, MO_TOP_K, state->group_row_offset, state->route_packed_row,
 				state->route_source_token, 2u * MO_EXPERT_INTER, MO_HIDDEN, LM_MOE_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "route build", layer);
-		if ( cudaMemsetAsync(state->param_of_row, 0, (uint64_t)routes * sizeof(uint32_t), stream) != cudaSuccess )
+		if ( SparkGpuMemsetAsync(state->param_of_row, 0, (uint64_t)routes * sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "route params", layer);
-		MotifRouteParamKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_packed_row, state->param_of_row, routes, kLocalExperts);
+		LM_LAUNCH((MotifRouteParamKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_packed_row, state->param_of_row, routes, kLocalExperts);
 		expert_routes.group_row_offset = state->group_row_offset;
 		expert_routes.route_source_token = state->route_source_token;
 		expert_routes.tile_prefix_up = state->tile_prefix_up;
@@ -453,7 +458,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			2u * MO_EXPERT_INTER, stream), "experts up", layer);
 		if ( status == SPARK_STATUS_OK && LmPolyNormMulLaunch<true>(state->expert_gate_up, w->moe_poly, state->param_of_row, state->expert_act, routes,
 				MO_EXPERT_INTER, SPARK_MOTIF_MODEL_HIDDEN_CLAMP, SPARK_MOTIF_MODEL_POLYNORM_ROUTED_BIAS_CLAMP, SPARK_MOTIF_MODEL_POLYNORM_OUTPUT_SCALE,
-				SPARK_MOTIF_MODEL_POLYNORM_EPSILON, stream) != cudaSuccess )
+				SPARK_MOTIF_MODEL_POLYNORM_EPSILON, stream) != SPARK_GPU_SUCCESS )
 			status = Check(LM_LAUNCH_ERR_LAUNCH, "experts polynorm", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = Check(LmLocalExpertsDown<LmBf16Format>(expert_routes, w->moe_w2, LmScaleTensorNone(), state->expert_act, state->expert_out,
@@ -462,7 +467,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			status = OwnedMlp(state, frame, layer, w->shared_gate_up, w->shared_down, w->shared_poly, MO_EXPERT_INTER, state->shared_out);
 		if ( status == SPARK_STATUS_OK )
 		{
-			LmMoeLocalWeightedFinalizeKernel<<<dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, rows), MO_THREADS, 0, stream>>>(state->expert_out,
+			LM_LAUNCH((LmMoeLocalWeightedFinalizeKernel), dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, rows), MO_THREADS, 0, stream, state->expert_out,
 				state->route_packed_row, state->route_expert, state->route_weight, w->owner != 0u ? state->shared_out : (const uint16_t *)0, state->partial,
 				MO_TOP_K, kLocalExperts, MO_HIDDEN);
 			status = Check(LM_LAUNCH_OK, "experts finalize", layer);
@@ -475,8 +480,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static SparkStatus HyperEnd(State *state, Frame &frame)
 	{
 		const uint32_t rows = frame.step->rows;
-		LmHcStreamsMeanKernel<MO_HIDDEN><<<rows, MO_THREADS, 0, frame.stream>>>(state->streams, frame.step->hidden_bf16, rows);
-		if ( cudaPeekAtLastError() != cudaSuccess )
+		LM_LAUNCH((LmHcStreamsMeanKernel<MO_HIDDEN>), rows, MO_THREADS, 0, frame.stream, state->streams, frame.step->hidden_bf16, rows);
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		state->steps++;
 		if ( rows > frame.step->sequences )
@@ -639,7 +644,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		float inv_freq[MO_ROPE / 2u];
 		SparkRopeYarnRampTable(inv_freq, MO_ROPE, SPARK_MOTIF_MODEL_ROPE_THETA, SPARK_MOTIF_MODEL_YARN_FACTOR, SPARK_MOTIF_MODEL_YARN_BETA_FAST,
 			SPARK_MOTIF_MODEL_YARN_BETA_SLOW, SPARK_MOTIF_MODEL_YARN_ORIGINAL_CONTEXT);
-		if ( cudaMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), cudaMemcpyHostToDevice) != cudaSuccess )
+		if ( SparkGpuMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		return SPARK_STATUS_OK;
 	}

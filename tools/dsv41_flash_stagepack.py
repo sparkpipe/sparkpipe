@@ -4,8 +4,14 @@
 subcommands:
   headers WARM_DIR INDEX_JSON OUT_JSON
       read all safetensors shard headers, cross-check against the index weight_map
-  plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA
-      validate the checkpoint against the kind map, write pack skeletons + plan.json
+  plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA [EXPERTS [PLACEMENT]]
+      validate the checkpoint against the kind map, write pack skeletons + plan.json;
+      EXPERTS is slice (every rank holds a slice of every expert, the default),
+      whole (rank r holds experts [r*E/TP, (r+1)*E/TP) whole) or rows (whole
+      experts, and every rank holds every attention head's weights); PLACEMENT,
+      for whole or rows, is a tools/dsv41_flash_expert_placement.py file naming
+      each layer's experts for each rank, written beside the packs as
+      expert_placement.bin
   copy HEADERS_JSON PLAN_JSON OUT_DIR WARM_DIR LO HI
       copy payload contributed by source shards [LO,HI] into every rank pack
 Exit 0 = step complete; nonzero = the failure is named on stderr.
@@ -43,6 +49,10 @@ ALIGN = 256
 COPY_BUDGET = 16 << 20
 MAGIC = 0x31413444
 FORMAT_VERSION = 2
+FLAG_WHOLE_EXPERTS = 2
+FLAG_WHOLE_ATTENTION = 4
+FLAG_PLACED_EXPERTS = 8
+EXPERT_LAYOUTS = ("slice", "whole", "rows")
 
 K_EMBEDDING = 0
 K_FINAL_NORM = 1
@@ -81,6 +91,7 @@ K_EXP_W2 = 36
 KIND_COUNT = 37
 UNUSED_KINDS = (29, 30, 31)
 EXPERT_KINDS = (K_EXP_W13, K_EXP_W2)
+WHOLE_ATTENTION_KINDS = (K_Q_B, K_O_A, K_O_B, K_IDX_Q_B, K_IDX_WP, K_ATTN_SINK)
 
 
 def fail(message: str):
@@ -107,7 +118,16 @@ def kind_in_layer(kind: int, layer: int) -> bool:
     return True
 
 
-def entry_shape(kind: int, tp: int):
+def attention_degree(tp: int, layout: str) -> int:
+    return 1 if layout == "rows" else tp
+
+
+def whole_experts(layout: str) -> bool:
+    return layout in ("whole", "rows")
+
+
+def entry_shape(kind: int, tp: int, layout: str = "slice"):
+    att = attention_degree(tp, layout)
     if kind in (K_EMBEDDING, K_LM_HEAD):
         return (VOCAB // tp, HIDDEN, 1)
     if kind in (K_ATTN_NORM, K_FFN_NORM, K_FINAL_NORM):
@@ -115,7 +135,7 @@ def entry_shape(kind: int, tp: int):
     if kind == K_Q_A:
         return (1280, HIDDEN, 1)
     if kind == K_Q_B:
-        return (32768 // tp, 1280, 1)
+        return (32768 // att, 1280, 1)
     if kind == K_KV_A:
         return (512, HIDDEN, 1)
     if kind == K_Q_NORM:
@@ -125,15 +145,15 @@ def entry_shape(kind: int, tp: int):
     if kind == K_ATTN_SINK:
         return (1, 64, 1)
     if kind == K_O_A:
-        return (8192 // tp, 4096, 1)
+        return (8192 // att, 4096, 1)
     if kind == K_O_B:
-        return (5120, 8192 // tp, 1)
+        return (5120, 8192 // att, 1)
     if kind == K_IDX_Q_B:
-        return (4096 // tp, 1280, 1)
+        return (4096 // att, 1280, 1)
     if kind == K_IDX_WK:
         return (128, 512, 1)
     if kind == K_IDX_WP:
-        return (32 // tp, 5120, 1)
+        return (32 // att, 5120, 1)
     if kind == K_IDX_KN:
         return (1, 128, 1)
     if kind in (K_C_WKV, K_C_WGATE):
@@ -151,8 +171,12 @@ def entry_shape(kind: int, tp: int):
     if kind in (K_ROUTER_BIAS, K_ROUTER_BIAS_VL):
         return (1, 384, 1)
     if kind == K_EXP_W13:
+        if whole_experts(layout):
+            return (2 * EXPERT_WIDTH, HIDDEN // 2, ROUTED_EXPERTS // tp)
         return (2 * EXPERT_WIDTH // tp, HIDDEN // 2, ROUTED_EXPERTS)
     if kind == K_EXP_W2:
+        if whole_experts(layout):
+            return (HIDDEN, EXPERT_WIDTH // 2, ROUTED_EXPERTS // tp)
         return (HIDDEN // tp, EXPERT_WIDTH // 2, ROUTED_EXPERTS)
     if kind in (K_SH_W1, K_SH_W3):
         return (EXPERT_WIDTH, HIDDEN, 1)
@@ -161,8 +185,8 @@ def entry_shape(kind: int, tp: int):
     fail(f"unknown kind {kind}")
 
 
-def entry_layout(kind: int, tp: int):
-    rows, cols, groups = entry_shape(kind, tp)
+def entry_layout(kind: int, tp: int, layout: str = "slice"):
+    rows, cols, groups = entry_shape(kind, tp, layout)
     if kind in EXPERT_KINDS:
         return (PAYLOAD_PACKED_WEIGHT, CODEC_MXFP4, SCALE_E8M0,
                 rows * cols * groups, rows * (cols * 2 // 32) * groups)
@@ -385,7 +409,7 @@ def rank_window(mode: str, rank: int, tp: int, rows: int, cols: int):
     fail(f"unknown mode {mode}")
 
 
-def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
+def build_pieces(flat: dict, tp: int, entries: list, order: list, layout: str = "slice", placement: list = None) -> list:
     pieces = []
     for entry, (kind, _) in zip(entries, order):
         layer = entry["layer"]
@@ -403,16 +427,20 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
                 rows_per_part = entry["rows"] // len(sources)
                 for rank in range(tp):
                     for group in range(groups):
+                        expert = (placement[layer][rank][group] if placement is not None else rank * groups + group) if whole_experts(layout) else group
+                        row0 = 0 if whole_experts(layout) else rank * rows_per_part
                         for part, names in enumerate(sources):
-                            src_name = names[0 if plane == "payload" else 1].format(e=group)
+                            src_name = names[0 if plane == "payload" else 1].format(e=expert)
                             src = flat[src_name]
                             pieces.append({"rank": rank, "kind": kind, "layer": layer, "plane": plane,
-                                           "shard": src["shard"], "name": src_name, "row0": rank * rows_per_part,
-                                           "row1": (rank + 1) * rows_per_part, "col0": 0, "col1": src["shape"][1],
+                                           "shard": src["shard"], "name": src_name, "row0": row0,
+                                           "row1": row0 + rows_per_part, "col0": 0, "col1": src["shape"][1],
                                            "dst_offset": entry[offset_field] + group * per_group + part * per_part,
                                            "dst_bytes": per_part})
                 continue
             src0 = flat[name]
+            if layout == "rows" and kind in WHOLE_ATTENTION_KINDS:
+                mode = "repl"
             for rank in range(tp):
                 r0, r1, c0, c1 = rank_window(mode, rank, tp, src0["shape"][0], src0["shape"][1])
                 pieces.append({"rank": rank, "kind": kind, "layer": layer, "plane": plane,
@@ -421,14 +449,14 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
     return pieces
 
 
-def plan_entries(tp: int):
+def plan_entries(tp: int, layout: str = "slice"):
     order = [(kind, GLOBAL_LAYER) for kind in range(KIND_COUNT) if is_global(kind)]
     for layer in range(LAYER_COUNT):
         order += [(kind, layer) for kind in range(K_ATTN_NORM, KIND_COUNT) if kind_in_layer(kind, layer)]
     entries = []
     for kind, layer in order:
-        rows, cols, groups = entry_shape(kind, tp)
-        payload_type, codec, scale_enc, payload_bytes, scale_bytes = entry_layout(kind, tp)
+        rows, cols, groups = entry_shape(kind, tp, layout)
+        payload_type, codec, scale_enc, payload_bytes, scale_bytes = entry_layout(kind, tp, layout)
         entries.append({"kind": kind, "layer": layer, "payload_type": payload_type, "codec": codec,
                         "scale_encoding": scale_enc, "groups": groups, "rows": rows, "cols": cols,
                         "payload_bytes": payload_bytes, "scale_bytes": scale_bytes})
@@ -443,7 +471,17 @@ def plan_entries(tp: int):
 
 
 def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
-             contract_hex: str, config_hex: str, recipe_hex: str):
+             contract_hex: str, config_hex: str, recipe_hex: str, layout: str = "slice", placement_path: str = ""):
+    if layout not in EXPERT_LAYOUTS:
+        fail(f"expert layout {layout!r} is not one of {EXPERT_LAYOUTS}")
+    placement = None
+    if placement_path:
+        import dsv41_flash_expert_placement as placement_tool
+        document = json.load(open(placement_path, encoding="utf-8"))
+        if not whole_experts(layout) or document.get("ranks") != tp:
+            fail(f"a placement needs whole experts and {tp} ranks")
+        placement_tool.check(document)
+        placement = document["layers"]
     if tp <= 0 or ROUTED_EXPERTS % tp or VOCAB % tp or 64 % tp or 4096 % tp or 32 % tp or EXPERT_WIDTH % tp or HIDDEN % tp:
         fail(f"tp {tp} does not divide the sharded dimensions")
     document, flat = load_flat(headers_json)
@@ -475,7 +513,7 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             check_shape(spec[0], flat, spec[2], spec[3])
             if spec[1]:
                 check_shape(spec[1], flat, "F8_E8M0", spec[4])
-    order, entries, directory_offset, file_bytes = plan_entries(tp)
+    order, entries, directory_offset, file_bytes = plan_entries(tp, layout)
     spine_bytes = sum(e["payload_bytes"] + e["scale_bytes"] for e in entries if e["kind"] not in EXPERT_KINDS)
     expert_bytes = sum(e["payload_bytes"] + e["scale_bytes"] for e in entries if e["kind"] in EXPERT_KINDS)
     rev = revision.encode()
@@ -491,7 +529,9 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
                                           e["scale_offset"], e["scale_bytes"]) for e in entries)
     os.makedirs(out_dir, exist_ok=True)
     for rank in range(tp):
-        fields = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0, LAYER_COUNT,
+        fields = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, (FLAG_WHOLE_EXPERTS if whole_experts(layout) else 0) | (FLAG_WHOLE_ATTENTION if layout == "rows" else 0) |
+                  (FLAG_PLACED_EXPERTS if placement is not None else 0),
+                  len(entries), 1, 0, 0, LAYER_COUNT,
                   LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, CODEC_FP8, CODEC_MXFP4, tp, rank, 0)
         header = codec_header(fields, directory_offset, file_bytes, rev, digests, HEADER_BYTES)
         fd = os.open(os.path.join(out_dir, f"rank{rank}.spstage"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -501,8 +541,11 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             os.pwrite(fd, directory, directory_offset)
         finally:
             os.close(fd)
-    pieces = build_pieces(flat, tp, entries, order)
-    plan = {"tp": tp, "expert_codec": "mxfp4", "revision": revision,
+    pieces = build_pieces(flat, tp, entries, order, layout, placement)
+    if placement is not None:
+        placement_tool.cmd_bin(placement_path, os.path.join(out_dir, "expert_placement.bin"))
+    plan = {"tp": tp, "expert_codec": "mxfp4", "expert_layout": layout, "revision": revision,
+            "expert_placement": placement,
             "contract_sha256": contract_hex, "config_sha256": config_hex,
             "recipe_sha256": recipe_hex, "directory_offset": directory_offset,
             "file_bytes": file_bytes, "tensor_count": len(entries),
@@ -526,7 +569,7 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
                    "dspark_sidecar_tensors": len(sidecar),
                    "vision_aligner_tensors": len(scope),
                    "accounting": accounting}, handle, indent=1)
-    print(f"plan ok: {len(entries)} entries/rank x {tp} ranks, file_bytes {file_bytes}, "
+    print(f"plan ok: {len(entries)} entries/rank x {tp} ranks, {layout} experts, file_bytes {file_bytes}, "
           f"spine {spine_bytes}, expert {expert_bytes}, pieces {len(pieces)}; "
           f"engram excluded {sum(m['end'] - m['begin'] for m in engram.values())} B, "
           f"sidecar {len(sidecar)}, vision {len(scope)}")
@@ -584,8 +627,9 @@ def main(argv: list) -> int:
     try:
         if argv[1] == "headers" and len(argv) == 5:
             cmd_headers(argv[2], argv[3], argv[4])
-        elif argv[1] == "plan" and len(argv) == 9:
-            cmd_plan(argv[2], argv[3], int(argv[4]), argv[5], argv[6], argv[7], argv[8])
+        elif argv[1] == "plan" and len(argv) in (9, 10, 11):
+            cmd_plan(argv[2], argv[3], int(argv[4]), argv[5], argv[6], argv[7], argv[8], argv[9] if len(argv) >= 10 else "slice",
+                     argv[10] if len(argv) == 11 else "")
         elif argv[1] == "copy" and len(argv) == 8:
             cmd_copy(argv[2], argv[3], argv[4], argv[5], int(argv[6]), int(argv[7]))
         else:

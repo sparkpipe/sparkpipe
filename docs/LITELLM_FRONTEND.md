@@ -53,6 +53,28 @@ engine URL, the served context, stop tokens, the reasoning and tool-call
 markers, the accepted `chat_template_kwargs` and the mapping of OpenAI
 `reasoning_effort` onto the template's own variable.
 
+Each model's `reasoning_effort` map follows the levels its publisher's
+template defines: `high` takes the top level, and `minimal` turns thinking
+off where the template can. A request without `reasoning_effort` gets the
+template's own default.
+
+| Models | Template variable (default) | low | medium | high |
+|---|---|---|---|---|
+| Qwen 3.8 27B, 27B FP8, Flash and Max | `reasoning_effort` (xhigh) | low | medium | xhigh |
+| GLM-5.3 and GLM-5.3 Flash | `reasoning_effort` (max) | low | high | max |
+| Kimi K3 and K3.1 Pro | `thinking_effort` (none) | low | high | max |
+| DeepSeek V4.1 Flash | `effort` (high) | low | high | max |
+| Muse Glimmer 30B | `reasoning_strength` (high) | low | medium | high |
+
+The other templates only switch thinking on or off, so their low, medium and
+high render the same prompt. Qwen 3.8 Max's template refuses to turn thinking
+off, so it offers no `minimal`. Before 2026-11-20 the Qwen 3.8 entries passed
+only `enable_thinking`, so low, medium and high all rendered xhigh.
+`tests/test_chat_frontend_effort_levels.py` holds this table for every served
+model and renders each label through the Qwen 3.8 template
+(`model_contracts/references/qwen38_27b_chat_template.jinja`); a new model
+fails it until its template's levels are read and listed there.
+
 Known limits:
 
 - The layer forwards `temperature`, `top_p`, `top_k` (vLLM's extension;
@@ -210,6 +232,7 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is the served adapter's model id (for example `google/gemma-4-26B-A4B-it`); 503 with the bring-up state until every rank is ready |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
+| `POST /v1/cache/state` | `prompt_token_ids`, or `identity` (the 64 hex digits of a prefix's SHA-256) with `token_count` | `cache.state`: what the engine and every rank hold for that prefix (below) |
 | anything else | — | `404 {"error":"not found"}` |
 
 Reply text is always valid UTF-8. When the emitted tokens leave a byte
@@ -327,6 +350,46 @@ When every engine request slot is taken, new requests wait in the API's
 queue instead of failing. The queue submits by priority, then earliest
 deadline, then arrival, as slots free up. A queued request still honours
 its deadline.
+
+**The cache object.** Beside `usage`, the first stream event, the last one
+and a non-streamed reply carry `cache`: `matched_tokens` (the longest prefix
+of the prompt the engine's prefix index knows), `resumed_tokens` (where the
+request resumed, the same number as `usage.prompt_tokens_details.cached_tokens`),
+`restore_ms` (time from a wave the ranks answered pending, because they were
+restoring the prefix, to the wave they admitted), `background_wait_ms` (time
+before its first token that the request spent behind a background wave:
+before it could be dispatched, and after it at the ranks, which is the part
+of each of its waves' time beyond the ranks' own work on the wave, as they
+report it, up to the time a background wave was running),
+`boot` (this API process) and `artifact` (the first 16 hex digits of the
+adapter's artifact digest). `matched_tokens` minus `resumed_tokens` is what
+the engine recomputes because it can resume only at a state point. The
+`request_measurements` line carries the same three numbers as
+`matched_prompt_tokens`, `restore_wait_ns` and `background_wait_ns`.
+
+**`POST /v1/cache/state`** answers one question at a time (a second one
+during it gets `429 busy`) and changes nothing: no restore starts and no
+entry is marked read. For `prompt_token_ids` it reports `prompt_tokens`,
+`matched_tokens` and `resume_tokens` from the prefix index, then asks every
+rank about the matched prefix. For an `identity` it asks the ranks directly.
+The answer is the least over the ranks, because a prefix is usable only when
+every rank has it:
+
+| Field | Meaning |
+| --- | --- |
+| `probed_tokens`, `identity` | the prefix the ranks were asked about |
+| `ranks`, `ranks_reported`, `complete` | how many ranks were asked and answered; `complete` is false when a rank did not answer within 5 s. The request has its own deadline one second later, so it answers even when the engine thread does not |
+| `ranks_failed` | ranks whose answer was a failure, for example an adapter that cannot be probed. Such a rank vouches for nothing, so every count below reads 0 when this is not 0 |
+| `held_tokens` | the prefix length when every rank's page cache has an entry for it, else 0 |
+| `resident_tokens` | tokens of that prefix whose pages are on the device |
+| `saved_tokens` | the longest part of the prefix, from token 0, whose page files are in the snapshot store now, checked in the store's index; for a prefix a rank no longer holds in memory, its whole length when every page file from its last to its first is there, and 0 when one is missing |
+| `state_tokens` | the nearest point at or below the prefix that the ranks can resume from: on a model with recurrent state, the deepest entry that still has its state |
+| `read_tokens` | the part of the prefix, from token 0, that a later request has read. The ranks save that part by themselves; the rest reaches the snapshot store only when the engine closes. 0 for a prefix no rank holds in memory. The design's classes (tail, kept, pinned) are not built yet, and this is what the engine knows in their place |
+| `block_tokens`, `checkpoint_tokens` | the page size and the checkpoint distance of this adapter (0 when it resumes at any block) |
+| `boot`, `artifact` | as in the cache object |
+
+A prompt the index does not know answers at once with `matched_tokens` 0 and
+`ranks` 0.
 
 Every request writes one `request_measurements` JSON line to the API log.
 It records the prompt's SHA-256, the adapter, model and driver identities,
@@ -582,17 +645,17 @@ conversations (each readable only by the member that stored it) and its
 alias table; `prefill.sqlite` holds only the measured
 prefill rates per model and length, with no request content. Stored
 responses and turns share `replay.budget_bytes`; over it, the least recently
-used rows go first, whichever account holds them. Deletion follows the
-working-state rule of `docs/WORKING_STATE.md` through the function in
+used rows go first, whichever account holds them. Nothing is deleted for
+its age. Deletion follows the function in
 `tools/serving/working_state.py`: every second the chat layer reads the
-directive the working-state controller writes on the hub
-(`replay.directive`, `~/sparkdata/working-state/directive`), and every row
-last used before `wiped` (another account started using the fleet), or 24 h
-after the later of its last use and `held_until`, is deleted; an account
-whose rows are all gone has its files removed. A missing directive is
-`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` removes
-the account's files at once; the engine's cache goes at the next change of
-user or by the same 24 h rule, and the answer says so (`not_deleted`).
+working-state directive on its host (`replay.directive`,
+`~/sparkdata/working-state/directive`, two lines:
+`sparkpipe-working-state 2` and `wiped <unix seconds>`), and every row last
+used before `wiped` is deleted; an account whose rows are all gone has its
+files removed. A missing directive is `wiped 0`: nothing is deleted.
+`DELETE /v1/cache` removes the account's files at once; the engine's cache
+stays until the fleet is restored to the base image when the hold ends, and
+the answer says so (`not_deleted`).
 Responses `store` (true unless the request sets it to false, as in OpenAI's
 API) decides whether the conversation is kept for `previous_response_id`;
 the generated tokens are kept either way. A failed write to the store (disk
@@ -640,6 +703,61 @@ tokens; with no measurement near that length it is null. `draft_accept` is
 null until the engine reports draft and accepted tokens per request. `pack`
 names the pack version the request ran on (`core@3672dbc4f1f9`), or is null.
 
+### Miss ledger
+
+Every request on the Messages, Responses and chat completions shapes gets a
+ledger entry: what the fleet had carried of its prompt, where the engine
+resumed, and a cause for what was prefilled beyond the request's own new
+tail. The entry is part of the request's record (below). A request without a
+key also gets it in its `sparkpipe` object; a keyed request's own telemetry
+leaves it out, because `seen_tokens` counts prefixes other keys sent.
+The ledger records counts, times, ids and names. It keeps digests of the
+opening's parts to compare them, and no text.
+
+| Field | Meaning |
+| --- | --- |
+| `seen_tokens`, `seen_of`, `seen_age_s` | the longest prefix of this prompt, in whole 64-token blocks, that an earlier engine request to this model carried; the length of the longest such request; how long ago |
+| `matched_tokens`, `resumed_tokens`, `recomputed_tokens` | the engine's cache object: its match, its resume position and the difference. With an engine that reports no cache object, `resumed_tokens` is its cached tokens and the other two are null |
+| `session_tokens`, `session_turn` | the length of this session's last prompt and reply, and the request's number in the session |
+| `tail_tokens` | the request's own new tail: for a turn that extends its session, the prompt beyond the last prompt and reply; for a session's first request, its first prompt (counted with the model's tokenizer); null when the request names no session and has history, because its tail cannot be known |
+| `miss_tokens` | tokens prefilled beyond that tail |
+| `opening_tokens`, `lost_tokens` | parts of the miss: opening tokens nobody had carried, and carried tokens the engine no longer matched |
+| `restore_ms`, `background_wait_ms`, `model_wait_ms` | the engine's two waits, and the time the request waited for its model to be loaded |
+| `cause`, `cause_block`, `cause_position`, `lost_reason` | below |
+| `request_class`, `agent_type`, `compaction`, `compacted` | Claude Code's `x-claude-code-request-class`, `-agent-type`, `-compaction` and `-context-compacted` headers; Codex's `x-openai-subagent: compact` counts as class `compaction` |
+| `engine_reported` | whether the engine sent a cache object |
+
+Causes, in the order they are tried:
+
+| `cause` | When | Detail |
+| --- | --- | --- |
+| `model_not_resident` | the request waited for its model to be loaded | `model_wait_ms` |
+| `compaction` | the request carries the context-compacted header, or follows a compaction request of its session and no longer extends it | `cause_position`: the first block nobody had carried |
+| `history_changed` | the session exists and the prompt does not extend its last prompt and reply | `cause_position`; `cause_block` is `reply` when the change is inside the last reply (the client sent back another reply than it was given, or the replay store no longer had it), else `history` |
+| `restored` | the engine waited for a restore | `restore_ms` |
+| `lost` | an earlier request carried more than the engine matched | `lost_reason`: `wiped` (the working state was wiped since it was carried), `release` (the adapter artifact changed), `swap` (the model was away since), `restart` (another API boot), `evicted` (none of these), or null when the engine reports no boot |
+| `pack_profile` | the request is the first with its tool set or template settings on a pack | |
+| `first_opening`, `opening_changed` | a session's first request prefills more than one block of opening tokens nobody had carried. `first_opening` when its family (scope, model, API shape, request class and agent type) has no opening yet; otherwise `opening_changed` | `cause_block`: the first part that differs from the family's newest opening, in the order `tools`, `attribution` (a first system block that starts with `x-anthropic-billing-header:`), `system`, `project_context` (the text before the first prompt); `template` when every part is known and the prompt still rendered differently, as with another reasoning effort |
+| `resume_point` | the engine matched more than one block beyond where it resumed | `recomputed_tokens` |
+| `unattributed` | nothing above explains what was prefilled beyond the tail. On a session the ledger does not know (the client sent no session id, or the chat layer restarted) the request's own tail cannot be told from the rest, so all of its prefill is here, with `tail_tokens` and `miss_tokens` null | |
+
+The causes are tried in the table's order and the first that holds is the
+request's cause, so `unattributed` is what is left: every request that
+prefilled more than one block beyond the tail the ledger knows has a cause,
+and the cold time of a set of requests divides among the causes with nothing
+over. `compaction`, `history_changed`, `lost`, `pack_profile` and
+`unattributed` need that much; without an engine cache object the bound is
+the model's `resume_tokens`, so a resume at a checkpoint is not called lost.
+Two things
+limit what the ledger can say. It lives in the chat layer's memory, so a
+restarted chat layer has seen nothing and knows no session. And it counts in
+64-token blocks, so `seen_tokens`, `opening_tokens` and `cause_position` are
+exact to a block.
+
+The ledger adds no cache point: a Messages or Responses request is sent to
+the engine as before, and only chat completions declare the cache point they
+already declared.
+
 ### Request records
 
 The operational record of each request (the `sparkpipe` object above, with
@@ -651,8 +769,8 @@ inside it. `<owner>` is `account-<id>` for a gateway request, `key-<id>`
 for a direct key and `own` for our own requests. The folder is mode 700 and
 its files mode 600. It is not working state: the chat layer refuses a
 records directory inside the replay store, and a wipe does not touch it. A
-record holds counts, times and ids, never prompt text, reply text or token
-numbers, and nothing of it goes to stderr, so the chat layer's log keeps no
+record holds counts, times, ids and the ledger's names, never prompt text,
+reply text or token numbers, and nothing of it goes to stderr, so the chat layer's log keeps no
 copy; the log lines keep only the model, counts, times and settings. Day
 files are deleted 366 days after their day (checked hourly).
 
@@ -735,8 +853,7 @@ Checked after the restart: `/v1/models` and `/v1/codex/models`, a Messages
 and a Responses request on GLM 5.3, `count_tokens`, the replay directory
 created with mode 700, the gateway key refused without
 `X-SparkPipe-Account` (400 `account_required`) and served with it, and every
-VPS file equal to the commit. No directive exists yet, so rows expire 24 h
-after their last use until the working-state controller writes one.
+VPS file equal to the commit.
 
 ### Repositories and context packs (2026-11-06)
 
@@ -771,7 +888,7 @@ it gets 404 for a name that exists elsewhere.
   background. Files are ordered by how often they changed on the first-parent
   history in the 90 days before the commit's own time, then by path, so the
   same commit gives the same order on any day. Secrets, vendored trees, lock
-  files and generated stubs are never packed (the anticipator's default
+  files and generated stubs are never packed (the builder's default
   exclusions); binary, generated and over-budget files are listed under
   `left_out`. The version is `<pack>@` and 12 hex digits of the token
   digest; its token ids are stored as `versions/<digest>.ids` beside the
@@ -794,11 +911,12 @@ it gets 404 for a name that exists elsewhere.
   version built yet it answers 409 `pack_building`. The session is
   `X-Claude-Code-Session-Id`, `x-session-affinity`, `X-Session-Id` or Codex's
   `prompt_cache_key`; without one, the first system and first user message.
-  Versions that are not current and that no session used for 24 hours are
-  dropped at the next refresh, with their pins.
-- **Deletion.** Areas follow the working-state rule: at a change of user, or
-  24 h after the last booked hour, the expiry sweep deletes every area last
-  used before it, repositories and packs together. `DELETE /v1/cache`
+  A version that is not current and that no session is on is dropped when
+  a newer one becomes current. A session keeps its version however long it
+  pauses; the newest 4,096 sessions of a pack are remembered.
+- **Deletion.** Areas follow the working-state rule: a wipe mark deletes
+  every area last used before it, repositories and packs together, and
+  nothing is deleted for its age. `DELETE /v1/cache`
   deletes the packs, and `?storage=true` the whole area. Deleting a pack or
   an area cancels its refresh, and a refresh never writes into a deleted pack.
 

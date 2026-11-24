@@ -38,19 +38,23 @@ struct LmHostRecorderFormat
 		return((uint8_t)(((int)clamped) & 15));
 	}
 };
+#include "tests/host_cuda/lm_host_skinny_recorder.cuh"
 #include "model-families/k3/source/layer.cuh"
 
 #define ROWS 2u
 #define ROUTES (ROWS * K3_TOP_K)
 
-static uint16_t hidden[ROWS * K3_HIDDEN];
-static uint16_t normed[ROWS * K3_HIDDEN], attention_out[ROWS * K3_HIDDEN];
-static uint16_t shared_out[ROWS * K3_HIDDEN];
-static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
-static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
-static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
-static uint16_t norm_weight[K3_HIDDEN];
-static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
+alignas(16) static uint16_t hidden[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t normed[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t attention_out[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t shared_out[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
+alignas(16) static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
+alignas(16) static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
+alignas(16) static uint16_t norm_weight[K3_HIDDEN];
+alignas(16) static uint16_t projection_weight[8];
+alignas(16) static float router_logits[ROWS * K3_EXPERTS];
+static float router_bias[K3_EXPERTS];
 static float route_weight[ROUTES];
 static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES], route_fault;
 static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
@@ -105,6 +109,8 @@ int main(void)
 	b.latent_bf16 = latent; b.gate_up_bf16 = gate_up;
 	b.intermediate_bf16 = intermediate;
 	b.mlp_norm_weight = norm_weight; b.routed_norm_weight = norm_weight;
+	b.router_weight = projection_weight; b.routed_down_weight = projection_weight; b.routed_up_weight = projection_weight;
+	b.shared_w1_weight = projection_weight; b.shared_w2_weight = projection_weight;
 	b.router_logits = router_logits; b.router_bias = router_bias;
 	b.route_expert = route_expert; b.route_weight = route_weight; b.route_fault = &route_fault;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;

@@ -295,10 +295,18 @@ async def pack_rules(harness, work, shas, scope_dir, bare, check):
     status, _, data = await ask(harness, [{"role": "user", "content": "hi"}], model="beta+core", swap=True)
     check(status == 404 and data["error"]["code"] == "pack_not_found", "a pack serves only the model it was tokenized for")
 
-    dropped = frontend.workspace.drop_unused(scope_dir, "core", time.time() + 2 * DAY)
-    check(sorted(dropped) == sorted([v1, v2]) and frontend.workspace.state(scope_dir, "core")["current"] == v3
-          and not (frontend.workspace.pack_folder(scope_dir, "core") / "versions" / (v1.partition("@")[2] + ".ids")).exists(),
-          f"versions no session used for 24 hours are dropped, the current one is kept: {dropped}")
+    state = frontend.workspace.state(scope_dir, "core")
+    for pin in state["pins"].values():
+        pin["used"] = time.time() - 400 * DAY
+    dropped = frontend.workspace.drop_unused(scope_dir, "core")
+    state = frontend.workspace.state(scope_dir, "core")
+    check(dropped == [] and {v1, v2, v3} <= set(state["versions"]), f"a version a session is on stays however long ago the session last used it: {dropped}")
+    state["pins"] = {key: pin for key, pin in state["pins"].items() if pin["version"] != v2}
+    dropped = frontend.workspace.drop_unused(scope_dir, "core")
+    state = frontend.workspace.state(scope_dir, "core")
+    check(dropped == [v2] and state["current"] == v3 and v1 in state["versions"]
+          and not (frontend.workspace.pack_folder(scope_dir, "core") / "versions" / (v2.partition("@")[2] + ".ids")).exists(),
+          f"a version no session is on is dropped once a newer one is current; the current one and one a session holds stay: {dropped}")
 
 
 async def deletion_rules(harness, scope_dir, check):
@@ -316,8 +324,8 @@ async def deletion_rules(harness, scope_dir, check):
     acme = frontend.workspace.area(frontend.scope_directory("account:acme"))
     check(status == 201 and acme.is_dir(), "a gateway account creates its own repository")
     now = time.time()
-    harness.directive(now + 5, now + 5)
-    frontend.expire_working_state(now + 10, False)
+    harness.directive(now + 5)
+    frontend.wipe_working_state()
     _, _, repos = await call(harness, "GET", "/v1/repos", account="acme")
     check(not acme.exists() and repos["data"] == [], "a change of user deletes the earlier account's repositories and packs with its working state")
 

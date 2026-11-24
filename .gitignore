@@ -26,3 +26,5 @@ api_submission.seq
 mock-pipeline-deployment.json
 /PACKAGE_MANIFEST.json
 /SHA256SUMS
+/prefix_index.spi
+/prefix_index_batch.spi

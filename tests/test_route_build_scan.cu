@@ -103,6 +103,10 @@ int main(int argc,char **argv)
 	Case<256u,896u>(64u,16u,0u,4096u,512u,64u,stream);
 	Case<256u,896u>(64u,16u,4u,4096u,512u,64u,stream);
 	Case<256u,896u>(1u,16u,0u,4096u,512u,64u,stream);
+	Case<256u,25u>(26652u,6u,0u,4608u,5120u,64u,stream);
+	Case<256u,25u>(26652u,6u,9u,4608u,5120u,64u,stream);
+	Case<256u,25u>(160u,6u,2u,4608u,5120u,64u,stream);
+	Case<128u,385u>(4099u,6u,0u,4608u,5120u,64u,stream);
 	printf("test_route_build_scan PASS\n");
 	return 0;
 }

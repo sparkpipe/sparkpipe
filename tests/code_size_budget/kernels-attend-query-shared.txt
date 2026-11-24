@@ -1,0 +1,2 @@
++22
+D41AttendKernel at one query tile stages the query in shared memory once a row and reads it with ldmatrix: no spill, bytes identical, 1.09-1.22x on the window path above 16 rows (prefill and verify frames).

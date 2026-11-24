@@ -3,8 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <cuda_runtime.h>
-
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
@@ -32,7 +31,7 @@ typedef struct SparkTpChainCollectives
 
 typedef struct SparkTpChainGraphTable
 {
-	void *exec[SPARK_TP_CHAIN_GRAPH_MAX_REGIMES][SPARK_TP_CHAIN_GRAPH_BUCKETS];
+	SparkDeviceProgram *program[SPARK_TP_CHAIN_GRAPH_MAX_REGIMES][SPARK_TP_CHAIN_GRAPH_BUCKETS];
 	uint32_t captures;
 	uint32_t failed;
 } SparkTpChainGraphTable;
@@ -158,74 +157,77 @@ static inline uint32_t SparkTpChainGraphBucketRows(uint32_t rows)
 		SPARK_TP_CHAIN_GRAPH_POW2_ROWS + (index + 1u - SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS) * SPARK_TP_CHAIN_GRAPH_WIDE_STEP);
 }
 
-static inline void **SparkTpChainGraphEntry(SparkTpChainGraphTable *table,uint32_t regime,uint32_t rows)
+static inline SparkDeviceProgram **SparkTpChainGraphEntry(SparkTpChainGraphTable *table,uint32_t regime,uint32_t rows)
 {
 	if ( table == 0 || regime >= SPARK_TP_CHAIN_GRAPH_MAX_REGIMES || rows == 0u || rows > SPARK_TP_CHAIN_GRAPH_MAX_ROWS )
 		return(0);
-	return(&table->exec[regime][SparkTpChainGraphBucketIndex(rows)]);
+	return(&table->program[regime][SparkTpChainGraphBucketIndex(rows)]);
 }
 
-static inline void SparkTpChainGraphTableDestroy(SparkTpChainGraphTable *table)
+static inline SparkStatus SparkTpChainGraphTableDestroy(SparkTpChainGraphTable *table,SparkDeviceQueue *queue)
 {
-	uint32_t regime,bucket;
+	uint32_t regime,bucket,waited = 0u;
+	SparkStatus status = SPARK_STATUS_OK,destroyed;
 	if ( table == 0 )
-		return;
+		return(SPARK_STATUS_OK);
 	for (regime=0u; regime<SPARK_TP_CHAIN_GRAPH_MAX_REGIMES; regime++)
 		for (bucket=0u; bucket<SPARK_TP_CHAIN_GRAPH_BUCKETS; bucket++)
-			if ( table->exec[regime][bucket] != 0 )
+			if ( table->program[regime][bucket] != 0 )
 			{
-				(void)cudaGraphExecDestroy((cudaGraphExec_t)table->exec[regime][bucket]);
-				table->exec[regime][bucket] = 0;
+				if ( waited == 0u && queue != 0 )
+				{
+					status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+					waited = 1u;
+					if ( status != SPARK_STATUS_OK )
+						return(status);
+				}
+				destroyed = SparkDeviceProgramDestroy(table->program[regime][bucket]);
+				if ( destroyed != SPARK_STATUS_OK )
+				{
+					if ( status == SPARK_STATUS_OK )
+						status = destroyed;
+					continue;
+				}
+				table->program[regime][bucket] = 0;
 			}
+	return(status);
 }
 
 static inline SparkStatus SparkTpChainGraphRecord(
 	const SparkTpChainCollectives *collectives,
-	void *stream,
+	SparkDeviceQueue *queue,
 	SparkTpChainWalkFunction walk,
 	void *context,
-	void **exec_out,
+	SparkDeviceProgram **program_out,
 	uint32_t *site_out)
 {
-	cudaGraph_t graph = 0;
-	cudaGraphExec_t exec = 0;
-	cudaError_t end_error;
+	SparkDeviceProgram *program = 0;
+	SparkStatus status,finished;
 	uint32_t site;
-	SparkStatus status;
-	if ( collectives == 0 || stream == 0 || walk == 0 || exec_out == 0 || site_out == 0 )
+	if ( collectives == 0 || queue == 0 || walk == 0 || program_out == 0 || site_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	*exec_out = 0;
+	*program_out = 0;
 	*site_out = 0u;
 	status = SparkTpChainArm(collectives);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( cudaStreamBeginCapture((cudaStream_t)stream,cudaStreamCaptureModeThreadLocal) != cudaSuccess )
+	status = SparkDeviceProgramRecord(queue,"tp chain");
+	if ( status != SPARK_STATUS_OK )
 	{
 		SparkTpChainDisarm(collectives);
-		return(SPARK_STATUS_IO_ERROR);
+		return(status);
 	}
 	site = walk(context);
-	end_error = cudaStreamEndCapture((cudaStream_t)stream,&graph);
+	finished = SparkDeviceProgramFinish(queue,&program);
 	*site_out = site;
-	if ( site != 0u || end_error != cudaSuccess || graph == 0 )
+	if ( site != 0u || finished != SPARK_STATUS_OK || program == 0 )
 	{
-		if ( graph != 0 )
-			(void)cudaGraphDestroy(graph);
-		(void)cudaGetLastError();
+		if ( program != 0 )
+			(void)SparkDeviceProgramDestroy(program);
 		SparkTpChainDisarm(collectives);
-		return(site != 0u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_IO_ERROR);
+		return(site != 0u ? SPARK_STATUS_INTERNAL_ERROR : finished != SPARK_STATUS_OK ? finished : SPARK_STATUS_IO_ERROR);
 	}
-	if ( cudaGraphInstantiate(&exec,graph,0) != cudaSuccess || cudaGraphUpload(exec,(cudaStream_t)stream) != cudaSuccess )
-	{
-		if ( exec != 0 )
-			(void)cudaGraphExecDestroy(exec);
-		(void)cudaGraphDestroy(graph);
-		(void)cudaGetLastError();
-		SparkTpChainDisarm(collectives);
-		return(SPARK_STATUS_IO_ERROR);
-	}
-	(void)cudaGraphDestroy(graph);
 	SparkTpChainDisarm(collectives);
-	*exec_out = exec;
+	*program_out = program;
 	return(SPARK_STATUS_OK);
 }

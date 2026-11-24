@@ -74,6 +74,7 @@ chat_shapes = load_sibling("chat_shapes")
 working_state = load_sibling("working_state")
 context_packs = load_sibling("context_packs")
 memory_connector = load_sibling("memory_connector")
+miss_ledger = load_sibling("miss_ledger")
 context_packs.RequestError = RequestError
 memory_connector.RequestError = RequestError
 chat_shapes.RequestError = RequestError
@@ -106,6 +107,13 @@ HEADER_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 FLEET_VALUE = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REQUEST_CLASS_HEADER = "x-claude-code-request-class"
 SIDE_CLASSES = frozenset({"compaction", "auxiliary"})
+AGENT_TYPE_HEADER = "x-claude-code-agent-type"
+COMPACTION_HEADER = "x-claude-code-compaction"
+COMPACTED_HEADER = "x-claude-code-context-compacted"
+MAIN_CLASSES = ("main", None)
+FIRST_PROMPT_CHARACTERS = 400000
+LEDGER_LENGTH_BITS = 32
+LEDGER_LENGTH_MASK = (1 << LEDGER_LENGTH_BITS) - 1
 SUBAGENT_HEADER = "x-openai-subagent"
 SIDE_SUBAGENTS = frozenset({"compact"})
 AFFINITY_HEADERS = ("X-Claude-Code-Session-Id", "x-session-affinity", "X-Session-Id")
@@ -121,7 +129,7 @@ REPLAY_MARK = re.compile("\ue000SPARKPIPE-REPLAY-([0-9]+)\ue001")
 GENERATION_PROBE = "\ue000SPARKPIPE-PROBE\ue001"
 GENERATION_CACHE = 64
 DIRECTIVE_CHECK_SECONDS = 1.0
-EXPIRY_SWEEP_SECONDS = 60.0
+RECORD_PRUNE_SECONDS = 60.0
 OWN_SCOPE = "own"
 RECORD_DAYS = 366
 RECORD_PRUNE_SECONDS = 3600.0
@@ -140,6 +148,15 @@ def clean_header(value, pattern=HEADER_VALUE):
 def harness_side_request(headers):
     return ((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in SIDE_CLASSES
             or (headers.get(SUBAGENT_HEADER) or "").strip().lower() in SIDE_SUBAGENTS)
+
+
+def client_signals(headers):
+    kind = clean_header((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower())
+    subagent = clean_header((headers.get(SUBAGENT_HEADER) or "").strip().lower())
+    return {"class": kind or (miss_ledger.COMPACTION_CLASS if subagent in SIDE_SUBAGENTS else None),
+            "agent_type": clean_header((headers.get(AGENT_TYPE_HEADER) or "").strip()) or subagent,
+            "compaction": clean_header((headers.get(COMPACTION_HEADER) or "").strip().lower()),
+            "compacted": (headers.get(COMPACTED_HEADER) or "").strip().lower() not in ("", "0", "false")}
 
 
 def glob_match(pattern, name):
@@ -1765,20 +1782,24 @@ class PrefixLedger:
             digest = hashlib.blake2b(digest + data[start:start + width], digest_size=16).digest()
             yield digest
 
-    def seen(self, token_ids):
-        matched, longest = 0, 0
+    def carried(self, token_ids):
+        matched, longest, stamp = 0, 0, None
         for digest in self.chain(token_ids):
-            length = self.blocks.get(digest)
-            if length is None:
+            found = self.blocks.get(digest)
+            if found is None:
                 break
             matched += self.block_tokens
-            longest = length
-        return matched, longest
+            longest, stamp = found & LEDGER_LENGTH_MASK, found >> LEDGER_LENGTH_BITS
+        return matched, longest, stamp
 
-    def record(self, token_ids):
+    def seen(self, token_ids):
+        return self.carried(token_ids)[:2]
+
+    def record(self, token_ids, now=None):
         total = len(token_ids)
+        stamp = int(time.time() if now is None else now) << LEDGER_LENGTH_BITS
         for digest in self.chain(token_ids):
-            self.blocks[digest] = max(self.blocks.get(digest, 0), total)
+            self.blocks[digest] = stamp | max(self.blocks.get(digest, 0) & LEDGER_LENGTH_MASK, total)
             self.blocks.move_to_end(digest)
         while len(self.blocks) > self.capacity_blocks:
             self.blocks.popitem(last=False)
@@ -1908,6 +1929,7 @@ class Frontend:
     directive = None
     expiry_task = None
     codex_instructions = None
+    misses = None
 
     def __init__(self, config, base):
         self.models = {}
@@ -1958,7 +1980,7 @@ class Frontend:
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
             raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
         self.codex_instructions = (base / codex["instructions_file"]).read_text() if codex.get("instructions_file") else None
-        self.directive_state = None
+        self.wiped = None
         self.residency_cache = None
         self.residency_task = None
         self.control_error = None
@@ -1974,7 +1996,7 @@ class Frontend:
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
         if self.memory is not None:
             await self.memory.start()
-        self.expire_working_state(time.time(), True)
+        self.wipe_working_state()
         self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
@@ -2004,40 +2026,38 @@ class Frontend:
         self.foreground[model.id] = self.foreground.get(model.id, 0) + change
         self.memory.notify("foreground", {"model": memory_model(model), "requests": self.foreground[model.id]})
 
-    def expire_working_state(self, now, sweep):
-        wiped, held_until = working_state.read_directive(self.directive) if self.directive is not None else (0, 0)
-        changed = (wiped, held_until) != self.directive_state
-        self.directive_state = (wiped, held_until)
-        if not (changed or sweep):
+    def wipe_working_state(self):
+        wiped = working_state.read_directive(self.directive) if self.directive is not None else 0
+        if wiped == self.wiped:
             return 0
+        self.wiped = wiped
         if self.memory is not None:
-            self.memory.notify("expire", {"wiped": wiped, "held_until": held_until, "now": now})
+            self.memory.notify("expire", {"wiped": wiped})
         if self.workspace is not None:
             try:
-                areas = self.workspace.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+                areas = self.workspace.expire(lambda used: working_state.expired(used, wiped))
             except OSError as error:
-                print(json.dumps({"event": "workspace_expiry_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+                print(json.dumps({"event": "workspace_wipe_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
                 areas = []
             if areas:
-                print(json.dumps({"event": "workspace_expired", "areas": areas, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
+                print(json.dumps({"event": "workspace_wiped", "areas": areas, "wiped": wiped}), file=sys.stderr, flush=True)
         try:
-            dropped = self.replay.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+            dropped = self.replay.expire(lambda used: working_state.expired(used, wiped))
         except chat_replay.STORE_ERRORS as error:
-            print(json.dumps({"event": "replay_expiry_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            print(json.dumps({"event": "replay_wipe_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
             return 0
         if dropped:
-            print(json.dumps({"event": "replay_expired", "dropped": dropped, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
+            print(json.dumps({"event": "replay_wiped", "dropped": dropped, "wiped": wiped}), file=sys.stderr, flush=True)
         return dropped
 
     async def expiry_loop(self):
         swept = time.monotonic()
         while True:
             await asyncio.sleep(DIRECTIVE_CHECK_SECONDS)
-            sweep = time.monotonic() - swept >= EXPIRY_SWEEP_SECONDS
-            if sweep:
+            if time.monotonic() - swept >= RECORD_PRUNE_SECONDS:
                 swept = time.monotonic()
                 self.prune_records(time.time())
-            self.expire_working_state(time.time(), sweep)
+            self.wipe_working_state()
 
     def prune_records(self, now):
         try:
@@ -2052,7 +2072,7 @@ class Frontend:
         scope, member = plan.get("gate", (OWN_SCOPE, None))
         scope, key = scope or OWN_SCOPE, plan.get("public_key") or {}
         found = dict(record, at=utc_stamp(time.time()), account=scope[len("account:"):] if scope.startswith("account:") else None, member=member, shape=shape,
-                     key=clean_header(headers.get(KEY_HEADER)) if key.get("gateway") is True else key.get("id"))
+                     key=clean_header(headers.get(KEY_HEADER)) if key.get("gateway") is True else key.get("id"), **(plan.get("ledger") or {}))
         try:
             self.records.add(scope, found)
         except OSError as error:
@@ -2327,7 +2347,11 @@ class Frontend:
         engine = result.get("usage") or {}
         drafted = engine.get("draft_tokens")
         session, agent = plan.get("affinity") or (None, None)
-        return {"request": plan["request_id"], "fleet": clean_header(headers.get(FLEET_HEADER), FLEET_VALUE), "model": model.id, "pack": plan.get("pack"),
+        plan["ledger"] = self.miss_entry(model, plan, result, completion)
+        if plan.get("trace") is not None:
+            plan["trace"].update({key: value for key, value in (plan["ledger"] or {}).items() if value not in (None, False)})
+        shown = {} if "public_key" in plan else plan["ledger"] or {}
+        return {**shown, "request": plan["request_id"], "fleet": clean_header(headers.get(FLEET_HEADER), FLEET_VALUE), "model": model.id, "pack": plan.get("pack"),
                 "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"], "prefill_tokens": usage["prompt"] - usage["cached"],
                 "replayed_tokens": replayed_tokens(plan), "engine_rounds": rounds,
                 "queue_ms": round((admitted - started) * 1000), "prefill_ms": prefill_ms, "ttft_ms": round((first - started) * 1000) if first else None,
@@ -2336,6 +2360,43 @@ class Frontend:
                 "cold_prefill_ms_estimate": round(usage["cached"] * rate) if rate is not None else None,
                 "priority": "interactive" if plan["engine_body"].get("priority", INTERACTIVE_PRIORITY) >= INTERACTIVE_PRIORITY else "background",
                 "session": session, "agent": agent, "transport": plan.get("transport", "http"), "turn_ms": round((time.monotonic() - started) * 1000)}
+
+    def miss_ledger(self):
+        if self.misses is None:
+            self.misses = miss_ledger.Ledger()
+        return self.misses
+
+    def note_opening(self, model, plan, opening):
+        if opening is None or "engine_body" not in plan:
+            return
+        prompt = opening.pop("prompt", None)
+        plan["opening"] = opening
+        vocabulary = getattr(model, "vocabulary", None)
+        if isinstance(prompt, str) and len(prompt) <= FIRST_PROMPT_CHARACTERS and vocabulary is not None:
+            plan["first_prompt_tokens"] = len(vocabulary.encode(prompt, False))
+
+    def miss_entry(self, model, plan, result, completion):
+        carried, timing, client = plan.get("carried"), plan["timing"], plan.get("client") or {}
+        if carried is None:
+            return None
+        scope = plan.get("gate", (OWN_SCOPE, None))[0] or OWN_SCOPE
+        session, agent = plan.get("affinity") or (None, None)
+        usage = timing.get("engine_usage") or result.get("usage") or {}
+        mains = [(scope, session, agent, kind) for kind in MAIN_CLASSES] if session is not None else []
+        facts = {"model": model.id, "block_tokens": CACHE_BLOCK_TOKENS, "resume_tokens": model.resume_tokens, "scope": scope,
+                 "session": (scope, session, agent, client.get("class")) if session is not None else None, "shape": plan.get("shape", "chat"),
+                 "session_fallbacks": mains if client.get("class") == miss_ledger.COMPACTION_CLASS else (), "prompt_tokens": plan["prompt_tokens"],
+                 "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0), "engine": timing.get("engine_cache"),
+                 "seen_tokens": carried[0], "seen_of": carried[1], "seen_at": carried[2], "opening": plan.get("opening"),
+                 "first_prompt_tokens": plan.get("first_prompt_tokens"), "model_wait_ms": timing.get("model_wait_ms"),
+                 "pack_profile_new": plan.get("pack_profile_new"), "request_class": client.get("class"), "agent_type": client.get("agent_type"),
+                 "compaction": client.get("compaction"), "compacted": client.get("compacted"), "wiped": self.wiped, "now": time.time()}
+        ledger = self.miss_ledger()
+        entry = ledger.entry(facts)
+        ledger.settle(facts, timing.get("recorded_tokens", plan["prompt_tokens"] + completion))
+        if client.get("class") == miss_ledger.COMPACTION_CLASS:
+            ledger.compacting(mains)
+        return entry
 
     def early_headers(self, model, plan, headers):
         shown = {REQUEST_HEADER: plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
@@ -2519,9 +2580,10 @@ class Frontend:
         if version is None:
             self.schedule_refresh(pack_request["scope"], name, "first_request")
             raise RequestError(409, "pack_building", f"pack {name!r} has no version yet; it is being built from its repository", retry_after=30)
+        new_profile = {"tools": tools or None, "kwargs": kwargs or {}} not in self.workspace.state(scope_dir, name)["profiles"]
         self.workspace.remember_profile(scope_dir, name, tools, kwargs)
         self.workspace.touch(scope_dir)
-        return version, self.workspace.ids(scope_dir, name, version)
+        return version, self.workspace.ids(scope_dir, name, version), new_profile
 
     def schedule_refresh(self, scope, name, reason):
         key = (self.scope_directory(scope), name)
@@ -2687,9 +2749,10 @@ class Frontend:
         rendered = (replay["text"], replay["ids"]) if replay is not None else (model.render(messages, tools, kwargs, pack[1]) if pack else None)
         plan = self.finish_plan(model, body, messages, tools, kwargs, session, rendered)
         plan.update(replay=replay, scope=scope if contexts is not None else None, member=member, replay_context=contexts[-1] if contexts else None,
-                    pack=pack and pack[0])
+                    pack=pack and pack[0], pack_profile_new=bool(pack and pack[2]))
         engine = plan["engine_body"]
-        seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
+        plan["carried"] = self.prefix_ledger(model).carried(engine["prompt_token_ids"])
+        seen, seen_of = plan["carried"][:2]
         points = cache_points(seen, len(engine["prompt_token_ids"]))
         if points:
             engine["cache_points"] = points
@@ -2770,7 +2833,7 @@ class Frontend:
             return RequestError(status, code, f"the {model.id} engine could not serve the request (status {status}); try again")
         return RequestError(status, code, error["message"])
 
-    async def engine_stream(self, model, engine_body, public):
+    async def engine_stream(self, model, engine_body, public, timing=None):
         deadline = None
         while True:
             started = False
@@ -2789,7 +2852,12 @@ class Frontend:
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
             if self.memory is not None and not public:
                 self.memory.notify("cancel_all")
-            await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
+            self.miss_ledger().model_absent(model.id)
+            try:
+                await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
+            finally:
+                if timing is not None:
+                    timing["model_wait_ms"] = timing.get("model_wait_ms", 0.0) + (asyncio.get_running_loop().time() - now) * 1000
 
     def logprob_entries(self, model, chunk, expected):
         tokens = chunk.get("tokens", [])
@@ -2818,7 +2886,7 @@ class Frontend:
         written = 0
         stop_string = False
         logprobs = engine_body.get("logprobs")
-        stream = self.engine_stream(model, engine_body, public)
+        stream = self.engine_stream(model, engine_body, public, timing)
         chunks = 0
         try:
             async for chunk in stream:
@@ -2848,6 +2916,8 @@ class Frontend:
                     usage, closed = chunk["usage"], choices[0].get("finish_reason") is not None
                     if timing is not None and chunks == 1:
                         timing.setdefault("engine_usage", usage)
+                if timing is not None and isinstance(chunk.get("cache"), dict):
+                    timing.setdefault("engine_cache", chunk["cache"])
                 if start is None:
                     start = parser.fed
                 for event in parser.feed("".join(text)):
@@ -2935,6 +3005,8 @@ class Frontend:
             usage["completion_tokens"] = len(token_ids)
             usage["total_tokens"] = usage.get("prompt_tokens", len(prompt)) + len(token_ids)
         self.prefix_ledger(model).record(prompt + token_ids)
+        if timing is not None:
+            timing["recorded_tokens"] = len(prompt) + len(token_ids)
         finish = outcome["finish"]
         yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage or None,
                           "engine_finish": "stop_string" if outcome["stop_string"] else (finish or "stop"), "token_ids": token_ids,
@@ -3150,6 +3222,7 @@ class Frontend:
         except RequestError as error:
             return error_response(error)
         self.stamp(plan, started, request.headers)
+        self.note_opening(model, plan, chat_shapes.chat_opening(body))
         plan["gate"] = (scope or OWN_SCOPE, self.member_of(public, request.headers))
         if public is not None:
             plan["trace"]["key"] = public["id"]
@@ -3171,6 +3244,7 @@ class Frontend:
         plan["request_id"] = "r_" + uuid.uuid4().hex[:24]
         plan["timing"] = {"arrived": started}
         plan["affinity"] = self.affinity(headers, affinity)
+        plan["client"] = client_signals(headers)
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
@@ -3279,6 +3353,7 @@ class Frontend:
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
         translated["metadata"] = body.get("metadata")
+        translated["opening"] = chat_shapes.messages_opening(body) if shape == "messages" else chat_shapes.responses_opening(body)
         translated["pack_request"] = self.pack_request(scope, pack, request.headers, key, translated.get("affinity"))
         return body, translated, model, bulk, key, scope
 
@@ -3337,9 +3412,12 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
-        plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
-                    trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
+        carried = self.prefix_ledger(model).carried(ids)
+        plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member), carried=carried,
+                    trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay}), "seen_tokens": carried[0],
+                           "seen_of": carried[1]}, pack=pack and pack[0], pack_profile_new=bool(pack and pack[2]))
         plan["trace"].update(lined)
+        self.note_opening(model, plan, translated.get("opening"))
         if key is not None:
             plan.update(public_key=key, public_scope=scope)
             plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(ids)[0], replayed_tokens(plan))
@@ -3629,7 +3707,7 @@ class Frontend:
         print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage, "memory": memory}), file=sys.stderr, flush=True)
         return web.json_response({"deleted": removed,
                                   "not_deleted": ["engine_cache"] + (["memory"] if memory is False else []) + (["storage"] if storage and self.workspace is None else []),
-                                  "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+                                  "note": "the engine's cache stays until the fleet is restored to the base image when the hold ends"})
 
     async def forget_memory(self, scope):
         if self.memory is None:
@@ -3817,9 +3895,9 @@ class Frontend:
             message["reasoning_content"] = "".join(reasoning)
         if calls:
             message["tool_calls"] = calls
+        _, record = self.settle(model, plan, result, message, started, request.headers, "chat")
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         self.record_public_prefix(model, plan, result)
-        _, record = self.settle(model, plan, result, message, started, request.headers, "chat")
         choice = {"index": 0, "message": message, "logprobs": {"content": logprobs} if "logprobs" in engine_body else None, "finish_reason": result.get("finish_reason")}
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
                                   "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens, plan),

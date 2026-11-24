@@ -525,6 +525,28 @@ Landed in the pull request that carries this page:
   ms). A drafter that does not answer costs the frame that asked its wait
   plus 100 ms; it used to stop the engine's thread for that long, and for
   200 ms more whenever the connection had to be opened.
+- The prefill hand-off (the fan-out cost of 2.5), on 2026-11-21. Some
+  submissions have every row inside its lanes, in lane order, at
+  consecutive positions from the lane's position. Those travel as
+  `PREPARE_SPANS` or `CONTINUE_SPANS` (IPC ABI 29). The message carries the
+  lanes, the block identities, each lane's row count, the tokens and the
+  model extension. It leaves out the 20 bytes of lane index, position and
+  sequence id that every row carried. The rank rebuilds the whole `PREPARE`
+  or `CONTINUE` message before it decodes anything. Decoding, validation,
+  leases and the route copy therefore see the same bytes as before. A
+  16,384-row chunk is 67,972 bytes a rank instead of 395,648. Three kinds
+  of frame still travel whole: tree frames, rows that interleave their
+  lanes, and frames the span form would not shrink. A decode continuation
+  that only advances its lanes stays `CONTINUE_TOKENS`.
+  - Measured on the 16-rank DSV4.1 Flash lane: the ranks on `76e941a8a`
+    plus the change, and the hub API built from the same tree with and
+    without the span form, three alternating runs each.
+  - Over 30 chunks of 16K, a chunk's wall beyond the ranks' service fell
+    from 4.23 to 2.06 ms. The gap before the next chunk fell from 3.16 to
+    1.79 ms.
+  - Prefill moved by -0.1%, +0.2% and +1.2% at 8K, 32K and 131K tokens.
+  - The answer hash was the same in all six runs, and the same as the
+    whole-form runs of the day before.
 
 A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal

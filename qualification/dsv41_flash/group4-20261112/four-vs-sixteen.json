@@ -1,0 +1,150 @@
+{
+ "arm": "runs/tp4.corpus.jsonl",
+ "arm_sha256": "57deda063373b1041fa45a827c036c3b34f90fae3bba34329cc76e35d360e503",
+ "format": "sparkpipe-ab-api-comparison-v1",
+ "level": 0.95,
+ "near_tie_nats": 0.001,
+ "overall": {
+  "accuracy_mcnemar_p": 1.0,
+  "accuracy_only_arm": 21,
+  "accuracy_only_reference": 20,
+  "arm_accuracy_pct": 79.16666666666667,
+  "dnll_rel_pct": {
+   "estimate": 1.1703290989206143,
+   "lower": 0.39855945762844286,
+   "upper": 1.9825290978072219
+  },
+  "identical_lists": 0,
+  "kl_lower_bound": {
+   "estimate": 0.009409946475112733,
+   "lower": 0.008178640558919162,
+   "upper": 0.010698933507913407
+  },
+  "logprob_delta_max": 6.796730100000001,
+  "near_tie_positions": 0,
+  "positions": 2112,
+  "reference_accuracy_pct": 79.11931818181819,
+  "reference_nll": 0.6267953473532276,
+  "stopped_by_arm_only": 0,
+  "stopped_by_both": 0,
+  "stopped_by_reference_only": 0,
+  "top1_agreement_pct": {
+   "estimate": 96.63825757575758,
+   "lower": 95.83333333333334,
+   "upper": 97.34848484848484
+  },
+  "truth_listed_by_arm_only": 8,
+  "truth_listed_by_both": 2039,
+  "truth_listed_by_reference_only": 3,
+  "units": 66
+ },
+ "reference": "runs/tp16.corpus.jsonl",
+ "reference_sha256": "0826bdd32e50c5972173423b63ab33f7429bf508f87c454a65d3d2f4fbe15b80",
+ "replicates": 10000,
+ "seed": 20260929,
+ "strata": {
+  "code": {
+   "accuracy_mcnemar_p": 0.629058837890625,
+   "accuracy_only_arm": 10,
+   "accuracy_only_reference": 7,
+   "arm_accuracy_pct": 87.03125,
+   "dnll_rel_pct": {
+    "estimate": 2.012147361417807,
+    "lower": 0.34332331006311056,
+    "upper": 3.7339913087461785
+   },
+   "identical_lists": 0,
+   "kl_lower_bound": {
+    "estimate": 0.00601524493565273,
+    "lower": 0.005100954965607625,
+    "upper": 0.007131088948804424
+   },
+   "logprob_delta_max": 6.796730100000001,
+   "near_tie_positions": 0,
+   "positions": 1280,
+   "reference_accuracy_pct": 86.796875,
+   "reference_nll": 0.39041719820425663,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 98.046875,
+    "lower": 97.34375,
+    "upper": 98.671875
+   },
+   "truth_listed_by_arm_only": 5,
+   "truth_listed_by_both": 1250,
+   "truth_listed_by_reference_only": 2,
+   "units": 40
+  },
+  "prose-old": {
+   "accuracy_mcnemar_p": 0.625,
+   "accuracy_only_arm": 1,
+   "accuracy_only_reference": 3,
+   "arm_accuracy_pct": 69.79166666666667,
+   "dnll_rel_pct": {
+    "estimate": 0.35594386337699324,
+    "lower": -0.8890205533621847,
+    "upper": 1.1423392009205204
+   },
+   "identical_lists": 0,
+   "kl_lower_bound": {
+    "estimate": 0.015782497511097966,
+    "lower": 0.01267637350953437,
+    "upper": 0.020638745394083738
+   },
+   "logprob_delta_max": 2.399814599999999,
+   "near_tie_positions": 0,
+   "positions": 96,
+   "reference_accuracy_pct": 71.875,
+   "reference_nll": 0.9694180808330424,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 94.79166666666666,
+    "lower": 93.75,
+    "upper": 96.875
+   },
+   "truth_listed_by_arm_only": 1,
+   "truth_listed_by_both": 90,
+   "truth_listed_by_reference_only": 0,
+   "units": 3
+  },
+  "prose-recent": {
+   "accuracy_mcnemar_p": 1.0,
+   "accuracy_only_arm": 10,
+   "accuracy_only_reference": 10,
+   "arm_accuracy_pct": 66.71195652173913,
+   "dnll_rel_pct": {
+    "estimate": 0.6868510345011302,
+    "lower": -0.22477168610019332,
+    "upper": 1.6468526247650026
+   },
+   "identical_lists": 0,
+   "kl_lower_bound": {
+    "estimate": 0.014482572930349446,
+    "lower": 0.012662895104071242,
+    "upper": 0.01640007389526177
+   },
+   "logprob_delta_max": 3.5949688,
+   "near_tie_positions": 0,
+   "positions": 736,
+   "reference_accuracy_pct": 66.71195652173913,
+   "reference_nll": 1.0053885382302383,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 94.42934782608695,
+    "lower": 92.93478260869566,
+    "upper": 95.92391304347827
+   },
+   "truth_listed_by_arm_only": 2,
+   "truth_listed_by_both": 699,
+   "truth_listed_by_reference_only": 1,
+   "units": 23
+  }
+ },
+ "unit": "document"
+}

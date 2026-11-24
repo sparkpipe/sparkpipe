@@ -41,6 +41,11 @@ jobs:
             python3 tools/ci_lanes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
           fi
           cat "$GITHUB_OUTPUT"
+      - name: Check that the hosted release debt list only shrinks
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 tools/hosted_release_gate.py shrink "$BASE"
 
   light-tests:
     needs: lanes
@@ -78,7 +83,7 @@ jobs:
     if: needs.lanes.outputs.engine == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:4ff859525f99de5782aa73607ce24219b07dddd48d12b97c1c301d7e1cfb0a87
+      image: nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6
     steps:
       - name: Install host build dependencies
         run: |

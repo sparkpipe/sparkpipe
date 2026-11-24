@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_device.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_sha256.h"
 
@@ -421,6 +422,7 @@ static void check_short_range_reads(void)
 		SparkCk128Update(&digest,source + ranges[i].offset,256u);
 		SparkCk128Finalize(&digest,ranges[i].digest);
 	}
+	assert(SparkWeightdDeviceOpen() == SPARK_STATUS_OK);
 	arena.staging = malloc(SPARK_WEIGHTD_ARENA_STAGING_BYTES);
 	arena.device_base = destination;
 	assert(arena.staging != 0);

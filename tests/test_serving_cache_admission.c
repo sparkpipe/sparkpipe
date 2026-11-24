@@ -38,6 +38,46 @@ static SparkStatus TestAdmit(void *context,const SparkModelDriverAdmissionReques
 	return(state->driver_status);
 }
 
+static SparkStatus TestProbeAdmit(void *context,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
+{
+	TestState *state = (TestState *)context;
+	SparkModelDriverCacheProbe probe = {640u,576u,512u,448u,384u};
+	state->admitted++;
+	state->last_flags = request->admission_flags;
+	if ( request->cache_lane_count != 1u || request->cache_lanes[0].flags != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX ||
+		request->cache_lanes[0].prefix_token_count != 640u || request->cache_lanes[0].prefix_identity.sha256[0] != 0x5au )
+		return(SPARK_STATUS_SCHEMA_ERROR);
+	decision->accepted = 1u;
+	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+	if ( state->driver_status == SPARK_STATUS_OK )
+		SparkModelDriverStoreCacheProbe(decision,&probe);
+	else decision->driver_dispatch_cookie0 = probe.saved_token_count;
+	return(SPARK_STATUS_OK);
+}
+
+static int32_t TestProbe(void)
+{
+	SparkModelDriverInterface driver = {0};
+	SparkModelServingCacheIdentity identity = {0};
+	SparkModelDriverCacheProbe probe = {0};
+	TestState state = {0};
+	SparkServingCacheAdmission cache = {1u,0u,0,&driver,&state,0,0};
+	driver.admit = TestProbeAdmit;
+	identity.sha256[0] = 0x5au;
+	if ( SparkServingCacheProbeRun(&cache,&identity,640u,&probe) != SPARK_STATUS_OK || state.admitted != 1u ||
+		state.last_flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE )
+		return(-1);
+	if ( probe.held_token_count != 640u || probe.resident_token_count != 576u || probe.saved_token_count != 512u ||
+		probe.state_token_count != 448u || probe.read_token_count != 384u )
+		return(-2);
+	if ( SparkServingCacheProbeRun(&cache,&identity,0u,&probe) != SPARK_STATUS_INVALID_ARGUMENT || state.admitted != 1u )
+		return(-3);
+	state.driver_status = SPARK_STATUS_ABI_MISMATCH;
+	if ( SparkServingCacheProbeRun(&cache,&identity,640u,&probe) != SPARK_STATUS_ABI_MISMATCH || state.admitted != 2u )
+		return(-4);
+	return(0);
+}
+
 static void TestBuildSubmissions(SparkModelServingSubmission *submissions,SparkModelServingLane *lanes)
 {
 	uint32_t index;
@@ -100,6 +140,11 @@ int main(void)
 	SparkStatus status;
 	if ( TestFrameTokenCount() != 0 )
 		return(9);
+	if ( TestProbe() != 0 )
+	{
+		fprintf(stderr,"probe case=%d\n",TestProbe());
+		return(13);
+	}
 	driver.admit = TestAdmit;
 	TestBuildSubmissions(submissions,lanes);
 	status = SparkServingCacheAdmissionRun(&cache,submissions,2u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
@@ -149,6 +194,6 @@ int main(void)
 	cache.lane_capacity = 2u;
 	if ( SparkServingCacheBuildRequest(&cache,submissions,0u,&request) != SPARK_STATUS_INVALID_ARGUMENT )
 		return(8);
-	printf("PASS serving cache admission prepare, commit, abort, release, publish and rejection statuses\n");
+	printf("PASS serving cache admission prepare, commit, abort, release, publish, probe and rejection statuses\n");
 	return(0);
 }

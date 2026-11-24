@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <string.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_STREAM_THREADS 256u
 #define LM_STREAM_WARPS 8u
@@ -242,7 +243,25 @@ static __host__ __device__ constexpr uint32_t LmStreamBlockK(void)
 		return(LmStreamWeight<Format>::kBlockK);
 }
 
-template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS = 32u>
+template<class Format, uint32_t TILE_M>
+static __host__ __device__ constexpr uint32_t LmStreamWarpRows(void)
+{
+	if constexpr ( LmStreamWeight<Format>::kScaled )
+		return(TILE_M > 32u ? TILE_M : 32u);
+	else
+		return(TILE_M == 128u && LmStreamBlockK<Format>() != 0u ? 64u : 32u);
+}
+
+template<class Format>
+static __host__ __device__ constexpr uint32_t LmStreamInputMultiple(void)
+{
+	if constexpr ( LmStreamWeight<Format>::kScaled )
+		return(LM_STREAM_SCALE_K);
+	else
+		return(16u / LmStreamWeight<Format>::kElementBytes);
+}
+
+template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS = 32u, bool TAIL = false>
 __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const __grid_constant__ LmStreamGemmArguments args)
 {
 	using Weight = LmStreamWeight<Format>;
@@ -273,6 +292,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	static_assert(!Weight::kScaled || (TILE_K % SCALE_K == 0u && SCALE_K % 32u == 0u),"a k-tile must hold whole weight scale blocks");
 	static_assert(BLOCK_K == 0u || (TILE_K % BLOCK_K == 0u && BLOCK_K % 32u == 0u),"a k-tile must hold whole accumulation blocks");
 	static_assert(A_ROW_CHUNKS >= 8u && B_ROW_CHUNKS >= 8u,"the shared-memory swizzle needs tile rows of at least 128 bytes");
+	static_assert(!TAIL || !Weight::kScaled,"a K tail exists only for unscaled weights, whose inputs need not be whole scale blocks");
 	extern __shared__ __align__(128) uint8_t lm_stream_shared[];
 	uint32_t *prefix = (uint32_t *)(lm_stream_shared + STAGES * STAGE_BYTES);
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(lm_stream_shared);
@@ -280,7 +300,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	const uint32_t warp_m = warp / WARPS_N,warp_n = warp % WARPS_N;
 	const uint32_t groups = args.group_row_offset == 0 ? 1u : args.groups;
 	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
-	const uint32_t k_tiles = args.input_dimension / TILE_K;
+	const uint32_t k_tiles = TAIL ? (args.input_dimension + TILE_K - 1u) / TILE_K : args.input_dimension / TILE_K;
 	const uint64_t weight_row_bytes = (uint64_t)args.input_dimension * Weight::kElementBytes;
 	float total[MF][NF][4],partial[MF][NF][4],scale[SCALE_BLOCKS][NF][2];
 	const uint16_t *a_source[A_PER_THREAD];
@@ -327,13 +347,27 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 			if ( chunk < A_CHUNKS )
 			{
 				row = chunk / A_ROW_CHUNKS;
-				LmStreamCopy(stage + row * A_ROW_BYTES + LmStreamSwizzle8(row,chunk % A_ROW_CHUNKS) * 16u,a_source[q] + (uint64_t)k * TILE_K,a_bytes[q]);
+				if constexpr ( TAIL )
+				{
+					const bool inside = k * TILE_K + (chunk % A_ROW_CHUNKS) * 8u < args.input_dimension;
+					LmStreamCopy(stage + row * A_ROW_BYTES + LmStreamSwizzle8(row,chunk % A_ROW_CHUNKS) * 16u,inside ? a_source[q] + (uint64_t)k * TILE_K : args.activation,
+						inside ? a_bytes[q] : 0u);
+				}
+				else
+					LmStreamCopy(stage + row * A_ROW_BYTES + LmStreamSwizzle8(row,chunk % A_ROW_CHUNKS) * 16u,a_source[q] + (uint64_t)k * TILE_K,a_bytes[q]);
 			}
 		}
 		for (q = 0u; q < B_PER_THREAD; q++)
 		{
 			chunk = threadIdx.x + q * LM_STREAM_THREADS;
-			LmStreamCopy(stage + A_BYTES + Weight::template Offset<B_ROW_BYTES>(chunk / B_ROW_CHUNKS,chunk % B_ROW_CHUNKS),b_source[q] + (uint64_t)k * TILE_K * Weight::kElementBytes,b_bytes[q]);
+			if constexpr ( TAIL )
+			{
+				const bool inside = k * TILE_K + (chunk % B_ROW_CHUNKS) * (16u / Weight::kElementBytes) < args.input_dimension;
+				LmStreamCopy(stage + A_BYTES + Weight::template Offset<B_ROW_BYTES>(chunk / B_ROW_CHUNKS,chunk % B_ROW_CHUNKS),
+					inside ? b_source[q] + (uint64_t)k * TILE_K * Weight::kElementBytes : args.weight,inside ? b_bytes[q] : 0u);
+			}
+			else
+				LmStreamCopy(stage + A_BYTES + Weight::template Offset<B_ROW_BYTES>(chunk / B_ROW_CHUNKS,chunk % B_ROW_CHUNKS),b_source[q] + (uint64_t)k * TILE_K * Weight::kElementBytes,b_bytes[q]);
 		}
 	};
 
@@ -359,7 +393,9 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 					}
 		}
 		if constexpr ( Weight::kScaled )
+#pragma unroll
 			for (uint32_t block = 0u; block < SCALE_BLOCKS; block++)
+#pragma unroll
 				for (j = 0u; j < NF; j++)
 				{
 					uint32_t column = work.neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
@@ -459,52 +495,54 @@ static int32_t LmStreamGemmValidate(const LmStreamGemmArguments *args, uint32_t 
 {
 	uint32_t groups;
 	if ( args == 0 || args->activation == 0 || args->weight == 0 || (args->output_bf16 == 0) == (args->output_f32 == 0) || multiprocessors == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( args->rows == 0u || args->input_dimension == 0u || args->output_dimension == 0u ||
-		args->input_dimension % (LmStreamWeight<Format>::kScaled ? LM_STREAM_SCALE_K : 64u) != 0u ||
+		args->input_dimension % LmStreamInputMultiple<Format>() != 0u ||
 		(args->output_dimension & 1u) != 0u || (args->output_column_offset & 1u) != 0u || (args->output_row_stride & 1u) != 0u ||
 		args->output_row_stride < args->output_column_offset + args->output_dimension )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( (((uintptr_t)args->activation | (uintptr_t)args->weight | (uintptr_t)args->weight_group_bytes) & 15u) != 0u ||
 		(((uintptr_t)args->output_bf16 | (uintptr_t)args->output_f32) & 7u) != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( args->group_row_offset == 0 ? args->groups > 1u || args->source_row_map != 0 : args->groups == 0u ||
 		(args->groups > 1u && args->weight_group_bytes < (uint64_t)args->output_dimension * args->input_dimension * LmStreamWeight<Format>::kElementBytes) )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	groups = args->group_row_offset == 0 ? 1u : args->groups;
 	if ( (groups + 1u) * 4u > LM_STREAM_SHARED_LIMIT - LM_STREAM_STAGE_BUDGET || LmStreamScaleFits<Format>(&args->scale,groups,args->output_dimension,args->input_dimension) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }
 
-template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS = 32u>
-static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_t tile_bound, uint32_t multiprocessors, cudaStream_t stream)
+template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS = 32u, bool TAIL = false>
+static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_t tile_bound, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	static std::atomic<uint64_t> granted(0u);
 	static std::atomic<int32_t> resident(0);
 	const uint32_t shared = LmStreamSharedBytes<Format,TILE_M,TILE_N,TILE_K>(args->group_row_offset == 0 ? 1u : args->groups);
 	uint64_t blocks;
 	int device = 0,per_multiprocessor;
-	if ( cudaGetDevice(&device) != cudaSuccess || device < 0 || (uint32_t)device >= LM_STREAM_MAX_DEVICES )
-		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_STREAM_MAX_DEVICES )
+		SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 	if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
 	{
-		if ( cudaFuncSetAttribute((const void *)LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)LM_STREAM_SHARED_LIMIT) != cudaSuccess )
-			return(LM_LAUNCH_ERR_ATTRIBUTE);
-		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_multiprocessor,LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS>,LM_STREAM_THREADS,LM_STREAM_SHARED_LIMIT) != cudaSuccess || per_multiprocessor < 1 )
-			return(LM_LAUNCH_ERR_ATTRIBUTE);
+		if ( SparkGpuFuncSetAttribute((const void *)LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS,TAIL>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)LM_STREAM_SHARED_LIMIT) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		if ( SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&per_multiprocessor,LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS,TAIL>,LM_STREAM_THREADS,LM_STREAM_SHARED_LIMIT) != SPARK_GPU_SUCCESS || per_multiprocessor < 1 )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		resident.store(per_multiprocessor);
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
 	blocks = (uint64_t)multiprocessors * (uint64_t)resident.load();
 	if ( tile_bound < blocks )
 		blocks = tile_bound;
-	LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS><<<(uint32_t)blocks,LM_STREAM_THREADS,shared,stream>>>(*args);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	LM_LAUNCH((LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS,TAIL>),(uint32_t)blocks,LM_STREAM_THREADS,shared,stream,*args);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
-template<class Format, uint32_t TILE_N, uint32_t TILE_K>
-static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
+template<class Format, uint32_t TILE_N, uint32_t TILE_K, bool TAIL = false>
+static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
 	const uint32_t neuron_tiles = (args->output_dimension + TILE_N - 1u) / TILE_N;
@@ -517,40 +555,65 @@ static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32
 	const uint64_t tile_bound = ((uint64_t)args->rows / tile_m + groups) * neuron_tiles;
 	switch ( tile_m )
 	{
-		case 16u: return(LmStreamGemmLaunchTile<Format,16u,TILE_N,TILE_K>(args,tile_bound,multiprocessors,stream));
-		case 32u: return(LmStreamGemmLaunchTile<Format,32u,TILE_N,TILE_K>(args,tile_bound,multiprocessors,stream));
+		case 16u: return(LmStreamGemmLaunchTile<Format,16u,TILE_N,TILE_K,LmStreamWarpRows<Format,16u>(),TAIL>(args,tile_bound,multiprocessors,stream));
+		case 32u: return(LmStreamGemmLaunchTile<Format,32u,TILE_N,TILE_K,LmStreamWarpRows<Format,32u>(),TAIL>(args,tile_bound,multiprocessors,stream));
 		case 64u:
 			if constexpr ( LmStreamStages<Format,64u,TILE_N,TILE_K>() >= 3u )
-				return(LmStreamGemmLaunchTile<Format,64u,TILE_N,TILE_K>(args,tile_bound,multiprocessors,stream));
-			return(LM_LAUNCH_ERR_TILE);
+				return(LmStreamGemmLaunchTile<Format,64u,TILE_N,TILE_K,LmStreamWarpRows<Format,64u>(),TAIL>(args,tile_bound,multiprocessors,stream));
+			SPARK_FAIL(LM_LAUNCH_ERR_TILE);
 		default:
 			if constexpr ( LmStreamStages<Format,128u,TILE_N,TILE_K>() >= 3u )
-				return(LmStreamGemmLaunchTile<Format,128u,TILE_N,TILE_K>(args,tile_bound,multiprocessors,stream));
-			return(LM_LAUNCH_ERR_TILE);
+				return(LmStreamGemmLaunchTile<Format,128u,TILE_N,TILE_K,LmStreamWarpRows<Format,128u>(),TAIL>(args,tile_bound,multiprocessors,stream));
+			SPARK_FAIL(LM_LAUNCH_ERR_TILE);
 	}
 }
 
-template<class Format>
-static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
+#define LM_STREAM_WIDE_TILE_NONE 0u
+#define LM_STREAM_WIDE_TILE_128X128 1u
+#define LM_STREAM_WIDE_TILE_64X256 2u
+#define LM_STREAM_WIDE_TILE_64X128 3u
+#define LM_STREAM_WIDE_TILE_32X256 4u
+
+static uint32_t LmStreamGemmWideTile(const LmStreamGemmArguments *args, uint32_t multiprocessors)
 {
 	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
 	const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
 	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
 	if ( args->rows < LM_STREAM_WIDE_ROWS || groups > 1u )
-		return(LM_LAUNCH_ERR_TILE);
+		return(LM_STREAM_WIDE_TILE_NONE);
 	if ( mean_rows > 64u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 127u) / 128u * narrow >= 2u * (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
+		return(LM_STREAM_WIDE_TILE_128X128);
 	if ( mean_rows > 32u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 63u) / 64u * wide >= 2u * (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,64u,256u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * wide,multiprocessors,stream));
+		return(LM_STREAM_WIDE_TILE_64X256);
 	if ( mean_rows > 32u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 63u) / 64u * narrow >= (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * narrow,multiprocessors,stream));
+		return(LM_STREAM_WIDE_TILE_64X128);
 	if ( mean_rows > 16u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 31u) / 32u * wide >= 2u * (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,32u,256u,128u,32u>(args,((uint64_t)args->rows / 32u + groups) * wide,multiprocessors,stream));
-	return(LM_LAUNCH_ERR_TILE);
+		return(LM_STREAM_WIDE_TILE_32X256);
+	return(LM_STREAM_WIDE_TILE_NONE);
 }
 
 template<class Format>
-static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_t tile, uint32_t multiprocessors, SparkGpuStream stream)
+{
+	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
+	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
+	switch ( tile )
+	{
+		case LM_STREAM_WIDE_TILE_128X128:
+			return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
+		case LM_STREAM_WIDE_TILE_64X256:
+			return(LmStreamGemmLaunchTile<Format,64u,256u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * wide,multiprocessors,stream));
+		case LM_STREAM_WIDE_TILE_64X128:
+			return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * narrow,multiprocessors,stream));
+		case LM_STREAM_WIDE_TILE_32X256:
+			return(LmStreamGemmLaunchTile<Format,32u,256u,128u,32u>(args,((uint64_t)args->rows / 32u + groups) * wide,multiprocessors,stream));
+		default:
+			SPARK_FAIL(LM_LAUNCH_ERR_TILE);
+	}
+}
+
+template<class Format>
+static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	int32_t status = LmStreamGemmValidate<Format>(args,multiprocessors);
 	if ( status != LM_LAUNCH_OK )
@@ -559,9 +622,9 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 	{
 		if constexpr ( LmStreamWeight<Format>::kElementBytes == 1u && LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 )
 		{
-			status = LmStreamGemmLaunchWide<Format>(args,multiprocessors,stream);
-			if ( status != LM_LAUNCH_ERR_TILE )
-				return(status);
+			const uint32_t tile = LmStreamGemmWideTile(args,multiprocessors);
+			if ( tile != LM_STREAM_WIDE_TILE_NONE )
+				return(LmStreamGemmLaunchWide<Format>(args,tile,multiprocessors,stream));
 		}
 		if ( args->input_dimension % 256u == 0u )
 			return(LmStreamGemmLaunchShape<Format,64u,256u>(args,multiprocessors,stream));
@@ -571,14 +634,20 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 	{
 		if ( args->output_dimension <= 512u && args->input_dimension % 128u == 0u )
 			return(LmStreamGemmLaunchShape<Format,64u,128u>(args,multiprocessors,stream));
+		if ( args->input_dimension % 64u != 0u )
+			return(LmStreamGemmLaunchShape<Format,128u,64u,true>(args,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,64u>(args,multiprocessors,stream));
 	}
 	else
+	{
+		if ( args->input_dimension % 64u != 0u )
+			return(LmStreamGemmLaunchShape<Format,128u,64u,true>(args,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,64u>(args,multiprocessors,stream));
+	}
 }
 
 template<class Format>
-static int32_t LmStreamGemmGrouped(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *source_row_map, uint32_t groups, uint32_t packed_rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t LmStreamGemmGrouped(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *source_row_map, uint32_t groups, uint32_t packed_rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	LmStreamGemmArguments args;
 	memset(&args,0,sizeof(args));
@@ -598,7 +667,7 @@ static int32_t LmStreamGemmGrouped(const void *weight, LmScaleTensor scale, cons
 }
 
 template<class Format>
-static int32_t LmStreamGemmDense(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t LmStreamGemmDense(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	LmStreamGemmArguments args;
 	memset(&args,0,sizeof(args));

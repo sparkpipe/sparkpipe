@@ -62,6 +62,11 @@ current authority.
   model families, and the rule for sharing it.
 - [`KERNEL_PLAYBOOK.md`](KERNEL_PLAYBOOK.md): shared-kernel techniques and
   contract template.
+- [`DECODE_REPLAY.md`](DECODE_REPLAY.md): one rank's DeepSeek V4.1 Flash
+  decode step on one GPU, for measuring kernel work on it without the fleet.
+- [`FUSED_KERNELS.md`](FUSED_KERNELS.md): the fused kernel generator, its
+  plans and op catalogue, the bit-exact test it writes, and the fused
+  hyper-connection block of the DeepSeek V4.1 Flash decode step.
 - [`STAGEPACK_NAMING.md`](STAGEPACK_NAMING.md): pack directory and
   runtime-root naming; `tools/stagepack_naming.json` is the machine source.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): serving recipe datafile and KV
@@ -125,6 +130,11 @@ current authority.
   cycle.
 - [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
   each item exists, and the procedure for replacing or adding a node.
+- [`HOSTED_DEPENDENCY_AUDIT.md`](HOSTED_DEPENDENCY_AUDIT.md): the release
+  gate that fails a hosted release root, node image or running node carrying
+  NVIDIA user-space libraries, tools or packages.
+- [`HOSTED_NODE_IMAGE.md`](HOSTED_NODE_IMAGE.md): the rented nodes' image,
+  its pins, GB10 settings, GPU device nodes and the baseline it carries.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
@@ -144,6 +154,10 @@ current authority.
 - [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md):
   the mega-PR against the product: what an engineer saves after it, what the
   site promises that is not built, and what to do first.
+- [`PREFILL_ANTICIPATION.md`](PREFILL_ANTICIPATION.md): audit of the context
+  packs, the anticipator and the cache controls; where prefill time goes in
+  agent sessions; and the proposed design and build order for keeping and
+  anticipating exact prefixes.
 - [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
   milestone's exit criterion. It now includes M10 (speculation at B1-B64)
   and M11 (drivers in parallel).

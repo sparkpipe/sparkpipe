@@ -172,6 +172,351 @@ batched decode, greedy or keyed sampling) that records these tap streams on a
 GB10 and writes the `--target-shard` (embed, head, final norm with its 1 + w
 folded in).
 
+## Drafter packs
+
+`tools/drafter_pack.py` cuts a drafter and the target tensors it reads into one
+named pack (`tools/spark_named_pack.py`, magic `DRPK`, 128-byte alignment in its
+format, `tp_degree` 1 and `tp_rank` 0 in its config) for the engine drafters
+that replace `block_draftd.py`:
+
+```sh
+python3 tools/drafter_pack.py --drafter k31dspark \
+    --checkpoint /srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-6a2ef20a05ef \
+    --target /srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors \
+    --revision 6a2ef20a05ef --out DIR
+```
+
+- **Drafters:** `k31dspark` (Kimi K3.1 Pro's DSpark), `dsv41dspark` (DeepSeek
+  V4.1 1017's DSpark, whose target tensors are in its own files, so no
+  `--target`) and `qwen27bdspine` (Qwen3.8-27B's DSpine b16).
+- **Contents:** every drafter tensor byte for byte under its checkpoint name,
+  with its dtype as the kind (`bf16`, `f32`, `fp8`, `e8m0`, and `mxfp4_e2m1`
+  for the DSpark's packed experts), and the target's embedding, head and final
+  norm as `target.embed`, `target.head` and `target.norm`. Integer version
+  scalars (the DSpine's) go into the pack's config.
+- **Refusals:** a tensor that no rule packs or leaves out by name, a layer past
+  the config's count, a dtype the drafter does not pack, a missing target tensor,
+  a drafter tensor that the checkpoint's `model.safetensors.index.json` places
+  in a file that is not there (a partial download holds only the drafter's
+  files), and a source whose `.sha256` sidecar or `--expect-sha256` disagrees.
+- **Sidecars:** `<pack>.sha256`; `<pack>.experts`, an empty weightd expert
+  manifest, so weightd binds the whole pack as its spine; and
+  `<pack>.receipt.json`, which names every source with its sha256, the
+  left-out tensors and the scalars.
+
+## Building for the 5090
+
+The node runs driver 595.84 (CUDA 13.2 at most) on glibc 2.43, and three rules
+follow from that:
+
+- **Kernels from CUDA 13.3.** glibc 2.43 declares `rsqrt` and `rsqrtf`, which
+  CUDA 13.1's headers declare differently, so 13.1's `nvcc` cannot compile any
+  `.cu` there. 13.3's can. Build the 5090's code only, SASS, with
+  `-gencode arch=compute_120a,code=sm_120a`; plain `-arch=sm_120a` refuses the
+  FP4 conversions.
+- **Every other host file and libcudart from CUDA 13.1.** The device layer asks
+  the driver for entry points by the runtime's version, and a 13.3 runtime's are
+  missing from a 13.2 driver, so weightd built against 13.3 does not start.
+  `-cudart shared` and `-L/usr/local/cuda-13.1/lib64 -lcudart` link 13.3's
+  generated host stubs to the 13.1 runtime.
+- **Checked on 2026-11-22:** our `LmFusedResidualRmsNormKernel` built by 13.3,
+  loaded as a cubin and launched through 13.3 stubs from a 13.1-runtime host
+  (runtime 13010, driver 13020), matched a double-precision CPU reference on
+  64 x 7168 rows (largest relative error 0.0039, one bf16 rounding). A cubin
+  for another architecture is refused at load with
+  `CUDA_ERROR_NO_BINARY_FOR_GPU`, never run.
+
+```sh
+make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
+    CUDA_ARCH=sm_120a CUDA_COMPUTE_ARCH=compute_120a drafter-modules
+```
+
+## Engine drafter modules
+
+`sparkpipe_draftd` loads an engine lane's drafter from a module (see
+[SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md), Draft server).
+
+- **K3.1 Pro DSpark** (`modules/k31_dspark_draft_stage/`,
+  `build/modules/k31_dspark_draft_stage.so`). It binds the
+  `k31dspark.bf16.tp1` pack through weightd and finds every tensor by name in the
+  pack's manifest.
+  - **Context.** For every tap row (the five 7168-wide taps of layers
+    75/79/83/87/91), it writes the drafter's context row in each of the five
+    layers: `context_proj` then `context_norm`, then per layer `kv_a_proj_with_mqa`,
+    `kv_a_layernorm` on the 512 compressed lanes and YaRN rope on the 64 rope
+    lanes. Rows are bf16 at their positions in 4,096-position pages of the
+    sequence, and whole sequences leave oldest first when the lane's
+    `context_bytes` is reached.
+    A frame at position 0 starts the sequence over. A frame from another
+    engine session or request at a later position retires the sequence's
+    context, which stays as a donor, and starts a new one, as
+    `block_draftd.py` does. A frame at position `p` drops every row from `p`
+    on and then holds its own rows, so a rewind after rejected drafts leaves
+    no stale rows behind. The module keeps each position's token beside its
+    row.
+  - **Donor prefixes.** When a sequence's context lacks positions below the
+    anchor (after a prefix-cache hit, the tap stream starts past the cached
+    prefix), `propose` copies them from other contexts, the most recently
+    used first, whose tokens match the committed ones up to that point, as
+    `LatentContext.copy_prefix` does. Only rows the donor holds and the
+    sequence lacks are copied, on the device.
+  - **Block forward.** A draft at position `p` runs the seven-row block (the
+    anchor and six mask tokens at `p..p+6`) through the five layers, as
+    `K3DsparkDrafter.forward_block` does, with the same bf16 rounding points:
+    - the target's embedding rows; per layer `input_layernorm`, `q_a_proj`,
+      `q_a_layernorm`, `q_b_proj`, the absorbed queries (`kv_b_proj`'s key half,
+      in fp32) with YaRN rope, and the block's own latent rows;
+    - attention over the held context rows below `p`, then causally over the
+      block. The context part is a tensor-core kernel with bf16 queries and
+      bf16 weights over fp32 sums, split over up to 8 ranges of the context and
+      merged with the block part in fp32, as the Python drafter's Triton kernel
+      and `causal_block_attention` do. It reads the rows in place in their
+      pages, and a gap in the held rows only shortens the context;
+    - `kv_b_proj`'s value half, `o_proj`, `post_attention_layernorm`, the SwiGLU
+      MLP, and the residual in fp32; then `final_norm`.
+  - **Heads.** The block rows go through the target's head; the 2,048 best
+    tokens of each row (exact top-k) are the candidates. Then seven steps, each
+    from the token before it (the anchor first): a candidate's score is its
+    logit plus its `markov_w2` row dotted with the previous token's `markov_w1`
+    row, in fp32. Greedy takes the best score. With a sampling rule
+    (`inverse_temperature > 0`) the 32 best are kept under the rule's nucleus
+    and top-k, and the verifier's keyed Gumbel noise
+    (`SparkMathGumbelNoise` at the slot's position) picks among them, as
+    `coupled_candidates` does. The confidence head reads the block row and the
+    previous token's `markov_w1` row.
+  - **Proposals.** `propose` answers `AWAIT_TAPS` while the context does not
+    hold the position before the anchor, checked on the host before any device
+    work; `NO_CONTEXT` when a held token differs from the committed one (each
+    position is checked once and remembered until a frame rewrites it);
+    otherwise it runs the block and the heads and answers the root and up to
+    seven drafts, the request's depth and node capacity permitting, each
+    scored by its confidence.
+  - **Check.** `build/k31_dspark_context_probe` writes random taps through the
+    module, and `tools/spec_offline/k31_dspark_context_compare.py` recomputes
+    the rows with the Python drafter and in float64. On the 5090 the module's
+    worst row was 0.0024-0.0032 from float64 (relative L2), the Python
+    drafter's 0.0030-0.0055, at 37 and 5 rows.
+  - **Check of the block forward.** `tools/spec_offline/k31_dspark_block_compare.py
+    extract` cuts the first `N` positions of a sequence out of a tap recording;
+    `build/k31_dspark_block_probe` ingests them, runs the block at `N` and dumps
+    the block rows, the context rows and each layer's attention inputs and
+    output; `compare` checks each layer's attention against the Python
+    drafter's on the same inputs and the block's top tokens under the target's
+    head against the Python drafter's. It also runs `propose` under a greedy
+    rule and two sampling rules and checks the drafts and confidences against
+    `K3DsparkDrafter.propose` on the module's block rows. `--time` times the
+    forward on synthetic context. The probe also checks the donor path: a sequence that holds only the
+    second half of the positions borrows the first half and drafts what the
+    whole sequence drafts.
+  - **Replay gate.** `build/drafter_module_replay` drives any drafter module
+    through a tap recording: before each decode, verify or chain frame at
+    position `p > 0` it asks for a draft at `p` with the frame's first token
+    as the anchor, then ingests the frame.
+    `tools/spec_offline/drafter_replay_compare.py` replays the same schedule
+    through the Python drafter with `block_draftd.py`'s context store and
+    compares the answers, the drafts and each side's accepted length against
+    the recording's committed stream.
+- **DeepSeek V4.1 Flash DSpark** (`modules/dsv41_dspark_draft_stage/`,
+  `build/modules/dsv41_dspark_draft_stage.so`). It binds the
+  `dsv41dspark.mxfp4.tp1` pack through weightd, finds every tensor by name in
+  the pack's manifest and refuses a checkpoint config of another shape.
+  - **Window.** Per sequence, a 128-position ring of 512-wide keys for each of
+    the three stages, as `block_draftd.py`'s `RingContext` keeps it. A tap row
+    (taps `o36`, `o37` and `o38`, 5,120 wide each) goes through the activation's
+    FP8 quantize-dequantize, `main_proj` and `main_norm`; then per stage `wkv`,
+    `kv_norm`, rope on the last 64 lanes and the quantize-dequantize, into slot
+    `position % 128`. A frame first drops every slot at or past its first
+    position and then writes its last 128 rows. A frame at position 0 starts
+    the sequence over; a frame from another engine session or request at a
+    later position retires the window, which stays as a donor. The module
+    keeps as many windows as the lane's `context_bytes` holds (at most 1,024)
+    and drops the least recently written first.
+  - **Proposals.** `AWAIT_TAPS` while the sequence has no window or the window
+    lacks the position before the anchor, checked on the host before any
+    device work. Missing window positions are copied from other windows, the
+    most recently written first, whose tokens match the committed ones. After
+    the last gap that remains, a held token that differs from the committed
+    one answers `NO_CONTEXT`. Otherwise the five-row block (the anchor and four
+    noise tokens) runs through the three stages, and the heads answer the root
+    and up to five drafts.
+  - **Block forward,** as `dspark_fast.DsparkFast` computes it: four
+    hyper-connection streams with Sinkhorn-normalized mixes
+    (`LmHcSinkhornMixes`); 64-head attention over the window and the whole
+    block with sinks, the inverse rope on the output, grouped `wo_a`, then
+    `wo_b`; a MoE of 3 of 128 routed experts and the shared expert. The routed
+    experts are MXFP4 with E8M0 scales, read in place through a per-expert
+    pointer table, each expert's weights once for every row that chose it.
+    The FP8 projections (32 x 32 E8M0 block scales, expanded per row at
+    `open`) run through `LmDenseRows<LmMxfp8>`. Every product accumulates in
+    fp32.
+  - **Heads.** The target's head in bf16 with fp32 logits, then five Markov
+    steps over the whole vocabulary (`markov_head.head` against the previous
+    token's `markov_head.embed` row). Greedy takes the best score. A sampling
+    rule keeps the 64 best under its nucleus (of the vocabulary-wide softmax)
+    and top-k, and the verifier's keyed Gumbel noise picks among them, as
+    `coupled_choice` does. The confidence head reads the hidden row and the
+    previous token's embedding.
+  - **Check.** `tools/spec_offline/dsv41_dspark_block_compare.py extract`
+    cuts an unbroken run of positions F..N of a sequence out of a tap
+    recording. `build/dsv41_dspark_block_probe` ingests it and dumps the window
+    keys, the streams after each stage, the hidden rows and logits at N and
+    the drafts under three rules. `compare --precise` checks the window
+    against `RingContext`, each stage against `DsparkFast` run from the
+    module's own input, and the drafts against `DsparkFast`'s heads on the
+    module's hidden rows. The probe also checks the donor path, and `--time`
+    times the forward and `propose`.
+  - **Replay gate.** `build/drafter_module_replay` and
+    `tools/spec_offline/drafter_replay_compare.py --dspark`, which replays
+    the schedule through `block_draftd.py`'s `RingContext` and `DsparkFast`.
+- **Qwen3.8-27B DSpine** (`modules/qwen38_dspine_draft_stage/`,
+  `build/modules/qwen38_dspine_draft_stage.so`). It binds the
+  `qwen27bdspine.bf16.tp1` pack through weightd, finds every tensor by name in
+  the pack's manifest and refuses a checkpoint config of another shape.
+  - **Window.** Per sequence and layer, keys and values (8 heads of 128, bf16)
+    for 8,176 positions plus the 16 block columns, as `block_draftd.py`'s
+    `Context` keeps them at `--window 8176`. A tap row (taps `o1`, `o16`,
+    `o31`, `o46` and `o61`, 5,120 wide each) goes through `fc` and
+    `hidden_norm`; then per layer `k_proj`, `k_norm` and rope, and `v_proj`,
+    into slot `position % 8176`. A frame drops every slot at or past its first
+    position and writes its last 8,176 rows. A frame at position 0 starts the
+    sequence over; a frame from another engine session or request at a later
+    position retires the window, which stays as a donor. The module keeps as
+    many windows as the lane's `context_bytes` holds (167,772,160 bytes each,
+    at most 256) and drops the least recently written first.
+  - **Proposals.** As for DeepSeek V4.1 Flash: `AWAIT_TAPS` from a host check,
+    donor fills of the missing window positions, and `NO_CONTEXT` when a held
+    token after the last gap differs from the committed one. Otherwise the
+    16-row block (the anchor and 15 mask tokens) runs through the five layers,
+    and the heads answer the root and up to 15 drafts.
+  - **Block forward,** as `DraftGraph` runs `DSpineDrafter`: per layer
+    `input_layernorm`, the projections, `q_norm` and `k_norm` per head and
+    rope; the block's keys and values go into the 16 block columns, after the
+    window when it is contiguous or with a mask over the whole ring otherwise
+    (`Context.span`). Attention covers the window and then the block causally:
+    a tensor-core kernel (bf16 operands, fp32 sums and softmax) over 256-key
+    splits, merged in fp32 with the block's own keys. Then `o_proj`,
+    `post_attention_layernorm` and the SwiGLU MLP, with a bf16 residual at
+    every add, and the code bridge, which adds `rms(u) W_l (g * m)` from the
+    predicted code of the row before. Projections with 4,096 outputs or more
+    run on the tensor-core stream GEMM in one 16-row tile; the narrower ones
+    run on the skinny kernel.
+  - **Heads.** The target's head on the final-norm rows, with fp32 logits. The
+    64 best tokens of each row (exact top-k) are re-ranked by the bridge's
+    normed row to 16 candidates. The greedy tables, built on the device at
+    `open` from the head and the codebook (0.76 GB), give the serial chain
+    from the anchor. A sampling rule walks the FP32 refined table over the 16
+    candidates with the verifier's keyed Gumbel noise, as `coupled_candidates`
+    does. The score is the chosen token's softmax mass.
+  - **Check.** `tools/spec_offline/qwen38_dspine_block_compare.py extract`
+    cuts an unbroken run of positions out of a tap recording (`synthetic`
+    writes random taps). `build/qwen38_dspine_block_probe` ingests it and dumps
+    the window, each layer's output, the final rows, the candidates and the
+    drafts under three rules. `compare --precise` checks the window against
+    `Context`, each layer against `DSpineDrafter` run from the module's own
+    input, and the drafts against its heads on the module's rows. The probe
+    also checks the donor path, and `--time` times the forward and `propose`.
+  - **Replay gate.** `build/drafter_module_replay` and
+    `tools/spec_offline/drafter_replay_compare.py --window 8176`, which
+    replays the schedule through `block_draftd.py`'s `Context` and
+    `DraftGraph`.
+
+## Engine draft server lane switch
+
+The K3.1 Pro, Qwen3.8-27B and DeepSeek V4.1 Flash lanes can each be served by
+`sparkpipe_draftd` with their engine drafter module instead of
+`block_draftd.py`. A lane record's `draftd.server` chooses: `block_draftd`
+(today) or `engine`. Its `draftd.engine` names the engine root, the lane's
+name in the root's config, and the two user units. The lane's `hub_start` and
+`hub_stop` in `deployment/hub/model_swap.json` carry the same settings
+(`DRAFTD_SERVER`, `DRAFTD_ENGINE_*`, `DRAFTD_WEIGHTD_UNIT`), and
+`tests/test_model_swap_hub_services.py` keeps them equal to the record.
+
+One engine draft server (`sparkpipe-draftd-engine`) serves all three lanes
+from one root, `/srv/workspace/sparkpipe/draftd-engine`, with one weightd
+(`sparkpipe-weightd-hub`). Its config, `deployment/hub/draftd_engine.json`,
+lists the three lanes:
+
+| Lane | Draft and tap ports | Module and pack | Context cap |
+| --- | --- | --- | --- |
+| `kimi-k3.1-pro` | 7722, 7721 | `k31_dspark_draft_stage.so`, `k31dspark.bf16.tp1` | 12 GiB |
+| `qwen3.8-27b` | 7732, 7731 | `qwen38_dspine_draft_stage.so`, `qwen27bdspine.bf16.tp1` | 8 GiB |
+| `deepseek-v4.1-flash` | 7712, 7711 | `dsv41_dspark_draft_stage.so`, `dsv41dspark.mxfp4.tp1` | 1 GiB |
+
+An engine lane opens its draft and tap ports when it is activated and closes
+them when it is deactivated, so a lane still served by `block_draftd.py`
+keeps its ports while the engine server runs other lanes. The caps leave room
+for the scratch on the 32 GB card:
+- K3.1 Pro: 12 GiB beside the 10.07 GB pack.
+- Qwen3.8-27B: 8 GiB, the 51 windows `block_draftd.py` keeps; the module
+  then peaks at 18,180 MiB.
+- DeepSeek V4.1 Flash: 1 GiB, more than its 1,024 windows of 393,216 bytes.
+
+With `DRAFTD_SERVER=engine`, `tools/hub_draftd.sh`:
+- `start`: starts weightd and the engine draft server if they are not
+  running, waits for their sockets, then activates the lane through the
+  control socket. The activation opens the lane's ports, binds the pack
+  through weightd's HOLD, and checks free video memory against the pack and
+  the lane's context cap. It exits 1 with the reason when a port is held by
+  another server or the pack does not fit.
+- `stop`: deactivates the lane, which releases its device memory and closes
+  its ports. Both units keep running. The target's draft requests then fail
+  to connect, so it decodes plainly and backs off.
+- `status`: the draft server's `status` line for every lane.
+
+The engine root is staged from merged main:
+- `bin/sparkpipe_draftd` and `bin/sparkpipe_weightd`, built with
+  `CUDA_HOME=/usr/local/cuda-13.1`;
+- the three modules in `modules/`, from `make
+  NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1
+  CUDA_ARCH=sm_120a CUDA_COMPUTE_ARCH=compute_120a drafter-modules`;
+- the three packs in `packs/`, each with its `.sha256`, `.experts` and
+  receipt, cut by `tools/drafter_pack.py` from the drafter checkpoint and the
+  target shard its lane record names;
+- `config/draftd.json`, a copy of `deployment/hub/draftd_engine.json`. Its
+  sockets live under `run/`, beside weightd's log.
+
+weightd keeps the default node KV root, the serving user's home, as the
+release kit never sets `SPARK_KV_NODE_ROOT`. It holds no KV here, and its
+purge walk only counts stores and deletes leftover temporaries.
+
+The hooks run the `hub_draftd.sh` in the lane's `draftd.source` directory, so
+that copy is replaced from merged main before the switch.
+- **To switch:** set `server` to `engine` in the record and `DRAFTD_SERVER` in
+  the lane's two hooks, and deploy the controller config. The next activation
+  of the model starts the engine lane.
+- **To switch back:** first deactivate the lane (`hub_draftd.sh stop` with the
+  engine settings), which frees its ports, then set both to `block_draftd`.
+
+**Soak before the switch stays.** `tools/spec_soak.py` drives the lane's API
+on the hub with a fixed workload built from this repository's files: 48
+rename edits of single files (1.5K to 5.7K prompt tokens), 16 after other
+files (about 75K tokens) and 8 after more (about 112K). Even tasks decode
+greedily; odd tasks sample with a seed fixed per task. Repeats reuse cached
+prefixes, so the engine module copies donor prefixes as it would in service.
+Run it once per arm, an hour each, on the same workload, never on user
+traffic:
+
+```sh
+python3 tools/spec_soak.py run --engine http://127.0.0.1:8481 --chat-dir /srv/workspace/sparkpipe/k31-chat \
+    --model kimi-k3.1-pro --log /srv/workspace/sparkpipe/logs/k31_pro-kv-api.log --minutes 60 --out SOAK/python \
+    --unit sparkpipe-draftd-k31
+python3 tools/spec_soak.py run ... --out SOAK/engine --unit sparkpipe-draftd-engine --unit sparkpipe-weightd-hub
+python3 tools/spec_soak.py compare SOAK/python SOAK/engine
+```
+
+The Qwen3.8-27B and DeepSeek V4.1 Flash lanes soak the same way, with their
+own endpoint, chat directory, model and API log. The Python arm names
+`sparkpipe-draftd-q27` or `sparkpipe-draftd-dsv41`, and the engine arm
+`sparkpipe-draftd-engine` with `sparkpipe-weightd-hub`. All three lanes hold the workload's longest
+contexts (262,144 tokens for Qwen3.8-27B, 1,048,576 for the other two).
+
+`compare` sums each arm's drafter counters from the API log's
+`batch_speculation` lines (an API restart starts a new segment) and passes
+when the engine arm's accepted drafts per round are within 2% of the Python
+arm's, its `UNAVAILABLE` rate is no higher, and neither engine unit
+restarted. Deactivate and activate the model once inside the engine hour so
+the lane rebinds its pack from weightd's held copy.
+
 ## Draft farm
 
 Each drafted lane asks its own `block_draftd.py` process, named by the lane

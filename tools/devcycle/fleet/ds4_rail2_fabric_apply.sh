@@ -103,16 +103,15 @@ configure_address()
 configure_lossless()
 {
     ethtool -A "${RAIL_DEVICE}" rx off tx off
-    mlnx_qos -i "${RAIL_DEVICE}" --trust dscp >/dev/null
-    mlnx_qos -i "${RAIL_DEVICE}" --pfc 0,0,0,1,0,0,1,0 >/dev/null
-    mlnx_qos -i "${RAIL_DEVICE}" --prio2buffer 1,1,1,1,1,1,1,1 >/dev/null
-    mlnx_qos -i "${RAIL_DEVICE}" --buffer_size 0,459360,0,0,0,0,0,0 >/dev/null
+    sparkpipe-dscp-trust set "${RAIL_DEVICE}" >/dev/null
+    dcb pfc set dev "${RAIL_DEVICE}" prio-pfc all:off 3:on 6:on
+    dcb buffer set dev "${RAIL_DEVICE}" prio-buffer all:1 buffer-size all:0 1:459360
     ethtool --set-tunable "${RAIL_DEVICE}" pfc-prevention-tout 100
     local trust pfc buffers
-    trust="$(mlnx_qos -i "${RAIL_DEVICE}")"
+    trust="$(sparkpipe-dscp-trust check "${RAIL_DEVICE}" || true)"
     pfc="$(dcb pfc show dev "${RAIL_DEVICE}" prio-pfc)"
     buffers="$(dcb buffer show dev "${RAIL_DEVICE}" prio-buffer)"
-    if [[ "${trust}" != *"Priority trust state: dscp"* || "${pfc}" != *"3:on"*"6:on"* || "${buffers}" != *"0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1"* ]]; then
+    if [[ "${trust}" != "${RAIL_DEVICE} trusts DSCP" || "${pfc}" != *"3:on"*"6:on"* || "${buffers}" != *"0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1"* ]]; then
         printf 'rail2: lossless state did not take on %s
 ' "${RAIL_DEVICE}" >&2
         return 4

@@ -12,7 +12,9 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_speculation_frame.c \
     src/spark_speculation_tree_frame.c \
     src/spark_tap_stream.c \
+    src/spark_tap_stream_reader.c \
     ring/transport/draft_bridge.c \
+    ring/transport/draft_server.c \
     runtime/filesystem.c \
     runtime/json.c
 
@@ -26,6 +28,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_orchestrator.c \
     runtime/stagepack_format.c \
     runtime/named_pack.c \
+    runtime/row_file.c \
     runtime/spark_expert_working_set.c \
 	runtime/model_serving_adapter.c \
 	runtime/model_resident_endpoint.c \
