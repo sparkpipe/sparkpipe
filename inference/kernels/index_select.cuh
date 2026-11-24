@@ -534,26 +534,8 @@ void LmIndexSelectLocalSampledKernel(SparkKvShard shard, const float *__restrict
 }
 #endif
 
-#define LM_INDEX_SELECT_MERGE_HIST 4096u
-#define LM_INDEX_SELECT_MERGE_TIE_CAP 2048u
-#define LM_INDEX_SELECT_MERGE_BITMAP_WORDS 2048u
-
-struct LmIndexSelectTieArraySource
-{
-	const uint2 *items;
-	uint32_t count;
-	__device__ __forceinline__ uint32_t Total(void) const { return count; }
-	__device__ __forceinline__ uint32_t Key(uint32_t index, uint32_t *key) const
-	{
-		if ( index >= count )
-			return 0u;
-		*key = items[index].x;
-		return 1u;
-	}
-};
-
 template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS)
+__global__ __launch_bounds__(THREADS, 1)
 void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_stride_candidates, SparkKvShard shard, uint32_t keep,
 	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position,
 	uint32_t k, uint32_t dense_limit, uint32_t row_words, uint32_t *__restrict__ bitmaps, uint32_t *__restrict__ selected, LmFrameError *__restrict__ error)
@@ -561,16 +543,6 @@ void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_
 	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
 	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
 	__shared__ uint32_t warp_totals[THREADS / LM_TOPK_WARP_LANES];
-#ifdef __CUDACC__
-	__shared__ uint32_t greater_shared[LM_INDEX_SELECT_MERGE_BITMAP_WORDS];
-	__shared__ uint32_t equal_shared[LM_INDEX_SELECT_MERGE_BITMAP_WORDS];
-	__shared__ union
-	{
-		uint32_t hist12[LM_INDEX_SELECT_MERGE_HIST];
-		uint2 ties[LM_INDEX_SELECT_MERGE_TIE_CAP];
-	} merge_work;
-	__shared__ uint32_t merge_meta[4];
-#endif
 	const uint32_t row = blockIdx.x, bound = LmIndexSelectRowBound(sequence_of_row, context_length, row_position, row);
 	uint32_t *greater = bitmaps + (uint64_t)row * 2u * row_words, *equal = greater + row_words, *out = selected + (uint64_t)row * k;
 	uint32_t words, index, key, threshold, mask, need, per, first, last, word, bits, bit, count_greater, count_equal, equal_before, take, sum, emitted, taken;
@@ -585,13 +557,6 @@ void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_
 			LmFrameErrorReport(error, LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE, 0u, row, sequence_of_row[row], bound, row_words * 32u);
 		return;
 	}
-#ifdef __CUDACC__
-	if ( words <= LM_INDEX_SELECT_MERGE_BITMAP_WORDS )
-	{
-		greater = greater_shared;
-		equal = equal_shared;
-	}
-#endif
 	for ( index = threadIdx.x; index < words; index += THREADS )
 	{
 		greater[index] = 0u;
@@ -603,263 +568,25 @@ void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_
 	source.span = source.span < keep ? source.span : keep;
 	source.degree = shard.degree;
 	source.bound = bound;
-#ifdef __CUDACC__
-	if constexpr ( THREADS == LM_INDEX_SELECT_THREADS && LM_INDEX_SELECT_MERGE_HIST % THREADS == 0u )
+	LmIndexSelectRadix<THREADS>(source, k, histogram, state);
+	threshold = state[LM_TOPK_EXACT_PREFIX];
+	mask = state[LM_TOPK_EXACT_MASK];
+	need = state[LM_TOPK_EXACT_NEED];
+	for ( index = threadIdx.x; index < source.Total(); index += THREADS * LM_INDEX_SELECT_UNROLL )
 	{
-		constexpr uint32_t PER = LM_INDEX_SELECT_MERGE_HIST / THREADS;
-		const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES;
-		const uint32_t total_cand = source.Total();
-		uint32_t r, base, own = 0u, above, hist_total, chosen_bucket, above_chosen, bucket_size, low_key, high_key, shift, count_above;
-		if ( total_cand <= k )
+		uint2 loaded[LM_INDEX_SELECT_UNROLL];
+		for ( bit = 0u; bit < LM_INDEX_SELECT_UNROLL; bit++ )
+			loaded[bit] = index + bit * THREADS < source.Total() ? source.Load(index + bit * THREADS) : make_uint2(0u, bound);
+		for ( bit = 0u; bit < LM_INDEX_SELECT_UNROLL; bit++ )
 		{
-			for ( r = 0u; r < source.degree; r++ )
-			{
-				const uint2 *rank_ptr = source.gathered + (uint64_t)r * source.rank_stride;
-				for ( index = threadIdx.x; index < source.span; index += THREADS )
-				{
-					const uint2 cand = rank_ptr[index];
-					if ( cand.y < bound )
-						atomicOr(&greater[cand.y >> 5u], 1u << (cand.y & 31u));
-				}
-			}
-			need = 0u;
-		}
-		else
-		{
-			const uint32_t s_idx = (uint32_t)(((uint64_t)threadIdx.x * total_cand) / THREADS);
-			const uint2 s_cand = source.gathered[(uint64_t)(s_idx / source.span) * source.rank_stride + s_idx % source.span];
-			const uint32_t s_key = s_cand.y < bound ? LmTopkKey(__uint_as_float(s_cand.x)) : 0u;
-			uint32_t wmax = s_key;
-			merge_work.hist12[threadIdx.x] = s_key;
-			for ( uint32_t off = LM_TOPK_WARP_LANES / 2u; off > 0u; off >>= 1u )
-			{
-				const uint32_t other = __shfl_xor_sync(0xffffffffu, wmax, off);
-				wmax = other > wmax ? other : wmax;
-			}
-			if ( lane == 0u )
-				warp_totals[threadIdx.x / LM_TOPK_WARP_LANES] = wmax;
-			__syncthreads();
-			if ( threadIdx.x == 0u )
-			{
-				uint32_t gmax = 0u;
-				for ( uint32_t w = 0u; w < THREADS / LM_TOPK_WARP_LANES; w++ )
-					gmax = warp_totals[w] > gmax ? warp_totals[w] : gmax;
-				merge_meta[0] = gmax;
-			}
-			__syncthreads();
-			const uint32_t sample_k = (uint32_t)(((uint64_t)k * THREADS + total_cand - 1u) / total_cand);
-			const uint32_t low_rank = sample_k * 2u + 32u < THREADS ? sample_k * 2u + 32u : THREADS;
-			LmIndexSelectSampleSource sample_src = { merge_work.hist12, THREADS };
-			LmIndexSelectRadix<THREADS>(sample_src, low_rank, histogram, state);
-			high_key = merge_meta[0];
-			low_key = state[LM_TOPK_EXACT_PREFIX];
-			if ( low_key > high_key )
-				low_key = high_key;
-			const uint32_t span_keys = high_key - low_key;
-			shift = span_keys >= LM_INDEX_SELECT_MERGE_HIST ? (20u - (uint32_t)__clz(span_keys)) : 0u;
-			for ( index = threadIdx.x; index < LM_INDEX_SELECT_MERGE_HIST; index += THREADS )
-				merge_work.hist12[index] = 0u;
-			if ( threadIdx.x < 4u )
-				merge_meta[threadIdx.x] = 0u;
-			__syncthreads();
-			for ( r = 0u; r < source.degree; r++ )
-			{
-				const uint2 *rank_ptr = source.gathered + (uint64_t)r * source.rank_stride;
-				for ( base = 0u; base < source.span; base += THREADS * LM_INDEX_SELECT_UNROLL )
-				{
-					uint2 loaded[LM_INDEX_SELECT_UNROLL];
-					#pragma unroll
-					for ( index = 0u; index < LM_INDEX_SELECT_UNROLL; index++ )
-					{
-						const uint32_t entry = base + index * THREADS + threadIdx.x;
-						loaded[index] = entry < source.span ? rank_ptr[entry] : make_uint2(0u, bound);
-					}
-					#pragma unroll
-					for ( index = 0u; index < LM_INDEX_SELECT_UNROLL; index++ )
-					{
-						const uint2 cand = loaded[index];
-						uint32_t b = LM_INDEX_SELECT_MERGE_HIST + 1u;
-						if ( cand.y < bound )
-						{
-							const uint32_t ck = LmTopkKey(__uint_as_float(cand.x));
-							if ( ck > high_key )
-								b = LM_INDEX_SELECT_MERGE_HIST;
-							else if ( ck >= low_key )
-								b = (ck - low_key) >> shift;
-						}
-						const uint32_t peers = __match_any_sync(0xffffffffu, b);
-						if ( lane == (uint32_t)(__ffs(peers) - 1) )
-						{
-							if ( b < LM_INDEX_SELECT_MERGE_HIST )
-								atomicAdd(&merge_work.hist12[b], (uint32_t)__popc(peers));
-							else if ( b == LM_INDEX_SELECT_MERGE_HIST )
-								atomicAdd(&merge_meta[3], (uint32_t)__popc(peers));
-						}
-					}
-				}
-			}
-			__syncthreads();
-			count_above = merge_meta[3];
-			#pragma unroll
-			for ( index = 0u; index < PER; index++ )
-				own += merge_work.hist12[LM_INDEX_SELECT_MERGE_HIST - 1u - (threadIdx.x * PER + index)];
-			above = count_above + LmIndexSelectExclusiveScan<THREADS>(own, warp_totals, &hist_total);
-			#pragma unroll
-			for ( index = 0u; index < PER; index++ )
-			{
-				const uint32_t b = LM_INDEX_SELECT_MERGE_HIST - 1u - (threadIdx.x * PER + index);
-				const uint32_t c = merge_work.hist12[b];
-				if ( above < k && above + c >= k )
-				{
-					merge_meta[0] = b;
-					merge_meta[1] = above;
-					merge_meta[2] = c;
-				}
-				above += c;
-			}
-			__syncthreads();
-			chosen_bucket = merge_meta[0];
-			above_chosen = merge_meta[1];
-			bucket_size = merge_meta[2];
-			if ( count_above < k && count_above + hist_total >= k && (shift == 0u || bucket_size <= LM_INDEX_SELECT_MERGE_TIE_CAP) )
-			{
-				if ( shift == 0u )
-				{
-					for ( r = 0u; r < source.degree; r++ )
-					{
-						const uint2 *rank_ptr = source.gathered + (uint64_t)r * source.rank_stride;
-						for ( index = threadIdx.x; index < source.span; index += THREADS )
-						{
-							const uint2 cand = rank_ptr[index];
-							if ( cand.y >= bound )
-								continue;
-							const uint32_t ck = LmTopkKey(__uint_as_float(cand.x));
-							if ( ck > high_key || (ck >= low_key && ck - low_key > chosen_bucket) )
-								atomicOr(&greater[cand.y >> 5u], 1u << (cand.y & 31u));
-							else if ( ck >= low_key && ck <= high_key && ck - low_key == chosen_bucket )
-								atomicOr(&equal[cand.y >> 5u], 1u << (cand.y & 31u));
-						}
-					}
-					need = k - above_chosen;
-				}
-				else
-				{
-					if ( threadIdx.x == 0u )
-						merge_meta[3] = 0u;
-					__syncthreads();
-					for ( r = 0u; r < source.degree; r++ )
-					{
-						const uint2 *rank_ptr = source.gathered + (uint64_t)r * source.rank_stride;
-						for ( base = 0u; base < source.span; base += THREADS * LM_INDEX_SELECT_UNROLL )
-						{
-							uint2 loaded[LM_INDEX_SELECT_UNROLL];
-							#pragma unroll
-							for ( index = 0u; index < LM_INDEX_SELECT_UNROLL; index++ )
-							{
-								const uint32_t entry = base + index * THREADS + threadIdx.x;
-								loaded[index] = entry < source.span ? rank_ptr[entry] : make_uint2(0u, bound);
-							}
-							#pragma unroll
-							for ( index = 0u; index < LM_INDEX_SELECT_UNROLL; index++ )
-							{
-								const uint2 cand = loaded[index];
-								if ( cand.y >= bound )
-									continue;
-								const uint32_t ck = LmTopkKey(__uint_as_float(cand.x));
-								if ( ck > high_key )
-									atomicOr(&greater[cand.y >> 5u], 1u << (cand.y & 31u));
-								else if ( ck >= low_key )
-								{
-									const uint32_t b = (ck - low_key) >> shift;
-									if ( b > chosen_bucket )
-										atomicOr(&greater[cand.y >> 5u], 1u << (cand.y & 31u));
-									else if ( b == chosen_bucket )
-									{
-										const uint32_t slot = atomicAdd(&merge_meta[3], 1u);
-										if ( slot < LM_INDEX_SELECT_MERGE_TIE_CAP )
-											merge_work.ties[slot] = make_uint2(ck, cand.y);
-									}
-								}
-							}
-						}
-					}
-					__syncthreads();
-					const uint32_t tie_count = merge_meta[3];
-					if ( above_chosen + tie_count == k )
-					{
-						for ( index = threadIdx.x; index < tie_count; index += THREADS )
-						{
-							const uint32_t pos = merge_work.ties[index].y;
-							atomicOr(&greater[pos >> 5u], 1u << (pos & 31u));
-						}
-						need = 0u;
-					}
-					else
-					{
-						LmIndexSelectTieArraySource tie_source = { merge_work.ties, tie_count };
-						LmIndexSelectRadix<THREADS>(tie_source, k - above_chosen, histogram, state);
-						threshold = state[LM_TOPK_EXACT_PREFIX];
-						mask = state[LM_TOPK_EXACT_MASK];
-						need = state[LM_TOPK_EXACT_NEED];
-						for ( index = threadIdx.x; index < tie_count; index += THREADS )
-						{
-							const uint2 item = merge_work.ties[index];
-							const uint32_t ck = item.x & mask;
-							if ( ck > threshold )
-								atomicOr(&greater[item.y >> 5u], 1u << (item.y & 31u));
-							else if ( ck == threshold )
-								atomicOr(&equal[item.y >> 5u], 1u << (item.y & 31u));
-						}
-					}
-				}
-			}
-			else
-			{
-				LmIndexSelectRadix<THREADS>(source, k, histogram, state);
-				threshold = state[LM_TOPK_EXACT_PREFIX];
-				mask = state[LM_TOPK_EXACT_MASK];
-				need = state[LM_TOPK_EXACT_NEED];
-				for ( r = 0u; r < source.degree; r++ )
-				{
-					const uint2 *rank_ptr = source.gathered + (uint64_t)r * source.rank_stride;
-					for ( index = threadIdx.x; index < source.span; index += THREADS )
-					{
-						candidate = rank_ptr[index];
-						if ( candidate.y >= bound )
-							continue;
-						key = LmTopkKey(__uint_as_float(candidate.x)) & mask;
-						if ( key > threshold )
-							atomicOr(&greater[candidate.y >> 5u], 1u << (candidate.y & 31u));
-						else if ( key == threshold )
-							atomicOr(&equal[candidate.y >> 5u], 1u << (candidate.y & 31u));
-					}
-				}
-			}
-		}
-	}
-	else
-#endif
-	{
-		LmIndexSelectRadix<THREADS>(source, k, histogram, state);
-		threshold = state[LM_TOPK_EXACT_PREFIX];
-		mask = state[LM_TOPK_EXACT_MASK];
-		need = state[LM_TOPK_EXACT_NEED];
-		for ( index = threadIdx.x; index < source.Total(); index += THREADS * LM_INDEX_SELECT_UNROLL )
-		{
-			uint2 loaded[LM_INDEX_SELECT_UNROLL];
-			for ( bit = 0u; bit < LM_INDEX_SELECT_UNROLL; bit++ )
-				loaded[bit] = index + bit * THREADS < source.Total() ? source.Load(index + bit * THREADS) : make_uint2(0u, bound);
-			for ( bit = 0u; bit < LM_INDEX_SELECT_UNROLL; bit++ )
-			{
-				candidate = loaded[bit];
-				if ( candidate.y >= bound )
-					continue;
-				key = LmTopkKey(__uint_as_float(candidate.x)) & mask;
-				if ( key > threshold )
-					atomicOr(&greater[candidate.y / 32u], 1u << (candidate.y % 32u));
-				else if ( key == threshold )
-					atomicOr(&equal[candidate.y / 32u], 1u << (candidate.y % 32u));
-			}
+			candidate = loaded[bit];
+			if ( candidate.y >= bound )
+				continue;
+			key = LmTopkKey(__uint_as_float(candidate.x)) & mask;
+			if ( key > threshold )
+				atomicOr(&greater[candidate.y / 32u], 1u << (candidate.y % 32u));
+			else if ( key == threshold )
+				atomicOr(&equal[candidate.y / 32u], 1u << (candidate.y % 32u));
 		}
 	}
 	__syncthreads();
