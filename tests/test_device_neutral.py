@@ -92,8 +92,6 @@ PENDING = {
     "model-families/k3/source/config.h": {"device-include": 1},
     "model-families/common/include/sparkpipe/spark_lm_certified_launch.h": {"device-include": 1, "token": 1},
     "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h": {"token": 48},
-    "model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h": {"token": 3},
-    "model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h": {"token": 3},
     "model-families/k3/include/sparkpipe/spark_k3_kv_shard.h": {"token": 3},
     "model-families/k3/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h": {"device-include": 1},
     "ring/transport/hidden_transport.c": {"handle": 1},

@@ -6,6 +6,7 @@
 #include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_glm5_next_device_stage.h"
 #include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_glm53_flash_tp16_stage_model.h"
@@ -254,7 +255,7 @@ struct Glm5NextDevice
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		const SparkDeviceStageRecurrentPlan pools[] = { { kKdaLayers, SparkDeviceChannelDeltaStateBytes(&state->delta_shape) },
 			{ kKdaLayers, SparkDeviceChannelDeltaWindowBytes(&state->delta_shape) } };

@@ -28,10 +28,9 @@ struct Glm5NextModelState : CudaStageState
 	uint16_t *replay_inputs;
 	float *replay_retention;
 	float *replay_write_gate;
+	float *kda_snapshots;
 	LmKvShardView latent_views[G5N_DSA_LAYERS];
 	LmKvShardView index_views[G5N_DSA_LAYERS];
-	uint32_t *dense_row_offset;
-	uint32_t *dense_tile_prefix;
 	uint16_t *streams;
 	uint16_t *snapshot;
 	uint16_t *normed;
@@ -296,7 +295,6 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 	const uint64_t replay = lane == 0u ? (uint64_t)G5N_KDA_LAYERS * state->verify_rows : 0u;
 	const Glm5NextBuffer plan[] =
 	{
-		{ (void **)&state->dense_row_offset, 8u }, { (void **)&state->dense_tile_prefix, 8u },
 		{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		{ (void **)&state->streams, R * G5N_HC_FLAT * 2u }, { (void **)&state->snapshot, R * G5N_HC_FLAT * 2u },
 		{ (void **)&state->normed, R * G5N_HIDDEN * 2u }, { (void **)&state->collapsed, R * G5N_HIDDEN * 2u },
@@ -332,6 +330,7 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 		{ (void **)&state->kda_windows, lane == 0u ? 3u * (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_window_slot_bytes : 0u },
 		{ (void **)&state->replay_inputs, replay * 3u * rank_qk * 2u }, { (void **)&state->replay_retention, replay * rank_qk * 4u },
 		{ (void **)&state->replay_write_gate, replay * kda_heads * 4u },
+		{ (void **)&state->kda_snapshots, replay != 0u ? LmDeltaRuleSnapshotBytes((uint32_t)kda_heads, G5N_KDA_KEY, G5N_KDA_VALUE) : 0u },
 	};
 	for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
 		if ( plan[index].bytes == 0u )
@@ -350,7 +349,7 @@ static uint32_t Glm5NextScratch(Glm5NextModelState *state, void ***fields)
 {
 	void **pointers[] =
 	{
-		(void **)&state->dense_row_offset, (void **)&state->dense_tile_prefix, (void **)&state->streams, (void **)&state->snapshot,
+		(void **)&state->streams, (void **)&state->snapshot,
 		(void **)&state->normed, (void **)&state->collapsed, (void **)&state->streams_mean, (void **)&state->hc_mixes, (void **)&state->hc_pre,
 		(void **)&state->hc_post, (void **)&state->hc_comb, (void **)&state->q_compressed, (void **)&state->q, (void **)&state->query_latent,
 		(void **)&state->index_query, (void **)&state->index_key, (void **)&state->index_head_weight, (void **)&state->index_gate,
@@ -409,7 +408,7 @@ static void Glm5NextFree(Glm5NextModelState *state)
 	Glm5NextLaneFree(state);
 	void *pointers[] =
 	{
-		state->dense_row_offset, state->dense_tile_prefix, state->kv_error, state->streams, state->snapshot, state->normed, state->collapsed,
+		state->kv_error, state->streams, state->snapshot, state->normed, state->collapsed,
 		state->streams_mean, state->hc_mixes, state->hc_pre, state->hc_post, state->hc_comb, state->q_compressed, state->q, state->query_latent,
 		state->index_query, state->index_key, state->index_head_weight, state->index_gate, state->index_packed, state->selected_pools,
 		state->selected_positions, state->selection_scores, state->index_local_scores, state->index_gathered_scores, state->fused_qkvb,
@@ -418,7 +417,7 @@ static void Glm5NextFree(Glm5NextModelState *state)
 		state->gate_up, state->intermediate, state->expert_out, state->shared_out, state->router_logits, state->route_expert, state->route_weight,
 		state->route_source_token, state->route_packed_row, state->group_row_offset, state->group_tile_prefix_w1, state->group_tile_prefix_w2,
 		state->shard_query_gathered, state->shard_partials, state->shard_partials_received, state->kda_state, state->kda_windows,
-		state->replay_inputs, state->replay_retention, state->replay_write_gate,
+		state->replay_inputs, state->replay_retention, state->replay_write_gate, state->kda_snapshots,
 	};
 	for ( uint32_t index = 0u; index < sizeof(pointers) / sizeof(pointers[0]); ++index )
 		if ( pointers[index] != 0 )
@@ -499,8 +498,6 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 		b->kv_b_key = (const uint16_t *)w->kv_b_key + (uint64_t)state->tp_rank * heads * G5N_LATENT * G5N_NOPE;
 	if ( w->kv_b_value != 0 )
 		b->kv_b_value = (const uint16_t *)w->kv_b_value + (uint64_t)state->tp_rank * heads * G5N_VALUE * G5N_LATENT;
-	b->dense_row_offset = state->dense_row_offset;
-	b->dense_tile_prefix = state->dense_tile_prefix;
 	b->hidden_bf16 = state->streams;
 	b->normed_bf16 = state->normed;
 	b->q_compressed_bf16 = state->q_compressed;
@@ -556,6 +553,16 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 	b->sequence_of_row = step->sequence_of_row;
 	b->context_length = step->context_length;
 	b->positions = step->positions;
+	if ( step->tree != 0u )
+	{
+		b->slots = step->slots;
+		b->fork_positions = step->fork_positions;
+		b->slot_offsets = step->slot_offsets;
+		b->parent_rows = step->parent_rows;
+		b->state_loads = step->state_loads;
+		b->state_saves = step->state_saves;
+		b->kda_snapshots = state->kda_snapshots;
+	}
 	b->kda_state_index = step->recurrent_index;
 	b->sequence_row_begin = step->sequence_row_begin;
 	b->sequence_row_indices = step->sequence_row_indices;
@@ -599,7 +606,7 @@ struct Glm5NextLatentShard
 		{
 			fprintf(stderr, "sparkpipe_glm5_next: KV attach refused: shard %u/%u grain %u is not this rank's latent shard\n", kv->context_shard.rank,
 				kv->context_shard.degree, kv->context_shard.grain);
-			return SPARK_STATUS_INVALID_ARGUMENT;
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
 		return SPARK_STATUS_OK;
 	}
@@ -722,13 +729,15 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 			frame->context = G5N_KPOOL;
 		if ( state->kv_attached == 0u || rows == 0u || rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots ||
 			step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 ||
-			(step->commit == 0u && rows > state->verify_rows) )
+			(step->commit == 0u && rows > state->verify_rows) ||
+			(step->tree != 0u && (step->commit != 0u || step->sequences != 1u || rows >= G5N_POOL_ROWS_MIN || step->slots == 0 ||
+				step->fork_positions == 0 || step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 ||
+				step->state_saves == 0 || state->kda_snapshots == 0)) )
 		{
 			fprintf(stderr, "%s: step refused rows=%u sequences=%u commit=%u kv_attached=%u\n", G::Tag(), rows, step->sequences, step->commit,
 				state->kv_attached);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		LM_LAUNCH((LmDenseRowOffsetsKernel), 1u, 1u, 0, frame->stream, state->dense_row_offset, rows);
 		return SPARK_STATUS_OK;
 	}
 
@@ -882,6 +891,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		Kv::Geometry(geometry);
 		geometry->kv_shard = SparkGlm5NextKvShardLatent(state->tp_rank, state->tp_degree);
 		geometry->recurrent_bytes = CudaStage<Glm5NextStage>::RecurrentBytes(state);
+		geometry->tree_verify = state->verify_rows != 0u ? 1u : 0u;
+		geometry->tree_slot_grain = G5N_KPOOL * state->tp_degree;
 		geometry->experts = G5N_EXPERTS;
 		geometry->top_k = G5N_TOP_K;
 		geometry->expert_w1_offset = state->expert_w1_offset;
@@ -967,7 +978,9 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 
 	static SparkStatus LaneAdmit(Glm5NextModelState *state, const SparkStageRunnerStep *step)
 	{
-		return step->rows > state->max_rows ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_OK;
+		if ( step->rows > state->max_rows )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus LaneScratch(Glm5NextModelState *copy, const Glm5NextModelState *state, uint32_t lane)
@@ -1009,17 +1022,32 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
 		Glm5NextModelState *state = (Glm5NextModelState *)model;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
 		Glm5NextLayerBuffers b;
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( kept == 0 || step->commit != 0u || step->rows == 0u || step->rows > state->verify_rows || step->sequences == 0u ||
 			step->sequences > state->slots || step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->tree != 0u && (step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		for ( uint32_t layer = 0u; layer < G5N_LAYERS && status == SPARK_STATUS_OK; ++layer )
 			if ( state->layers[layer].kda_ordinal != G5N_NO_ORDINAL )
 			{
 				Glm5NextBindLayer(state, step, layer, &b);
-				status = Launch(Glm5NextKdaRecur(&b, step->rows, step->sequences, kept, 1u, (SparkGpuStream)stream_void), "kda keep rows", layer);
+				status = Launch(Glm5NextKdaRecur(&b, step->rows, step->sequences, kept, 1u, stream), "kda keep rows", layer);
 			}
+		if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		{
+			for ( uint32_t dsa = 0u; dsa < G5N_DSA_LAYERS; ++dsa )
+			{
+				LM_LAUNCH((LmKvShardPathMoveKernel<Glm5NextKv, G5N_THREADS>), step->rows, G5N_THREADS, 0, stream,
+					state->latent_views[dsa], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, G5N_LATENT);
+				LM_LAUNCH((LmKvShardPathMoveKernel<Glm5NextIndexKv, G5N_THREADS>), step->rows, G5N_THREADS, 0, stream,
+					state->index_views[dsa], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, G5N_INDEX_PACKED);
+			}
+			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
 		return status;
 	}
 };
