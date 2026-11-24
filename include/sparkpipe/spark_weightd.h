@@ -118,6 +118,13 @@ static inline uint32_t SparkWeightdMeshSecondRailPeers(uint32_t local_rank, uint
             peers |= 1u << (rank < local_rank ? rank : rank - 1u);
     return peers;
 }
+
+static inline uint32_t SparkWeightdMeshSchedulePeer(uint32_t local_rank, uint32_t degree, uint32_t step)
+{
+    if (local_rank >= degree || degree < 2u || step == 0u || step >= degree)
+        return local_rank;
+    return (degree & (degree - 1u)) == 0u ? (local_rank ^ step) : ((local_rank + step) % degree);
+}
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 4u
 #define SPARK_WEIGHTD_MESH_PIPELINE_DEPTH (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
