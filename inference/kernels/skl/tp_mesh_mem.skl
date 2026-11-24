@@ -1,0 +1,57 @@
+const BLOCK = 256;
+
+kernel[BLOCK, 32] tp_f32_to_bf16_vec16(
+    global u32* src_f32, global u32* dst_bf16,
+    u32 chunks16
+) {
+    reg u32 chunks8 = chunks16 << 1;
+    reg u32 i0 = (ctaid_x() << 9) + tid_x();
+    if (i0 >= chunks8) { return; }
+
+    reg u32x8 a0 = ldg256_stream(ptr_add(src_f32, i0, 32));
+    reg u32 i1 = i0 + BLOCK;
+    reg u32x4 o0;
+    unroll (k = 0..4) {
+        o0[k] = pack_bf16x2(u32_as_f32(a0[k * 2]), u32_as_f32(a0[k * 2 + 1]));
+    }
+    stg128(ptr_add(dst_bf16, i0, 16), o0);
+
+    if (i1 >= chunks8) { return; }
+    reg u32x8 a1 = ldg256_stream(ptr_add(src_f32, i1, 32));
+    reg u32x4 o1;
+    unroll (k = 0..4) {
+        o1[k] = pack_bf16x2(u32_as_f32(a1[k * 2]), u32_as_f32(a1[k * 2 + 1]));
+    }
+    stg128(ptr_add(dst_bf16, i1, 16), o1);
+}
+
+kernel[BLOCK, 40] tp_bf16_to_f32_vec16(
+    global u32* src_bf16, global u32* dst_f32,
+    u32 chunks16
+) {
+    reg u32 idx = ctaid_x() * BLOCK + tid_x();
+    if (idx >= chunks16) { return; }
+
+    reg u32x8 v = ldg256_stream(ptr_add(src_bf16, idx, 32));
+    reg u32x8 o0;
+    reg u32x8 o1;
+    unroll (k = 0..4) {
+        o0[k * 2] = f32_as_u32(bf16_lo(v[k]));
+        o0[k * 2 + 1] = f32_as_u32(bf16_hi(v[k]));
+        o1[k * 2] = f32_as_u32(bf16_lo(v[4 + k]));
+        o1[k * 2 + 1] = f32_as_u32(bf16_hi(v[4 + k]));
+    }
+    stg256(ptr_add(dst_f32, idx * 2, 32), o0);
+    stg256(ptr_add(dst_f32, idx * 2 + 1, 32), o1);
+}
+
+kernel[BLOCK, 32] device_program_copy_vec256(
+    global u32* dst, global u32* src,
+    u32 chunks32
+) {
+    reg u32 idx = ctaid_x() * BLOCK + tid_x();
+    if (idx >= chunks32) { return; }
+
+    reg u32x8 v = ldg256_stream(ptr_add(src, idx, 32));
+    stg256(ptr_add(dst, idx, 32), v);
+}

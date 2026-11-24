@@ -1,0 +1,204 @@
+const LANES = 32;
+const BLOCK = 128;
+
+kernel[BLOCK, 64] skinny_nvfp4_b1(
+    global u32* weight, global u32* act_bf16, global u32* scales_ue4m3,
+    global f32* global_scale_ptr, global u16* out_bf16,
+    u32 chunks32, u32 out_dim, u32 out_col_off
+) {
+    reg u32 row0 = ((ctaid_x() << 2) + warp_id()) << 1;
+    reg u32 lane = lane_id();
+    if (row0 >= out_dim) { return; }
+
+    ureg u64 w_r0 = ptr_add(weight, row0 * chunks32, 32);
+    ureg u64 w_r1 = ptr_add(w_r0, chunks32, 32);
+    ureg u64 s_r0 = ptr_add(scales_ue4m3, row0 * chunks32, 4);
+    ureg u64 s_r1 = ptr_add(s_r0, chunks32, 4);
+    reg f32 gscale = u32_as_f32(ldg32_persist(global_scale_ptr));
+    reg f32 a0 = 0.0f;
+    reg f32 a1 = 0.0f;
+    reg f32 b0 = 0.0f;
+    reg f32 b1 = 0.0f;
+
+    for (reg u32 c = lane; c < chunks32; c += LANES) {
+        reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+        reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+        reg u32 sc0 = ldg32_stream(ptr_add(s_r0, c, 4));
+        reg u32 sc1 = ldg32_stream(ptr_add(s_r1, c, 4));
+        reg u32 ab = c << 2;
+
+        unroll (g = 0..4) {
+            reg u32x8 av = ldg256_persist(ptr_add(act_bf16, ab + g, 32));
+            reg f32 sg0 = ue4m3_to_f32((sc0 >> (g << 3)) & 0xff);
+            reg f32 sg1 = ue4m3_to_f32((sc1 >> (g << 3)) & 0xff);
+            reg f32 p0 = 0.0f;
+            reg f32 p1 = 0.0f;
+            reg f32 p2 = 0.0f;
+            reg f32 p3 = 0.0f;
+            reg f32 q0 = 0.0f;
+            reg f32 q1 = 0.0f;
+            reg f32 q2 = 0.0f;
+            reg f32 q3 = 0.0f;
+
+            unroll (k = 0..4) {
+                reg f32 x0 = bf16_lo(av[k * 2]);
+                reg f32 x1 = bf16_hi(av[k * 2]);
+                reg f32 x2 = bf16_lo(av[k * 2 + 1]);
+                reg f32 x3 = bf16_hi(av[k * 2 + 1]);
+                reg f32x4 d = (k < 2) ? cvt_e2m1x4_f32x4(w0[g * 2], (k & 1) << 4) : cvt_e2m1x4_f32x4(w0[g * 2 + 1], (k & 1) << 4);
+                p0 = fma(d.x, x0, p0);
+                p1 = fma(d.y, x1, p1);
+                p2 = fma(d.z, x2, p2);
+                p3 = fma(d.w, x3, p3);
+                d = (k < 2) ? cvt_e2m1x4_f32x4(w1[g * 2], (k & 1) << 4) : cvt_e2m1x4_f32x4(w1[g * 2 + 1], (k & 1) << 4);
+                q0 = fma(d.x, x0, q0);
+                q1 = fma(d.y, x1, q1);
+                q2 = fma(d.z, x2, q2);
+                q3 = fma(d.w, x3, q3);
+            }
+            if ((g & 1) == 0) {
+                a0 = fma(sg0, (p0 + p1) + (p2 + p3), a0);
+                b0 = fma(sg1, (q0 + q1) + (q2 + q3), b0);
+            } else {
+                a1 = fma(sg0, (p0 + p1) + (p2 + p3), a1);
+                b1 = fma(sg1, (q0 + q1) + (q2 + q3), b1);
+            }
+        }
+    }
+
+    reg f32 t0 = warp_sum(a0 + a1) * gscale;
+    reg f32 t1 = warp_sum(b0 + b1) * gscale;
+    if (lane == 0) {
+        stg16(ptr_add(out_bf16, out_col_off + row0, 2), f32_to_bf16(t0));
+        stg16(ptr_add(out_bf16, out_col_off + row0 + 1, 2), f32_to_bf16(t1));
+    }
+}
+
+kernel[BLOCK, 64] skinny_mxfp4_b1(
+    global u32* weight, global u32* act_bf16, global u16* scales_ue8m0,
+    global u16* out_bf16,
+    u32 chunks32, u32 out_dim, u32 out_col_off
+) {
+    reg u32 row0 = ((ctaid_x() << 2) + warp_id()) << 1;
+    reg u32 lane = lane_id();
+    if (row0 >= out_dim) { return; }
+
+    ureg u64 w_r0 = ptr_add(weight, row0 * chunks32, 32);
+    ureg u64 w_r1 = ptr_add(w_r0, chunks32, 32);
+    ureg u64 s_r0 = ptr_add(scales_ue8m0, row0 * chunks32, 2);
+    ureg u64 s_r1 = ptr_add(s_r0, chunks32, 2);
+    reg f32 a0 = 0.0f;
+    reg f32 a1 = 0.0f;
+    reg f32 b0 = 0.0f;
+    reg f32 b1 = 0.0f;
+
+    for (reg u32 c = lane; c < chunks32; c += LANES) {
+        reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+        reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+        reg u32 sc0 = ldg16_stream(ptr_add(s_r0, c, 2));
+        reg u32 sc1 = ldg16_stream(ptr_add(s_r1, c, 2));
+        reg u32 ab = c << 2;
+
+        unroll (g = 0..2) {
+            reg f32 p0 = 0.0f;
+            reg f32 p1 = 0.0f;
+            reg f32 p2 = 0.0f;
+            reg f32 p3 = 0.0f;
+            reg f32 q0 = 0.0f;
+            reg f32 q1 = 0.0f;
+            reg f32 q2 = 0.0f;
+            reg f32 q3 = 0.0f;
+
+            unroll (h = 0..2) {
+                reg u32x8 av = ldg256_persist(ptr_add(act_bf16, ab + g * 2 + h, 32));
+                unroll (k = 0..4) {
+                    reg f32 x0 = bf16_lo(av[k * 2]);
+                    reg f32 x1 = bf16_hi(av[k * 2]);
+                    reg f32 x2 = bf16_lo(av[k * 2 + 1]);
+                    reg f32 x3 = bf16_hi(av[k * 2 + 1]);
+                    reg f32x4 d = (k < 2) ? cvt_e2m1x4_f32x4(w0[g * 4 + h * 2], (k & 1) << 4) : cvt_e2m1x4_f32x4(w0[g * 4 + h * 2 + 1], (k & 1) << 4);
+                    p0 = fma(d.x, x0, p0);
+                    p1 = fma(d.y, x1, p1);
+                    p2 = fma(d.z, x2, p2);
+                    p3 = fma(d.w, x3, p3);
+                    d = (k < 2) ? cvt_e2m1x4_f32x4(w1[g * 4 + h * 2], (k & 1) << 4) : cvt_e2m1x4_f32x4(w1[g * 4 + h * 2 + 1], (k & 1) << 4);
+                    q0 = fma(d.x, x0, q0);
+                    q1 = fma(d.y, x1, q1);
+                    q2 = fma(d.z, x2, q2);
+                    q3 = fma(d.w, x3, q3);
+                }
+            }
+            reg f32 sg0 = ue8m0_to_f32(sc0 >> (g << 3));
+            reg f32 sg1 = ue8m0_to_f32(sc1 >> (g << 3));
+            if (g == 0) {
+                a0 = fma(sg0, (p0 + p1) + (p2 + p3), a0);
+                b0 = fma(sg1, (q0 + q1) + (q2 + q3), b0);
+            } else {
+                a1 = fma(sg0, (p0 + p1) + (p2 + p3), a1);
+                b1 = fma(sg1, (q0 + q1) + (q2 + q3), b1);
+            }
+        }
+    }
+
+    reg f32 t0 = warp_sum(a0 + a1);
+    reg f32 t1 = warp_sum(b0 + b1);
+    if (lane == 0) {
+        stg16(ptr_add(out_bf16, out_col_off + row0, 2), f32_to_bf16(t0));
+        stg16(ptr_add(out_bf16, out_col_off + row0 + 1, 2), f32_to_bf16(t1));
+    }
+}
+
+kernel[BLOCK, 64] skinny_bf16_b1(
+    global u32* weight_bf16, global u32* act_bf16, global u16* out_bf16,
+    u32 chunks16, u32 out_dim, u32 out_col_off
+) {
+    reg u32 row0 = ((ctaid_x() << 2) + warp_id()) << 1;
+    reg u32 lane = lane_id();
+    if (row0 >= out_dim) { return; }
+
+    ureg u64 w_r0 = ptr_add(weight_bf16, row0 * chunks16, 32);
+    ureg u64 w_r1 = ptr_add(w_r0, chunks16, 32);
+    reg f32 a0 = 0.0f;
+    reg f32 a1 = 0.0f;
+    reg f32 a2 = 0.0f;
+    reg f32 a3 = 0.0f;
+    reg f32 b0 = 0.0f;
+    reg f32 b1 = 0.0f;
+    reg f32 b2 = 0.0f;
+    reg f32 b3 = 0.0f;
+
+    for (reg u32 c = lane; c < chunks16; c += LANES) {
+        reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+        reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+        reg u32x8 av = ldg256_persist(ptr_add(act_bf16, c, 32));
+        unroll (k = 0..4) {
+            reg f32 fx0 = bf16_lo(av[k * 2]);
+            reg f32 fx1 = bf16_hi(av[k * 2]);
+            reg f32 fx2 = bf16_lo(av[k * 2 + 1]);
+            reg f32 fx3 = bf16_hi(av[k * 2 + 1]);
+            reg f32 u0 = bf16_lo(w0[k * 2]);
+            reg f32 u1 = bf16_hi(w0[k * 2]);
+            reg f32 u2 = bf16_lo(w0[k * 2 + 1]);
+            reg f32 u3 = bf16_hi(w0[k * 2 + 1]);
+            a0 = fma(u0, fx0, a0);
+            a1 = fma(u1, fx1, a1);
+            a2 = fma(u2, fx2, a2);
+            a3 = fma(u3, fx3, a3);
+            u0 = bf16_lo(w1[k * 2]);
+            u1 = bf16_hi(w1[k * 2]);
+            u2 = bf16_lo(w1[k * 2 + 1]);
+            u3 = bf16_hi(w1[k * 2 + 1]);
+            b0 = fma(u0, fx0, b0);
+            b1 = fma(u1, fx1, b1);
+            b2 = fma(u2, fx2, b2);
+            b3 = fma(u3, fx3, b3);
+        }
+    }
+
+    reg f32 t0 = warp_sum((a0 + a1) + (a2 + a3));
+    reg f32 t1 = warp_sum((b0 + b1) + (b2 + b3));
+    if (lane == 0) {
+        stg16(ptr_add(out_bf16, out_col_off + row0, 2), f32_to_bf16(t0));
+        stg16(ptr_add(out_bf16, out_col_off + row0 + 1, 2), f32_to_bf16(t1));
+    }
+}

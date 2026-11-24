@@ -45,36 +45,80 @@ typedef struct LmSkinnyArguments
 }
 LmSkinnyArguments;
 
-static __device__ __forceinline__ float LmSkinnyBf16Pairs(uint32_t weight, uint32_t activation, float accumulator)
-{
-	accumulator = fmaf(__uint_as_float(weight << 16u),__uint_as_float(activation << 16u),accumulator);
-	return(fmaf(__uint_as_float(weight & 0xffff0000u),__uint_as_float(activation & 0xffff0000u),accumulator));
-}
-
 static __device__ __forceinline__ float LmSkinnyBf16Chunk(uint4 weight, uint4 activation, float accumulator)
 {
-	accumulator = LmSkinnyBf16Pairs(weight.x,activation.x,accumulator);
-	accumulator = LmSkinnyBf16Pairs(weight.y,activation.y,accumulator);
-	accumulator = LmSkinnyBf16Pairs(weight.z,activation.z,accumulator);
-	return(LmSkinnyBf16Pairs(weight.w,activation.w,accumulator));
+	float a0 = fmaf(__uint_as_float(weight.x << 16u),__uint_as_float(activation.x << 16u),accumulator);
+	float a1 = __uint_as_float(weight.x & 0xffff0000u) * __uint_as_float(activation.x & 0xffff0000u);
+	a0 = fmaf(__uint_as_float(weight.y << 16u),__uint_as_float(activation.y << 16u),a0);
+	a1 = fmaf(__uint_as_float(weight.y & 0xffff0000u),__uint_as_float(activation.y & 0xffff0000u),a1);
+	a0 = fmaf(__uint_as_float(weight.z << 16u),__uint_as_float(activation.z << 16u),a0);
+	a1 = fmaf(__uint_as_float(weight.z & 0xffff0000u),__uint_as_float(activation.z & 0xffff0000u),a1);
+	a0 = fmaf(__uint_as_float(weight.w << 16u),__uint_as_float(activation.w << 16u),a0);
+	a1 = fmaf(__uint_as_float(weight.w & 0xffff0000u),__uint_as_float(activation.w & 0xffff0000u),a1);
+	return(a0 + a1);
 }
 
-static __device__ __forceinline__ float LmSkinnyFp8Pairs(float2 low, float2 high, uint4 activation_half, uint32_t word, float accumulator)
+static __device__ __forceinline__ float2 LmSkinnyE2m1Pair(uint32_t word, uint32_t byte)
 {
-	uint32_t first = word == 0u ? activation_half.x : activation_half.z, second = word == 0u ? activation_half.y : activation_half.w;
-	accumulator = fmaf(low.x,__uint_as_float(first << 16u),accumulator);
-	accumulator = fmaf(low.y,__uint_as_float(first & 0xffff0000u),accumulator);
-	accumulator = fmaf(high.x,__uint_as_float(second << 16u),accumulator);
-	return(fmaf(high.y,__uint_as_float(second & 0xffff0000u),accumulator));
+#if defined(__CUDA_ARCH__)
+	uint32_t widened;
+	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
+		: "=r"(widened) : "r"(word >> (8u * byte)));
+	return(make_float2(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))),
+		__half2float(__ushort_as_half((uint16_t)(widened >> 16u)))));
+#else
+	const uint32_t packed = (word >> (8u * byte)) & 0xffu;
+	return(make_float2(LmE2m1ToFloatPure(packed & 15u),LmE2m1ToFloatPure((packed >> 4u) & 15u)));
+#endif
 }
 
-static __device__ __forceinline__ float LmSkinnyFp8Word(uint32_t weight, uint4 activation_half, uint32_t word, float accumulator)
+typedef struct LmSkinnyE2m1HalfDecoded
 {
-	return(LmSkinnyFp8Pairs(LmE4m3PairToFloat2Pure((uint16_t)weight),LmE4m3PairToFloat2Pure((uint16_t)(weight >> 16u)),activation_half,word,accumulator));
+	float2 pair[8];
+}
+LmSkinnyE2m1HalfDecoded;
+
+static __device__ __forceinline__ LmSkinnyE2m1HalfDecoded LmSkinnyDecodeE2m1Half(uint32_t w0, uint32_t w1)
+{
+	LmSkinnyE2m1HalfDecoded decoded;
+	#pragma unroll
+	for ( uint32_t j = 0u; j < 4u; j++ )
+	{
+		decoded.pair[j] = LmSkinnyE2m1Pair(w0,j);
+		decoded.pair[4u + j] = LmSkinnyE2m1Pair(w1,j);
+	}
+	return(decoded);
+}
+
+static __device__ __forceinline__ float LmSkinnyAccumE2m1Half(const LmSkinnyE2m1HalfDecoded &d, uint4 a0_in, uint4 a1_in)
+{
+	float a0 = d.pair[0].x * __uint_as_float(a0_in.x << 16u);
+	float a1 = d.pair[0].y * __uint_as_float(a0_in.x & 0xffff0000u);
+	float a2 = d.pair[1].x * __uint_as_float(a0_in.y << 16u);
+	float a3 = d.pair[1].y * __uint_as_float(a0_in.y & 0xffff0000u);
+	a0 = fmaf(d.pair[2].x,__uint_as_float(a0_in.z << 16u),a0);
+	a1 = fmaf(d.pair[2].y,__uint_as_float(a0_in.z & 0xffff0000u),a1);
+	a2 = fmaf(d.pair[3].x,__uint_as_float(a0_in.w << 16u),a2);
+	a3 = fmaf(d.pair[3].y,__uint_as_float(a0_in.w & 0xffff0000u),a3);
+	a0 = fmaf(d.pair[4].x,__uint_as_float(a1_in.x << 16u),a0);
+	a1 = fmaf(d.pair[4].y,__uint_as_float(a1_in.x & 0xffff0000u),a1);
+	a2 = fmaf(d.pair[5].x,__uint_as_float(a1_in.y << 16u),a2);
+	a3 = fmaf(d.pair[5].y,__uint_as_float(a1_in.y & 0xffff0000u),a3);
+	a0 = fmaf(d.pair[6].x,__uint_as_float(a1_in.z << 16u),a0);
+	a1 = fmaf(d.pair[6].y,__uint_as_float(a1_in.z & 0xffff0000u),a1);
+	a2 = fmaf(d.pair[7].x,__uint_as_float(a1_in.w << 16u),a2);
+	a3 = fmaf(d.pair[7].y,__uint_as_float(a1_in.w & 0xffff0000u),a3);
+	return((a0 + a1) + (a2 + a3));
 }
 
 template<class Format>
 struct LmSkinnyDecodeOnce
+{
+	static constexpr bool kValue = false;
+};
+
+template<class Format>
+struct LmSkinnyDecodeHalves
 {
 	static constexpr bool kValue = false;
 };
@@ -122,14 +166,6 @@ struct LmSkinnyFormat<LmFp8>
 		value.high = __ldg((const uint4 *)activation + 1);
 		return(value);
 	}
-	static __device__ __forceinline__ float Chunk(uint4 weight, Activation activation)
-	{
-		float accumulator = 0.0f;
-		accumulator = LmSkinnyFp8Word(weight.x,activation.low,0u,accumulator);
-		accumulator = LmSkinnyFp8Word(weight.y,activation.low,1u,accumulator);
-		accumulator = LmSkinnyFp8Word(weight.z,activation.high,0u,accumulator);
-		return(LmSkinnyFp8Word(weight.w,activation.high,1u,accumulator));
-	}
 	typedef struct Decoded
 	{
 		float2 pair[8];
@@ -149,11 +185,26 @@ struct LmSkinnyFormat<LmFp8>
 	}
 	static __device__ __forceinline__ float ChunkDecoded(const Decoded &decoded, Activation activation)
 	{
-		float accumulator = 0.0f;
-		accumulator = LmSkinnyFp8Pairs(decoded.pair[0],decoded.pair[1],activation.low,0u,accumulator);
-		accumulator = LmSkinnyFp8Pairs(decoded.pair[2],decoded.pair[3],activation.low,1u,accumulator);
-		accumulator = LmSkinnyFp8Pairs(decoded.pair[4],decoded.pair[5],activation.high,0u,accumulator);
-		return(LmSkinnyFp8Pairs(decoded.pair[6],decoded.pair[7],activation.high,1u,accumulator));
+		float accumulator = decoded.pair[0].x * __uint_as_float(activation.low.x << 16u);
+		accumulator = fmaf(decoded.pair[0].y,__uint_as_float(activation.low.x & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[1].x,__uint_as_float(activation.low.y << 16u),accumulator);
+		accumulator = fmaf(decoded.pair[1].y,__uint_as_float(activation.low.y & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[2].x,__uint_as_float(activation.low.z << 16u),accumulator);
+		accumulator = fmaf(decoded.pair[2].y,__uint_as_float(activation.low.z & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[3].x,__uint_as_float(activation.low.w << 16u),accumulator);
+		accumulator = fmaf(decoded.pair[3].y,__uint_as_float(activation.low.w & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[4].x,__uint_as_float(activation.high.x << 16u),accumulator);
+		accumulator = fmaf(decoded.pair[4].y,__uint_as_float(activation.high.x & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[5].x,__uint_as_float(activation.high.y << 16u),accumulator);
+		accumulator = fmaf(decoded.pair[5].y,__uint_as_float(activation.high.y & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[6].x,__uint_as_float(activation.high.z << 16u),accumulator);
+		accumulator = fmaf(decoded.pair[6].y,__uint_as_float(activation.high.z & 0xffff0000u),accumulator);
+		accumulator = fmaf(decoded.pair[7].x,__uint_as_float(activation.high.w << 16u),accumulator);
+		return(fmaf(decoded.pair[7].y,__uint_as_float(activation.high.w & 0xffff0000u),accumulator));
+	}
+	static __device__ __forceinline__ float Chunk(uint4 weight, Activation activation)
+	{
+		return(ChunkDecoded(Decode(weight),activation));
 	}
 };
 
@@ -168,20 +219,6 @@ typedef struct LmSkinnyQuad
 	uint4 part[4];
 }
 LmSkinnyQuad;
-
-static __device__ __forceinline__ float LmSkinnyMxfp4Byte(uint32_t code, uint32_t activation, float accumulator)
-{
-	accumulator = fmaf(LmE2m1ToFloatPure(code & 15u),__uint_as_float(activation << 16u),accumulator);
-	return(fmaf(LmE2m1ToFloatPure((code >> 4u) & 15u),__uint_as_float(activation & 0xffff0000u),accumulator));
-}
-
-static __device__ __forceinline__ float LmSkinnyMxfp4Word(uint32_t weight, uint4 activation, float accumulator)
-{
-	accumulator = LmSkinnyMxfp4Byte(weight,activation.x,accumulator);
-	accumulator = LmSkinnyMxfp4Byte(weight >> 8u,activation.y,accumulator);
-	accumulator = LmSkinnyMxfp4Byte(weight >> 16u,activation.z,accumulator);
-	return(LmSkinnyMxfp4Byte(weight >> 24u,activation.w,accumulator));
-}
 
 template<>
 struct LmSkinnyDecodeOnce<LmMxfp8>
@@ -211,14 +248,27 @@ struct LmSkinnyFormat<LmMxfp4>
 		value.part[3] = __ldg((const uint4 *)activation + 3);
 		return(value);
 	}
+	static __device__ __forceinline__ LmSkinnyWide LoadHalf(const uint16_t *activation, uint32_t half)
+	{
+		LmSkinnyWide value;
+		const uint4 *base = (const uint4 *)activation + half * 2u;
+		value.low = __ldg(base);
+		value.high = __ldg(base + 1);
+		return(value);
+	}
 	static __device__ __forceinline__ float Chunk(uint4 weight, Activation activation)
 	{
-		float accumulator = 0.0f;
-		accumulator = LmSkinnyMxfp4Word(weight.x,activation.part[0],accumulator);
-		accumulator = LmSkinnyMxfp4Word(weight.y,activation.part[1],accumulator);
-		accumulator = LmSkinnyMxfp4Word(weight.z,activation.part[2],accumulator);
-		return(LmSkinnyMxfp4Word(weight.w,activation.part[3],accumulator));
+		const LmSkinnyE2m1HalfDecoded low = LmSkinnyDecodeE2m1Half(weight.x,weight.y);
+		const LmSkinnyE2m1HalfDecoded high = LmSkinnyDecodeE2m1Half(weight.z,weight.w);
+		return(LmSkinnyAccumE2m1Half(low,activation.part[0],activation.part[1]) +
+			LmSkinnyAccumE2m1Half(high,activation.part[2],activation.part[3]));
 	}
+};
+
+template<>
+struct LmSkinnyDecodeHalves<LmMxfp4>
+{
+	static constexpr bool kValue = true;
 };
 
 template<class Format>
@@ -243,13 +293,29 @@ struct LmSkinnyFormat<LmNvfp4>
 		value.part[3] = __ldg((const uint4 *)activation + 3);
 		return(value);
 	}
+	static __device__ __forceinline__ LmSkinnyWide LoadHalf(const uint16_t *activation, uint32_t half)
+	{
+		LmSkinnyWide value;
+		const uint4 *base = (const uint4 *)activation + half * 2u;
+		value.low = __ldg(base);
+		value.high = __ldg(base + 1);
+		return(value);
+	}
 	static __device__ __forceinline__ float2 Halves(uint4 weight, Activation activation)
 	{
 		float2 value;
-		value.x = LmSkinnyMxfp4Word(weight.y,activation.part[1],LmSkinnyMxfp4Word(weight.x,activation.part[0],0.0f));
-		value.y = LmSkinnyMxfp4Word(weight.w,activation.part[3],LmSkinnyMxfp4Word(weight.z,activation.part[2],0.0f));
+		const LmSkinnyE2m1HalfDecoded low = LmSkinnyDecodeE2m1Half(weight.x,weight.y);
+		const LmSkinnyE2m1HalfDecoded high = LmSkinnyDecodeE2m1Half(weight.z,weight.w);
+		value.x = LmSkinnyAccumE2m1Half(low,activation.part[0],activation.part[1]);
+		value.y = LmSkinnyAccumE2m1Half(high,activation.part[2],activation.part[3]);
 		return(value);
 	}
+};
+
+template<>
+struct LmSkinnyDecodeHalves<LmNvfp4>
+{
+	static constexpr bool kValue = true;
 };
 
 template<>
@@ -289,35 +355,31 @@ static __device__ __forceinline__ float LmSkinnyScaleEntry(const uint8_t *entry,
 }
 
 template<class Format>
-static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
+static __device__ __forceinline__ float LmSkinnyScaleWithGlobal(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k, float global)
 {
 	if constexpr ( Format::kScaleGroup == 0u )
 		return(1.0f);
 	else
 		return(LmSkinnyScaleEntry<Format>((const uint8_t *)scale->data + (((uint64_t)group * scale->group_stride_entries) + ((uint64_t)neuron * scale->row_group_stride_entries) + (k / Format::kScaleGroup)) * LmSkinnyScaleBytes<Format>(),
-			LmSkinnyScaleGlobal<Format>(scale,group)));
+			global));
+}
+
+template<class Format>
+static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
+{
+	return(LmSkinnyScaleWithGlobal<Format>(scale,group,neuron,k,LmSkinnyScaleGlobal<Format>(scale,group)));
 }
 
 template<class Format>
 static __device__ __forceinline__ float LmSkinnyScaleByEncoding(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
 {
-	float value;
-	if constexpr ( Format::kScaleGroup == 0u )
-		return(1.0f);
-	else
-	{
-		value = LmScaleTensorLoadByIndex(scale,((uint64_t)group * scale->group_stride_entries) + ((uint64_t)neuron * scale->row_group_stride_entries) + (k / Format::kScaleGroup));
-		return(scale->encoding == LM_SCALE_ENCODING_UE4M3_F32_GLOBAL ? value * ((const float *)scale->global_data)[group] : value);
-	}
+	return(LmSkinnyScale<Format>(scale,group,neuron,k));
 }
 
 template<class Format, uint32_t ROWS>
 static __device__ __forceinline__ float LmSkinnyRowsScale(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
 {
-	if constexpr ( ROWS == 1u )
-		return(LmSkinnyScaleByEncoding<Format>(scale,group,neuron,k));
-	else
-		return(LmSkinnyScale<Format>(scale,group,neuron,k));
+	return(LmSkinnyScale<Format>(scale,group,neuron,k));
 }
 
 template<class Format>
@@ -346,58 +408,194 @@ static __device__ __forceinline__ void LmSkinnyResolve(const LmSkinnyArguments &
 	*source = args.activation_packed != 0u ? *target : pair / args.top_k;
 }
 
+template<class Format, uint32_t ROWS, uint32_t NPG>
+static __device__ __forceinline__ void LmSkinnyAccumulateStep(const LmSkinnyArguments &args, const uint4 *weight, const uint16_t *const *activation, uint32_t group, uint32_t neuron, uint32_t c, float global, float (*accumulator)[ROWS])
+{
+	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
+	uint32_t n, r;
+	if constexpr ( LmSkinnyDecodeHalves<Format>::kValue && ROWS > 1u )
+	{
+		LmSkinnyWide act_half[ROWS];
+		float part[NPG][ROWS];
+		#pragma unroll
+		for ( r = 0u; r < ROWS; r++ )
+			act_half[r] = LmSkinnyFormat<Format>::LoadHalf(activation[r] + c * elements,0u);
+		#pragma unroll
+		for ( n = 0u; n < NPG; n++ )
+		{
+			const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
+			const LmSkinnyE2m1HalfDecoded low = LmSkinnyDecodeE2m1Half(weight[n].x,weight[n].y);
+			if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+			{
+				const float scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements,global);
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+					accumulator[n][r] = fmaf(scale,LmSkinnyAccumE2m1Half(low,act_half[r].low,act_half[r].high),accumulator[n][r]);
+			}
+			else
+			{
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+					part[n][r] = LmSkinnyAccumE2m1Half(low,act_half[r].low,act_half[r].high);
+			}
+		}
+		#pragma unroll
+		for ( r = 0u; r < ROWS; r++ )
+			act_half[r] = LmSkinnyFormat<Format>::LoadHalf(activation[r] + c * elements,1u);
+		#pragma unroll
+		for ( n = 0u; n < NPG; n++ )
+		{
+			const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
+			const LmSkinnyE2m1HalfDecoded high = LmSkinnyDecodeE2m1Half(weight[n].z,weight[n].w);
+			if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+			{
+				const float high_scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements + Format::kScaleGroup,global);
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+					accumulator[n][r] = fmaf(high_scale,LmSkinnyAccumE2m1Half(high,act_half[r].low,act_half[r].high),accumulator[n][r]);
+			}
+			else
+			{
+				const float scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements,global);
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+					accumulator[n][r] = fmaf(scale,part[n][r] + LmSkinnyAccumE2m1Half(high,act_half[r].low,act_half[r].high),accumulator[n][r]);
+			}
+		}
+	}
+	else if constexpr ( ROWS > 1u && LmSkinnyDecodeOnce<Format>::kValue )
+	{
+		typename LmSkinnyFormat<Format>::Activation staged[ROWS];
+		#pragma unroll
+		for ( r = 0u; r < ROWS; r++ )
+			staged[r] = LmSkinnyFormat<Format>::Load(activation[r] + c * elements);
+		#pragma unroll
+		for ( n = 0u; n < NPG; n++ )
+		{
+			const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
+			const float scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements,global);
+			const typename LmSkinnyFormat<Format>::Decoded decoded = LmSkinnyFormat<Format>::Decode(weight[n]);
+			#pragma unroll
+			for ( r = 0u; r < ROWS; r++ )
+				accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::ChunkDecoded(decoded,staged[r]),accumulator[n][r]);
+		}
+	}
+	else
+	{
+		typename LmSkinnyFormat<Format>::Activation staged[ROWS];
+		#pragma unroll
+		for ( r = 0u; r < ROWS; r++ )
+			staged[r] = LmSkinnyFormat<Format>::Load(activation[r] + c * elements);
+		#pragma unroll
+		for ( n = 0u; n < NPG; n++ )
+		{
+			const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
+			const float scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements,global);
+			if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+			{
+				const float high = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements + Format::kScaleGroup,global);
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+				{
+					const float2 part = LmSkinnyFormat<Format>::Halves(weight[n],staged[r]);
+					accumulator[n][r] = fmaf(high,part.y,fmaf(scale,part.x,accumulator[n][r]));
+				}
+			}
+			else
+			{
+				#pragma unroll
+				for ( r = 0u; r < ROWS; r++ )
+					accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[n],staged[r]),accumulator[n][r]);
+			}
+		}
+	}
+}
+
 template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
 static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArguments &args, const uint4 *const *rows, const uint16_t *const *activation, uint32_t group, uint32_t neuron, uint32_t sub, uint32_t chunks, float (*accumulator)[ROWS])
 {
 	constexpr uint32_t depth = ROWS == 1u ? 8u : ROWS <= LM_SKINNY_ROWS_MID ? 4u : 2u, unroll = depth / NPG != 0u ? depth / NPG : 1u, elements = LmSkinnyFormat<Format>::kElements;
-	uint32_t base, u, n, r, c;
-	float scale;
+	const float global = LmSkinnyScaleGlobal<Format>(&args.scale,group);
+	uint32_t base, u, n;
 	uint4 weight[unroll][NPG];
-	typename LmSkinnyFormat<Format>::Activation staged[unroll][ROWS];
-	for ( base = sub; base < chunks; base += LANES * unroll )
+	if constexpr ( ROWS == 1u )
 	{
-		#pragma unroll
-		for ( u = 0u; u < unroll; u++ )
+		typename LmSkinnyFormat<Format>::Activation staged[unroll];
+		for ( base = sub; base + (unroll - 1u) * LANES < chunks; base += LANES * unroll )
 		{
-			c = base + u * LANES < chunks ? base + u * LANES : 0u;
 			#pragma unroll
-			for ( n = 0u; n < NPG; n++ )
-				weight[u][n] = base + u * LANES < chunks ? __ldcs(rows[n] + c) : make_uint4(0u,0u,0u,0u);
+			for ( u = 0u; u < unroll; u++ )
+			{
+				const uint32_t c = base + u * LANES;
+				#pragma unroll
+				for ( n = 0u; n < NPG; n++ )
+					weight[u][n] = __ldcs(rows[n] + c);
+				staged[u] = LmSkinnyFormat<Format>::Load(activation[0] + c * elements);
+			}
 			#pragma unroll
-			for ( r = 0u; r < ROWS; r++ )
-				staged[u][r] = LmSkinnyFormat<Format>::Load(activation[r] + c * elements);
+			for ( u = 0u; u < unroll; u++ )
+			{
+				const uint32_t c = base + u * LANES;
+				#pragma unroll
+				for ( n = 0u; n < NPG; n++ )
+				{
+					const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
+					const float scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements,global);
+					if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+					{
+						const float high = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,c * elements + Format::kScaleGroup,global);
+						const float2 part = LmSkinnyFormat<Format>::Halves(weight[u][n],staged[u]);
+						accumulator[n][0] = fmaf(high,part.y,fmaf(scale,part.x,accumulator[n][0]));
+					}
+					else
+						accumulator[n][0] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[u][n],staged[u]),accumulator[n][0]);
+				}
+			}
 		}
-		#pragma unroll
-		for ( u = 0u; u < unroll; u++ )
+		for ( ; base < chunks; base += LANES )
+		{
+			const typename LmSkinnyFormat<Format>::Activation act = LmSkinnyFormat<Format>::Load(activation[0] + base * elements);
 			#pragma unroll
 			for ( n = 0u; n < NPG; n++ )
 			{
-				scale = base + u * LANES < chunks ? LmSkinnyRowsScale<Format,ROWS>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements) : 1.0f;
+				const uint4 w = __ldcs(rows[n] + base);
+				const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
+				const float scale = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,base * elements,global);
 				if constexpr ( LmSkinnySplitScale<Format>::kSplit )
 				{
-					float high = base + u * LANES < chunks ? LmSkinnyRowsScale<Format,ROWS>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements + Format::kScaleGroup) : 1.0f;
-					float2 part;
-					#pragma unroll
-					for ( r = 0u; r < ROWS; r++ )
-					{
-						part = LmSkinnyFormat<Format>::Halves(weight[u][n],staged[u][r]);
-						accumulator[n][r] = fmaf(high,part.y,fmaf(scale,part.x,accumulator[n][r]));
-					}
-				}
-				else if constexpr ( ROWS > 1u && LmSkinnyDecodeOnce<Format>::kValue )
-				{
-					const typename LmSkinnyFormat<Format>::Decoded decoded = LmSkinnyFormat<Format>::Decode(weight[u][n]);
-					#pragma unroll
-					for ( r = 0u; r < ROWS; r++ )
-						accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::ChunkDecoded(decoded,staged[u][r]),accumulator[n][r]);
+					const float high = LmSkinnyScaleWithGlobal<Format>(&args.scale,group,row_neuron,base * elements + Format::kScaleGroup,global);
+					const float2 part = LmSkinnyFormat<Format>::Halves(w,act);
+					accumulator[n][0] = fmaf(high,part.y,fmaf(scale,part.x,accumulator[n][0]));
 				}
 				else
-				{
-					#pragma unroll
-					for ( r = 0u; r < ROWS; r++ )
-						accumulator[n][r] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(weight[u][n],staged[u][r]),accumulator[n][r]);
-				}
+					accumulator[n][0] = fmaf(scale,LmSkinnyFormat<Format>::Chunk(w,act),accumulator[n][0]);
 			}
+		}
+	}
+	else
+	{
+		for ( base = sub; base + (unroll - 1u) * LANES < chunks; base += LANES * unroll )
+		{
+			#pragma unroll
+			for ( u = 0u; u < unroll; u++ )
+			{
+				const uint32_t c = base + u * LANES;
+				#pragma unroll
+				for ( n = 0u; n < NPG; n++ )
+					weight[u][n] = __ldcs(rows[n] + c);
+			}
+			#pragma unroll
+			for ( u = 0u; u < unroll; u++ )
+				LmSkinnyAccumulateStep<Format,ROWS,NPG>(args,weight[u],activation,group,neuron,base + u * LANES,global,accumulator);
+		}
+		for ( ; base < chunks; base += LANES )
+		{
+			uint4 tail[NPG];
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+				tail[n] = __ldcs(rows[n] + base);
+			LmSkinnyAccumulateStep<Format,ROWS,NPG>(args,tail,activation,group,neuron,base,global,accumulator);
+		}
 	}
 }
 
@@ -617,6 +815,7 @@ template<class Format, uint32_t LANES, uint32_t U, uint32_t NPG>
 static __device__ __forceinline__ void LmSkinnyFrameLoad(const LmSkinnyArguments &args, uint32_t neuron, uint32_t chunk, uint32_t chunks, uint4 (*weight)[NPG], float (*low)[NPG], float (*high)[NPG])
 {
 	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
+	const float global = LmSkinnyScaleGlobal<Format>(&args.scale,0u);
 	const uint4 *rows[NPG];
 	uint32_t u, n, c;
 	LmSkinnyWeightRows<Format,NPG>(args,0u,neuron,rows);
@@ -627,10 +826,11 @@ static __device__ __forceinline__ void LmSkinnyFrameLoad(const LmSkinnyArguments
 		#pragma unroll
 		for ( n = 0u; n < NPG; n++ )
 		{
+			const uint32_t row_neuron = neuron + n < args.output_dimension ? neuron + n : neuron;
 			weight[u][n] = c < chunks ? __ldcs(rows[n] + c) : make_uint4(0u,0u,0u,0u);
-			low[u][n] = c < chunks ? LmSkinnyScale<Format>(&args.scale,0u,neuron + n < args.output_dimension ? neuron + n : neuron,c * elements) : 1.0f;
+			low[u][n] = c < chunks ? LmSkinnyScaleWithGlobal<Format>(&args.scale,0u,row_neuron,c * elements,global) : 1.0f;
 			if constexpr ( LmSkinnySplitScale<Format>::kSplit )
-				high[u][n] = c < chunks ? LmSkinnyScale<Format>(&args.scale,0u,neuron + n < args.output_dimension ? neuron + n : neuron,c * elements + Format::kScaleGroup) : 1.0f;
+				high[u][n] = c < chunks ? LmSkinnyScaleWithGlobal<Format>(&args.scale,0u,row_neuron,c * elements + Format::kScaleGroup,global) : 1.0f;
 		}
 	}
 }
@@ -639,7 +839,6 @@ template<class Format, uint32_t LANES, uint32_t RG, uint32_t U, uint32_t NPG>
 static __device__ __forceinline__ void LmSkinnyFrameCompute(const uint16_t *activation, uint64_t stride, uint32_t count, uint32_t chunk, uint32_t chunks, const uint4 (*weight)[NPG], const float (*low)[NPG], const float (*high)[NPG], float (*accumulator)[RG])
 {
 	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
-	typename LmSkinnyFormat<Format>::Activation staged[RG];
 	uint32_t u, n, r, c;
 	#pragma unroll
 	for ( u = 0u; u < U; u++ )
@@ -647,22 +846,57 @@ static __device__ __forceinline__ void LmSkinnyFrameCompute(const uint16_t *acti
 		c = chunk + u * LANES;
 		if ( c >= chunks )
 			break;
-		#pragma unroll
-		for ( r = 0u; r < RG; r++ )
-			staged[r] = LmSkinnyFormat<Format>::Load(activation + (r < count ? r : 0u) * stride + c * elements);
-		if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+		if constexpr ( LmSkinnyDecodeHalves<Format>::kValue )
 		{
+			LmSkinnyWide act_half[RG];
+			float part[NPG][RG];
+			#pragma unroll
+			for ( r = 0u; r < RG; r++ )
+				act_half[r] = LmSkinnyFormat<Format>::LoadHalf(activation + (r < count ? r : 0u) * stride + c * elements,0u);
 			#pragma unroll
 			for ( n = 0u; n < NPG; n++ )
-				#pragma unroll
-				for ( r = 0u; r < RG; r++ )
+			{
+				const LmSkinnyE2m1HalfDecoded low_d = LmSkinnyDecodeE2m1Half(weight[u][n].x,weight[u][n].y);
+				if constexpr ( LmSkinnySplitScale<Format>::kSplit )
 				{
-					const float2 part = LmSkinnyFormat<Format>::Halves(weight[u][n],staged[r]);
-					accumulator[n][r] = fmaf(high[u][n],part.y,fmaf(low[u][n],part.x,accumulator[n][r]));
+					#pragma unroll
+					for ( r = 0u; r < RG; r++ )
+						accumulator[n][r] = fmaf(low[u][n],LmSkinnyAccumE2m1Half(low_d,act_half[r].low,act_half[r].high),accumulator[n][r]);
 				}
+				else
+				{
+					#pragma unroll
+					for ( r = 0u; r < RG; r++ )
+						part[n][r] = LmSkinnyAccumE2m1Half(low_d,act_half[r].low,act_half[r].high);
+				}
+			}
+			#pragma unroll
+			for ( r = 0u; r < RG; r++ )
+				act_half[r] = LmSkinnyFormat<Format>::LoadHalf(activation + (r < count ? r : 0u) * stride + c * elements,1u);
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+			{
+				const LmSkinnyE2m1HalfDecoded high_d = LmSkinnyDecodeE2m1Half(weight[u][n].z,weight[u][n].w);
+				if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+				{
+					#pragma unroll
+					for ( r = 0u; r < RG; r++ )
+						accumulator[n][r] = fmaf(high[u][n],LmSkinnyAccumE2m1Half(high_d,act_half[r].low,act_half[r].high),accumulator[n][r]);
+				}
+				else
+				{
+					#pragma unroll
+					for ( r = 0u; r < RG; r++ )
+						accumulator[n][r] = fmaf(low[u][n],part[n][r] + LmSkinnyAccumE2m1Half(high_d,act_half[r].low,act_half[r].high),accumulator[n][r]);
+				}
+			}
 		}
 		else if constexpr ( LmSkinnyDecodeOnce<Format>::kValue )
 		{
+			typename LmSkinnyFormat<Format>::Activation staged[RG];
+			#pragma unroll
+			for ( r = 0u; r < RG; r++ )
+				staged[r] = LmSkinnyFormat<Format>::Load(activation + (r < count ? r : 0u) * stride + c * elements);
 			#pragma unroll
 			for ( n = 0u; n < NPG; n++ )
 			{
@@ -674,6 +908,10 @@ static __device__ __forceinline__ void LmSkinnyFrameCompute(const uint16_t *acti
 		}
 		else
 		{
+			typename LmSkinnyFormat<Format>::Activation staged[RG];
+			#pragma unroll
+			for ( r = 0u; r < RG; r++ )
+				staged[r] = LmSkinnyFormat<Format>::Load(activation + (r < count ? r : 0u) * stride + c * elements);
 			#pragma unroll
 			for ( n = 0u; n < NPG; n++ )
 				#pragma unroll
@@ -1312,22 +1550,6 @@ static __device__ __forceinline__ uint32_t LmSkinnyCellGroup(const uint32_t *off
 	return(low);
 }
 
-static __device__ __forceinline__ float2 LmSkinnyE2m1Pair(uint32_t word, uint32_t byte)
-{
-#if defined(__CUDA_ARCH__)
-	uint32_t widened;
-	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
-		: "=r"(widened) : "r"(word >> (8u * byte)));
-	return(make_float2(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))),
-		__half2float(__ushort_as_half((uint16_t)(widened >> 16u)))));
-#else
-	const uint32_t packed = (word >> (8u * byte)) & 0xffu;
-	const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
-	return(make_float2(((packed & 0x8u) != 0u ? -1.0f : 1.0f) * magnitude[packed & 0x7u],
-		((packed & 0x80u) != 0u ? -1.0f : 1.0f) * magnitude[(packed >> 4u) & 0x7u]));
-#endif
-}
-
 template<uint32_t BATCH>
 static __device__ __forceinline__ void LmSkinnyCellTile(uint4 weight, float scale, const uint16_t *const *activation, uint32_t element, float *accumulator)
 {
@@ -1348,13 +1570,15 @@ static __device__ __forceinline__ void LmSkinnyCellTile(uint4 weight, float scal
 		for ( r = 0u; r < BATCH; r++ )
 		{
 			const uint4 packed = __ldg((const uint4 *)(activation[r] + element + w * 8u));
-			const uint32_t values[4] = {packed.x,packed.y,packed.z,packed.w};
-			#pragma unroll
-			for ( j = 0u; j < 4u; j++ )
-			{
-				chunk[r] = fmaf(pair[j].x,__uint_as_float(values[j] << 16u),chunk[r]);
-				chunk[r] = fmaf(pair[j].y,__uint_as_float(values[j] & 0xffff0000u),chunk[r]);
-			}
+			float a0 = pair[0].x * __uint_as_float(packed.x << 16u);
+			float a1 = pair[0].y * __uint_as_float(packed.x & 0xffff0000u);
+			float a2 = pair[1].x * __uint_as_float(packed.y << 16u);
+			float a3 = pair[1].y * __uint_as_float(packed.y & 0xffff0000u);
+			a0 = fmaf(pair[2].x,__uint_as_float(packed.z << 16u),a0);
+			a1 = fmaf(pair[2].y,__uint_as_float(packed.z & 0xffff0000u),a1);
+			a2 = fmaf(pair[3].x,__uint_as_float(packed.w << 16u),a2);
+			a3 = fmaf(pair[3].y,__uint_as_float(packed.w & 0xffff0000u),a3);
+			chunk[r] += (a0 + a1) + (a2 + a3);
 		}
 	}
 	#pragma unroll
