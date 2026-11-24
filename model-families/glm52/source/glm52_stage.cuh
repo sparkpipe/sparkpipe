@@ -56,6 +56,7 @@
 #define GLM_TILE_STAGES 2u
 #define GLM_TILE_WARPS 8u
 #define GLM_STREAM_EXPERT_ROWS 256u
+#define GLM_STREAM_EXPERT_W2_ROWS 32u
 #define GLM_CANDIDATE_BYTES 8u
 #define GLM_SCATTER_ROWS 256u
 #define GLM_PREFILL_HEADS 4u
@@ -418,7 +419,8 @@ template<class S>
 static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ query_norm,
 	const uint16_t *__restrict__ latent_norm, const uint32_t *__restrict__ positions, uint16_t *__restrict__ query_out, uint16_t *__restrict__ slot_out,
 	uint32_t rows, uint32_t tp_degree, uint32_t width, uint32_t query_max, uint32_t rope_dimension, float theta, float epsilon,
-	uint16_t *__restrict__ query_input_out, const float *__restrict__ rope_table)
+	uint16_t *__restrict__ query_input_out, const float *__restrict__ rope_table, LmKvShardView cache_shard,
+	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ store_positions, uint32_t store_kv)
 {
 	__shared__ __align__(16) float buf[S::kQueryA > S::kSlot ? S::kQueryA : S::kSlot];
 	__shared__ float reduction[LmBlockWarps<GLM_THREADS>()];
@@ -437,6 +439,25 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 	for ( uint32_t index = threadIdx.x; index < half; index += GLM_THREADS )
 		LmRopeRotate<LM_ROPE_INTERLEAVED, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index,
 			half, position * (S::kRopeTable ? rope_table[index] : __powf(theta, -2.0f * (float)index / (float)rope_dimension)));
+	if ( store_kv == 0u )
+		return;
+	__syncthreads();
+	const uint32_t store_pos = store_positions[row];
+	if ( SparkKvShardOwns(cache_shard.shard, store_pos) == 0u )
+		return;
+	uint8_t *slot = (uint8_t *)LmKvShardSlotRequired<GlmKv<S>>(cache_shard, sequence_of_row[row], store_pos, row, LM_KV_ACCESS_WRITE);
+	if ( slot == 0 )
+		return;
+	const uint16_t *src = slot_out + (uint64_t)row * S::kSlot;
+	uint16_t *dst = (uint16_t *)slot;
+	if ( ((S::kSlot & 7u) == 0u) && LmIsAligned16(dst) && LmIsAligned16(src) )
+	{
+		for ( uint32_t v = threadIdx.x; v < (S::kSlot >> 3u); v += GLM_THREADS )
+			((uint4 *)dst)[v] = ((const uint4 *)src)[v];
+		return;
+	}
+	for ( uint32_t index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
+		dst[index] = src[index];
 }
 
 static __global__ void GlmWaveContextKernel(const uint32_t *slots, const uint32_t *positions, uint32_t *context_lengths, uint32_t rows)
@@ -580,11 +601,159 @@ static int32_t GlmLaunched(void)
 }
 
 template<class S>
-static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
+static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmIndexKeyNormRopeStoreKernel(uint16_t *__restrict__ index_key_bf16,
+	const uint16_t *__restrict__ norm_weight, const uint16_t *__restrict__ norm_bias, const uint32_t *__restrict__ positions,
+	const float *__restrict__ rope_table, LmKvShardView index_shard, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ store_positions)
 {
-	int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->index_k, b->index_key_bf16, rows, S::kHidden, S::kIndexDim, S::kIndexDim, 0u, sms, b->row_exact, stream);
-	if ( status != LM_LAUNCH_OK )
-		return status;
+	__shared__ __align__(16) uint16_t s_key[S::kIndexDim];
+	__shared__ float pair_reduction[2u * LmBlockWarps<GLM_THREADS>()];
+	const uint32_t row = blockIdx.x, half = S::kRope / 2u;
+	const uint64_t base = (uint64_t)row * S::kIndexDim;
+	const uint32_t offset = threadIdx.x * 8u;
+	float total = 0.0f, total_squared = 0.0f, mean, inverse;
+	uint4 staged = make_uint4(0u, 0u, 0u, 0u);
+	LmDependentRelease();
+	if ( offset < S::kIndexDim )
+	{
+		float v[8];
+		staged = *(const uint4 *)(index_key_bf16 + base + offset);
+		LmLoadBf16x8AsFloat(staged, v);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k )
+		{
+			total += v[k];
+			total_squared += v[k] * v[k];
+		}
+	}
+	LmLayerNormStats<GLM_THREADS>(total, total_squared, pair_reduction, S::kIndexDim, S::kIndexEpsilon, &mean, &inverse);
+	if ( offset < S::kIndexDim )
+	{
+		float v[8];
+		LmLoadBf16x8AsFloat(staged, v);
+		LmLayerNormStore8(v, norm_weight, norm_bias, offset, mean, inverse, s_key + offset);
+	}
+	__syncthreads();
+	const float position = (float)positions[row];
+	for ( uint32_t index = threadIdx.x; index < half; index += GLM_THREADS )
+	{
+		const float angle = position * (S::kRopeTable ? rope_table[index] : __powf(S::kRopeTheta, -2.0f * (float)index / (float)S::kRope));
+		LmRopeRotate<S::kIndexPairing, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(s_key, 0u, index, half, angle);
+	}
+	__syncthreads();
+	if ( offset < S::kIndexDim )
+		*(uint4 *)(index_key_bf16 + base + offset) = *(const uint4 *)(s_key + offset);
+	const uint32_t store_pos = store_positions[row];
+	if ( SparkKvShardOwns(index_shard.shard, store_pos) == 0u )
+		return;
+	uint8_t *slot = (uint8_t *)LmKvShardSlotRequired<GlmIndexKv<S>>(index_shard, sequence_of_row[row], store_pos, row, LM_KV_ACCESS_WRITE);
+	if ( slot == 0 )
+		return;
+	if ( LmIsAligned16(slot) )
+	{
+		if ( offset < S::kIndexDim )
+			*(uint4 *)((uint16_t *)slot + offset) = *(const uint4 *)(s_key + offset);
+		return;
+	}
+	for ( uint32_t index = threadIdx.x; index < S::kIndexDim; index += GLM_THREADS )
+		((uint16_t *)slot)[index] = s_key[index];
+}
+
+template<class S>
+static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmIndexQueryRopeSkipKernel(uint16_t *__restrict__ rows_bf16,
+	const uint32_t *__restrict__ positions, const float *__restrict__ rope_table, const uint32_t *__restrict__ skip_seq,
+	const uint32_t *__restrict__ skip_ctx, const uint32_t *__restrict__ skip_pos, uint32_t skip_max_context)
+{
+	if ( skip_max_context != 0u && skip_seq != 0 && skip_ctx != 0 )
+	{
+		uint32_t bound = skip_ctx[skip_seq[0]];
+		if ( skip_pos != 0 && skip_pos[0] + 1u < bound )
+			bound = skip_pos[0] + 1u;
+		if ( bound <= skip_max_context )
+			return;
+	}
+	const uint32_t row = blockIdx.x, head = blockIdx.y, half = S::kRope / 2u;
+	if ( head >= S::kIndexHeads )
+		return;
+	const uint64_t base = (((uint64_t)row * S::kIndexHeads) + head) * S::kIndexDim;
+	const float position = (float)positions[row];
+	for ( uint32_t index = threadIdx.x; index < half; index += GLM_THREADS )
+	{
+		const float angle = position * (S::kRopeTable ? rope_table[index] : __powf(S::kRopeTheta, -2.0f * (float)index / (float)S::kRope));
+		LmRopeRotate<S::kIndexPairing, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(rows_bf16, base, index, half, angle);
+	}
+}
+
+template<class S>
+static __global__ __launch_bounds__(32u) void GlmKvBKeyRopeB1Kernel(const uint16_t *__restrict__ q_bf16,
+	const uint16_t *__restrict__ weight_bf16, const uint32_t *__restrict__ positions, const float *__restrict__ rope_table,
+	uint16_t *__restrict__ packed_query)
+{
+	constexpr uint32_t IN_DIM = S::kNope, OUT_DIM = S::kLatent, INPUT_HEAD_DIM = S::kQueryHead, OUT_HEAD_STRIDE = S::kLatent + S::kRope;
+	constexpr uint32_t OUTPUTS = 16u, K_TILE = 64u, VECTORS = IN_DIM / 8u, TILE_VECS = K_TILE / 8u, STRIDE = K_TILE + 8u, HALF = S::kRope / 2u;
+	__shared__ __align__(16) uint16_t input_tile[IN_DIM];
+	__shared__ __align__(16) uint16_t weight_tile[OUTPUTS][STRIDE];
+	const uint32_t first_output = blockIdx.x * OUTPUTS, head = blockIdx.y;
+	const uint16_t *weight_base = weight_bf16 + ((uint64_t)head * OUT_DIM + first_output) * IN_DIM;
+	LmDependentWait();
+	if ( blockIdx.x == 0u )
+	{
+		const uint64_t input_base = (uint64_t)head * INPUT_HEAD_DIM + IN_DIM;
+		const uint64_t output_base = (uint64_t)head * OUT_HEAD_STRIDE + OUT_DIM;
+		const float position = (float)positions[0];
+		for ( uint32_t index = threadIdx.x; index < HALF; index += 32u )
+		{
+			const uint32_t low_offset = index * 2u, high_offset = low_offset + 1u;
+			float low = LmBf16ToFloat(q_bf16[input_base + low_offset]);
+			float high = LmBf16ToFloat(q_bf16[input_base + high_offset]);
+			const float angle = position * (S::kRopeTable ? rope_table[index] : __powf(S::kRopeTheta, -2.0f * (float)index / (float)S::kRope));
+			LmRopePairRounded<S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(&low, &high, angle);
+			packed_query[output_base + low_offset] = LmFloatToBf16(low);
+			packed_query[output_base + high_offset] = LmFloatToBf16(high);
+		}
+	}
+	for ( uint32_t i = threadIdx.x; i < VECTORS; i += 32u )
+		((uint4 *)input_tile)[i] = __ldg((const uint4 *)(q_bf16 + (uint64_t)head * INPUT_HEAD_DIM) + i);
+	float total = 0.0f;
+	for ( uint32_t k0 = 0u; k0 < IN_DIM; k0 += K_TILE )
+	{
+		#pragma unroll
+		for ( uint32_t idx = threadIdx.x; idx < OUTPUTS * TILE_VECS; idx += 32u )
+		{
+			const uint32_t r = idx / TILE_VECS, c = idx % TILE_VECS;
+			*(uint4 *)(weight_tile[r] + c * 8u) = __ldcs((const uint4 *)(weight_base + (uint64_t)r * IN_DIM + k0) + c);
+		}
+		__syncthreads();
+		if ( threadIdx.x < OUTPUTS )
+		{
+			#pragma unroll
+			for ( uint32_t k = 0u; k < K_TILE; k += 8u )
+				total = LmDotBf16x8(*(const uint4 *)(input_tile + k0 + k), *(const uint4 *)(weight_tile[threadIdx.x] + k), total);
+		}
+		if ( k0 + K_TILE < IN_DIM )
+			__syncthreads();
+	}
+	if ( threadIdx.x < OUTPUTS )
+		packed_query[(uint64_t)head * OUT_HEAD_STRIDE + first_output + threadIdx.x] = LmFloatToBf16(total);
+	LmDependentRelease();
+}
+
+template<class S>
+static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream, uint32_t index_k_done = 0u)
+{
+	if ( index_k_done == 0u )
+	{
+		const int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->index_k, b->index_key_bf16, rows, S::kHidden, S::kIndexDim, S::kIndexDim, 0u, sms, b->row_exact, stream);
+		if ( status != LM_LAUNCH_OK )
+			return status;
+	}
+	if constexpr ( (S::kIndexDim & 7u) == 0u && S::kIndexDim <= GLM_THREADS * 8u )
+		if ( LmIsAligned16(b->index_key_bf16) && LmIsAligned16(b->weights->index_norm_weight) && LmIsAligned16(b->weights->index_norm_bias) )
+		{
+			LM_LAUNCH((GlmIndexKeyNormRopeStoreKernel<S>), rows, GLM_THREADS, 0, stream, b->index_key_bf16, b->weights->index_norm_weight,
+				b->weights->index_norm_bias, b->positions, b->rope_table, b->index_shard, b->sequence_of_row, b->slots != 0 ? b->slots : b->positions);
+			return GlmLaunched();
+		}
 	LM_LAUNCH((LmLayerNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kIndexDim + 8u) * sizeof(float), stream,
 		b->index_key_bf16, b->weights->index_norm_weight, b->weights->index_norm_bias, b->index_key_bf16, S::kIndexDim, S::kIndexDim, S::kIndexEpsilon);
 	LM_LAUNCH((LmRopeKernel<GLM_THREADS,S::kIndexPairing,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), rows, GLM_THREADS, 0, stream,
@@ -595,25 +764,31 @@ static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, 
 }
 
 template<class S>
-static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream, uint32_t dense_limit = 0u)
+static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream, uint32_t dense_limit = 0u, uint32_t index_q_done = 0u)
 {
-	int32_t status;
+	int32_t status = LM_LAUNCH_OK;
 	if ( dense_limit != 0u && rows == 1u )
 	{
-		const LmScaleTensor scale = GlmLinearScale<S>(b->weights->index_q, S::kQueryA, S::kIndexQuery);
-		status = GlmSkinny<GlmLinearFormat<S>>(b->weights->index_q.weight, scale, b->q_compressed_bf16, b->index_query_bf16, 0, rows, S::kQueryA,
-			S::kIndexQuery, S::kIndexQuery, 0u, stream, b->sequence_of_row, b->context_length, b->row_positions, dense_limit);
+		if ( index_q_done == 0u )
+		{
+			const LmScaleTensor scale = GlmLinearScale<S>(b->weights->index_q, S::kQueryA, S::kIndexQuery);
+			status = GlmSkinny<GlmLinearFormat<S>>(b->weights->index_q.weight, scale, b->q_compressed_bf16, b->index_query_bf16, 0, rows, S::kQueryA,
+				S::kIndexQuery, S::kIndexQuery, 0u, stream, b->sequence_of_row, b->context_length, b->row_positions, dense_limit);
+		}
 		if ( status == LM_LAUNCH_OK )
 			status = GlmSkinny<LmBf16Format>(b->weights->index_head, LmScaleTensorNone(), b->normed_bf16, 0, b->index_head_weight, rows, S::kHidden,
 				S::kIndexHeads, S::kIndexHeads, 0u, stream, b->sequence_of_row, b->context_length, b->row_positions, dense_limit);
+		if ( status != LM_LAUNCH_OK )
+			return status;
+		LM_LAUNCH((GlmIndexQueryRopeSkipKernel<S>), dim3(rows, S::kIndexHeads), GLM_THREADS, 0, stream, b->index_query_bf16, b->positions,
+			b->rope_table, b->sequence_of_row, b->context_length, b->row_positions, dense_limit);
+		return GlmLaunched();
 	}
-	else
-	{
+	if ( index_q_done == 0u )
 		status = GlmLinear<S>(b->q_compressed_bf16, b->weights->index_q, b->index_query_bf16, rows, S::kQueryA, S::kIndexQuery, S::kIndexQuery, 0u, sms, b->row_exact, stream);
-		if ( status == LM_LAUNCH_OK )
-			status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
-				b->row_exact, stream);
-	}
+	if ( status == LM_LAUNCH_OK )
+		status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
+			b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if constexpr ( S::kRopeTable )
@@ -688,10 +863,12 @@ static int32_t GlmNormGate(uint16_t *rows_bf16, const uint16_t *down, const uint
 }
 
 template<class S>
-static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
+static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream, uint32_t *index_k_done = 0, uint32_t with_index_k = 0u)
 {
 	uint32_t q_first, q_count, kv_first, kv_count, width, query_max;
 	int32_t status = LM_LAUNCH_OK;
+	if ( index_k_done != 0 )
+		*index_k_done = 0u;
 	if ( b->prenormed == 0u )
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
@@ -706,12 +883,19 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	if ( q_count != 0u && kv_count != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_exact != 0u) )
 	{
 		const GlmLinearWeight q_a = GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden), kv_a = GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden);
-		const LmSkinnyDenseTarget targets[2] = {
+		const uint32_t fuse_ik = (with_index_k != 0u && b->weights->index_k.weight != 0 && (!GlmLinearScaled<S> || b->weights->index_k.scale != 0) &&
+			b->index_key_bf16 != 0 && q_count + kv_count + S::kIndexDim <= LM_SKINNY_SPLIT_MAX_OUTPUTS) ? 1u : 0u;
+		const LmSkinnyDenseTarget targets[3] = {
 			{q_a.weight, b->projection_local_bf16, 0, q_count, width, 0u, GlmLinearScale<S>(q_a, S::kHidden, q_count)},
-			{kv_a.weight, b->projection_local_bf16, 0, kv_count, width, query_max, GlmLinearScale<S>(kv_a, S::kHidden, kv_count)}};
-		status = LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream, rows > LM_SKINNY_ROWS_WIDE ? 1u : 0u, 1u);
+			{kv_a.weight, b->projection_local_bf16, 0, kv_count, width, query_max, GlmLinearScale<S>(kv_a, S::kHidden, kv_count)},
+			{b->weights->index_k.weight, b->index_key_bf16, 0, S::kIndexDim, S::kIndexDim, 0u, GlmLinearScale<S>(b->weights->index_k, S::kHidden, S::kIndexDim)}};
+		status = LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, fuse_ik != 0u ? 3u : 2u, b->normed_bf16, rows, S::kHidden, stream, rows > LM_SKINNY_ROWS_WIDE ? 1u : 0u, 1u);
 		if ( status != LM_LAUNCH_ERR_SHAPE )
+		{
+			if ( status == LM_LAUNCH_OK && fuse_ik != 0u && index_k_done != 0 )
+				*index_k_done = 1u;
 			return status;
+		}
 		LM_LAUNCH_REFUSE("%s projection: the fused q_a/kv_a launch refused %u rows of %u + %u outputs over %u inputs (output width %u, kv_a at column %u); "
 			"both slices need 16-byte aligned weights, an input that is a multiple of the format's elements and scales that cover them\n", S::Tag(), rows,
 			q_count, kv_count, S::kHidden, width, query_max);
@@ -725,20 +909,54 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 }
 
 template<class S>
-static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream, uint16_t *packed_query = 0)
+static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream, uint16_t *packed_query = 0,
+	uint32_t store_kv = 0u, uint32_t fuse_index_q = 0u, uint32_t dense_limit = 0u, uint32_t *index_q_done = 0)
 {
-	int32_t status;
+	int32_t status = LM_LAUNCH_OK;
+	if ( index_q_done != 0 )
+		*index_q_done = 0u;
 	LM_LAUNCH((GlmProjectionNormKernel<S>), dim3(rows, 2u), GLM_THREADS, 0, stream, b->projection_gather_bf16, b->weights->q_a_norm, b->weights->kv_a_norm, b->positions,
 		b->q_compressed_bf16, b->kv_slot_bf16, rows, b->tp_degree, GlmProjectionSliceWidth<S>(b->tp_degree), GlmProjectionSliceMax(S::kQueryA, b->tp_degree),
-		S::kRope, S::kRopeTheta, S::kRmsEpsilon, b->q_input_bf16, b->rope_table);
+		S::kRope, S::kRopeTheta, S::kRmsEpsilon, b->q_input_bf16, b->rope_table, b->cache_shard, b->sequence_of_row,
+		b->slots != 0 ? b->slots : b->positions, store_kv);
 	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
-	status = GlmLinear<S>(S::kQueryConcat ? b->q_input_bf16 : b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, S::kQueryInput, b->q_b_rows, b->q_b_rows, 0u,
-		sms, b->row_exact, stream);
+	if ( !S::kQueryConcat && fuse_index_q != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_exact != 0u) && b->weights->index_q.weight != 0 &&
+		(!GlmLinearScaled<S> || b->weights->index_q.scale != 0) && b->index_query_bf16 != 0 &&
+		((b->q_b_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS && S::kIndexQuery > LM_SKINNY_SPLIT_MAX_OUTPUTS) ||
+			S::kQueryA / LmSkinnyFormat<GlmLinearFormat<S>>::kElements < LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES) )
+	{
+		const LmSkinnyDenseTarget targets[2] = {
+			{b->weights->q_b.weight, b->q_bf16, 0, b->q_b_rows, b->q_b_rows, 0u, GlmLinearScale<S>(b->weights->q_b, S::kQueryA, b->q_b_rows)},
+			{b->weights->index_q.weight, b->index_query_bf16, 0, S::kIndexQuery, S::kIndexQuery, 0u, GlmLinearScale<S>(b->weights->index_q, S::kQueryA, S::kIndexQuery)}};
+		const uint32_t skip_part = (dense_limit != 0u && rows == 1u) ? 1u : LM_SKINNY_MULTI_MAX;
+		status = LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->q_compressed_bf16, rows, S::kQueryA, stream, rows > LM_SKINNY_ROWS_WIDE ? 1u : 0u, 0u,
+			skip_part, b->sequence_of_row, b->context_length, b->row_positions, dense_limit);
+		if ( status == LM_LAUNCH_OK )
+		{
+			if ( index_q_done != 0 )
+				*index_q_done = 1u;
+		}
+		else if ( status != LM_LAUNCH_ERR_SHAPE )
+			return status;
+		else
+			status = GlmLinear<S>(b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, S::kQueryInput, b->q_b_rows, b->q_b_rows, 0u, sms, b->row_exact, stream);
+	}
+	else
+		status = GlmLinear<S>(S::kQueryConcat ? b->q_input_bf16 : b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, S::kQueryInput, b->q_b_rows, b->q_b_rows, 0u,
+			sms, b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( packed_query != 0 )
 	{
+		if constexpr ( S::kNope % 64u == 0u && S::kLatent % 16u == 0u )
+			if ( rows == 1u && (S::kLatent / 16u) * b->attn_heads >= 48u )
+			{
+				LM_LAUNCH_DEPENDENT((GlmKvBKeyRopeB1Kernel<S>), dim3(S::kLatent / 16u, b->attn_heads, 1u), 32u, 0, stream,
+					b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank * b->attn_heads * S::kLatent * S::kNope,
+					b->positions, b->rope_table, packed_query);
+				return GlmLaunched();
+			}
 		LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 			b->q_bf16, packed_query, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table, S::kLatent + S::kRope, S::kLatent);
 		if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u,S::kLatent + S::kRope>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
@@ -808,23 +1026,24 @@ static uint32_t GlmShardKeep(SparkKvShard shard, uint32_t context)
 }
 
 template<class S>
-static int32_t GlmShardStoreAll(const GlmBuffers *b, uint32_t rows, uint32_t layer, uint32_t sms, SparkGpuStream stream, uint16_t *packed_query = 0)
+static int32_t GlmShardStoreAll(const GlmBuffers *b, uint32_t rows, uint32_t layer, uint32_t sms, SparkGpuStream stream, uint16_t *packed_query = 0,
+	uint32_t index_k_done = 0u, uint32_t fuse_index_q = 0u, uint32_t dense_limit = 0u, uint32_t *index_q_done = 0)
 {
-	int32_t status = GlmAttentionPrologue<S>(b, rows, sms, stream, packed_query);
+	int32_t status = GlmAttentionPrologue<S>(b, rows, sms, stream, packed_query, 1u, fuse_index_q, dense_limit, index_q_done);
 	if ( status == LM_LAUNCH_OK && GlmFullIndexer<S>(layer) != 0u )
-		status = GlmIndexerKeys<S>(b, rows, sms, stream);
-	if ( status == LM_LAUNCH_OK )
-		status = GlmLatentStore<S>(b, rows, stream);
+		status = GlmIndexerKeys<S>(b, rows, sms, stream, index_k_done);
 	return status;
 }
 
 template<class S>
-static int32_t GlmShardScatterPre(const GlmBuffers *b, uint32_t rows, uint32_t context, uint32_t layer, uint32_t sms, SparkGpuStream stream)
+static int32_t GlmShardScatterPre(const GlmBuffers *b, uint32_t rows, uint32_t context, uint32_t layer, uint32_t sms, SparkGpuStream stream, uint32_t index_k_done = 0u)
 {
-	int32_t status = GlmShardStoreAll<S>(b, rows, layer, sms, stream, b->shard_send_bf16);
-	if ( status == LM_LAUNCH_OK && GlmShardIndexing<S>(layer, context) != 0u )
+	const uint32_t indexing = GlmShardIndexing<S>(layer, context);
+	uint32_t index_q_done = 0u;
+	int32_t status = GlmShardStoreAll<S>(b, rows, layer, sms, stream, b->shard_send_bf16, index_k_done, indexing, S::kSelected, &index_q_done);
+	if ( status == LM_LAUNCH_OK && indexing != 0u )
 	{
-		status = GlmIndexerQuery<S>(b, rows, sms, stream, S::kSelected);
+		status = GlmIndexerQuery<S>(b, rows, sms, stream, S::kSelected, index_q_done);
 		if ( status == LM_LAUNCH_OK )
 			status = GlmIndexerScoreSelect<S>(b, rows, SparkKvShardGatherKeys(b->kv_shard, context), GlmShardKeep<S>(b->kv_shard, context),
 				(uint2 *)((uint8_t *)b->shard_send_bf16 + b->shard_candidate_offset), stream);
@@ -863,10 +1082,10 @@ static int32_t GlmShardScatterPost(const GlmBuffers *b, uint32_t rows, uint32_t 
 }
 
 template<class S>
-static int32_t GlmShardGatherPre(const GlmBuffers *b, uint32_t rows, uint32_t context, uint32_t layer, uint32_t sms, SparkGpuStream stream)
+static int32_t GlmShardGatherPre(const GlmBuffers *b, uint32_t rows, uint32_t context, uint32_t layer, uint32_t sms, SparkGpuStream stream, uint32_t index_k_done = 0u)
 {
 	const uint32_t indexing = GlmShardIndexing<S>(layer, context);
-	int32_t status = GlmShardStoreAll<S>(b, rows, layer, sms, stream);
+	int32_t status = GlmShardStoreAll<S>(b, rows, layer, sms, stream, 0, index_k_done);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( SparkGpuMemcpyAsync(b->kv_gather_latent_tail, b->kv_slot_bf16, (size_t)rows * S::kSlotBytes, SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS ||
@@ -943,12 +1162,13 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 			(const uint16_t *)0, S::kRoutedScale, b->route_fault);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		status = LmRouteBuild<GLM_THREADS,S::kExperts>(b->route_expert, rows, packed_rows, S::kTopK, b->group_row_offset, b->route_packed_row,
+			b->route_source_token, b->expert_w1_rows, S::kHidden, GLM_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
 	}
-	else if ( LmTopkRouteLaunch<GLM_THREADS,S::kTopK,true,LM_TOPK_SCORE_SIGMOID>(rows, b->router_logits, S::kExperts, b->route_expert, b->route_weight,
-			b->weights->router_bias, 0, S::kRoutedScale, b->route_fault, stream) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
-	status = LmRouteBuild<GLM_THREADS,S::kExperts>(b->route_expert, rows, packed_rows, S::kTopK, b->group_row_offset, b->route_packed_row,
-		b->route_source_token, b->expert_w1_rows, S::kHidden, GLM_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
+	else
+		status = LmTopkRouteBuild<GLM_THREADS,S::kExperts,S::kTopK,true,LM_TOPK_SCORE_SIGMOID>(b->router_logits, b->weights->router_bias,
+			(const uint16_t *)0, S::kRoutedScale, b->route_fault, rows, packed_rows, b->route_expert, b->route_weight, b->group_row_offset,
+			b->route_packed_row, b->route_source_token, b->expert_w1_rows, S::kHidden, GLM_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
 	return status != LM_LAUNCH_OK ? status : GlmLaunched();
 }
 
@@ -958,11 +1178,12 @@ static int32_t GlmExpertsProject(const GlmBuffers *b, const void *weight, const 
 {
 	using Format = typename LmWeightCodec<S::kExpertCodec>::Format;
 	const LmScaleTensor scale = LmWeightCodecScaleTensor<S::kExpertCodec>(scale_data, S::kExperts, output_dim, input_dim);
+	const uint32_t stream_rows = mode == 1u ? GLM_STREAM_EXPERT_W2_ROWS : GLM_STREAM_EXPERT_ROWS;
 	int32_t status;
 	if ( b->row_exact != 0u )
 		return LmSkinnyGroupedExperts<Format>(weight, scale, input, output, b->group_row_offset, b->route_source_token, S::kExperts, packed_rows, mode,
 			input_dim, output_dim, stream, 1u);
-	if ( rows >= GLM_STREAM_EXPERT_ROWS )
+	if ( rows >= stream_rows )
 	{
 		status = LmStreamGemmGrouped<Format>(weight, scale, input, output, b->group_row_offset, mode == 0u ? b->route_source_token : 0, S::kExperts,
 			packed_rows, input_dim, output_dim, sms, stream);
@@ -978,8 +1199,177 @@ static int32_t GlmExpertsProject(const GlmBuffers *b, const void *weight, const 
 		LM_LAUNCH_REFUSE("%s experts: the %s skinny kernel refused %s for %u rows (%u routed pairs over %u experts, %u x %u); one-row waves run on the "
 			"per-pair kernel and other waves below %u rows on the grouped one, so the expert weights need 16-byte alignment, an input that is a multiple "
 			"of the codec's elements and scales that cover every expert\n", S::Tag(), rows == 1u ? "per-pair" : "grouped", mode == 0u ? "w1" : "w2", rows,
-			packed_rows, S::kExperts, output_dim, input_dim, GLM_STREAM_EXPERT_ROWS);
+			packed_rows, S::kExperts, output_dim, input_dim, stream_rows);
 	return status != LM_LAUNCH_OK ? status : GlmLaunched();
+}
+
+template<class S>
+static __global__ __launch_bounds__(LM_SKINNY_THREADS) void GlmMoeB1W1ActKernel(const uint8_t *__restrict__ exp_w1, const float *__restrict__ exp_s1,
+	const uint8_t *__restrict__ shared_w1, const float *__restrict__ shared_s1, const uint16_t *__restrict__ act,
+	const uint32_t *__restrict__ route_expert, uint16_t *__restrict__ inter_out, uint16_t *__restrict__ shared_inter_out, uint32_t inter)
+{
+	constexpr uint32_t FP8_CHUNKS = S::kHidden / 16u, SCALES = S::kHidden / 128u, WARPS = LM_SKINNY_SPLIT_WARPS;
+	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
+	const uint32_t expert_blocks = S::kTopK * (inter / WARPS);
+	LmDependentWait();
+	if ( blockIdx.x < expert_blocks )
+	{
+		const uint32_t slot = blockIdx.x / (inter / WARPS), ch = (blockIdx.x % (inter / WARPS)) * WARPS + warp;
+		const uint64_t exp_base = (uint64_t)route_expert[slot] * (2u * inter);
+		const uint4 *w_up = (const uint4 *)(exp_w1 + (exp_base + ch) * S::kHidden);
+		const uint4 *w_gt = (const uint4 *)(exp_w1 + (exp_base + inter + ch) * S::kHidden);
+		const float *s_up = exp_s1 + (exp_base + ch) * SCALES, *s_gt = exp_s1 + (exp_base + inter + ch) * SCALES;
+		float a_up = 0.0f, a_gt = 0.0f;
+		uint32_t c = lane;
+		for ( ; c + 3u * LM_WARP_LANES < FP8_CHUNKS; c += 4u * LM_WARP_LANES )
+		{
+			uint4 wu[4], wg[4];
+			float su[4], sg[4];
+			LmSkinnyFormat<LmFp8>::Activation a[4];
+			#pragma unroll
+			for ( uint32_t u = 0u; u < 4u; ++u )
+			{
+				const uint32_t ci = c + u * LM_WARP_LANES, sgi = ci >> 3u;
+				wu[u] = __ldcs(w_up + ci);
+				wg[u] = __ldcs(w_gt + ci);
+				su[u] = __ldg(s_up + sgi);
+				sg[u] = __ldg(s_gt + sgi);
+				a[u] = LmSkinnyFormat<LmFp8>::Load(act + ci * 16u);
+			}
+			#pragma unroll
+			for ( uint32_t u = 0u; u < 4u; ++u )
+			{
+				a_up = fmaf(su[u], LmSkinnyFormat<LmFp8>::Chunk(wu[u], a[u]), a_up);
+				a_gt = fmaf(sg[u], LmSkinnyFormat<LmFp8>::Chunk(wg[u], a[u]), a_gt);
+			}
+		}
+		for ( ; c < FP8_CHUNKS; c += LM_WARP_LANES )
+		{
+			const LmSkinnyFormat<LmFp8>::Activation a = LmSkinnyFormat<LmFp8>::Load(act + c * 16u);
+			const uint32_t sg = c >> 3u;
+			a_up = fmaf(__ldg(s_up + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w_up + c), a), a_up);
+			a_gt = fmaf(__ldg(s_gt + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w_gt + c), a), a_gt);
+		}
+		#pragma unroll
+		for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
+		{
+			a_up += __shfl_xor_sync(0xffffffffu, a_up, step);
+			a_gt += __shfl_xor_sync(0xffffffffu, a_gt, step);
+		}
+		if ( lane == 0u )
+			inter_out[(uint64_t)slot * inter + ch] = LmFloatToBf16(LmSiluOp{}(LmBf16ToFloat(LmFloatToBf16(a_gt)), LmBf16ToFloat(LmFloatToBf16(a_up))));
+		LmDependentRelease();
+		return;
+	}
+	__shared__ float partial[4][WARPS];
+	const uint32_t ch0 = (blockIdx.x - expert_blocks) * 2u;
+	const uint32_t first = FP8_CHUNKS * warp / WARPS, last = FP8_CHUNKS * (warp + 1u) / WARPS;
+	const uint4 *wu0 = (const uint4 *)(shared_w1 + (uint64_t)ch0 * S::kHidden), *wg0 = (const uint4 *)(shared_w1 + (uint64_t)(inter + ch0) * S::kHidden);
+	const uint4 *wu1 = (const uint4 *)(shared_w1 + (uint64_t)(ch0 + 1u) * S::kHidden), *wg1 = (const uint4 *)(shared_w1 + (uint64_t)(inter + ch0 + 1u) * S::kHidden);
+	const float *su0 = shared_s1 + (uint64_t)ch0 * SCALES, *sg0 = shared_s1 + (uint64_t)(inter + ch0) * SCALES;
+	const float *su1 = shared_s1 + (uint64_t)(ch0 + 1u) * SCALES, *sg1 = shared_s1 + (uint64_t)(inter + ch0 + 1u) * SCALES;
+	float u0 = 0.0f, g0 = 0.0f, u1 = 0.0f, g1 = 0.0f;
+	for ( uint32_t c = first + lane; c < last; c += LM_WARP_LANES )
+	{
+		const LmSkinnyFormat<LmFp8>::Activation a = LmSkinnyFormat<LmFp8>::Load(act + c * 16u);
+		const uint32_t sg = c >> 3u;
+		u0 = fmaf(__ldg(su0 + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(wu0 + c), a), u0);
+		g0 = fmaf(__ldg(sg0 + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(wg0 + c), a), g0);
+		u1 = fmaf(__ldg(su1 + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(wu1 + c), a), u1);
+		g1 = fmaf(__ldg(sg1 + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(wg1 + c), a), g1);
+	}
+	#pragma unroll
+	for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
+	{
+		u0 += __shfl_xor_sync(0xffffffffu, u0, step);
+		g0 += __shfl_xor_sync(0xffffffffu, g0, step);
+		u1 += __shfl_xor_sync(0xffffffffu, u1, step);
+		g1 += __shfl_xor_sync(0xffffffffu, g1, step);
+	}
+	if ( lane == 0u )
+	{
+		partial[0][warp] = u0;
+		partial[1][warp] = g0;
+		partial[2][warp] = u1;
+		partial[3][warp] = g1;
+	}
+	__syncthreads();
+	if ( threadIdx.x < 2u )
+	{
+		float tu = 0.0f, tg = 0.0f;
+		#pragma unroll
+		for ( uint32_t w = 0u; w < WARPS; ++w )
+		{
+			tu += partial[threadIdx.x * 2u][w];
+			tg += partial[threadIdx.x * 2u + 1u][w];
+		}
+		shared_inter_out[ch0 + threadIdx.x] = LmFloatToBf16(LmSiluOp{}(LmBf16ToFloat(LmFloatToBf16(tg)), LmBf16ToFloat(LmFloatToBf16(tu))));
+	}
+	LmDependentRelease();
+}
+
+template<class S>
+static __global__ __launch_bounds__(256u) void GlmMoeB1W2FinalizeKernel(const uint8_t *__restrict__ exp_w2, const float *__restrict__ exp_s2,
+	const uint8_t *__restrict__ shared_w2, const float *__restrict__ shared_s2, const uint16_t *__restrict__ inter_in,
+	const uint16_t *__restrict__ shared_inter_in, const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight,
+	uint16_t *__restrict__ out_bf16)
+{
+	constexpr uint32_t INTER = 128u, ROWS_PER_BLOCK = 32u;
+	__shared__ __align__(16) uint16_t s_inter[S::kTopK + 1u][INTER];
+	__shared__ uint32_t s_expert[S::kTopK];
+	__shared__ float s_weight[S::kTopK];
+	const uint32_t group = threadIdx.x >> 3u, lane = threadIdx.x & 7u, out_row = blockIdx.x * ROWS_PER_BLOCK + group;
+	LmDependentWait();
+	if ( threadIdx.x < S::kTopK )
+	{
+		s_expert[threadIdx.x] = route_expert[threadIdx.x];
+		s_weight[threadIdx.x] = route_weight[threadIdx.x];
+	}
+	for ( uint32_t v = threadIdx.x; v < S::kTopK * (INTER / 8u); v += 256u )
+		((uint4 *)s_inter)[v] = __ldg((const uint4 *)inter_in + v);
+	if ( threadIdx.x < INTER / 8u )
+		((uint4 *)s_inter[S::kTopK])[threadIdx.x] = __ldg((const uint4 *)shared_inter_in + threadIdx.x);
+	__syncthreads();
+	const uint64_t row0 = (uint64_t)s_expert[0] * S::kHidden + out_row;
+	uint4 w_cur = __ldcs((const uint4 *)(exp_w2 + row0 * INTER) + lane);
+	float sc_cur = __ldg(exp_s2 + row0), acc = 0.0f;
+	for ( uint32_t slot = 0u; slot < S::kTopK; ++slot )
+	{
+		uint4 w_next;
+		float sc_next;
+		if ( slot + 1u < S::kTopK )
+		{
+			const uint64_t nr = (uint64_t)s_expert[slot + 1u] * S::kHidden + out_row;
+			w_next = __ldcs((const uint4 *)(exp_w2 + nr * INTER) + lane);
+			sc_next = __ldg(exp_s2 + nr);
+		}
+		else
+		{
+			w_next = __ldcs((const uint4 *)(shared_w2 + (uint64_t)out_row * INTER) + lane);
+			sc_next = __ldg(shared_s2 + out_row);
+		}
+		LmSkinnyFormat<LmFp8>::Activation a;
+		a.low = ((const uint4 *)s_inter[slot])[2u * lane];
+		a.high = ((const uint4 *)s_inter[slot])[2u * lane + 1u];
+		float dot = fmaf(sc_cur, LmSkinnyFormat<LmFp8>::Chunk(w_cur, a), 0.0f);
+		dot += __shfl_xor_sync(0xffffffffu, dot, 4u);
+		dot += __shfl_xor_sync(0xffffffffu, dot, 2u);
+		dot += __shfl_xor_sync(0xffffffffu, dot, 1u);
+		if ( lane == 0u )
+			acc = fmaf(LmBf16ToFloat(LmFloatToBf16(dot)), s_weight[slot], acc);
+		w_cur = w_next;
+		sc_cur = sc_next;
+	}
+	LmSkinnyFormat<LmFp8>::Activation sa;
+	sa.low = ((const uint4 *)s_inter[S::kTopK])[2u * lane];
+	sa.high = ((const uint4 *)s_inter[S::kTopK])[2u * lane + 1u];
+	float sdot = fmaf(sc_cur, LmSkinnyFormat<LmFp8>::Chunk(w_cur, sa), 0.0f);
+	sdot += __shfl_xor_sync(0xffffffffu, sdot, 4u);
+	sdot += __shfl_xor_sync(0xffffffffu, sdot, 2u);
+	sdot += __shfl_xor_sync(0xffffffffu, sdot, 1u);
+	if ( lane == 0u )
+		out_bf16[out_row] = LmFloatToBf16(SparkMathRoundBf16(acc) + LmBf16ToFloat(LmFloatToBf16(sdot)));
+	LmDependentRelease();
 }
 
 template<class S>
@@ -1000,6 +1390,26 @@ template<class S>
 static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, SparkGpuStream stream)
 {
 	static_assert(S::kHidden % LM_MOE_FINALIZE_ADD_ELEMENTS == 0u, "the expert combine reads whole 16-byte words of a row");
+	if constexpr ( S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 && S::kLinearCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 &&
+		S::kHidden % 128u == 0u && S::kHidden / 16u >= LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES )
+		if ( rows == 1u && b->expert_intermediate == 128u && b->shared_intermediate == 128u &&
+			b->expert_w1_weight != 0 && b->expert_w1_scale != 0 && b->expert_w2_weight != 0 && b->expert_w2_scale != 0 &&
+			b->weights->shared_gate_up.weight != 0 && b->weights->shared_gate_up.scale != 0 &&
+			b->weights->shared_down.weight != 0 && b->weights->shared_down.scale != 0 &&
+			LmIsAligned16(b->expert_w1_weight) && LmIsAligned16(b->expert_w2_weight) &&
+			LmIsAligned16(b->weights->shared_gate_up.weight) && LmIsAligned16(b->weights->shared_down.weight) && LmIsAligned16(b->normed_bf16) )
+		{
+			const uint32_t w1_blocks = S::kTopK * (b->expert_intermediate / LM_SKINNY_SPLIT_WARPS) + b->shared_intermediate / 2u;
+			LM_LAUNCH_DEPENDENT((GlmMoeB1W1ActKernel<S>), w1_blocks, LM_SKINNY_THREADS, 0, stream,
+				(const uint8_t *)b->expert_w1_weight, (const float *)b->expert_w1_scale,
+				b->weights->shared_gate_up.weight, b->weights->shared_gate_up.scale,
+				b->normed_bf16, b->route_expert, b->intermediate_bf16, b->gate_up_bf16, b->expert_intermediate);
+			LM_LAUNCH_DEPENDENT((GlmMoeB1W2FinalizeKernel<S>), S::kHidden / 32u, 256u, 0, stream,
+				(const uint8_t *)b->expert_w2_weight, (const float *)b->expert_w2_scale,
+				b->weights->shared_down.weight, b->weights->shared_down.scale,
+				b->intermediate_bf16, b->gate_up_bf16, b->route_expert, b->route_weight, b->hidden_bf16);
+			return GlmLaunched();
+		}
 	int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->shared_gate_up, b->gate_up_bf16, rows, S::kHidden, b->shared_gate_up_rows, b->shared_gate_up_rows, 0u, sms,
 		b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -2030,8 +2440,9 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			b->fork_positions = frame.step->fork_positions;
 			b->slot_offsets = frame.step->slot_offsets;
 		}
+		uint32_t index_k_done = 0u;
 		b->prenormed = sharded != 0u && layer != 0u ? 1u : 0u;
-		code = GlmAttentionProject<S>(b, rows, sms, stream);
+		code = GlmAttentionProject<S>(b, rows, sms, stream, &index_k_done, GlmFullIndexer<S>(layer));
 		if ( code != LM_LAUNCH_OK )
 			return Fail("attention projection", layer, code);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, GlmProjectionSliceWidth<S>(state->tp_degree),
@@ -2041,7 +2452,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		if ( wave->gather != 0u )
 		{
 			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			code = GlmShardGatherPre<S>(b, rows, wave->context, layer, sms, stream);
+			code = GlmShardGatherPre<S>(b, rows, wave->context, layer, sms, stream, index_k_done);
 			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("gather pre", layer, code);
@@ -2055,7 +2466,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		else
 		{
 			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			code = GlmShardScatterPre<S>(b, rows, wave->context, layer, sms, stream);
+			code = GlmShardScatterPre<S>(b, rows, wave->context, layer, sms, stream, index_k_done);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("scatter pre", layer, code);
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,

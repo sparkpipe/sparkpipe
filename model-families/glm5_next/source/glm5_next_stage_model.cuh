@@ -715,6 +715,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		const SparkStageRunnerStep *step;
 		SparkGpuStream stream;
 		uint32_t context;
+		uint32_t post_pending;
+		uint32_t stream_bank;
 		Glm5NextLayerBuffers b;
 	};
 
@@ -723,6 +725,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		const uint32_t rows = step->rows;
 		frame->step = step;
 		frame->stream = (SparkGpuStream)stream_void;
+		frame->post_pending = 0u;
+		frame->stream_bank = 0u;
 		frame->context = step->commit != 0u && step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context :
 			state->context_capacity;
 		if ( frame->context < G5N_KPOOL )
@@ -758,11 +762,21 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	static SparkStatus HyperNorm(Glm5NextModelState *state, Frame &frame, uint32_t layer, Glm5NextPart part)
 	{
 		const Glm5NextLayerWeights *w = &state->layers[layer];
+		const uint16_t *streams_in = frame.stream_bank != 0u ? state->snapshot : state->streams;
+		uint16_t *streams_out = frame.stream_bank != 0u ? state->streams : state->snapshot;
+		const uint16_t *post_out = frame.post_pending != 0u ? frame.b.attention_out_bf16 : (const uint16_t *)0;
+		const void *fn = part == GLM5_NEXT_FFN_PART ? w->hc_ffn_fn : w->hc_attn_fn;
+		const void *base = part == GLM5_NEXT_FFN_PART ? w->hc_ffn_base : w->hc_attn_base;
+		const void *scale = part == GLM5_NEXT_FFN_PART ? w->hc_ffn_scale : w->hc_attn_scale;
+		const void *norm = part == GLM5_NEXT_FFN_PART ? w->post_attn_norm : w->attn_norm;
 		frame.b.prenormed = 1u;
-		if ( part == GLM5_NEXT_FFN_PART )
-			return Launch(Glm5NextHcSiteNorm(&frame.b, w->hc_ffn_fn, w->hc_ffn_base, w->hc_ffn_scale, w->post_attn_norm, frame.step->rows, frame.stream), "ffn hc site", layer);
-		return Launch(Glm5NextHcSiteNorm(&frame.b, w->hc_attn_fn, w->hc_attn_base, w->hc_attn_scale, w->attn_norm, frame.step->rows, frame.stream), "attention hc site",
-			layer);
+		if ( frame.post_pending != 0u )
+		{
+			frame.stream_bank ^= 1u;
+			frame.post_pending = 0u;
+		}
+		return Launch(Glm5NextHcPostNorm(&frame.b, streams_in, post_out, streams_out, fn, base, scale, norm, frame.step->rows, frame.stream),
+			part == GLM5_NEXT_FFN_PART ? "ffn hc site" : "attention hc site", layer);
 	}
 
 	static SparkStatus Kda(Glm5NextModelState *state, Frame &frame, uint32_t layer)
@@ -789,8 +803,14 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 
 	static SparkStatus HyperPost(Glm5NextModelState *state, Frame &frame, uint32_t layer, Glm5NextPart part)
 	{
-		(void)state;
-		return Launch(Glm5NextHcPost(&frame.b, frame.step->rows, frame.stream), part == GLM5_NEXT_FFN_PART ? "ffn hc post" : "attention hc post", layer);
+		if ( layer + 1u < G5N_LAYERS || part == GLM5_NEXT_ATTENTION_PART )
+		{
+			frame.post_pending = 1u;
+			return SPARK_STATUS_OK;
+		}
+		const uint16_t *src = frame.stream_bank != 0u ? state->snapshot : state->streams;
+		frame.stream_bank = 0u;
+		return Launch(Glm5NextHcPostFrom(&frame.b, src, state->streams, frame.step->rows, frame.stream), "ffn hc post", layer);
 	}
 
 	static SparkStatus DenseMlp(Glm5NextModelState *state, Frame &frame, uint32_t layer)
