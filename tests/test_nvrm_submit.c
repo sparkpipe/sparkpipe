@@ -590,13 +590,13 @@ static void TestDependentLaunch(void)
 		"the first launch on a channel arrives at a latch of its own and waits on none, dependent or not");
 	CHECK(DependentLaunch(&fake,&program,&request,slots[1],0x1000701000ull,1u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == pcas &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 1u && LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID) == first &&
-		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 0u &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE) == 1u &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE) == 1u && first < SPARK_NVRM_PROGRAM_LATCH_FIRST &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) != first && fake.gpu.compute.latch == LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID),
-		"a dependent launch after a launch pushes no acquire: its descriptor waits on the earlier latch, holds its blocks and membar, and invalidates the "
-		"data caches when it acquires the latch; eager latch ids stay below the programs' half");
+		"a dependent launch after a launch pushes no wait: its descriptor waits on the earlier latch, overlaps block launch, holds its membar, and invalidates "
+		"the data caches when it acquires the latch; eager latch ids stay below the programs' half");
 	CHECK(DependentLaunch(&fake,&program,&request,slots[2],0x1000702000ull,0u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
 		LATCH_FIELD(slots[2],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a plain launch after a launch keeps the front-end acquire");
 	CHECK(SparkNvrmCopy(&fake.gpu,&fake.gpu.compute,0x2000001000ull,0x3000002000ull,4096u,&copied,"dependent") == SPARK_STATUS_OK &&
@@ -669,6 +669,13 @@ static int SemaphoreAt(const uint32_t *words, uint32_t at, uint64_t address, uin
 	return(memcmp(words + at,expected,sizeof(expected)) == 0);
 }
 
+static int WaitIdleAt(const uint32_t *words, uint32_t at)
+{
+	uint32_t expected[SPARK_NVRM_WAIT_IDLE_WORDS];
+	SparkNvrmWaitIdleWords(expected);
+	return(memcmp(words + at,expected,sizeof(expected)) == 0);
+}
+
 static int LaunchAt(const uint32_t *words, uint32_t at, uint64_t slot)
 {
 	uint32_t expected[SPARK_NVRM_LAUNCH_WORDS];
@@ -678,7 +685,7 @@ static int LaunchAt(const uint32_t *words, uint32_t at, uint64_t slot)
 
 static void TestImage(void)
 {
-	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS };
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, WAIT_IDLE_WORDS = SPARK_NVRM_WAIT_IDLE_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS };
 	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull,event = 0x3000000000ull,reached = 0x4000000000ull,done = 0x4000000040ull;
 	static Fake fake;
 	SparkNvrmStep steps[6];
@@ -700,15 +707,15 @@ static void TestImage(void)
 	steps[5].slot = 0x800u;
 	count = SparkNvrmImageWords(steps,6u);
 	SparkNvrmImageWrite(words,semaphore,slots,steps,6u);
-	CHECK(count == 14u * SEMAPHORE_WORDS + 3u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu && words[count - 1u] != 0xeeeeeeeeu,
+	CHECK(count == 13u * SEMAPHORE_WORDS + WAIT_IDLE_WORDS + 3u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu && words[count - 1u] != 0xeeeeeeeeu,
 		"a segment of three launches, a record, a wait and a host step has the words it counts, and no more");
 	CHECK(SemaphoreAt(words,0u,semaphore,0u,SPARK_NVRM_SEMAPHORE_RELEASE),"a run first sets the program's semaphore to zero");
 	at = SEMAPHORE_WORDS;
-	CHECK(LaunchAt(words,at,slots),"the first launch needs no acquire");
+	CHECK(LaunchAt(words,at,slots),"the first launch needs no wait");
 	at += LAUNCH_WORDS;
-	CHECK(SemaphoreAt(words,at,semaphore,1u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && LaunchAt(words,at + SEMAPHORE_WORDS,slots + 0x400u),
-		"the second launch waits for the first to release 1, then sends its own descriptor");
-	at += SEMAPHORE_WORDS + LAUNCH_WORDS;
+	CHECK(WaitIdleAt(words,at) && LaunchAt(words,at + WAIT_IDLE_WORDS,slots + 0x400u),
+		"an unchained second launch orders with compute WAIT_FOR_IDLE, then sends its own descriptor");
+	at += WAIT_IDLE_WORDS + LAUNCH_WORDS;
 	CHECK(SemaphoreAt(words,at,semaphore,2u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[2].payload == at + SEMAPHORE_WORDS &&
 		SemaphoreAt(words,steps[2].payload,event + SPARK_NVRM_MARK_TIME_OFFSET,0u,SPARK_NVRM_SEMAPHORE_RELEASE_TIME) &&
 		steps[2].second == steps[2].payload + SEMAPHORE_WORDS && SemaphoreAt(words,steps[2].second,event,0u,SPARK_NVRM_SEMAPHORE_MAX) &&
@@ -744,11 +751,12 @@ static void TestImage(void)
 
 static void TestImageChain(void)
 {
-	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS, STEPS = 74, HOST = 70, PLAIN = 10, LATER_PLAIN = 50 };
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, WAIT_IDLE_WORDS = SPARK_NVRM_WAIT_IDLE_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS,
+		STEPS = 74, HOST = 70, PLAIN = 10, LATER_PLAIN = 50 };
 	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull;
 	static SparkNvrmStep steps[STEPS];
 	static uint32_t words[1024];
-	uint32_t index,count,at,chained = 0u,marked = 1u,laid = 1u;
+	uint32_t index,count,at,latched = 0u,qmd_chained = 0u,marked = 1u,laid = 1u;
 	memset(steps,0,sizeof(steps));
 	memset(words,0xee,sizeof(words));
 	for ( index = 0u; index < STEPS; index++ )
@@ -762,17 +770,19 @@ static void TestImageChain(void)
 	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
 	for ( index = 0u; index < STEPS; index++ )
 	{
-		const uint32_t head = index == 0u || index == PLAIN || index == 42u || index == LATER_PLAIN || index == HOST || index == HOST + 1u ? 1u : 0u;
-		chained += steps[index].chained;
-		if ( steps[index].chained != 1u - head )
+		const uint32_t expected = (index == 0u || index == 32u || index == 64u || index == HOST || index == HOST + 1u) ? SPARK_NVRM_CHAIN_NONE :
+			((index >= PLAIN && index < 32u) || (index >= LATER_PLAIN && index < 64u)) ? SPARK_NVRM_CHAIN_QMD : SPARK_NVRM_CHAIN_LATCH;
+		if ( steps[index].chained != expected )
 			marked = 0u;
+		latched += steps[index].chained == SPARK_NVRM_CHAIN_LATCH ? 1u : 0u;
+		qmd_chained += steps[index].chained == SPARK_NVRM_CHAIN_QMD ? 1u : 0u;
 	}
-	CHECK(marked != 0u && chained == 68u,
-		"back-to-back dependent launches chain in segments of 32; a plain launch heads a chain, and a host step ends a chain and the launch after it starts one");
+	CHECK(marked != 0u && latched == 33u && qmd_chained == 36u,
+		"dependent launches chain by latch, plain launches and their segment followers chain by dependent QMD, and a host step ends a segment");
 	count = SparkNvrmImageWords(steps,STEPS);
 	SparkNvrmImageWrite(words,semaphore,slots,steps,STEPS);
-	CHECK(count == 9u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu,
-		"every launch is in the segment, and only the reset, four chain heads and the host step push semaphores");
+	CHECK(count == 6u * SEMAPHORE_WORDS + 2u * WAIT_IDLE_WORDS + 37u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu,
+		"QMD-chained launches take zero push words, segment heads take compute WAIT_FOR_IDLE, and only the reset and host step push semaphores");
 	for ( index = 0u, at = SEMAPHORE_WORDS; index < STEPS && laid != 0u; index++ )
 	{
 		if ( index == HOST )
@@ -782,30 +792,44 @@ static void TestImageChain(void)
 			at = steps[HOST].second + 2u * SEMAPHORE_WORDS;
 			continue;
 		}
-		if ( index != 0u && steps[index].chained == 0u )
+		if ( steps[index].chained == SPARK_NVRM_CHAIN_QMD )
+			continue;
+		if ( index != 0u && steps[index].chained == SPARK_NVRM_CHAIN_NONE )
 		{
-			laid = SemaphoreAt(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
-			at += SEMAPHORE_WORDS;
+			if ( steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH )
+			{
+				laid = WaitIdleAt(words,at);
+				at += WAIT_IDLE_WORDS;
+			}
+			else
+			{
+				laid = SemaphoreAt(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+				at += SEMAPHORE_WORDS;
+			}
 		}
 		laid = laid && LaunchAt(words,at,slots + 0x400ull * index);
 		at += LAUNCH_WORDS;
 	}
 	CHECK(laid != 0u && at == count,
-		"a chained launch follows the launch before it with no acquire; a chain's head acquires the step before it, and the host step waits for the last chain");
-	for ( index = 0u; index < STEPS; index++ )
-		steps[index].chained = 0u;
+		"latched launches push no wait, QMD-chained launches emit no push words, segment heads emit WAIT_FOR_IDLE, and host steps use semaphores");
 	SparkNvrmImageChain(steps,STEPS,1u);
-	for ( index = 0u, chained = 0u; index < STEPS; index++ )
-		chained += steps[index].chained;
-	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
-		"in segments of one launch nothing chains, and every launch after the first takes the acquire");
+	for ( index = 0u, latched = 0u, qmd_chained = 0u; index < STEPS; index++ )
+	{
+		latched += steps[index].chained == SPARK_NVRM_CHAIN_LATCH ? 1u : 0u;
+		qmd_chained += steps[index].chained == SPARK_NVRM_CHAIN_QMD ? 1u : 0u;
+	}
+	CHECK(latched == 0u && qmd_chained == 0u && SparkNvrmImageWords(steps,STEPS) == 6u * SEMAPHORE_WORDS + 71u * WAIT_IDLE_WORDS + 73u * LAUNCH_WORDS,
+		"in segments of one launch nothing chains, and every launch after a launch takes compute WAIT_FOR_IDLE");
 	for ( index = 0u; index < STEPS; index++ )
 		steps[index].dependent = 0u;
 	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
-	for ( index = 0u, chained = 0u; index < STEPS; index++ )
-		chained += steps[index].chained;
-	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
-		"plain launches never chain: each waits for the launch before it to end, as a plain kernel boundary does");
+	for ( index = 0u, latched = 0u, qmd_chained = 0u; index < STEPS; index++ )
+	{
+		latched += steps[index].chained == SPARK_NVRM_CHAIN_LATCH ? 1u : 0u;
+		qmd_chained += steps[index].chained == SPARK_NVRM_CHAIN_QMD ? 1u : 0u;
+	}
+	CHECK(latched == 0u && qmd_chained == 69u && SparkNvrmImageWords(steps,STEPS) == 6u * SEMAPHORE_WORDS + 2u * WAIT_IDLE_WORDS + 4u * LAUNCH_WORDS,
+		"plain launches chain through dependent QMD pointers in segments of 32, pushing only the four segment heads");
 }
 
 static void TestLatchRanges(void)

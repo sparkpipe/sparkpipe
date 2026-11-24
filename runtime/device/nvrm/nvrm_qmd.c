@@ -122,6 +122,8 @@ static const char *QmdShapeProblem(const SparkNvrmLaunchShape *shape)
 	if ( shape->cluster[0] != 0u && (shape->cluster[1] == 0u || shape->cluster[2] == 0u || shape->grid[0] % shape->cluster[0] != 0u ||
 		shape->grid[1] % shape->cluster[1] != 0u || shape->grid[2] % shape->cluster[2] != 0u) )
 		return("a cluster launch's grid is a whole number of clusters on every axis");
+	if ( shape->next_qmd_address != 0u && ((shape->next_qmd_address & (SPARK_NVRM_QMD_ALIGN - 1u)) != 0u || (shape->next_qmd_address >> 40) != 0u) )
+		return("a dependent launch descriptor address is 256-byte aligned and below 2^40");
 	return(0);
 }
 
@@ -184,6 +186,7 @@ static void QmdRelease(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 	QMD_PUT(builder,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_PAYLOAD_LOWER,shape->release_payload & 0xffffffffu);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_PAYLOAD_UPPER,shape->release_payload >> 32);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_RELEASE_ENABLE(0),NVCEC0_QMDV05_00_RELEASE_ENABLE_TRUE);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_RELEASE_MEMBAR_TYPE(0),NVCEC0_QMDV05_00_RELEASE_MEMBAR_TYPE_FE_SYSMEMBAR);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_RELEASE_PAYLOAD64B(0),NVCEC0_QMDV05_00_RELEASE_PAYLOAD64B_TRUE);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE(0),shape->release_timestamp != 0u ?
 		NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE_SEMAPHORE_FOUR_WORDS : NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE_SEMAPHORE_TWO_WORDS);
@@ -206,12 +209,17 @@ static void QmdLatch(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 		QMD_PUT(builder,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID_TRUE);
 		QMD_PUT(builder,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID,shape->latch_arrive);
 	}
+	if ( shape->next_qmd_address != 0u )
+	{
+		QMD_PUT(builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ENABLE,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ENABLE_TRUE);
+		QMD_PUT(builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ACTION,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ACTION_QMD_SCHEDULE);
+		QMD_PUT(builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_PREFETCH,NVCEC0_QMDV05_00_DEPENDENT_QMD0_PREFETCH_TRUE);
+		QMD_PUT(builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_POINTER,shape->next_qmd_address >> 8);
+	}
 	if ( shape->latch_wait == 0u )
 		return;
 	QMD_PUT(builder,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID_TRUE);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID,shape->latch_wait);
-	QMD_PUT(builder,NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE,
-		NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE_TRUE);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE_TRUE);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE,1u);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE,1u);
@@ -243,7 +251,8 @@ SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *q
 	QMD_PUT(&builder,NVCEC0_QMDV05_00_INVALIDATE_SHADER_DATA_CACHE,1u);
 	QMD_PUT(&builder,NVCEC0_QMDV05_00_API_VISIBLE_CALL_LIMIT,1u);
 	QMD_PUT(&builder,NVCEC0_QMDV05_00_SAMPLER_INDEX,1u);
-	QMD_PUT(&builder,NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE,NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR);
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE,NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE_L1_MEMBAR);
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_CWD_MEMBAR_TASK_CHASING_ENABLE,NVCEC0_QMDV05_00_CWD_MEMBAR_TASK_CHASING_ENABLE_TRUE);
 	QmdProgram(&builder,shape);
 	QmdShape(&builder,shape);
 	QmdBanks(&builder,shape);

@@ -9,6 +9,9 @@ extern "C" {
 #endif
 
 #define SPARK_NVRM_IMAGE_SEMAPHORE_BYTES 256u
+#define SPARK_NVRM_CHAIN_NONE 0u
+#define SPARK_NVRM_CHAIN_LATCH 1u
+#define SPARK_NVRM_CHAIN_QMD 2u
 
 typedef enum SparkNvrmStepKind
 {

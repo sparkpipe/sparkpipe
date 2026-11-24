@@ -101,8 +101,9 @@ static void TestLaunch(const SparkNvrmCubinKernel *kernel)
 	CHECK(FIELD(&qmd,NVCEC0_QMDV05_00_INVALIDATE_TEXTURE_HEADER_CACHE) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_INVALIDATE_TEXTURE_SAMPLER_CACHE) == 1u &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_INVALIDATE_TEXTURE_DATA_CACHE) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_INVALIDATE_SHADER_DATA_CACHE) == 1u &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_API_VISIBLE_CALL_LIMIT) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_SAMPLER_INDEX) == 1u &&
-		FIELD(&qmd,NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE) == NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR &&
-		FIELD(&qmd,NVCEC0_QMDV05_00_CONSTANT_BUFFER_INVALIDATE(0)) == 1u,"cache invalidation and the end-of-grid membar are set");
+		FIELD(&qmd,NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE) == NVCEC0_QMDV05_00_CWD_MEMBAR_TYPE_L1_MEMBAR &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_CWD_MEMBAR_TASK_CHASING_ENABLE) == NVCEC0_QMDV05_00_CWD_MEMBAR_TASK_CHASING_ENABLE_TRUE &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_CONSTANT_BUFFER_INVALIDATE(0)) == 1u,"cache invalidation and the end-of-grid membar with task chasing are set");
 	CHECK(FIELD(&qmd,NVCEC0_QMDV05_00_PROGRAM_ADDRESS_LOWER_SHIFTED4) == ((shape.program_address >> 4) & 0xffffffffu) &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_PROGRAM_ADDRESS_UPPER_SHIFTED4) == shape.program_address >> 36 &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_PROGRAM_PREFETCH_ADDR_LOWER_SHIFTED) == ((shape.program_address >> 8) & 0xffffffffu) &&
@@ -126,6 +127,7 @@ static void TestLaunch(const SparkNvrmCubinKernel *kernel)
 		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_PAYLOAD_LOWER) == 0x55667788u &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_PAYLOAD_UPPER) == 0x11223344u &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_ENABLE(0)) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_ENABLE(1)) == 0u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_MEMBAR_TYPE(0)) == NVCEC0_QMDV05_00_RELEASE_MEMBAR_TYPE_FE_SYSMEMBAR &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE(0)) == NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE_SEMAPHORE_TWO_WORDS &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_PAYLOAD64B(0)) == NVCEC0_QMDV05_00_RELEASE_PAYLOAD64B_TRUE &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_PAYLOAD64B(1)) == 0u,
@@ -188,9 +190,22 @@ static void TestLatch(const SparkNvrmCubinKernel *kernel)
 	shape.latch_wait = 40u;
 	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"latch") == SPARK_STATUS_OK && FIELD(&qmd,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 1u &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID) == 40u &&
-		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 1u &&
-		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) == 41u,
-		"a dependent launch waits on the launch before it, holds its blocks until that one ends and holds its membar until the latch");
+		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 0u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) == 41u,
+		"a dependent launch waits on the launch before it, overlaps block launch with griddepcontrol.wait, holds its membar and invalidates data caches");
+	shape.latch_wait = 0u;
+	shape.next_qmd_address = 0x1000700400ull;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"chain") == SPARK_STATUS_OK && FIELD(&qmd,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ENABLE) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ACTION) == NVCEC0_QMDV05_00_DEPENDENT_QMD0_ACTION_QMD_SCHEDULE &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_DEPENDENT_QMD0_PREFETCH) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_DEPENDENT_QMD0_POINTER) == (uint32_t)(shape.next_qmd_address >> 8),
+		"a QMD-chained launch schedules and prefetches its successor descriptor");
+	shape.next_qmd_address = 0x1000700480ull;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"chain") == SPARK_STATUS_INVALID_ARGUMENT,"a dependent descriptor off 256 bytes is refused");
+	shape.next_qmd_address = 0x10000000000ull;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"chain") == SPARK_STATUS_INVALID_ARGUMENT,"a dependent descriptor at or above 2^40 is refused");
 }
 
 static SparkStatus ClusterShape(const SparkNvrmCubinKernel *kernel, uint32_t groups, uint32_t asked, uint32_t cluster[3])

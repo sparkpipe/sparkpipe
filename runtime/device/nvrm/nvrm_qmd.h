@@ -52,6 +52,7 @@ typedef struct SparkNvrmLaunchShape
 	uint32_t cluster[3];
 	uint32_t latch_arrive;
 	uint32_t latch_wait;
+	uint64_t next_qmd_address;
 } SparkNvrmLaunchShape;
 
 SparkStatus SparkNvrmQmdWrite(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, uint64_t value, const char *owner);

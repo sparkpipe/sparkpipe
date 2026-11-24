@@ -814,44 +814,53 @@ steps it holds.
     the worker's answer.
 
   A step that is no launch then releases the next step number itself.
-- **Chains.** A dependent launch (`LM_LAUNCH_DEPENDENT`) right after a
-  launch is chained: the segment sends its descriptor right after the
-  earlier one, with no front-end acquire, and the descriptor orders it in
-  hardware, as an eager dependent launch is ordered (see below).
-  - Every launch of the program arrives at a latch of its own when it ends
-    (`ARRIVE_AT_LATCH_ID`). A chained launch waits on the latch of the
-    launch before it (`WAIT_ON_LATCH_ID`), holds its blocks until that
-    launch's blocks have ended
-    (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE`), holds
-    its completion membar until the latch is acquired
+- **Chains.** Back-to-back launches within a 32-launch segment
+  (`SPARK_NVRM_LATCH_SEGMENT`, keeping preemption bounded for other
+  processes) chain in hardware in two modes:
+  - **Dependent launches (latch chains).** A dependent launch
+    (`LM_LAUNCH_DEPENDENT`) right after a launch that was pushed to the
+    segment is latch-chained: the segment sends its descriptor right after
+    the earlier one, with no wait between them, and the descriptor orders
+    it in hardware, as an eager dependent launch is ordered. Every launch
+    arrives at a latch of its own (`ARRIVE_AT_LATCH_ID`). A latch-chained
+    dependent launch waits on the earlier launch's latch
+    (`WAIT_ON_LATCH_ID`), overlaps CTA launch with the parent grid
+    (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE` false,
+    matching CUDA's programmatic dependent launch contract that the child
+    calls `griddepcontrol.wait` before reading parent writes), holds its
+    completion membar until the latch is acquired
     (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), and invalidates the shader and
-    texture data caches when it acquires the latch
+    texture data caches at latch acquire
     (`LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE`,
     `LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE`).
-  - Only a kernel that calls `griddepcontrol.wait` before it reads the
-    earlier grid's writes may be chained, which is what CUDA asks of a
-    programmatic dependent launch. The latch alone does not keep a plain
-    kernel from reading a line its multiprocessor cached before the
-    earlier grid wrote it. `test_nvrm_latch_segments stale 200 20`
-    measured it on GB10: the parent's other blocks cache a word, block 0
-    writes it 20 µs later, and children of 96 blocks read it cached.
-    Chained plain children read the value from before the write in 282
-    of 153,600 reads when the parent triggers its dependents first and in
-    142 of 153,600 when it never does; children that call
-    `griddepcontrol.wait` never did. A plain launch is therefore never
-    chained: it takes the acquire and starts once the launch before it
-    has ended and the front end has flushed, as a plain kernel boundary
-    does on CUDA. Eager plain launches already took the acquire.
+  - **Plain launches (dependent QMD chains).** A plain launch right after a
+    launch cannot be latch-chained because a plain kernel does not call
+    `griddepcontrol.wait` and can read a stale cache line (`test_nvrm_latch_segments
+    stale 200 20` caught 424 of 307,200 stale reads when plain launches
+    used latches). Instead, a plain launch—and any launch following a
+    QMD-chained launch within the same segment—is linked via the parent
+    QMD's `DEPENDENT_QMD0` fields (`DEPENDENT_QMD0_ENABLE`,
+    `ACTION_QMD_SCHEDULE`, `DEPENDENT_QMD0_PREFETCH`,
+    `DEPENDENT_QMD0_POINTER`) and emits zero push-buffer words. SKED
+    schedules and prefetches the successor QMD directly once the parent
+    grid and its membar finish, and the successor invalidates shader and
+    texture data caches at launch (`test_nvrm_latch_segments stale 200 20`
+    and `trigger 200 20` report 0 stale or early reads).
+  - **Compute membar and segment heads.** Each QMD uses GPU-scope
+    `CWD_MEMBAR_TYPE_L1_MEMBAR` with `CWD_MEMBAR_TASK_CHASING_ENABLE` so
+    GPU-to-GPU transitions overlap task launch with L1-to-L2 completion,
+    while `RELEASE_MEMBAR_TYPE_FE_SYSMEMBAR` preserves system-memory
+    coherence before any QMD semaphore release is observed by the host or
+    another channel. At segment boundaries (every 32 launches) and between
+    unchained launches inside a program, the push buffer emits
+    compute-subchannel `NVCEC0_WAIT_FOR_IDLE` instead of polling a host
+    semaphore acquire. Eager launches, event steps and host steps still
+    order through semaphores.
   - Latch ids. Finish takes a range of ids for the program, one per step,
     from the upper half of the 32-bit id space, and destroy gives it back.
     Live programs never share an id, and eager launches take their ids
     from the lower half, so a program's descriptors, which keep their ids
     for every run, never meet an eager launch's id.
-  - A chain holds at most 32 launches (`SPARK_NVRM_LATCH_SEGMENT`, the
-    bound latched dependent launches keep, so another process waits at
-    most one chain). The next launch heads a new chain and takes the
-    acquire, as do a plain launch and the launch after an event or host
-    step.
   - Every launch still releases its step number plus one, so the run's
     tail and fault reports see the semaphore as before.
 - **Run.** A run is one queue operation. It pushes the queue's ordering
@@ -887,9 +896,9 @@ steps it holds.
     registered memory. A copy or fill of pageable host memory is refused
     at finish, naming the node, its size and the kernel before it.
 - **Dependent launches.** A dependent launch runs inside a program as a
-  chained launch: its blocks start after the earlier grid has ended, so
-  `griddepcontrol.wait` returns at once, with the same results. Starting
-  its blocks before the earlier grid ends, as CUDA allows, is a later step.
+  latch-chained launch whose blocks can launch before the earlier grid
+  ends and synchronize at `griddepcontrol.wait`, matching CUDA's
+  programmatic dependent launch semantics.
 - **Faults.** A fault report during a run names the program, the step its
   semaphore had reached, and that step's kernel.
 

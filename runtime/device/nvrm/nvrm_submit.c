@@ -9,8 +9,10 @@
 #include "class/clc361.h"
 #include "class/clc56f.h"
 #include "class/clc96f.h"
+#include "classes/compute/clcec0.h"
 
 #define SUBMIT_HOST_SUBCHANNEL 0u
+#define SUBMIT_COMPUTE_SUBCHANNEL 1u
 #define SUBMIT_METHOD_COUNT_MAX 8191u
 #define SUBMIT_ENTRY_LEVEL_BIT 41u
 #define SUBMIT_ENTRY_LENGTH_SHIFT 42u
@@ -145,6 +147,12 @@ uint32_t SparkNvrmMethodHeader(uint32_t subchannel, uint32_t method, uint32_t co
 {
 	return((uint32_t)(SPARK_NVRM_VALUE(NVC56F_DMA_SEC_OP,NVC56F_DMA_SEC_OP_INC_METHOD) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_COUNT,count) |
 		SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_SUBCHANNEL,subchannel) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_ADDRESS,method >> 2)));
+}
+
+void SparkNvrmWaitIdleWords(uint32_t *words)
+{
+	words[0] = SparkNvrmMethodHeader(SUBMIT_COMPUTE_SUBCHANNEL,NVCEC0_WAIT_FOR_IDLE,1u);
+	words[1] = 0u;
 }
 
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner)
