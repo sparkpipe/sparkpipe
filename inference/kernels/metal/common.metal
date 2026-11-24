@@ -6,18 +6,18 @@ using namespace metal;
 
 static inline float4 SparkBf16x4(ushort4 bits)
 {
-	return float4(SparkMathBf16ToFloat(bits.x), SparkMathBf16ToFloat(bits.y), SparkMathBf16ToFloat(bits.z), SparkMathBf16ToFloat(bits.w));
+	return float4(as_type<bfloat4>(bits));
 }
 
 static inline float4 SparkUnpack4(uint2 bits)
 {
-	return float4(as_type<float>(bits.x << 16u), as_type<float>(bits.x & 0xffff0000u), as_type<float>(bits.y << 16u), as_type<float>(bits.y & 0xffff0000u));
+	return float4(as_type<bfloat4>(bits));
 }
 
 static inline void SparkUnpack8(uint4 bits, thread float4 &low, thread float4 &high)
 {
-	low = float4(as_type<float>(bits.x << 16u), as_type<float>(bits.x & 0xffff0000u), as_type<float>(bits.y << 16u), as_type<float>(bits.y & 0xffff0000u));
-	high = float4(as_type<float>(bits.z << 16u), as_type<float>(bits.z & 0xffff0000u), as_type<float>(bits.w << 16u), as_type<float>(bits.w & 0xffff0000u));
+	low = float4(as_type<bfloat4>(bits.xy));
+	high = float4(as_type<bfloat4>(bits.zw));
 }
 
 static inline uint SparkPack2(float a, float b)

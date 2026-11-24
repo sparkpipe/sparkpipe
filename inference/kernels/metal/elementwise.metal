@@ -579,11 +579,130 @@ kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], 
 {
 	threadgroup float score[SPARK_ROUTE_MAX_EXPERTS];
 	threadgroup float selection[SPARK_ROUTE_MAX_EXPERTS];
-	threadgroup float simd_value[32];
-	threadgroup uint simd_index[32];
+	threadgroup float simd_value[2][32];
+	threadgroup uint simd_index[2][32];
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
 	threadgroup float group_score[SPARK_ROUTE_MAX_GROUPS];
 	threadgroup uint group_open[SPARK_ROUTE_MAX_GROUPS];
+	if ( p.experts <= threads )
+	{
+		float my_sel = -INFINITY;
+		if ( tid < p.experts )
+		{
+			const float logit = logits[(ulong)row * p.logit_stride + tid];
+			const float rounded = p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit;
+			const float value = SCORE == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SparkMathSqrtSoftplus(rounded) : SparkMathSigmoid(rounded);
+			score[tid] = value;
+			my_sel = value + bias[tid];
+			if ( p.groups > 1u )
+				selection[tid] = my_sel;
+		}
+		if ( p.groups > 1u )
+		{
+			const uint per_group = p.experts / p.groups;
+			if ( per_group == 32u )
+			{
+				if ( simd < p.groups )
+				{
+					float v1 = my_sel;
+					uint i1 = lane;
+					for ( uint offset = 16u; offset > 0u; offset >>= 1u )
+					{
+						const float ov = simd_shuffle_xor(v1, offset);
+						const uint oi = simd_shuffle_xor(i1, offset);
+						if ( ov > v1 || (ov == v1 && oi < i1) )
+						{
+							v1 = ov;
+							i1 = oi;
+						}
+					}
+					const float v2 = simd_max(lane == i1 ? -INFINITY : my_sel);
+					if ( lane == 0u )
+					{
+						group_score[simd] = v1 + v2;
+						group_open[simd] = 0u;
+					}
+				}
+				threadgroup_barrier(mem_flags::mem_threadgroup);
+			}
+			else
+			{
+				threadgroup_barrier(mem_flags::mem_threadgroup);
+				if ( tid < p.groups )
+				{
+					float first = -INFINITY, second = -INFINITY;
+					for ( uint index = 0u; index < per_group; index++ )
+					{
+						const float value = selection[tid * per_group + index];
+						if ( value > first )
+						{
+							second = first;
+							first = value;
+						}
+						else if ( value > second )
+							second = value;
+					}
+					group_score[tid] = first + second;
+					group_open[tid] = 0u;
+				}
+				threadgroup_barrier(mem_flags::mem_threadgroup);
+			}
+			if ( tid == 0u )
+				for ( uint pick = 0u; pick < p.topk_groups; pick++ )
+				{
+					uint best = p.groups;
+					for ( uint candidate = 0u; candidate < p.groups; candidate++ )
+						if ( group_open[candidate] == 0u && (best == p.groups || group_score[candidate] > group_score[best]) )
+							best = candidate;
+					group_open[best] = 1u;
+				}
+			threadgroup_barrier(mem_flags::mem_threadgroup);
+			if ( tid < p.experts && group_open[tid / per_group] == 0u )
+				my_sel = -INFINITY;
+		}
+		for ( uint pick = 0u; pick < p.top_k; pick++ )
+		{
+			float value = my_sel;
+			uint index = tid < p.experts ? tid : 0xffffffffu;
+			for ( uint offset = 16u; offset > 0u; offset >>= 1u )
+			{
+				const float other_value = simd_shuffle_xor(value, offset);
+				const uint other_index = simd_shuffle_xor(index, offset);
+				if ( other_value > value || (other_value == value && other_index < index) )
+				{
+					value = other_value;
+					index = other_index;
+				}
+			}
+			const uint buf = pick & 1u;
+			if ( lane == 0u )
+			{
+				simd_value[buf][simd] = value;
+				simd_index[buf][simd] = index;
+			}
+			threadgroup_barrier(mem_flags::mem_threadgroup);
+			float gval = lane < simds ? simd_value[buf][lane] : -INFINITY;
+			uint gidx = lane < simds ? simd_index[buf][lane] : 0xffffffffu;
+			for ( uint offset = 16u; offset > 0u; offset >>= 1u )
+			{
+				const float ov = simd_shuffle_xor(gval, offset);
+				const uint oi = simd_shuffle_xor(gidx, offset);
+				if ( ov > gval || (ov == gval && oi < gidx) )
+				{
+					gval = ov;
+					gidx = oi;
+				}
+			}
+			if ( tid == gidx )
+				my_sel = -INFINITY;
+			if ( tid == 0u )
+				chosen[pick] = gidx;
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( tid == 0u )
+			SparkRouteScoredWeights(p, score, chosen, experts, weights, row);
+		return;
+	}
 	SparkRouteScores<SCORE>(p, logits, bias, score, selection, row, tid, threads);
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( p.groups > 1u )
@@ -644,19 +763,19 @@ kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], 
 		}
 		if ( lane == 0u )
 		{
-			simd_value[simd] = value;
-			simd_index[simd] = index;
+			simd_value[0][simd] = value;
+			simd_index[0][simd] = index;
 		}
 		threadgroup_barrier(mem_flags::mem_threadgroup);
 		if ( tid == 0u )
 		{
-			value = simd_value[0];
-			index = simd_index[0];
+			value = simd_value[0][0];
+			index = simd_index[0][0];
 			for ( uint other = 1u; other < simds; other++ )
-				if ( simd_value[other] > value || (simd_value[other] == value && simd_index[other] < index) )
+				if ( simd_value[0][other] > value || (simd_value[0][other] == value && simd_index[0][other] < index) )
 				{
-					value = simd_value[other];
-					index = simd_index[other];
+					value = simd_value[0][other];
+					index = simd_index[0][other];
 				}
 			chosen[pick] = index;
 			selection[index] = -INFINITY;
