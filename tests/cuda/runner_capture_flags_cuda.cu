@@ -110,9 +110,9 @@ static int GraphIdentityRules(void)
 static int GraphSlotRules(void)
 {
 	static uint8_t seen[STAGE_RUNNER_GRAPH_SLOTS];
-	if ( STAGE_RUNNER_GRAPH_KEYS != 3u || STAGE_RUNNER_GRAPH_ROWS != 32u )
+	if ( STAGE_RUNNER_GRAPH_KEYS != 10u || STAGE_RUNNER_GRAPH_ROWS != 32u )
 	{
-		printf("FAIL expected 3 graph keys and 32 graph rows (got keys=%u rows=%u)\n", STAGE_RUNNER_GRAPH_KEYS, STAGE_RUNNER_GRAPH_ROWS);
+		printf("FAIL expected 10 graph keys and 32 graph rows (got keys=%u rows=%u)\n", STAGE_RUNNER_GRAPH_KEYS, STAGE_RUNNER_GRAPH_ROWS);
 		return 1;
 	}
 	memset(seen, 0, sizeof(seen));
@@ -304,6 +304,150 @@ static int AlternatingTreeGraphReplayRules(void)
 		printf("FAIL alternating tree verify triggered recapture (steps=%u launches=%llu)\n",
 			mock_verify_steps, (unsigned long long)state->graph_launches);
 		failed = 1;
+	}
+	if ( failed == 0 && (StageRunnerGraphEligible(state, &runner, 1u, 16u, 4u, 0u, 0u) != 1u ||
+		StageRunnerGraphEligible(state, &runner, 2u, 16u, 4u, 0u, 0u) != 1u ||
+		StageRunnerGraphEligible(state, &runner, 1u, 24u, 8u, 0u, 0u) != 1u ||
+		StageRunnerGraphEligible(state, &runner, 1u, 16u, 4u, 1u, 0u) != 0u ||
+		StageRunnerGraphEligible(state, &runner, 1u, 16u, 4u, 0u, 1u) != 0u ||
+		StageRunnerGraphEligible(state, &runner, 0u, 16u, 4u, 0u, 0u) != 0u) )
+	{
+		printf("FAIL multi-lane verify graph eligibility rules\n");
+		failed = 1;
+	}
+	{
+		SparkStageRunnerStep lane4_step, lane8_step, lane1_step;
+		SparkDeviceProgram *lane4_prog = 0, *lane8_prog = 0, *lane1_prog = 0;
+		uint32_t lane4_slot, lane8_slot, lane1_slot;
+		uint32_t tokens_a[24], tokens_b[24], out_tokens[24];
+		float out_scores[24];
+		for ( uint32_t index = 0u; index < 24u; ++index )
+		{
+			tokens_a[index] = (index * 7u + 3u) % vocab;
+			tokens_b[index] = (index * 11u + 5u) % vocab;
+		}
+		memcpy(&lane4_step, &chain_step, sizeof(lane4_step));
+		lane4_step.rows = 16u;
+		lane4_step.sequences = 4u;
+		lane4_step.graph_key = 1u;
+		lane4_step.gather_context = 0u;
+		memcpy(&lane8_step, &lane4_step, sizeof(lane8_step));
+		lane8_step.rows = 24u;
+		lane8_step.sequences = 8u;
+		memcpy(&lane1_step, &lane4_step, sizeof(lane1_step));
+		lane1_step.rows = 16u;
+		lane1_step.sequences = 1u;
+		lane1_step.graph_key = 2u;
+		lane4_slot = StageRunnerGraphSlot(StageRunnerGraphSlotKey(&lane4_step), 16u, 0u, 0u);
+		lane8_slot = StageRunnerGraphSlot(StageRunnerGraphSlotKey(&lane8_step), 24u, 0u, 0u);
+		lane1_slot = StageRunnerGraphSlot(StageRunnerGraphSlotKey(&lane1_step), 16u, 0u, 0u);
+		if ( failed == 0 && (StageRunnerGraphSlotKey(&lane4_step) != 6u || StageRunnerGraphSlotKey(&lane8_step) != 10u ||
+			lane4_slot == lane1_slot || lane4_slot == lane8_slot) )
+		{
+			printf("FAIL multi-lane verify slot keys collided (k4=%u k8=%u s1=%u s4=%u s8=%u)\n",
+				StageRunnerGraphSlotKey(&lane4_step), StageRunnerGraphSlotKey(&lane8_step), lane1_slot, lane4_slot, lane8_slot);
+			failed = 1;
+		}
+		if ( failed == 0 && (SparkGpuMemcpyAsync(state->token_ids_device, tokens_a, 16u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
+			StageRunnerStep(state, &runner, &lane4_step, 0u, state->stream) != SPARK_STATUS_OK ||
+			SparkGpuMemcpyAsync(out_tokens, state->output_token, 16u * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST, state->stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpyAsync(out_scores, state->output_score, 16u * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_HOST, state->stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS) )
+		{
+			printf("FAIL multi-lane verify (B=4, rows=16) capture\n");
+			failed = 1;
+		}
+		lane4_prog = state->graph_program[lane4_slot];
+		if ( failed == 0 )
+			for ( uint32_t index = 0u; index < 16u; ++index )
+				if ( out_tokens[index] != tokens_a[index] || !(out_scores[index] > 0.0f) )
+				{
+					printf("FAIL multi-lane verify (B=4, rows=16) capture output mismatch row=%u got=%u want=%u score=%.3f\n",
+						index, out_tokens[index], tokens_a[index], out_scores[index]);
+					failed = 1;
+					break;
+				}
+		if ( failed == 0 && (lane4_prog == 0 || mock_verify_steps != 3u || state->graph_launches != 5u) )
+		{
+			printf("FAIL multi-lane verify (B=4, rows=16) did not capture one program (steps=%u launches=%llu)\n",
+				mock_verify_steps, (unsigned long long)state->graph_launches);
+			failed = 1;
+		}
+		if ( failed == 0 && (SparkGpuMemcpyAsync(state->token_ids_device, tokens_a, 24u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
+			StageRunnerStep(state, &runner, &lane8_step, 0u, state->stream) != SPARK_STATUS_OK ||
+			SparkGpuMemcpyAsync(out_tokens, state->output_token, 24u * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST, state->stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS) )
+		{
+			printf("FAIL multi-lane verify (B=8, rows=24) capture\n");
+			failed = 1;
+		}
+		lane8_prog = state->graph_program[lane8_slot];
+		if ( failed == 0 )
+			for ( uint32_t index = 0u; index < 24u; ++index )
+				if ( out_tokens[index] != tokens_a[index] )
+				{
+					printf("FAIL multi-lane verify (B=8, rows=24) capture output mismatch row=%u got=%u want=%u\n",
+						index, out_tokens[index], tokens_a[index]);
+					failed = 1;
+					break;
+				}
+		if ( failed == 0 && (StageRunnerStep(state, &runner, &lane1_step, 0u, state->stream) != SPARK_STATUS_OK ||
+			SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS) )
+		{
+			printf("FAIL single-lane verify (B=1, rows=16) capture alongside multi-lane\n");
+			failed = 1;
+		}
+		lane1_prog = state->graph_program[lane1_slot];
+		if ( failed == 0 && (lane8_prog == 0 || lane1_prog == 0 || state->graph_program[lane4_slot] != lane4_prog ||
+			mock_verify_steps != 5u || state->graph_launches != 7u) )
+		{
+			printf("FAIL multi-lane verify collided with single-lane slot (steps=%u launches=%llu)\n",
+				mock_verify_steps, (unsigned long long)state->graph_launches);
+			failed = 1;
+		}
+		lane4_step.host_positions = host_b;
+		if ( failed == 0 && (SparkGpuMemcpyAsync(state->token_ids_device, tokens_b, 16u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
+			StageRunnerStep(state, &runner, &lane4_step, 0u, state->stream) != SPARK_STATUS_OK ||
+			SparkGpuMemcpyAsync(out_tokens, state->output_token, 16u * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST, state->stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS) )
+		{
+			printf("FAIL multi-lane verify (B=4, rows=16) replay\n");
+			failed = 1;
+		}
+		if ( failed == 0 )
+			for ( uint32_t index = 0u; index < 16u; ++index )
+				if ( out_tokens[index] != tokens_b[index] )
+				{
+					printf("FAIL multi-lane verify (B=4, rows=16) replay output mismatch row=%u got=%u want=%u\n",
+						index, out_tokens[index], tokens_b[index]);
+					failed = 1;
+					break;
+				}
+		lane8_step.host_positions = host_b;
+		if ( failed == 0 && (SparkGpuMemcpyAsync(state->token_ids_device, tokens_b, 24u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
+			StageRunnerStep(state, &runner, &lane8_step, 0u, state->stream) != SPARK_STATUS_OK ||
+			SparkGpuMemcpyAsync(out_tokens, state->output_token, 24u * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST, state->stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS) )
+		{
+			printf("FAIL multi-lane verify (B=8, rows=24) replay\n");
+			failed = 1;
+		}
+		if ( failed == 0 )
+			for ( uint32_t index = 0u; index < 24u; ++index )
+				if ( out_tokens[index] != tokens_b[index] )
+				{
+					printf("FAIL multi-lane verify (B=8, rows=24) replay output mismatch row=%u got=%u want=%u\n",
+						index, out_tokens[index], tokens_b[index]);
+					failed = 1;
+					break;
+				}
+		if ( failed == 0 && (state->graph_program[lane4_slot] != lane4_prog || state->graph_program[lane8_slot] != lane8_prog ||
+			state->graph_program[lane1_slot] != lane1_prog || mock_verify_steps != 5u || state->graph_launches != 9u) )
+		{
+			printf("FAIL multi-lane verify replay triggered recapture (steps=%u launches=%llu)\n",
+				mock_verify_steps, (unsigned long long)state->graph_launches);
+			failed = 1;
+		}
 	}
 	StageRunnerGraphDrop(state);
 	StageRunnerGraphPrefetchFree(state);

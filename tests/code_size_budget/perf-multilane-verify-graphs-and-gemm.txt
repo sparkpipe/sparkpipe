@@ -1,0 +1,2 @@
++266
+perf/multilane-verify-graphs-and-gemm: route multi-lane speculative verify steps (B=2..8, rows<=32, tree==0) to dedicated per-lane CUDA graph slot keys in inference/runner/stage_runner.cu; optimize inference/kernels/stream_gemm.cuh with ldmatrix.x4 double-buffered BF16 MMA, cross-K pipelining, 128x256x64/256x128x64/64x128x64 BF16 wide/narrow tiles, compile-time-specialized FP8/MXFP8 scale loads, cross-tile grouped pipelining, serpentine/N-inner L2 tile swizzling, and non-persistent dense grid dispatch (+21% to +77% GB10 TFLOPS, 0 spills).

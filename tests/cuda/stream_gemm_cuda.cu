@@ -377,7 +377,7 @@ static void ProbeDense(const ProbeDenseShape *shape,uint32_t rows,uint32_t timin
 	PROBE_CUDA(cudaDeviceSynchronize());
 	for (path=0u; path<2u; path++)
 	{
-		PROBE_CUDA(cudaMemset(device_output,0xff,output.size() * 2u));
+		PROBE_CUDA(cudaMemsetAsync(device_output,0xff,output.size() * 2u,stream));
 		PROBE_OK(ProbeDenseRun(path,device_weight,device_activation,device_output,row_offset,tile_prefix,rows,shape,stream));
 		PROBE_CUDA(cudaStreamSynchronize(stream));
 		PROBE_CUDA(cudaMemcpy(output.data(),device_output,output.size() * 2u,cudaMemcpyDeviceToHost));
