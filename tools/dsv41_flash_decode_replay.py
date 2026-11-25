@@ -29,7 +29,7 @@ SEQUENCES = {
     'attention_output': ['D41MergeSinkKernel', 'D41RopeRowsKernel', 'D41ColumnsKernel', 'SparkDsv41FlashFp8QdqKernel', SKINNY, 'D41ColumnsKernel',
                          'D41ColumnsKernel', 'SparkDsv41FlashFp8QdqKernel', SKINNY, 'D41ColumnsKernel', 'SparkDsv41FlashFp8QdqKernel', SKINNY],
     'attention_core': [('D41InitRecordsKernel', 'LmLatentShardPrefillKernel'), 'D41WindowFoldWholeKernel', 'D41WindowRingStoreKernel'],
-    'attention_input': [SKINNY, 'D41RmsNormQdqKernel', 'D41KvNormRopeQdqKernel', SKINNY, 'D41RopeRowsKernel'],
+    'attention_input': [SKINNY, 'D41QKvNormRopeQdqKernel', SKINNY, 'D41RopeRowsKernel'],
     'shared_expert': [SKINNY, 'D41ExpertActKernel', 'D41SwigluRowsKernel', 'SparkDsv41FlashFp8QdqKernel', SKINNY],
     'mhc': ['LmHcSinkhornPartialKernel', 'LmHcSinkhornKernel', 'D41RmsNormQdqKernel'],
     'mhc_fused': ['D41FusedMixNormKernel'],
