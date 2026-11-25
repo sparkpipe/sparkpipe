@@ -8,8 +8,19 @@
 #error "HY4_TP16_CONTRACT_SHA256 must identify the model contract"
 #endif
 
+#ifdef HY4_FP8
+#define SPARK_HY4_TP16_ADAPTER_ID "hy4_fp8-tp16"
+#define SPARK_HY4_TP16_MODEL_ID "tencent/Hy4-FP8"
+#define SPARK_HY4_TP16_MODEL_REVISION "d063b5853ecf56e0776266dab28305fc17a137cc"
+#define SPARK_HY4_TP16_PROGRAM "hy4_fp8"
+#define SPARK_HY4_TP16_MODULE_TAG "hy4_fp8_tp16_stage"
+#else
 #define SPARK_HY4_TP16_ADAPTER_ID "hy4-tp16"
 #define SPARK_HY4_TP16_MODEL_ID "tencent/Hy4-preview-FP8"
+#define SPARK_HY4_TP16_MODEL_REVISION SPARK_HY4_TP16_ADAPTER_ID
+#define SPARK_HY4_TP16_PROGRAM "hy4"
+#define SPARK_HY4_TP16_MODULE_TAG "hy4_tp16_stage"
+#endif
 #define SPARK_HY4_TP16_MAX_ROWS 2048u
 #define SPARK_HY4_TP16_CHECKPOINT_TOKENS 16384u
 
@@ -48,10 +59,10 @@ static const SparkStageServingModel Hy4Tp16StageServing =
 {
 	.adapter_id = SPARK_HY4_TP16_ADAPTER_ID,
 	.model_id = SPARK_HY4_TP16_MODEL_ID,
-	.model_revision = SPARK_HY4_TP16_ADAPTER_ID,
-	.program = "hy4",
+	.model_revision = SPARK_HY4_TP16_MODEL_REVISION,
+	.program = SPARK_HY4_TP16_PROGRAM,
 	.contract_sha256 = HY4_TP16_CONTRACT_SHA256,
-	.module_tag = "hy4_tp16_stage",
+	.module_tag = SPARK_HY4_TP16_MODULE_TAG,
 	.runner_model = SparkHy4Tp16StageModel,
 	.tp_degree = SPARK_HY4_TP16_STAGE_TP_DEGREE,
 	.layer_count = SPARK_HY4_TP16_STAGE_LAYERS,

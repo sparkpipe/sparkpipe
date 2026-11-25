@@ -96,6 +96,8 @@ DENSE_INTER = 12288
 VOCAB = 154880
 FIRST_ROUTED = 3
 REVISION = "84c6a6aa9497188e15a635ba793b0f95a79b1033"
+SAGE21_FLASH_REVISION = "716e6436905650b7be93e1b7dedfb0bb95afd3a3"
+MODEL_REVISIONS = {"glm53_flash": REVISION, "sage21_flash": SAGE21_FLASH_REVISION}
 CONTRACT_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 SPINE_DTYPES = ("BF16", "F8_E4M3", "U8")
 
@@ -401,8 +403,10 @@ def main() -> int:
     parser.add_argument("--tp-all", type=int, default=0,
                         help="emit all N rank packs in one pass: entry i of every rank before entry i+1, so each "
                              "source tensor is read once while it is cached")
-    parser.add_argument("--model-revision", default=REVISION,
-                        help=f"header model revision (default {REVISION}, the FP8 release)")
+    parser.add_argument("--model", choices=sorted(MODEL_REVISIONS), default="glm53_flash",
+                        help="model variant in the glm5_next family (selects default header revision)")
+    parser.add_argument("--model-revision", default=None,
+                        help=f"header model revision (default from --model, {REVISION} for glm53_flash)")
     parser.add_argument("--spine-cache-gib", type=float, default=8.0, help="dequantized spine tensor cache cap")
     parser.add_argument("--drop-output-cache", action="store_true",
                         help="--tp-all only: fdatasync and DONTNEED the outputs every 2 GiB")
@@ -411,6 +415,8 @@ def main() -> int:
                              "otherwise it must equal the source-driven codec")
     parser.add_argument("--dry-plan", action="store_true", help="plan and print the inventory without writing")
     args = parser.parse_args()
+    if args.model_revision is None:
+        args.model_revision = MODEL_REVISIONS[args.model]
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     if args.mtp_only:
         validate_mtp_only(args)

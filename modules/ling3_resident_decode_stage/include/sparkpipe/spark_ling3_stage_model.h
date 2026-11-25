@@ -10,9 +10,17 @@ extern "C" {
 #define SPARK_LING3_STAGE_TP_DEGREE 16u
 #define SPARK_LING3_STAGE_PAGE_SLOTS 64u
 #define SPARK_LING3_STAGE_VERIFY_ROWS 256u
+#ifdef LING31_FLASH
+#define SPARK_LING3_STAGE_HIDDEN 4096u
+#define SPARK_LING3_STAGE_LAYERS 72u
+#define SPARK_LING3_STAGE_PERIOD 8u
+#define SPARK_LING3_STAGE_MLA_HEADS 64u
+#else
 #define SPARK_LING3_STAGE_HIDDEN 2560u
 #define SPARK_LING3_STAGE_LAYERS 42u
 #define SPARK_LING3_STAGE_PERIOD 6u
+#define SPARK_LING3_STAGE_MLA_HEADS 32u
+#endif
 #define SPARK_LING3_STAGE_MLA_LAYERS (SPARK_LING3_STAGE_LAYERS / SPARK_LING3_STAGE_PERIOD)
 #define SPARK_LING3_STAGE_LATENT 512u
 #define SPARK_LING3_STAGE_ROPE 64u
@@ -60,9 +68,15 @@ struct Ling3Geometry : LingDefaults
 	static constexpr uint32_t kPageSlots = SPARK_LING3_STAGE_PAGE_SLOTS;
 	static float RoutedLimit(uint32_t layer) { return layer >= 35u ? 4.0f : 0.0f; }
 	static float SharedLimit(uint32_t layer) { return layer >= 40u ? 7.0f : layer >= 34u ? 5.0f : 0.0f; }
+#ifdef LING32_AIR
+	static const char *Tag(void) { return "sparkpipe_ling32_air"; }
+	static const char *Name(void) { return "ling-3.2-air"; }
+	static const char *ReportTag(void) { return "LING32_AIR-STATE"; }
+#else
 	static const char *Tag(void) { return "sparkpipe_ling3"; }
 	static const char *Name(void) { return "ling-3.0-flash"; }
 	static const char *ReportTag(void) { return "LING3-STATE"; }
+#endif
 	static constexpr uint32_t kAttention = LING_ATTENTION_MLA;
 	static constexpr float kNormEpsilon = LG_EPSILON;
 	static constexpr bool kNormRoundFirst = true;
