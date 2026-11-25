@@ -144,10 +144,10 @@
       "runtime_root": "/home/{host}/stage-lanes/k31_pro/lane2/root",
       "weightd_socket": "/tmp/spark_weightd.sock",
       "memory_max": "16G",
-      "sequences": 32,
+      "sequences": 64,
       "rows": 2048,
       "context_tokens": 1048576,
-      "kv_logical_pages": 524288,
+      "kv_logical_pages": 1048576,
       "state_budget_bytes": 5368709120,
       "draft_server": {
         "host": "127.0.0.1",
@@ -182,7 +182,7 @@
       },
       "tokenizer_sha256": "58578ae8cb9f99f2b928afd7af00c6ac87d8262a01484fb7a51b7dc608742ad9",
       "text_prompt_prefix_token_ids": [],
-      "state_memory_bytes": 1920000000
+      "state_memory_bytes": 3840000000
     },
     "qwen3.8-27b": {
       "launcher": "stage_lane",
