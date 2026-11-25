@@ -10,7 +10,7 @@
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
-#include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/drafter_blackwell.cuh"
 #include "runtime/launch.h"
 
 #include <math.h>
@@ -46,9 +46,9 @@
 #define KX2_WARP 32u
 #define KX2_WARPS (KX2_THREADS / KX2_WARP)
 #define KX2_PICK_THREADS 1024u
-#define KX2_TOPK_THREADS 512u
 #define KX2_ATTN_TILE 32u
-#define KX2_ATTN_THREADS (KX2_GQA_GROUP * KX2_WARP)
+#define KX2_ATTN_Q_GROUP 4u
+#define KX2_ATTN_Q_GROUPS (KX2_GQA_GROUP / KX2_ATTN_Q_GROUP)
 #define KX2_SPLITS_MAX 16u
 #define KX2_SPLIT_ROWS_MIN 256u
 #define KX2_RUNS_MAX 256u
@@ -96,9 +96,19 @@ typedef struct KX2Sequence
 
 typedef struct KX2Draft
 {
+	uint64_t seed;
 	uint32_t positions[KX2_BLOCK];
 	uint32_t anchor;
 	uint32_t mask;
+	uint32_t position;
+	uint32_t top_k;
+	float inverse_temperature;
+	float nucleus;
+	float scale;
+	uint32_t held;
+	uint32_t splits;
+	uint32_t split_rows;
+	uint32_t drafts;
 	uint32_t runs;
 	uint32_t run_first[KX2_RUNS_MAX];
 	uint32_t run_position[KX2_RUNS_MAX];
@@ -141,7 +151,7 @@ typedef struct KX2Forward
 	uint16_t *mlp;
 	uint16_t *y;
 	uint16_t *logits;
-	float *logits_f32;
+	SparkDrafterTopkBf16Workspace topk_ws;
 	uint32_t *candidates;
 	float *markov_row;
 } KX2Forward;
@@ -150,6 +160,7 @@ typedef struct KX2State
 {
 	SparkWeightdLazyPack *pack;
 	SparkGpuStream stream;
+	SparkDrafterGraphCache graphs;
 	uint32_t multiprocessors;
 	uint32_t mask_token;
 	float epsilon;
@@ -229,7 +240,7 @@ void KX2RopeTableKernel(float *__restrict__ inverse, float theta)
 		inverse[threadIdx.x] = 1.0f / powf(theta, (float)(2u * threadIdx.x) / (float)KX2_HEAD_DIM);
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
 void KX2RmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[KX2_WARPS];
@@ -244,9 +255,32 @@ void KX2RmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict
 	scale = rsqrtf(total / (float)dimension + epsilon);
 	for ( uint32_t index = threadIdx.x; index < dimension; index += KX2_THREADS )
 		output[row * dimension + index] = LmFloatToBf16(LmBf16ToFloat(input[row * dimension + index]) * scale * LmBf16ToFloat(weight[index]));
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_HEAD_DIM, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
+void KX2ResidualRmsKernel(const uint16_t *__restrict__ base, const uint16_t *__restrict__ addend, const uint16_t *__restrict__ weight,
+	uint16_t *__restrict__ residual, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduction[KX2_WARPS];
+	const uint64_t row = blockIdx.x;
+	const uint64_t base_offset = row * dimension;
+	float total = 0.0f, scale;
+	for ( uint32_t index = threadIdx.x; index < dimension; index += KX2_THREADS )
+	{
+		const uint16_t sum_bf16 = LmFloatToBf16(LmBf16ToFloat(base[base_offset + index]) + LmBf16ToFloat(addend[base_offset + index]));
+		const float value = LmBf16ToFloat(sum_bf16);
+		residual[base_offset + index] = sum_bf16;
+		total += value * value;
+	}
+	total = LmBlockSum<KX2_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)dimension + epsilon);
+	for ( uint32_t index = threadIdx.x; index < dimension; index += KX2_THREADS )
+		output[base_offset + index] = LmFloatToBf16(LmBf16ToFloat(residual[base_offset + index]) * scale * LmBf16ToFloat(weight[index]));
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(KX2_HEAD_DIM, 4)
 void KX2BlockHeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const float *__restrict__ inverse,
 	const uint32_t *__restrict__ positions, uint32_t heads, float epsilon, uint16_t *__restrict__ output)
 {
@@ -262,9 +296,10 @@ void KX2BlockHeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16
 	KX2Rotation(position, inverse[lane % KX2_HALF], &cosine, &sine);
 	rotated = lane < KX2_HALF ? normed[lane] * cosine - normed[lane + KX2_HALF] * sine : normed[lane] * cosine + normed[lane - KX2_HALF] * sine;
 	output[((uint64_t)row * heads + head) * KX2_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_HEAD_DIM, 1)
+__global__ __launch_bounds__(KX2_HEAD_DIM, 4)
 void KX2IngestKeyRopeKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const float *__restrict__ inverse,
 	const uint32_t *__restrict__ positions, float epsilon, uint16_t *const *__restrict__ pages, uint32_t layer)
 {
@@ -282,152 +317,188 @@ void KX2IngestKeyRopeKernel(const uint16_t *__restrict__ input, const uint16_t *
 	rotated = lane < KX2_HALF ? normed[lane] * cosine - normed[lane + KX2_HALF] * sine : normed[lane] * cosine + normed[lane - KX2_HALF] * sine;
 	page[(uint64_t)layer * KX2_PAGE_LAYER + ((uint64_t)head * KX2_PAGE_POSITIONS + (position % KX2_PAGE_POSITIONS)) * KX2_HEAD_DIM + lane] =
 		LmFloatToBf16(rotated);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
 void KX2IngestStoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions,
 	uint16_t *const *__restrict__ pages, uint32_t layer)
 {
 	const uint32_t row = blockIdx.x, position = positions[row];
 	uint16_t *dst = pages[position / KX2_PAGE_POSITIONS] + (uint64_t)layer * KX2_PAGE_LAYER + KX2_PAGE_HALF_LAYER;
 	const uint32_t slot = position % KX2_PAGE_POSITIONS;
-	for ( uint32_t index = threadIdx.x; index < KX2_KV_WIDTH; index += KX2_THREADS )
-		dst[((uint64_t)(index / KX2_HEAD_DIM) * KX2_PAGE_POSITIONS + slot) * KX2_HEAD_DIM + index % KX2_HEAD_DIM] =
-			values[(uint64_t)row * KX2_KV_WIDTH + index];
+	for ( uint32_t vec = threadIdx.x; vec < KX2_KV_WIDTH / 8u; vec += KX2_THREADS )
+	{
+		const uint32_t index = vec * 8u;
+		const uint32_t head = index / KX2_HEAD_DIM;
+		const uint32_t col = index % KX2_HEAD_DIM;
+		*(uint4 *)(dst + ((uint64_t)head * KX2_PAGE_POSITIONS + slot) * KX2_HEAD_DIM + col) =
+			*(const uint4 *)(values + (uint64_t)row * KX2_KV_WIDTH + index);
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
 void KX2EmbedKernel(const uint16_t *__restrict__ embed, const KX2Draft *__restrict__ draft, uint16_t *__restrict__ hidden)
 {
 	const uint32_t row = blockIdx.x, token = row == 0u ? draft->anchor : draft->mask;
-	for ( uint32_t index = threadIdx.x; index < KX2_HIDDEN; index += KX2_THREADS )
-		hidden[(uint64_t)row * KX2_HIDDEN + index] = embed[(uint64_t)token * KX2_HIDDEN + index];
+	const uint4 *src = (const uint4 *)(embed + (uint64_t)token * KX2_HIDDEN);
+	uint4 *dst = (uint4 *)(hidden + (uint64_t)row * KX2_HIDDEN);
+	for ( uint32_t vec = threadIdx.x; vec < KX2_HIDDEN / 8u; vec += KX2_THREADS )
+		dst[vec] = src[vec];
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_ATTN_THREADS, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
 void KX2ContextAttentionKernel(const uint16_t *__restrict__ q, uint16_t *const *__restrict__ pages, uint32_t layer,
-	const KX2Draft *__restrict__ draft, uint32_t held, uint32_t split_rows, float scale, float *__restrict__ partials)
+	const KX2Draft *__restrict__ draft, float scale, float *__restrict__ partials)
 {
-	__shared__ const uint16_t *s_ptrs[KX2_ATTN_TILE];
-	__shared__ uint32_t s_k[KX2_ATTN_TILE][KX2_HALF + 1u];
-	__shared__ uint32_t s_v[KX2_ATTN_TILE][KX2_HALF + 1u];
-	__shared__ float s_scores[KX2_GQA_GROUP][KX2_ATTN_TILE];
-	const uint32_t kv_head = blockIdx.x / KX2_BLOCK, row = blockIdx.x % KX2_BLOCK, split = blockIdx.y;
+	__shared__ __align__(16) uint32_t s_k[2][KX2_ATTN_TILE][KX2_HALF];
+	__shared__ __align__(16) uint32_t s_v[2][KX2_ATTN_TILE][KX2_HALF];
+	__shared__ float s_scores[KX2_BLOCK][KX2_ATTN_TILE];
+	LmDependentWait();
+	const uint32_t kv_head = blockIdx.x / KX2_ATTN_Q_GROUPS, q_group = blockIdx.x % KX2_ATTN_Q_GROUPS, split = blockIdx.y;
 	const uint32_t warp = threadIdx.x / KX2_WARP, lane = threadIdx.x % KX2_WARP;
-	const uint32_t q_head = kv_head * KX2_GQA_GROUP + warp;
+	const uint32_t q_head_base = kv_head * KX2_GQA_GROUP + q_group * KX2_ATTN_Q_GROUP;
 	const uint64_t layer_head_offset = (uint64_t)layer * KX2_PAGE_LAYER + (uint64_t)kv_head * KX2_PAGE_POSITIONS * KX2_HEAD_DIM;
+	const uint32_t held = draft->held, split_rows = draft->split_rows;
 	const uint32_t begin = split * split_rows;
 	const uint32_t end = begin + split_rows < held ? begin + split_rows : held;
 	const uint32_t tiles = begin < end ? (end - begin + KX2_ATTN_TILE - 1u) / KX2_ATTN_TILE : 0u;
-	const uint2 q_quad = *(const uint2 *)(q + ((uint64_t)row * KX2_HEADS + q_head) * KX2_HEAD_DIM + 4u * lane);
-	const float q0 = LmBf16ToFloat((uint16_t)(q_quad.x & 0xffffu));
-	const float q1 = LmBf16ToFloat((uint16_t)(q_quad.x >> 16u));
-	const float q2 = LmBf16ToFloat((uint16_t)(q_quad.y & 0xffffu));
-	const float q3 = LmBf16ToFloat((uint16_t)(q_quad.y >> 16u));
-	float running_max = -INFINITY, running_sum = 0.0f, acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-	float *out = partials + (((uint64_t)q_head * KX2_SPLITS_MAX + split) * KX2_BLOCK + row) * (KX2_HEAD_DIM + 2u);
-	for ( uint32_t tile = 0u; tile < tiles; tile++ )
+	const uint32_t load_key = threadIdx.x >> 3u, load_chunk = threadIdx.x & 7u;
+	float q0[KX2_ATTN_Q_GROUP], q1[KX2_ATTN_Q_GROUP], q2[KX2_ATTN_Q_GROUP], q3[KX2_ATTN_Q_GROUP];
+	float running_max[KX2_ATTN_Q_GROUP], running_sum[KX2_ATTN_Q_GROUP];
+	float acc0[KX2_ATTN_Q_GROUP], acc1[KX2_ATTN_Q_GROUP], acc2[KX2_ATTN_Q_GROUP], acc3[KX2_ATTN_Q_GROUP];
+	if ( warp < KX2_BLOCK )
 	{
-		const uint32_t tile_first = begin + tile * KX2_ATTN_TILE;
-		const uint32_t tile_keys = end - tile_first < KX2_ATTN_TILE ? end - tile_first : KX2_ATTN_TILE;
-		const uint32_t load_key = threadIdx.x >> 3u, load_chunk = threadIdx.x & 7u;
-		if ( threadIdx.x < KX2_ATTN_TILE )
-			s_ptrs[threadIdx.x] = KX2KeyRow(pages, layer_head_offset, draft->run_first, draft->run_position, draft->runs,
-				tile_first + threadIdx.x, end);
-		__syncthreads();
+#pragma unroll
+		for ( uint32_t g = 0u; g < KX2_ATTN_Q_GROUP; g++ )
 		{
-			const uint16_t *src_k = s_ptrs[load_key];
+			const uint2 q_quad = *(const uint2 *)(q + ((uint64_t)warp * KX2_HEADS + q_head_base + g) * KX2_HEAD_DIM + 4u * lane);
+			q0[g] = LmBf16ToFloat((uint16_t)(q_quad.x & 0xffffu));
+			q1[g] = LmBf16ToFloat((uint16_t)(q_quad.x >> 16u));
+			q2[g] = LmBf16ToFloat((uint16_t)(q_quad.y & 0xffffu));
+			q3[g] = LmBf16ToFloat((uint16_t)(q_quad.y >> 16u));
+			running_max[g] = -INFINITY;
+			running_sum[g] = 0.0f;
+			acc0[g] = 0.0f;
+			acc1[g] = 0.0f;
+			acc2[g] = 0.0f;
+			acc3[g] = 0.0f;
+		}
+	}
+	if ( tiles > 0u )
+	{
+		{
+			const uint16_t *src_k = KX2KeyRow(pages, layer_head_offset, draft->run_first, draft->run_position, draft->runs, begin + load_key, end);
 			if ( src_k != 0 )
 			{
 				const uint16_t *src_v = src_k + KX2_PAGE_HALF_LAYER;
-				const uint4 k0 = *(const uint4 *)(src_k + load_chunk * 16u);
-				const uint4 k1 = *(const uint4 *)(src_k + load_chunk * 16u + 8u);
-				const uint4 v0 = *(const uint4 *)(src_v + load_chunk * 16u);
-				const uint4 v1 = *(const uint4 *)(src_v + load_chunk * 16u + 8u);
-				s_k[load_key][load_chunk * 8u + 0u] = k0.x;
-				s_k[load_key][load_chunk * 8u + 1u] = k0.y;
-				s_k[load_key][load_chunk * 8u + 2u] = k0.z;
-				s_k[load_key][load_chunk * 8u + 3u] = k0.w;
-				s_k[load_key][load_chunk * 8u + 4u] = k1.x;
-				s_k[load_key][load_chunk * 8u + 5u] = k1.y;
-				s_k[load_key][load_chunk * 8u + 6u] = k1.z;
-				s_k[load_key][load_chunk * 8u + 7u] = k1.w;
-				s_v[load_key][load_chunk * 8u + 0u] = v0.x;
-				s_v[load_key][load_chunk * 8u + 1u] = v0.y;
-				s_v[load_key][load_chunk * 8u + 2u] = v0.z;
-				s_v[load_key][load_chunk * 8u + 3u] = v0.w;
-				s_v[load_key][load_chunk * 8u + 4u] = v1.x;
-				s_v[load_key][load_chunk * 8u + 5u] = v1.y;
-				s_v[load_key][load_chunk * 8u + 6u] = v1.z;
-				s_v[load_key][load_chunk * 8u + 7u] = v1.w;
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[0][load_key][load_chunk * 8u]), src_k + load_chunk * 16u, 16u);
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[0][load_key][load_chunk * 8u + 4u]), src_k + load_chunk * 16u + 8u, 16u);
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[0][load_key][load_chunk * 8u]), src_v + load_chunk * 16u, 16u);
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[0][load_key][load_chunk * 8u + 4u]), src_v + load_chunk * 16u + 8u, 16u);
+			}
+			SparkDrafterCommitGroup();
+		}
+		for ( uint32_t tile = 0u; tile < tiles; tile++ )
+		{
+			const uint32_t cur = tile & 1u, nxt = cur ^ 1u;
+			const uint32_t tile_first = begin + tile * KX2_ATTN_TILE;
+			const uint32_t tile_keys = end - tile_first < KX2_ATTN_TILE ? end - tile_first : KX2_ATTN_TILE;
+			if ( tile + 1u < tiles )
+			{
+				const uint32_t next_first = tile_first + KX2_ATTN_TILE;
+				const uint16_t *src_k = KX2KeyRow(pages, layer_head_offset, draft->run_first, draft->run_position, draft->runs,
+					next_first + load_key, end);
+				if ( src_k != 0 )
+				{
+					const uint16_t *src_v = src_k + KX2_PAGE_HALF_LAYER;
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[nxt][load_key][load_chunk * 8u]), src_k + load_chunk * 16u, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[nxt][load_key][load_chunk * 8u + 4u]), src_k + load_chunk * 16u + 8u, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[nxt][load_key][load_chunk * 8u]), src_v + load_chunk * 16u, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[nxt][load_key][load_chunk * 8u + 4u]), src_v + load_chunk * 16u + 8u, 16u);
+				}
+				SparkDrafterCommitGroup();
+				SparkDrafterWaitGroup<1>();
 			}
 			else
+				SparkDrafterWaitGroup<0>();
+			__syncthreads();
+			if ( warp < KX2_BLOCK )
 			{
-				for ( uint32_t w = 0u; w < 8u; w++ )
+#pragma unroll
+				for ( uint32_t g = 0u; g < KX2_ATTN_Q_GROUP; g++ )
 				{
-					s_k[load_key][load_chunk * 8u + w] = 0u;
-					s_v[load_key][load_chunk * 8u + w] = 0u;
+					for ( uint32_t t = 0u; t < tile_keys; t++ )
+					{
+						const uint2 kp = *(const uint2 *)&s_k[cur][t][2u * lane];
+						float dot = fmaf(q0[g], LmBf16ToFloat((uint16_t)(kp.x & 0xffffu)),
+							fmaf(q1[g], LmBf16ToFloat((uint16_t)(kp.x >> 16u)),
+								fmaf(q2[g], LmBf16ToFloat((uint16_t)(kp.y & 0xffffu)), q3[g] * LmBf16ToFloat((uint16_t)(kp.y >> 16u)))));
+						dot = KX2WarpSum(dot);
+						if ( lane == 0u )
+							s_scores[warp][t] = dot * scale;
+					}
+					__syncwarp();
+					{
+						const float sc = lane < tile_keys ? s_scores[warp][lane] : -INFINITY;
+						const float tile_max = KX2WarpMax(sc);
+						const float next_max = fmaxf(running_max[g], tile_max);
+						const float rescale = running_max[g] == -INFINITY ? 0.0f : expf(running_max[g] - next_max);
+						const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
+						const float tile_sum = KX2WarpSum(weight);
+						running_sum[g] = running_sum[g] * rescale + tile_sum;
+						running_max[g] = next_max;
+						acc0[g] *= rescale;
+						acc1[g] *= rescale;
+						acc2[g] *= rescale;
+						acc3[g] *= rescale;
+						s_scores[warp][lane] = weight;
+					}
+					__syncwarp();
+					for ( uint32_t t = 0u; t < tile_keys; t++ )
+					{
+						const float wt = s_scores[warp][t];
+						const uint2 vp = *(const uint2 *)&s_v[cur][t][2u * lane];
+						acc0[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp.x & 0xffffu)), acc0[g]);
+						acc1[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp.x >> 16u)), acc1[g]);
+						acc2[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp.y & 0xffffu)), acc2[g]);
+						acc3[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp.y >> 16u)), acc3[g]);
+					}
 				}
 			}
+			__syncthreads();
 		}
-		__syncthreads();
-		for ( uint32_t t = 0u; t < tile_keys; t++ )
-		{
-			const uint32_t kp0 = s_k[t][2u * lane];
-			const uint32_t kp1 = s_k[t][2u * lane + 1u];
-			float dot = fmaf(q0, LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)),
-				fmaf(q1, LmBf16ToFloat((uint16_t)(kp0 >> 16u)),
-					fmaf(q2, LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), q3 * LmBf16ToFloat((uint16_t)(kp1 >> 16u)))));
-			dot = KX2WarpSum(dot);
-			if ( lane == 0u )
-				s_scores[warp][t] = dot * scale;
-		}
-		__syncwarp();
-		{
-			const float sc = lane < tile_keys ? s_scores[warp][lane] : -INFINITY;
-			const float tile_max = KX2WarpMax(sc);
-			const float next_max = fmaxf(running_max, tile_max);
-			const float rescale = running_max == -INFINITY ? 0.0f : expf(running_max - next_max);
-			const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
-			const float tile_sum = KX2WarpSum(weight);
-			running_sum = running_sum * rescale + tile_sum;
-			running_max = next_max;
-			acc0 *= rescale;
-			acc1 *= rescale;
-			acc2 *= rescale;
-			acc3 *= rescale;
-			s_scores[warp][lane] = weight;
-		}
-		__syncwarp();
-		for ( uint32_t t = 0u; t < tile_keys; t++ )
-		{
-			const float wt = s_scores[warp][t];
-			const uint32_t vp0 = s_v[t][2u * lane];
-			const uint32_t vp1 = s_v[t][2u * lane + 1u];
-			acc0 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0);
-			acc1 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1);
-			acc2 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2);
-			acc3 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3);
-		}
-		__syncthreads();
 	}
-	out[4u * lane + 0u] = acc0;
-	out[4u * lane + 1u] = acc1;
-	out[4u * lane + 2u] = acc2;
-	out[4u * lane + 3u] = acc3;
-	if ( lane == 0u )
+	if ( warp < KX2_BLOCK )
 	{
-		out[KX2_HEAD_DIM] = running_max;
-		out[KX2_HEAD_DIM + 1u] = running_sum;
+#pragma unroll
+		for ( uint32_t g = 0u; g < KX2_ATTN_Q_GROUP; g++ )
+		{
+			float *out = partials + (((uint64_t)(q_head_base + g) * KX2_SPLITS_MAX + split) * KX2_BLOCK + warp) * (KX2_HEAD_DIM + 2u);
+			out[4u * lane + 0u] = acc0[g];
+			out[4u * lane + 1u] = acc1[g];
+			out[4u * lane + 2u] = acc2[g];
+			out[4u * lane + 3u] = acc3[g];
+			if ( lane == 0u )
+			{
+				out[KX2_HEAD_DIM] = running_max[g];
+				out[KX2_HEAD_DIM + 1u] = running_sum[g];
+			}
+		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_HEAD_DIM, 1)
+__global__ __launch_bounds__(KX2_HEAD_DIM, 4)
 void KX2AttentionMergeKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ block_k, const uint16_t *__restrict__ block_v,
-	float scale, const float *__restrict__ partials, uint32_t splits, uint16_t *__restrict__ output)
+	float scale, const float *__restrict__ partials, const KX2Draft *__restrict__ draft, uint16_t *__restrict__ output)
 {
 	__shared__ float reduction[KX2_HEAD_DIM / KX2_WARP];
+	LmDependentWait();
 	const uint32_t row = blockIdx.x / KX2_HEADS, head = blockIdx.x % KX2_HEADS, kv_head = head / KX2_GQA_GROUP, lane = threadIdx.x;
+	const uint32_t splits = draft->splits;
 	const float own = LmBf16ToFloat(q[((uint64_t)row * KX2_HEADS + head) * KX2_HEAD_DIM + lane]);
 	float top = -INFINITY, sum = 0.0f, accumulated = 0.0f;
 	for ( uint32_t split = 0u; split < splits; split++ )
@@ -453,38 +524,49 @@ void KX2AttentionMergeKernel(const uint16_t *__restrict__ q, const uint16_t *__r
 		top = next;
 	}
 	output[(uint64_t)row * KX2_Q_WIDTH + head * KX2_HEAD_DIM + lane] = LmFloatToBf16(accumulated / sum);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
 void KX2ResidualKernel(const uint16_t *__restrict__ base, const uint16_t *__restrict__ addend, uint16_t *__restrict__ output, uint32_t count)
 {
 	for ( uint32_t index = blockIdx.x * KX2_THREADS + threadIdx.x; index < count; index += gridDim.x * KX2_THREADS )
 		output[index] = LmFloatToBf16(LmBf16ToFloat(base[index]) + LmBf16ToFloat(addend[index]));
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
+__global__ __launch_bounds__(KX2_THREADS, 2)
 void KX2SwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t count)
 {
-	for ( uint32_t index = blockIdx.x * KX2_THREADS + threadIdx.x; index < count; index += gridDim.x * KX2_THREADS )
+	const uint4 *g4 = (const uint4 *)gate;
+	const uint4 *u4 = (const uint4 *)up;
+	uint4 *o4 = (uint4 *)output;
+	for ( uint32_t vec = blockIdx.x * KX2_THREADS + threadIdx.x; vec < count / 8u; vec += gridDim.x * KX2_THREADS )
 	{
-		const float g = LmBf16ToFloat(gate[index]);
-		output[index] = LmFloatToBf16(g / (1.0f + expf(-g)) * LmBf16ToFloat(up[index]));
+		const uint4 gv = g4[vec], uv = u4[vec];
+		const uint32_t ga[4] = {gv.x, gv.y, gv.z, gv.w};
+		const uint32_t ua[4] = {uv.x, uv.y, uv.z, uv.w};
+		uint32_t oa[4];
+		for ( uint32_t i = 0u; i < 4u; i++ )
+		{
+			const float g0 = LmBf16ToFloat((uint16_t)(ga[i] & 0xffffu));
+			const float g1 = LmBf16ToFloat((uint16_t)(ga[i] >> 16u));
+			const uint16_t r0 = LmFloatToBf16(g0 / (1.0f + expf(-g0)) * LmBf16ToFloat((uint16_t)(ua[i] & 0xffffu)));
+			const uint16_t r1 = LmFloatToBf16(g1 / (1.0f + expf(-g1)) * LmBf16ToFloat((uint16_t)(ua[i] >> 16u)));
+			oa[i] = (uint32_t)r0 | ((uint32_t)r1 << 16u);
+		}
+		o4[vec] = make_uint4(oa[0], oa[1], oa[2], oa[3]);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
-void KX2WidenKernel(const uint16_t *__restrict__ input, float *__restrict__ output, uint32_t count)
-{
-	for ( uint32_t index = blockIdx.x * KX2_THREADS + threadIdx.x; index < count; index += gridDim.x * KX2_THREADS )
-		output[index] = LmBf16ToFloat(input[index]);
-}
-
-__global__ __launch_bounds__(KX2_THREADS, 1)
-void KX2MarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
-	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
+__global__ __launch_bounds__(KX2_THREADS, 2)
+void KX2MarkovRowKernel(uint32_t step, const KX2Draft *__restrict__ draft, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
 {
 	__shared__ float vector[KX2_MARKOV];
-	const uint32_t previous = step == 0u ? anchor : tokens[step - 1u];
+	LmDependentWait();
+	const uint32_t previous = step == 0u ? draft->anchor : tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / KX2_WARP, lane = threadIdx.x % KX2_WARP;
 	for ( uint32_t index = threadIdx.x; index < KX2_MARKOV; index += KX2_THREADS )
 		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * KX2_MARKOV + index]);
@@ -498,8 +580,9 @@ void KX2MarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restri
 			sum += LmBf16ToFloat(edge[element]) * vector[element];
 		sum = KX2WarpSum(sum);
 		if ( lane == 0u )
-			row[slot] = logits[(uint64_t)step * KX2_VOCAB + candidate] + sum;
+			row[slot] = LmBf16ToFloat(logits[(uint64_t)step * KX2_VOCAB + candidate]) + sum;
 	}
+	LmDependentRelease();
 }
 
 static __device__ __forceinline__ unsigned long long KX2RowKey(const float *row, uint32_t slot)
@@ -524,10 +607,9 @@ static __device__ __forceinline__ void KX2Top2Insert(unsigned long long candidat
 }
 
 __global__ __launch_bounds__(KX2_PICK_THREADS, 1)
-void KX2MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsigned long long seed, float inverse_temperature, float nucleus,
-	uint32_t top_k, const float *__restrict__ row, const uint32_t *__restrict__ candidates, const uint16_t *__restrict__ y,
-	const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ confidence_weight, const uint16_t *__restrict__ confidence_bias,
-	KX2Picks *__restrict__ picks)
+void KX2MarkovPickKernel(uint32_t step, const KX2Draft *__restrict__ draft, const float *__restrict__ row, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ y, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ confidence_weight,
+	const uint16_t *__restrict__ confidence_bias, KX2Picks *__restrict__ picks)
 {
 	__shared__ unsigned long long keys[KX2_CANDIDATES];
 	__shared__ unsigned long long best[KX2_PICK_THREADS / KX2_WARP];
@@ -536,6 +618,10 @@ void KX2MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 	__shared__ uint32_t chosen;
 	__shared__ uint32_t alt_chosen;
 	__shared__ float peak_scaled;
+	LmDependentWait();
+	const uint32_t anchor = draft->anchor, position = draft->position, top_k = draft->top_k;
+	const unsigned long long seed = (unsigned long long)draft->seed;
+	const float inverse_temperature = draft->inverse_temperature, nucleus = draft->nucleus;
 	const uint32_t previous = step == 0u ? anchor : picks->tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / KX2_WARP, lane = threadIdx.x % KX2_WARP;
 	const float scale = inverse_temperature > 0.0f ? inverse_temperature : 1.0f;
@@ -647,126 +733,138 @@ void KX2MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsi
 		picks->alt_tokens[step] = candidates[step * KX2_CANDIDATES + alt_chosen];
 		picks->alt_scores[step] = denom > 0.0f ? expf(row[alt_chosen] * scale - peak_scaled) / denom : 0.0f;
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(KX2_WARP, 1)
-void KX2BranchSelectKernel(KX2Picks *__restrict__ picks, uint32_t drafts, float min_score)
+void KX2BranchSelectKernel(KX2Picks *__restrict__ picks, const KX2Draft *__restrict__ draft, float min_score)
 {
+	LmDependentWait();
 	uint32_t used = 0u;
-	if ( threadIdx.x != 0u )
-		return;
-	for ( uint32_t branch = 0u; branch < KX2_BRANCHES; branch++ )
+	if ( threadIdx.x == 0u )
 	{
-		picks->branch_fork[branch] = KX2_BLOCK;
-		picks->branch_len[branch] = 0u;
-	}
-	for ( uint32_t step = 0u; step + 1u < drafts; step++ )
-	{
-		const float score = picks->alt_scores[step];
-		uint32_t pos = used;
-		if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
-			continue;
-		while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+		const uint32_t drafts = draft->drafts;
+		for ( uint32_t branch = 0u; branch < KX2_BRANCHES; branch++ )
 		{
+			picks->branch_fork[branch] = KX2_BLOCK;
+			picks->branch_len[branch] = 0u;
+		}
+		for ( uint32_t step = 0u; step + 1u < drafts; step++ )
+		{
+			const float score = picks->alt_scores[step];
+			uint32_t pos = used;
+			if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
+				continue;
+			while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+			{
+				if ( pos < KX2_BRANCHES )
+				{
+					picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
+					picks->branch_len[pos] = picks->branch_len[pos - 1u];
+					picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
+					picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				}
+				pos--;
+			}
 			if ( pos < KX2_BRANCHES )
 			{
-				picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
-				picks->branch_len[pos] = picks->branch_len[pos - 1u];
-				picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
-				picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				picks->branch_fork[pos] = step;
+				picks->branch_len[pos] = 1u;
+				picks->branch_tokens[pos][0] = picks->alt_tokens[step];
+				picks->branch_scores[pos][0] = score;
+				if ( used < KX2_BRANCHES )
+					used++;
 			}
-			pos--;
-		}
-		if ( pos < KX2_BRANCHES )
-		{
-			picks->branch_fork[pos] = step;
-			picks->branch_len[pos] = 1u;
-			picks->branch_tokens[pos][0] = picks->alt_tokens[step];
-			picks->branch_scores[pos][0] = score;
-			if ( used < KX2_BRANCHES )
-				used++;
 		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(KX2_THREADS, 1)
-void KX2BranchRowKernel(uint32_t offset, uint32_t drafts, const KX2Picks *__restrict__ picks, const uint32_t *__restrict__ candidates,
-	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
+__global__ __launch_bounds__(KX2_THREADS, 2)
+void KX2BranchRowKernel(uint32_t offset, const KX2Draft *__restrict__ draft, const KX2Picks *__restrict__ picks, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
 {
 	__shared__ float vector[KX2_MARKOV];
+	LmDependentWait();
+	const uint32_t drafts = draft->drafts;
 	const uint32_t branch = blockIdx.y, fork = picks->branch_fork[branch], step = fork + offset;
 	const uint32_t warp = threadIdx.x / KX2_WARP, lane = threadIdx.x % KX2_WARP;
-	uint32_t previous;
-	float *row;
-	if ( fork >= drafts || step >= drafts )
-		return;
-	previous = picks->branch_tokens[branch][offset - 1u];
-	row = rows + (uint64_t)branch * KX2_CANDIDATES;
-	for ( uint32_t index = threadIdx.x; index < KX2_MARKOV; index += KX2_THREADS )
-		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * KX2_MARKOV + index]);
-	__syncthreads();
-	for ( uint32_t slot = blockIdx.x * KX2_WARPS + warp; slot < KX2_CANDIDATES; slot += gridDim.x * KX2_WARPS )
+	if ( fork < drafts && step < drafts )
 	{
-		const uint32_t candidate = candidates[step * KX2_CANDIDATES + slot];
-		const uint16_t *edge = markov_next + (uint64_t)candidate * KX2_MARKOV;
-		float sum = 0.0f;
-		for ( uint32_t element = lane; element < KX2_MARKOV; element += KX2_WARP )
-			sum += LmBf16ToFloat(edge[element]) * vector[element];
-		sum = KX2WarpSum(sum);
-		if ( lane == 0u )
-			row[slot] = logits[(uint64_t)step * KX2_VOCAB + candidate] + sum;
+		const uint32_t previous = picks->branch_tokens[branch][offset - 1u];
+		float *row = rows + (uint64_t)branch * KX2_CANDIDATES;
+		for ( uint32_t index = threadIdx.x; index < KX2_MARKOV; index += KX2_THREADS )
+			vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * KX2_MARKOV + index]);
+		__syncthreads();
+		for ( uint32_t slot = blockIdx.x * KX2_WARPS + warp; slot < KX2_CANDIDATES; slot += gridDim.x * KX2_WARPS )
+		{
+			const uint32_t candidate = candidates[step * KX2_CANDIDATES + slot];
+			const uint16_t *edge = markov_next + (uint64_t)candidate * KX2_MARKOV;
+			float sum = 0.0f;
+			for ( uint32_t element = lane; element < KX2_MARKOV; element += KX2_WARP )
+				sum += LmBf16ToFloat(edge[element]) * vector[element];
+			sum = KX2WarpSum(sum);
+			if ( lane == 0u )
+				row[slot] = LmBf16ToFloat(logits[(uint64_t)step * KX2_VOCAB + candidate]) + sum;
+		}
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(KX2_PICK_THREADS, 1)
-void KX2BranchPickKernel(uint32_t offset, uint32_t drafts, float scale, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
+void KX2BranchPickKernel(uint32_t offset, const KX2Draft *__restrict__ draft, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
 	KX2Picks *__restrict__ picks)
 {
 	__shared__ unsigned long long best[KX2_PICK_THREADS / KX2_WARP];
 	__shared__ float reduction[KX2_PICK_THREADS / KX2_WARP];
 	__shared__ uint32_t chosen;
 	__shared__ float peak_scaled;
+	LmDependentWait();
+	const uint32_t drafts = draft->drafts;
+	const float scale = draft->scale;
 	const uint32_t branch = blockIdx.x, fork = picks->branch_fork[branch], step = fork + offset;
 	const uint32_t warp = threadIdx.x / KX2_WARP, lane = threadIdx.x % KX2_WARP;
-	const float *row = rows + (uint64_t)branch * KX2_CANDIDATES;
-	unsigned long long first = 0ull;
-	float denom = 0.0f;
-	if ( fork >= drafts || step >= drafts )
-		return;
-	for ( uint32_t index = threadIdx.x; index < KX2_CANDIDATES; index += KX2_PICK_THREADS )
+	if ( fork < drafts && step < drafts )
 	{
-		const unsigned long long key = KX2RowKey(row, index);
-		if ( key > first )
-			first = key;
+		const float *row = rows + (uint64_t)branch * KX2_CANDIDATES;
+		unsigned long long first = 0ull;
+		float denom = 0.0f;
+		for ( uint32_t index = threadIdx.x; index < KX2_CANDIDATES; index += KX2_PICK_THREADS )
+		{
+			const unsigned long long key = KX2RowKey(row, index);
+			if ( key > first )
+				first = key;
+		}
+		for ( uint32_t mask = KX2_WARP / 2u; mask > 0u; mask >>= 1u )
+		{
+			const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
+			if ( other > first )
+				first = other;
+		}
+		if ( lane == 0u )
+			best[warp] = first;
+		__syncthreads();
+		if ( threadIdx.x == 0u )
+		{
+			first = best[0];
+			for ( uint32_t index = 1u; index < KX2_PICK_THREADS / KX2_WARP; index++ )
+				if ( best[index] > first )
+					first = best[index];
+			chosen = KX2KeySlot(first);
+			peak_scaled = row[chosen] * scale;
+		}
+		__syncthreads();
+		for ( uint32_t index = threadIdx.x; index < KX2_CANDIDATES; index += KX2_PICK_THREADS )
+			denom += expf(row[index] * scale - peak_scaled);
+		denom = LmBlockSum<KX2_PICK_THREADS>(denom, reduction);
+		if ( threadIdx.x == 0u )
+		{
+			picks->branch_tokens[branch][offset] = candidates[step * KX2_CANDIDATES + chosen];
+			picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
+			picks->branch_len[branch] = offset + 1u;
+		}
 	}
-	for ( uint32_t mask = KX2_WARP / 2u; mask > 0u; mask >>= 1u )
-	{
-		const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
-		if ( other > first )
-			first = other;
-	}
-	if ( lane == 0u )
-		best[warp] = first;
-	__syncthreads();
-	if ( threadIdx.x == 0u )
-	{
-		first = best[0];
-		for ( uint32_t index = 1u; index < KX2_PICK_THREADS / KX2_WARP; index++ )
-			if ( best[index] > first )
-				first = best[index];
-		chosen = KX2KeySlot(first);
-		peak_scaled = row[chosen] * scale;
-	}
-	__syncthreads();
-	for ( uint32_t index = threadIdx.x; index < KX2_CANDIDATES; index += KX2_PICK_THREADS )
-		denom += expf(row[index] * scale - peak_scaled);
-	denom = LmBlockSum<KX2_PICK_THREADS>(denom, reduction);
-	if ( threadIdx.x == 0u )
-	{
-		picks->branch_tokens[branch][offset] = candidates[step * KX2_CANDIDATES + chosen];
-		picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
-		picks->branch_len[branch] = offset + 1u;
-	}
+	LmDependentRelease();
 }
 
 static SparkStatus KX2Refuse(SparkDrafterModuleBind *bind, SparkStatus status, const char *format, const char *detail)
@@ -1015,7 +1113,8 @@ static SparkStatus KX2Scratch(KX2State *state)
 		!KX2_DEVICE(forward->residual, KX2_BLOCK * KX2_HIDDEN) || !KX2_DEVICE(forward->gate, KX2_BLOCK * KX2_MLP) ||
 		!KX2_DEVICE(forward->up, KX2_BLOCK * KX2_MLP) || !KX2_DEVICE(forward->act, KX2_BLOCK * KX2_MLP) ||
 		!KX2_DEVICE(forward->mlp, KX2_BLOCK * KX2_HIDDEN) || !KX2_DEVICE(forward->y, KX2_BLOCK * KX2_HIDDEN) ||
-		!KX2_DEVICE(forward->logits, (uint64_t)KX2_BLOCK * KX2_VOCAB) || !KX2_DEVICE(forward->logits_f32, (uint64_t)KX2_BLOCK * KX2_VOCAB) ||
+		!KX2_DEVICE(forward->logits, (uint64_t)KX2_BLOCK * KX2_VOCAB) ||
+		SparkDrafterTopkBf16Alloc(&forward->topk_ws, KX2_BLOCK) != SPARK_STATUS_OK ||
 		!KX2_DEVICE(forward->candidates, KX2_BLOCK * KX2_CANDIDATES) || !KX2_DEVICE(forward->markov_row, KX2_BRANCHES * KX2_CANDIDATES) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->multiprocessors = (uint32_t)multiprocessors;
@@ -1386,15 +1485,15 @@ static uint32_t KX2TokensMatch(KX2Sequence *sequence, const SparkDraftServerRequ
 	return 1u;
 }
 
-static SparkStatus KX2RunForward(KX2State *state, const KX2Sequence *sequence, uint32_t anchor, uint64_t position, uint32_t layers)
+static SparkStatus KX2PrepareDraft(KX2State *state, const KX2Sequence *sequence, uint32_t anchor, uint64_t position, const SparkRowSampling *sampling,
+	uint32_t drafts, uint32_t *splits_out)
 {
 	KX2Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
 	const uint32_t pages = sequence != 0 ? sequence->page_count : 0u;
-	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(KX2Draft, positions));
 	uint32_t held = 0u, splits = 0u, split_rows = 0u;
 	SparkStatus status;
-	if ( anchor >= KX2_VOCAB || position + KX2_BLOCK > (uint64_t)KX2_PAGES_MAX * KX2_PAGE_POSITIONS || layers == 0u || layers > KX2_LAYERS )
+	if ( anchor >= KX2_VOCAB || position + KX2_BLOCK > (uint64_t)KX2_PAGES_MAX * KX2_PAGE_POSITIONS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(forward->host_draft, 0, sizeof(*forward->host_draft));
 	status = KX2DraftRuns(sequence, position, forward->host_draft, &held);
@@ -1404,8 +1503,17 @@ static SparkStatus KX2RunForward(KX2State *state, const KX2Sequence *sequence, u
 		forward->host_draft->positions[row] = (uint32_t)(position + row);
 	forward->host_draft->anchor = anchor;
 	forward->host_draft->mask = state->mask_token;
-	for ( uint32_t page = 0u; page < pages; page++ )
-		forward->host_pages[page] = sequence->pages[page];
+	forward->host_draft->position = (uint32_t)position;
+	if ( sampling != 0 )
+	{
+		forward->host_draft->seed = sampling->seed;
+		forward->host_draft->top_k = sampling->top_k;
+		forward->host_draft->inverse_temperature = sampling->inverse_temperature;
+		forward->host_draft->nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
+		forward->host_draft->scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
+	}
+	else
+		forward->host_draft->scale = 1.0f;
 	if ( held != 0u )
 	{
 		splits = (held + KX2_SPLIT_ROWS_MIN - 1u) / KX2_SPLIT_ROWS_MIN;
@@ -1413,15 +1521,31 @@ static SparkStatus KX2RunForward(KX2State *state, const KX2Sequence *sequence, u
 		split_rows = ((held + splits - 1u) / splits + KX2_ATTN_TILE - 1u) / KX2_ATTN_TILE * KX2_ATTN_TILE;
 		splits = (held + split_rows - 1u) / split_rows;
 	}
+	forward->host_draft->held = held;
+	forward->host_draft->splits = splits;
+	forward->host_draft->split_rows = split_rows;
+	forward->host_draft->drafts = drafts;
+	for ( uint32_t page = 0u; page < pages; page++ )
+		forward->host_pages[page] = sequence->pages[page];
 	if ( SparkGpuMemcpyAsync(forward->draft, forward->host_draft, sizeof(KX2Draft), SPARK_GPU_COPY_HOST_TO_DEVICE, stream) != SPARK_GPU_SUCCESS ||
 		(pages != 0u && SparkGpuMemcpyAsync(forward->pages, forward->host_pages, (size_t)pages * sizeof(*forward->host_pages),
 			SPARK_GPU_COPY_HOST_TO_DEVICE, stream) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	*splits_out = splits;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus KX2LaunchForward(KX2State *state, uint32_t layers, uint32_t splits)
+{
+	KX2Forward *forward = &state->forward;
+	const SparkGpuStream stream = state->stream;
+	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(KX2Draft, positions));
+	SparkStatus status = SPARK_STATUS_OK;
 	LM_LAUNCH((KX2EmbedKernel), KX2_BLOCK, KX2_THREADS, 0, stream, state->embed, forward->draft, forward->hidden);
+	LM_LAUNCH((KX2RmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->hidden, state->layers[0].input_norm, forward->x, KX2_HIDDEN, state->epsilon);
 	for ( uint32_t layer = 0u; layer < layers && status == SPARK_STATUS_OK; layer++ )
 	{
 		const KX2Layer *weights = &state->layers[layer];
-		LM_LAUNCH((KX2RmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->hidden, weights->input_norm, forward->x, KX2_HIDDEN, state->epsilon);
 		status = KX2Gemm(state, weights->q, forward->x, forward->q, KX2_BLOCK, KX2_HIDDEN, KX2_Q_WIDTH);
 		if ( status == SPARK_STATUS_OK )
 			status = KX2Gemm(state, weights->k, forward->x, forward->k, KX2_BLOCK, KX2_HIDDEN, KX2_KV_WIDTH);
@@ -1434,16 +1558,15 @@ static SparkStatus KX2RunForward(KX2State *state, const KX2Sequence *sequence, u
 		LM_LAUNCH((KX2BlockHeadNormRopeKernel), KX2_BLOCK * KX2_KV_HEADS, KX2_HEAD_DIM, 0, stream, forward->k, weights->k_norm, state->rope_inverse,
 			positions, KX2_KV_HEADS, state->epsilon, forward->k_roped);
 		if ( splits != 0u )
-			LM_LAUNCH((KX2ContextAttentionKernel), dim3(KX2_KV_HEADS * KX2_BLOCK, splits), KX2_ATTN_THREADS, 0, stream, forward->q_roped,
-				forward->pages, layer, forward->draft, held, split_rows, state->softmax_scale, forward->partials);
-		LM_LAUNCH((KX2AttentionMergeKernel), KX2_BLOCK * KX2_HEADS, KX2_HEAD_DIM, 0, stream, forward->q_roped, forward->k_roped, forward->v,
-			state->softmax_scale, forward->partials, splits, forward->attended);
+			LM_LAUNCH_DEPENDENT((KX2ContextAttentionKernel), dim3(KX2_KV_HEADS * KX2_ATTN_Q_GROUPS, splits), KX2_THREADS, 0, stream, forward->q_roped,
+				forward->pages, layer, forward->draft, state->softmax_scale, forward->partials);
+		LM_LAUNCH_DEPENDENT((KX2AttentionMergeKernel), KX2_BLOCK * KX2_HEADS, KX2_HEAD_DIM, 0, stream, forward->q_roped, forward->k_roped, forward->v,
+			state->softmax_scale, forward->partials, forward->draft, forward->attended);
 		status = KX2Gemm(state, weights->o, forward->attended, forward->projected, KX2_BLOCK, KX2_Q_WIDTH, KX2_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((KX2ResidualKernel), 2u * state->multiprocessors, KX2_THREADS, 0, stream, forward->hidden, forward->projected, forward->residual,
-			KX2_BLOCK * KX2_HIDDEN);
-		LM_LAUNCH((KX2RmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->residual, weights->post_norm, forward->x, KX2_HIDDEN, state->epsilon);
+		LM_LAUNCH((KX2ResidualRmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->hidden, forward->projected, weights->post_norm, forward->residual,
+			forward->x, KX2_HIDDEN, state->epsilon);
 		status = KX2Gemm(state, weights->gate, forward->x, forward->gate, KX2_BLOCK, KX2_HIDDEN, KX2_MLP);
 		if ( status == SPARK_STATUS_OK )
 			status = KX2Gemm(state, weights->up, forward->x, forward->up, KX2_BLOCK, KX2_HIDDEN, KX2_MLP);
@@ -1453,47 +1576,61 @@ static SparkStatus KX2RunForward(KX2State *state, const KX2Sequence *sequence, u
 		status = KX2Gemm(state, weights->down, forward->act, forward->mlp, KX2_BLOCK, KX2_MLP, KX2_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((KX2ResidualKernel), 2u * state->multiprocessors, KX2_THREADS, 0, stream, forward->residual, forward->mlp, forward->hidden,
-			KX2_BLOCK * KX2_HIDDEN);
+		if ( layer + 1u < layers )
+			LM_LAUNCH((KX2ResidualRmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->residual, forward->mlp, state->layers[layer + 1u].input_norm,
+				forward->hidden, forward->x, KX2_HIDDEN, state->epsilon);
+		else if ( layers == KX2_LAYERS )
+			LM_LAUNCH((KX2ResidualRmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->residual, forward->mlp, state->norm, forward->hidden, forward->y,
+				KX2_HIDDEN, state->epsilon);
+		else
+			LM_LAUNCH((KX2ResidualKernel), 2u * state->multiprocessors, KX2_THREADS, 0, stream, forward->residual, forward->mlp, forward->hidden,
+				KX2_BLOCK * KX2_HIDDEN);
 	}
-	if ( status != SPARK_STATUS_OK || layers < KX2_LAYERS )
+	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((KX2RmsKernel), KX2_BLOCK, KX2_THREADS, 0, stream, forward->hidden, state->norm, forward->y, KX2_HIDDEN, state->epsilon);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus KX2Heads(KX2State *state, uint32_t anchor_token, uint64_t position, const SparkRowSampling *sampling, uint32_t drafts, uint32_t tree)
+static SparkStatus KX2RunForward(KX2State *state, const KX2Sequence *sequence, uint32_t anchor, uint64_t position, uint32_t layers)
+{
+	uint32_t splits = 0u;
+	SparkStatus status;
+	if ( layers == 0u || layers > KX2_LAYERS )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = KX2PrepareDraft(state, sequence, anchor, position, 0, 0u, &splits);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	return KX2LaunchForward(state, layers, splits);
+}
+
+static SparkStatus KX2LaunchHeads(KX2State *state, uint32_t branch_steps, uint32_t tree_enabled)
 {
 	KX2Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
-	const float nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
 	SparkStatus status = KX2Gemm(state, state->head, forward->y, forward->logits, KX2_BLOCK, KX2_HIDDEN, KX2_VOCAB);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((KX2WidenKernel), 4u * state->multiprocessors, KX2_THREADS, 0, stream, forward->logits, forward->logits_f32, KX2_BLOCK * KX2_VOCAB);
-	if ( LmTopkExactRowsLaunch<KX2_TOPK_THREADS>(forward->logits_f32, KX2_BLOCK, KX2_VOCAB, KX2_CANDIDATES, forward->candidates, stream) !=
-		SPARK_GPU_SUCCESS )
+	if ( SparkDrafterTopkBf16Launch(forward->logits, KX2_BLOCK, KX2_VOCAB, KX2_CANDIDATES, &forward->topk_ws, forward->candidates, stream) !=
+		SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t step = 0u; step < KX2_BLOCK; step++ )
 	{
-		LM_LAUNCH((KX2MarkovRowKernel), KX2_CANDIDATES / KX2_WARPS, KX2_THREADS, 0, stream, step, anchor_token, forward->picks->tokens,
-			forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
-		LM_LAUNCH((KX2MarkovPickKernel), 1u, KX2_PICK_THREADS, 0, stream, step, anchor_token, (uint32_t)position, (unsigned long long)sampling->seed,
-			sampling->inverse_temperature, nucleus, sampling->top_k, forward->markov_row, forward->candidates, forward->y, state->markov_previous,
-			state->confidence_weight, state->confidence_bias, forward->picks);
+		LM_LAUNCH_DEPENDENT((KX2MarkovRowKernel), KX2_CANDIDATES / KX2_WARPS, KX2_THREADS, 0, stream, step, forward->draft, forward->picks->tokens,
+			forward->candidates, forward->logits, state->markov_previous, state->markov_next, forward->markov_row);
+		LM_LAUNCH_DEPENDENT((KX2MarkovPickKernel), 1u, KX2_PICK_THREADS, 0, stream, step, forward->draft, forward->markov_row, forward->candidates,
+			forward->y, state->markov_previous, state->confidence_weight, state->confidence_bias, forward->picks);
 	}
-	if ( tree != 0u && drafts >= 2u )
+	if ( tree_enabled != 0u )
 	{
-		const float scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
-		LM_LAUNCH((KX2BranchSelectKernel), 1u, KX2_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
-		for ( uint32_t offset = 1u; offset < KX2_BRANCH_LEN && offset < drafts; offset++ )
+		LM_LAUNCH_DEPENDENT((KX2BranchSelectKernel), 1u, KX2_WARP, 0, stream, forward->picks, forward->draft, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
+		for ( uint32_t offset = 1u; offset < branch_steps; offset++ )
 		{
-			LM_LAUNCH((KX2BranchRowKernel), dim3(KX2_CANDIDATES / KX2_WARPS, KX2_BRANCHES), KX2_THREADS, 0, stream, offset, drafts,
-				forward->picks, forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
-			LM_LAUNCH((KX2BranchPickKernel), KX2_BRANCHES, KX2_PICK_THREADS, 0, stream, offset, drafts, scale, forward->markov_row, forward->candidates,
-				forward->picks);
+			LM_LAUNCH_DEPENDENT((KX2BranchRowKernel), dim3(KX2_CANDIDATES / KX2_WARPS, KX2_BRANCHES), KX2_THREADS, 0, stream, offset, forward->draft,
+				forward->picks, forward->candidates, forward->logits, state->markov_previous, state->markov_next, forward->markov_row);
+			LM_LAUNCH_DEPENDENT((KX2BranchPickKernel), KX2_BRANCHES, KX2_PICK_THREADS, 0, stream, offset, forward->draft, forward->markov_row,
+				forward->candidates, forward->picks);
 		}
 	}
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(KX2Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
@@ -1515,8 +1652,9 @@ static void KX2ForwardFree(KX2Forward *forward)
 	void *buffers[] = {
 		forward->draft, forward->pages, forward->picks, forward->hidden, forward->x, forward->q, forward->q_roped, forward->k, forward->k_roped,
 		forward->v, forward->partials, forward->attended, forward->projected, forward->residual, forward->gate, forward->up, forward->act, forward->mlp,
-		forward->y, forward->logits, forward->logits_f32, forward->candidates, forward->markov_row,
+		forward->y, forward->logits, forward->candidates, forward->markov_row,
 	};
+	SparkDrafterTopkBf16Free(&forward->topk_ws);
 	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
 		(void)SparkGpuFree(buffers[index]);
 	if ( forward->host_draft != 0 )
@@ -1535,6 +1673,7 @@ static SparkStatus KX2Close(void *opaque)
 		return SPARK_STATUS_OK;
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamSynchronize(state->stream);
+	SparkDrafterGraphCacheDestroy(&state->graphs);
 	for ( uint32_t index = 0u; index < KX2_SEQUENCES_MAX; index++ )
 		if ( state->sequences[index].pages != 0 )
 			KX2SequenceFree(state, &state->sequences[index]);
@@ -1655,11 +1794,22 @@ static SparkStatus KX2Propose(void *opaque, const SparkDraftServerRequest *reque
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	{
 		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		const uint32_t tree_enabled = tree != 0u && drafts >= 2u ? 1u : 0u;
+		const uint32_t branch_steps = drafts < KX2_BRANCH_LEN ? drafts : KX2_BRANCH_LEN;
+		uint32_t splits = 0u;
 		SparkDraftTreeBranch branches[KX2_BLOCK];
 		uint32_t branch_count = 0u;
-		status = KX2RunForward(state, sequence, request->anchor_token_id, request->position, KX2_LAYERS);
+		status = KX2PrepareDraft(state, sequence, request->anchor_token_id, request->position, &request->sampling, drafts, &splits);
 		if ( status == SPARK_STATUS_OK )
-			status = KX2Heads(state, request->anchor_token_id, request->position, &request->sampling, drafts, tree);
+		{
+			const uint64_t graph_key = ((uint64_t)splits << 16u) | ((uint64_t)tree_enabled << 8u) | (uint64_t)branch_steps;
+			status = SparkDrafterGraphRun(&state->graphs, state->stream, graph_key, [&]() -> SparkStatus {
+				SparkStatus inner = KX2LaunchForward(state, KX2_LAYERS, splits);
+				if ( inner == SPARK_STATUS_OK )
+					inner = KX2LaunchHeads(state, branch_steps, tree_enabled);
+				return inner;
+			});
+		}
 		status = KX2Settle(state, status);
 		if ( status != SPARK_STATUS_OK )
 			return status;
