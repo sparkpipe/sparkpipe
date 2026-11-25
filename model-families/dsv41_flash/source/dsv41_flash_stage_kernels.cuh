@@ -3311,20 +3311,19 @@ void D41HcMixNormStagedKernel(const uint16_t *__restrict__ streams, const float 
 	LmDependentRelease();
 }
 
-template<uint32_t MAX_R, uint32_t HIDDEN>
-static __global__ __launch_bounds__(256, 2)
-void D41HcMixNormK32Kernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, const float *__restrict__ scale,
-	const float *__restrict__ base, float *__restrict__ partials, float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb,
-	uint32_t *__restrict__ counters, const float *__restrict__ collapse_pre, const uint16_t *__restrict__ norm, uint16_t *__restrict__ x,
-	uint16_t *__restrict__ xq, uint8_t *__restrict__ mx_codes, uint8_t *__restrict__ mx_scales, uint32_t rows, float rms_eps, uint32_t hc_iters,
-	float hc_eps)
+template<uint32_t MAX_R, uint32_t K_SPLITS, uint32_t HIDDEN>
+static __device__ __forceinline__ void D41HcMixNormKSplitBody(const uint16_t *__restrict__ streams, const float *__restrict__ fn,
+	const float *__restrict__ scale, const float *__restrict__ base, float *__restrict__ partials, float *__restrict__ pre,
+	float *__restrict__ post, float *__restrict__ comb, uint32_t *__restrict__ counters, const float *__restrict__ collapse_pre,
+	const uint16_t *__restrict__ norm, uint16_t *__restrict__ x, uint16_t *__restrict__ xq, uint8_t *__restrict__ mx_codes,
+	uint8_t *__restrict__ mx_scales, uint32_t rows, float rms_eps, uint32_t hc_iters, float hc_eps)
 {
 	using S = LmHcSinkhornShape<D41K_HC>;
-	constexpr uint32_t THREADS = 256u, WARPS = 8u, K_SPLITS = 32u, TASKS_PER_WARP = S::kMix / WARPS;
+	constexpr uint32_t THREADS = 256u, WARPS = 8u, TASKS_PER_WARP = S::kMix / WARPS;
 	constexpr uint32_t FLAT = D41K_HC * HIDDEN, SLICE_K = FLAT / K_SPLITS, ITERS = SLICE_K / 128u;
 	constexpr uint32_t STR_VECS = MAX_R * 16u;
 	static_assert(S::kMix == 24u && S::kTasks == 25u && FLAT % (K_SPLITS * 128u) == 0u && STR_VECS <= THREADS,
-		"k32 sinkhorn splits hidden evenly into 128-wide chunks");
+		"ksplit sinkhorn splits hidden evenly into 128-wide chunks");
 	union SharedStorage
 	{
 		uint16_t s_str[2][MAX_R][128];
@@ -3337,22 +3336,9 @@ void D41HcMixNormK32Kernel(const uint16_t *__restrict__ streams, const float *__
 	LmDependentWait();
 	if ( blockIdx.x < sink_blocks )
 	{
-		const uint32_t chunk = blockIdx.x >> 5u, ksplit = blockIdx.x & 31u, row0 = chunk * MAX_R;
+		const uint32_t chunk = blockIdx.x / K_SPLITS, ksplit = blockIdx.x - chunk * K_SPLITS, row0 = chunk * MAX_R;
 		const uint32_t live = rows - row0 < MAX_R ? rows - row0 : MAX_R;
 		const uint32_t k_base = ksplit * SLICE_K;
-		const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(smem.s_str);
-		constexpr uint32_t BUF_BYTES = MAX_R * 128u * 2u;
-		const uint32_t cp_r = threadIdx.x >> 4u, cp_c = threadIdx.x & 15u;
-		const uint32_t cp_active = threadIdx.x < STR_VECS && cp_r < live ? 1u : 0u;
-		const uint16_t *cp_src = cp_active != 0u ? streams + (uint64_t)(row0 + cp_r) * FLAT + k_base + cp_c * 8u : (const uint16_t *)0;
-		const uint32_t cp_dst_off = threadIdx.x * 16u;
-		auto issue = [&](uint32_t iter)
-		{
-			if ( cp_active != 0u )
-				asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(sbase + (iter & 1u) * BUF_BYTES + cp_dst_off),
-					"l"(cp_src + iter * 128u) : "memory");
-			asm volatile("cp.async.commit_group;\n" ::: "memory");
-		};
 		float total[TASKS_PER_WARP][MAX_R], norm_sq[MAX_R];
 		#pragma unroll
 		for ( uint32_t r = 0u; r < MAX_R; ++r )
@@ -3361,33 +3347,71 @@ void D41HcMixNormK32Kernel(const uint16_t *__restrict__ streams, const float *__
 			#pragma unroll
 			for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t ) total[t][r] = 0.0f;
 		}
-		issue(0u);
-		for ( uint32_t iter = 0u; iter < ITERS; ++iter )
+		if constexpr ( MAX_R == 1u )
 		{
-			const uint32_t k_off = k_base + iter * 128u;
-			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-			__syncthreads();
-			if ( iter + 1u < ITERS ) issue(iter + 1u);
-			float4 f[TASKS_PER_WARP];
+			const uint16_t *str_row = streams + (uint64_t)row0 * FLAT + k_base;
 			#pragma unroll
-			for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
-				f[t] = __ldcs((const float4 *)(fn + (uint64_t)(warp + t * WARPS) * FLAT + k_off) + lane);
-			const uint16_t (*cur)[128] = smem.s_str[iter & 1u];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < MAX_R; ++r )
-				if ( r < live )
+			for ( uint32_t iter = 0u; iter < ITERS; ++iter )
+			{
+				const uint32_t k_off = k_base + iter * 128u;
+				const uint2 s = __ldg((const uint2 *)(str_row + iter * 128u) + lane);
+				const float v0 = LmBf16ToFloat((uint16_t)(s.x & 0xffffu));
+				const float v1 = LmBf16ToFloat((uint16_t)(s.x >> 16u));
+				const float v2 = LmBf16ToFloat((uint16_t)(s.y & 0xffffu));
+				const float v3 = LmBf16ToFloat((uint16_t)(s.y >> 16u));
+				#pragma unroll
+				for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
 				{
-					const uint2 s = ((const uint2 *)cur[r])[lane];
-					const float v0 = LmBf16ToFloat((uint16_t)(s.x & 0xffffu));
-					const float v1 = LmBf16ToFloat((uint16_t)(s.x >> 16u));
-					const float v2 = LmBf16ToFloat((uint16_t)(s.y & 0xffffu));
-					const float v3 = LmBf16ToFloat((uint16_t)(s.y >> 16u));
-					#pragma unroll
-					for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
-						total[t][r] = fmaf(f[t].x, v0, fmaf(f[t].y, v1, fmaf(f[t].z, v2, fmaf(f[t].w, v3, total[t][r]))));
-					if ( warp == 0u )
-						norm_sq[r] = fmaf(v0, v0, fmaf(v1, v1, fmaf(v2, v2, fmaf(v3, v3, norm_sq[r]))));
+					const float4 ft = __ldcs((const float4 *)(fn + (uint64_t)(warp + t * WARPS) * FLAT + k_off) + lane);
+					total[t][0] = fmaf(ft.x, v0, fmaf(ft.y, v1, fmaf(ft.z, v2, fmaf(ft.w, v3, total[t][0]))));
 				}
+				if ( warp == 0u )
+					norm_sq[0] = fmaf(v0, v0, fmaf(v1, v1, fmaf(v2, v2, fmaf(v3, v3, norm_sq[0]))));
+			}
+		}
+		else
+		{
+			const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(smem.s_str);
+			constexpr uint32_t BUF_BYTES = MAX_R * 128u * 2u;
+			const uint32_t cp_r = threadIdx.x >> 4u, cp_c = threadIdx.x & 15u;
+			const uint32_t cp_active = threadIdx.x < STR_VECS && cp_r < live ? 1u : 0u;
+			const uint16_t *cp_src = cp_active != 0u ? streams + (uint64_t)(row0 + cp_r) * FLAT + k_base + cp_c * 8u : (const uint16_t *)0;
+			const uint32_t cp_dst_off = threadIdx.x * 16u;
+			auto issue = [&](uint32_t iter)
+			{
+				if ( cp_active != 0u )
+					asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(sbase + (iter & 1u) * BUF_BYTES + cp_dst_off),
+						"l"(cp_src + iter * 128u) : "memory");
+				asm volatile("cp.async.commit_group;\n" ::: "memory");
+			};
+			issue(0u);
+			for ( uint32_t iter = 0u; iter < ITERS; ++iter )
+			{
+				const uint32_t k_off = k_base + iter * 128u;
+				asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+				__syncthreads();
+				if ( iter + 1u < ITERS ) issue(iter + 1u);
+				float4 f[TASKS_PER_WARP];
+				#pragma unroll
+				for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
+					f[t] = __ldcs((const float4 *)(fn + (uint64_t)(warp + t * WARPS) * FLAT + k_off) + lane);
+				const uint16_t (*cur)[128] = smem.s_str[iter & 1u];
+				#pragma unroll
+				for ( uint32_t r = 0u; r < MAX_R; ++r )
+					if ( r < live )
+					{
+						const uint2 s = ((const uint2 *)cur[r])[lane];
+						const float v0 = LmBf16ToFloat((uint16_t)(s.x & 0xffffu));
+						const float v1 = LmBf16ToFloat((uint16_t)(s.x >> 16u));
+						const float v2 = LmBf16ToFloat((uint16_t)(s.y & 0xffffu));
+						const float v3 = LmBf16ToFloat((uint16_t)(s.y >> 16u));
+						#pragma unroll
+						for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
+							total[t][r] = fmaf(f[t].x, v0, fmaf(f[t].y, v1, fmaf(f[t].z, v2, fmaf(f[t].w, v3, total[t][r]))));
+						if ( warp == 0u )
+							norm_sq[r] = fmaf(v0, v0, fmaf(v1, v1, fmaf(v2, v2, fmaf(v3, v3, norm_sq[r]))));
+					}
+			}
 		}
 		#pragma unroll
 		for ( uint32_t r = 0u; r < MAX_R; ++r )
@@ -3454,6 +3478,30 @@ void D41HcMixNormK32Kernel(const uint16_t *__restrict__ streams, const float *__
 	if ( row < rows )
 		D41CollapseNormBlock<THREADS, HIDDEN>(streams, collapse_pre, norm, x, xq, mx_codes, mx_scales, row, rms_eps, smem.cn.row, smem.cn.red);
 	LmDependentRelease();
+}
+
+template<uint32_t MAX_R, uint32_t HIDDEN>
+static __global__ __launch_bounds__(256, 2)
+void D41HcMixNormK32Kernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, const float *__restrict__ scale,
+	const float *__restrict__ base, float *__restrict__ partials, float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb,
+	uint32_t *__restrict__ counters, const float *__restrict__ collapse_pre, const uint16_t *__restrict__ norm, uint16_t *__restrict__ x,
+	uint16_t *__restrict__ xq, uint8_t *__restrict__ mx_codes, uint8_t *__restrict__ mx_scales, uint32_t rows, float rms_eps, uint32_t hc_iters,
+	float hc_eps)
+{
+	D41HcMixNormKSplitBody<MAX_R, 32u, HIDDEN>(streams, fn, scale, base, partials, pre, post, comb, counters, collapse_pre, norm, x, xq,
+		mx_codes, mx_scales, rows, rms_eps, hc_iters, hc_eps);
+}
+
+template<uint32_t MAX_R, uint32_t HIDDEN>
+static __global__ __launch_bounds__(256, 2)
+void D41HcMixNormK40Kernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, const float *__restrict__ scale,
+	const float *__restrict__ base, float *__restrict__ partials, float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb,
+	uint32_t *__restrict__ counters, const float *__restrict__ collapse_pre, const uint16_t *__restrict__ norm, uint16_t *__restrict__ x,
+	uint16_t *__restrict__ xq, uint8_t *__restrict__ mx_codes, uint8_t *__restrict__ mx_scales, uint32_t rows, float rms_eps, uint32_t hc_iters,
+	float hc_eps)
+{
+	D41HcMixNormKSplitBody<MAX_R, 40u, HIDDEN>(streams, fn, scale, base, partials, pre, post, comb, counters, collapse_pre, norm, x, xq,
+		mx_codes, mx_scales, rows, rms_eps, hc_iters, hc_eps);
 }
 
 template<uint32_t QLORA>
@@ -4947,7 +4995,7 @@ static __device__ __forceinline__ void D41TopkRoutePackedBody(const float *__res
 	uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
 	uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up,
 	uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down, float *__restrict__ packed_weight, uint32_t rows,
-	const uint32_t *__restrict__ row_valid = 0)
+	const uint32_t *__restrict__ row_valid = 0, uint32_t *__restrict__ active_out = 0)
 {
 	static_assert(EXPERTS <= 512u && TOP_K <= 8u, "fused route build covers up to 512 experts");
 	__shared__ uint32_t s_off[512];
@@ -4982,6 +5030,8 @@ static __device__ __forceinline__ void D41TopkRoutePackedBody(const float *__res
 		if ( dead == 0u ) atomicAdd(&s_off[e], 1u);
 	}
 	__syncthreads();
+	const uint32_t act0 = threadIdx.x < EXPERTS && s_off[threadIdx.x] != 0u ? 1u : 0u;
+	const uint32_t act1 = threadIdx.x + 256u < EXPERTS && s_off[threadIdx.x + 256u] != 0u ? 1u : 0u;
 	auto scan512 = [&](uint32_t *arr) -> uint32_t
 	{
 		const uint32_t v0 = threadIdx.x < EXPERTS ? arr[threadIdx.x] : 0u;
@@ -5022,28 +5072,67 @@ static __device__ __forceinline__ void D41TopkRoutePackedBody(const float *__res
 		if ( threadIdx.x + 256u < EXPERTS ) arr[threadIdx.x + 256u] = off1;
 		return tot0 + tot1;
 	};
-	for ( uint32_t i = threadIdx.x; i < EXPERTS; i += 256u )
+	if ( active_out == 0 )
 	{
-		const uint32_t c = s_off[i];
-		const uint32_t mt = c != 0u ? (c + tile_m - 1u) / tile_m : 0u;
-		s_up[i] = mt * neuron_tiles_up;
-		s_dn[i] = mt * neuron_tiles_down;
+		for ( uint32_t i = threadIdx.x; i < EXPERTS; i += 256u )
+		{
+			const uint32_t c = s_off[i];
+			const uint32_t mt = c != 0u ? (c + tile_m - 1u) / tile_m : 0u;
+			s_up[i] = mt * neuron_tiles_up;
+			s_dn[i] = mt * neuron_tiles_down;
+		}
+		__syncthreads();
+		const uint32_t tot_off = scan512(s_off);
+		const uint32_t tot_up = scan512(s_up);
+		const uint32_t tot_dn = scan512(s_dn);
+		for ( uint32_t i = threadIdx.x; i < EXPERTS; i += 256u )
+		{
+			group_row_offset[i] = s_off[i];
+			tile_prefix_up[i] = s_up[i];
+			tile_prefix_down[i] = s_dn[i];
+		}
+		if ( threadIdx.x == 0u )
+		{
+			group_row_offset[EXPERTS] = tot_off;
+			tile_prefix_up[EXPERTS] = tot_up;
+			tile_prefix_down[EXPERTS] = tot_dn;
+		}
 	}
-	__syncthreads();
-	const uint32_t tot_off = scan512(s_off);
-	const uint32_t tot_up = scan512(s_up);
-	const uint32_t tot_dn = scan512(s_dn);
-	for ( uint32_t i = threadIdx.x; i < EXPERTS; i += 256u )
+	else
 	{
-		group_row_offset[i] = s_off[i];
-		tile_prefix_up[i] = s_up[i];
-		tile_prefix_down[i] = s_dn[i];
-	}
-	if ( threadIdx.x == 0u )
-	{
-		group_row_offset[EXPERTS] = tot_off;
-		tile_prefix_up[EXPERTS] = tot_up;
-		tile_prefix_down[EXPERTS] = tot_dn;
+		const uint32_t tot_off = scan512(s_off);
+		for ( uint32_t i = threadIdx.x; i < EXPERTS; i += 256u ) group_row_offset[i] = s_off[i];
+		if ( threadIdx.x == 0u ) group_row_offset[EXPERTS] = tot_off;
+		const uint32_t m0 = __ballot_sync(0xffffffffu, act0 != 0u);
+		if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m0);
+		__syncthreads();
+		if ( warp == 0u )
+		{
+			uint32_t w = lane < 8u ? s_warp[lane] : 0u;
+			#pragma unroll
+			for ( uint32_t d = 1u; d < 8u; d <<= 1u ) { const uint32_t u = __shfl_up_sync(0xffffffffu, w, d); if ( lane >= d ) w += u; }
+			if ( lane < 8u ) s_warp[lane] = w;
+		}
+		__syncthreads();
+		const uint32_t tot0 = s_warp[7];
+		const uint32_t off0 = (warp > 0u ? s_warp[warp - 1u] : 0u) + (uint32_t)__popc(m0 & ((1u << lane) - 1u));
+		if ( act0 != 0u ) active_out[off0] = threadIdx.x;
+		__syncthreads();
+		const uint32_t m1 = __ballot_sync(0xffffffffu, act1 != 0u);
+		if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m1);
+		__syncthreads();
+		if ( warp == 0u )
+		{
+			uint32_t w = lane < 8u ? s_warp[lane] : 0u;
+			#pragma unroll
+			for ( uint32_t d = 1u; d < 8u; d <<= 1u ) { const uint32_t u = __shfl_up_sync(0xffffffffu, w, d); if ( lane >= d ) w += u; }
+			if ( lane < 8u ) s_warp[lane] = w;
+		}
+		__syncthreads();
+		const uint32_t tot1 = s_warp[7];
+		const uint32_t off1 = tot0 + (warp > 0u ? s_warp[warp - 1u] : 0u) + (uint32_t)__popc(m1 & ((1u << lane) - 1u));
+		if ( act1 != 0u ) active_out[off1] = threadIdx.x + 256u;
+		if ( threadIdx.x == 0u ) active_out[EXPERTS] = tot0 + tot1;
 	}
 	__syncthreads();
 	if ( threadIdx.x < routes )
@@ -5071,12 +5160,12 @@ void D41TopkRoutePackedKernel(const float *__restrict__ router_logits, const flo
 	uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
 	uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up,
 	uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down, float *__restrict__ packed_weight, uint32_t rows,
-	const uint32_t *__restrict__ row_valid = 0)
+	const uint32_t *__restrict__ row_valid = 0, uint32_t *__restrict__ active_out = 0)
 {
 	LmDependentWait();
 	D41TopkRoutePackedBody<EXPERTS, TOP_K, 128u>(router_logits, router_bias, route_scale, fault, route_expert, route_weight,
 		group_row_offset, route_packed_row, route_source_token, tile_m, neuron_tiles_up, tile_prefix_up, neuron_tiles_down,
-		tile_prefix_down, packed_weight, rows, row_valid);
+		tile_prefix_down, packed_weight, rows, row_valid, active_out);
 	LmDependentRelease();
 }
 
@@ -5093,57 +5182,96 @@ static __device__ __forceinline__ float D41Bf16Dot8(uint4 weight, uint4 activati
 	return a0 + a1;
 }
 
-template<uint32_t EXPERTS, uint32_t HIDDEN, uint32_t MAX_R>
+template<uint32_t EXPERTS, uint32_t HIDDEN, uint32_t MAX_R, uint32_t EPB = 1u>
 static __device__ __forceinline__ void D41RouterGateSplitBlock(const uint16_t *__restrict__ router_w, const uint16_t *__restrict__ x,
 	float *__restrict__ router_logits, uint32_t rows, const uint32_t *__restrict__ row_valid)
 {
 	constexpr uint32_t CHUNKS = HIDDEN / 8u, WARPS = 8u, SPAN = CHUNKS / WARPS;
-	static_assert(CHUNKS % WARPS == 0u && SPAN <= 96u, "router hidden splits evenly across eight warps");
-	__shared__ float partial[WARPS][MAX_R];
-	const uint32_t e = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, first = warp * SPAN;
+	static_assert(CHUNKS % WARPS == 0u && SPAN <= 96u && EXPERTS % EPB == 0u, "router hidden splits evenly across eight warps");
+	__shared__ float partial[WARPS][MAX_R == 1u ? EPB : MAX_R];
+	const uint32_t e0 = blockIdx.x * EPB, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, first = warp * SPAN;
 	const uint4 *w_base = (const uint4 *)router_w, *x_base = (const uint4 *)x;
-	const uint4 *wr = w_base + (uint64_t)e * CHUNKS + first;
 	if ( lane == 0u )
-		LmPrefetchL2(wr, SPAN * 16u);
+		#pragma unroll
+		for ( uint32_t ep = 0u; ep < EPB; ++ep )
+			LmPrefetchL2(w_base + (uint64_t)(e0 + ep) * CHUNKS + first, SPAN * 16u);
 	LmDependentWait();
-	uint4 w0 = {}, w1 = {}, w2 = {};
-	if ( lane < SPAN ) w0 = __ldcs(wr + lane);
-	if ( lane + 32u < SPAN ) w1 = __ldcs(wr + lane + 32u);
-	if ( lane + 64u < SPAN ) w2 = __ldcs(wr + lane + 64u);
-	float acc[MAX_R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < MAX_R; ++r )
+	if constexpr ( MAX_R == 1u )
 	{
-		const uint32_t row = r < rows ? r : 0u;
-		const uint4 *xr = x_base + (uint64_t)row * CHUNKS + first;
-		float s = 0.0f;
-		if ( lane < SPAN ) s += D41Bf16Dot8(w0, __ldg(xr + lane));
-		if ( lane + 32u < SPAN ) s += D41Bf16Dot8(w1, __ldg(xr + lane + 32u));
-		if ( lane + 64u < SPAN ) s += D41Bf16Dot8(w2, __ldg(xr + lane + 64u));
-		acc[r] = s;
+		const uint4 *xr = x_base + first;
+		const uint4 x0 = lane < SPAN ? __ldg(xr + lane) : make_uint4(0u, 0u, 0u, 0u);
+		const uint4 x1 = lane + 32u < SPAN ? __ldg(xr + lane + 32u) : make_uint4(0u, 0u, 0u, 0u);
+		const uint4 x2 = lane + 64u < SPAN ? __ldg(xr + lane + 64u) : make_uint4(0u, 0u, 0u, 0u);
+		#pragma unroll
+		for ( uint32_t ep = 0u; ep < EPB; ++ep )
+		{
+			const uint4 *wr = w_base + (uint64_t)(e0 + ep) * CHUNKS + first;
+			float s = 0.0f;
+			if ( lane < SPAN ) s += D41Bf16Dot8(__ldcs(wr + lane), x0);
+			if ( lane + 32u < SPAN ) s += D41Bf16Dot8(__ldcs(wr + lane + 32u), x1);
+			if ( lane + 64u < SPAN ) s += D41Bf16Dot8(__ldcs(wr + lane + 64u), x2);
+			#pragma unroll
+			for ( uint32_t off = 16u; off > 0u; off >>= 1u )
+				s += __shfl_xor_sync(0xffffffffu, s, off);
+			if ( lane == 0u ) partial[warp][ep] = s;
+		}
+		__syncthreads();
+		if ( warp == 0u && lane < EPB )
+		{
+			float total = 0.0f;
+			if ( row_valid == 0 || row_valid[0] != 0u )
+			{
+				#pragma unroll
+				for ( uint32_t w = 0u; w < WARPS; ++w ) total += partial[w][lane];
+			}
+			router_logits[e0 + lane] = total;
+		}
+		return;
 	}
-	#pragma unroll
-	for ( uint32_t off = 16u; off > 0u; off >>= 1u )
+	for ( uint32_t ep = 0u; ep < EPB; ++ep )
+	{
+		const uint32_t e = e0 + ep;
+		const uint4 *wr = w_base + (uint64_t)e * CHUNKS + first;
+		uint4 w0 = {}, w1 = {}, w2 = {};
+		if ( lane < SPAN ) w0 = __ldcs(wr + lane);
+		if ( lane + 32u < SPAN ) w1 = __ldcs(wr + lane + 32u);
+		if ( lane + 64u < SPAN ) w2 = __ldcs(wr + lane + 64u);
+		float acc[MAX_R];
 		#pragma unroll
 		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], off);
-	if ( lane == 0u )
-		#pragma unroll
-		for ( uint32_t r = 0u; r < MAX_R; ++r ) partial[warp][r] = acc[r];
-	__syncthreads();
-	if ( warp == 0u && lane < rows )
-	{
-		float total = 0.0f;
-		if ( row_valid == 0 || row_valid[lane] != 0u )
 		{
-			#pragma unroll
-			for ( uint32_t w = 0u; w < WARPS; ++w ) total += partial[w][lane];
+			const uint32_t row = r < rows ? r : 0u;
+			const uint4 *xr = x_base + (uint64_t)row * CHUNKS + first;
+			float s = 0.0f;
+			if ( lane < SPAN ) s += D41Bf16Dot8(w0, __ldg(xr + lane));
+			if ( lane + 32u < SPAN ) s += D41Bf16Dot8(w1, __ldg(xr + lane + 32u));
+			if ( lane + 64u < SPAN ) s += D41Bf16Dot8(w2, __ldg(xr + lane + 64u));
+			acc[r] = s;
 		}
-		router_logits[(uint64_t)lane * EXPERTS + e] = total;
+		#pragma unroll
+		for ( uint32_t off = 16u; off > 0u; off >>= 1u )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < MAX_R; ++r )
+				acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], off);
+		if ( lane == 0u )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < MAX_R; ++r ) partial[warp][r] = acc[r];
+		__syncthreads();
+		if ( warp == 0u && lane < rows )
+		{
+			float total = 0.0f;
+			if ( row_valid == 0 || row_valid[lane] != 0u )
+			{
+				#pragma unroll
+				for ( uint32_t w = 0u; w < WARPS; ++w ) total += partial[w][lane];
+			}
+			router_logits[(uint64_t)lane * EXPERTS + e] = total;
+		}
+		if ( ep + 1u < EPB ) __syncthreads();
 	}
 }
 
-template<uint32_t RANKS, uint32_t EXPERTS, uint32_t LOCAL, uint32_t THREADS, uint32_t HELD_PLUS_ONE, uint32_t TOP_K, uint32_t MAX_COPIES, uint32_t HIDDEN, uint32_t MAX_R>
+template<uint32_t RANKS, uint32_t EXPERTS, uint32_t LOCAL, uint32_t THREADS, uint32_t HELD_PLUS_ONE, uint32_t TOP_K, uint32_t MAX_COPIES, uint32_t HIDDEN, uint32_t MAX_R, uint32_t EPB = 1u>
 static __global__ __launch_bounds__(THREADS)
 void D41FusedRouterBalanceKernel(const uint16_t *__restrict__ router_w, const uint16_t *__restrict__ x, float *__restrict__ router_logits,
 	const float *__restrict__ router_bias, float route_scale, uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert,
@@ -5153,28 +5281,28 @@ void D41FusedRouterBalanceKernel(const uint16_t *__restrict__ router_w, const ui
 	uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down, float *__restrict__ packed_weight,
 	uint32_t *__restrict__ counter, const uint32_t *__restrict__ row_valid = 0)
 {
-	D41RouterGateSplitBlock<EXPERTS, HIDDEN, MAX_R>(router_w, x, router_logits, rows, row_valid);
-	if ( LmFusedLastArrival(counter, EXPERTS) )
+	D41RouterGateSplitBlock<EXPERTS, HIDDEN, MAX_R, EPB>(router_w, x, router_logits, rows, row_valid);
+	if ( LmFusedLastArrival(counter, EXPERTS / EPB) )
 		D41TopkBalanceRouteBody<RANKS, EXPERTS, LOCAL, THREADS, HELD_PLUS_ONE, TOP_K, MAX_COPIES, true, MAX_R>(router_logits, router_bias, route_scale,
 			fault, route_expert, route_weight, route_global, rows, rank, copies, row_invariant, owner, backup, group, group_row_offset, route_packed_row,
 			route_source_token, tile_m, neuron_tiles_up, tile_prefix_up, neuron_tiles_down, tile_prefix_down, packed_weight, row_valid);
 	LmDependentRelease();
 }
 
-template<uint32_t EXPERTS, uint32_t TOP_K, uint32_t HIDDEN, uint32_t MAX_R>
+template<uint32_t EXPERTS, uint32_t TOP_K, uint32_t HIDDEN, uint32_t MAX_R, uint32_t EPB = 1u>
 static __global__ __launch_bounds__(256)
 void D41FusedRouterPackedKernel(const uint16_t *__restrict__ router_w, const uint16_t *__restrict__ x, float *__restrict__ router_logits,
 	const float *__restrict__ router_bias, float route_scale, uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert,
 	float *__restrict__ route_weight, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row,
 	uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up,
 	uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down, float *__restrict__ packed_weight, uint32_t rows,
-	uint32_t *__restrict__ counter, const uint32_t *__restrict__ row_valid = 0)
+	uint32_t *__restrict__ counter, const uint32_t *__restrict__ row_valid = 0, uint32_t *__restrict__ active_out = 0)
 {
-	D41RouterGateSplitBlock<EXPERTS, HIDDEN, MAX_R>(router_w, x, router_logits, rows, row_valid);
-	if ( LmFusedLastArrival(counter, EXPERTS) )
+	D41RouterGateSplitBlock<EXPERTS, HIDDEN, MAX_R, EPB>(router_w, x, router_logits, rows, row_valid);
+	if ( LmFusedLastArrival(counter, EXPERTS / EPB) )
 		D41TopkRoutePackedBody<EXPERTS, TOP_K, MAX_R * TOP_K>(router_logits, router_bias, route_scale, fault, route_expert, route_weight,
 			group_row_offset, route_packed_row, route_source_token, tile_m, neuron_tiles_up, tile_prefix_up, neuron_tiles_down,
-			tile_prefix_down, packed_weight, rows, row_valid);
+			tile_prefix_down, packed_weight, rows, row_valid, active_out);
 	LmDependentRelease();
 }
 
@@ -5348,6 +5476,91 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 				}
 			}
 	}
+	LmDependentRelease();
+}
+
+static __device__ __forceinline__ uint2 D41LoadU8x8(const uint8_t *p)
+{
+	if ( ((uintptr_t)p & 7u) == 0u ) return __ldg((const uint2 *)p);
+	const uint16_t *h = (const uint16_t *)p;
+	return make_uint2((uint32_t)__ldg(h) | ((uint32_t)__ldg(h + 1u) << 16u), (uint32_t)__ldg(h + 2u) | ((uint32_t)__ldg(h + 3u) << 16u));
+}
+
+struct D41SharedPartialsDesc
+{
+	const uint8_t *w[4];
+	const uint8_t *ws[4];
+	uint16_t *out[4];
+	uint32_t width[4];
+};
+
+template<uint32_t MAX_R, uint32_t OUT_DIM, uint32_t MAX_WIDTH>
+static __global__ __launch_bounds__(256, 2)
+void D41SharedPartialsFusedKernel(const __grid_constant__ D41SharedPartialsDesc desc, const uint16_t *__restrict__ received,
+	uint64_t stride, uint32_t rows)
+{
+	constexpr uint32_t ROWS_PER_BLK = 16u, BLKS_PER_SRC = OUT_DIM / ROWS_PER_BLK;
+	static_assert(OUT_DIM % ROWS_PER_BLK == 0u && MAX_WIDTH % 32u == 0u, "shared partials tile 16 outputs per block");
+	__shared__ __align__(16) uint16_t s_act[MAX_R][MAX_WIDTH];
+	const uint32_t source = blockIdx.x / BLKS_PER_SRC, o_base = (blockIdx.x - source * BLKS_PER_SRC) * ROWS_PER_BLK;
+	const uint32_t width = desc.width[source], octets = width >> 3u, s_blocks = width >> 5u;
+	LmDependentWait();
+	const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * stride);
+	const uint8_t *scales = bytes + (uint64_t)rows * width;
+	const uint32_t total_oct = rows * octets;
+	for ( uint32_t idx = threadIdx.x; idx < total_oct; idx += 256u )
+	{
+		const uint32_t r = idx / octets, q = idx - r * octets;
+		const float sc = __uint_as_float((uint32_t)scales[(uint64_t)r * s_blocks + (q >> 2u)] << 23u);
+		((uint4 *)s_act[r])[q] = D41DequantE4m3x8(D41LoadU8x8(bytes + (uint64_t)r * width + (uint64_t)q * 8u), sc);
+	}
+	__syncthreads();
+	const uint32_t hw = threadIdx.x >> 4u, hl = threadIdx.x & 15u, o = o_base + hw;
+	const uint8_t *w_row = desc.w[source] + (uint64_t)o * width;
+	const uint8_t *ws_row = desc.ws[source] + (uint64_t)o * s_blocks;
+	float acc[MAX_R];
+	#pragma unroll
+	for ( uint32_t r = 0u; r < MAX_R; ++r ) acc[r] = 0.0f;
+	for ( uint32_t k = hl * 16u; k < width; k += 256u )
+	{
+		const uint4 w16 = __ldcs((const uint4 *)(w_row + k));
+		const float wsc = __uint_as_float((uint32_t)__ldg(ws_row + (k >> 5u)) << 23u);
+		const uint32_t ww[4] = { w16.x, w16.y, w16.z, w16.w };
+		float wf[16];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < 4u; ++i )
+		{
+			const float2 p0 = LmE4m3PairToFloat2((uint16_t)(ww[i] & 0xffffu));
+			const float2 p1 = LmE4m3PairToFloat2((uint16_t)(ww[i] >> 16u));
+			wf[i * 4u + 0u] = p0.x * wsc; wf[i * 4u + 1u] = p0.y * wsc;
+			wf[i * 4u + 2u] = p1.x * wsc; wf[i * 4u + 3u] = p1.y * wsc;
+		}
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+			if ( r < rows )
+			{
+				const uint4 a0 = *(const uint4 *)(s_act[r] + k);
+				const uint4 a1 = *(const uint4 *)(s_act[r] + k + 8u);
+				const uint32_t aw[8] = { a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w };
+				float s = acc[r];
+				#pragma unroll
+				for ( uint32_t i = 0u; i < 8u; ++i )
+				{
+					s = fmaf(wf[i * 2u], __uint_as_float(aw[i] << 16u), s);
+					s = fmaf(wf[i * 2u + 1u], __uint_as_float(aw[i] & 0xffff0000u), s);
+				}
+				acc[r] = s;
+			}
+	}
+	#pragma unroll
+	for ( uint32_t off = 8u; off != 0u; off >>= 1u )
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+			acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], off);
+	if ( hl == 0u )
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+			if ( r < rows ) desc.out[source][(uint64_t)r * OUT_DIM + o] = LmFloatToBf16(acc[r]);
 	LmDependentRelease();
 }
 
@@ -5538,6 +5751,204 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 				}
 		}
 		if ( first + TILE_M < end ) __syncthreads();
+	}
+}
+
+template<uint32_t MAX_R>
+static __device__ __forceinline__ void D41CellFp4AccumTile(uint4 weight, uint8_t scale_code, const uint16_t s_act[MAX_R][128],
+	uint32_t step_off, uint32_t count, float acc[MAX_R])
+{
+	const uint32_t words[4] = { weight.x, weight.y, weight.z, weight.w };
+	float chunk[MAX_R];
+	#pragma unroll
+	for ( uint32_t r = 0u; r < MAX_R; ++r ) chunk[r] = 0.0f;
+	#pragma unroll
+	for ( uint32_t w = 0u; w < 4u; ++w )
+	{
+		float2 pair[4];
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 4u; ++j ) pair[j] = LmE2m1PairToFloat((uint8_t)((words[w] >> (j * 8u)) & 0xffu));
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+			if ( r < count )
+			{
+				const uint4 packed = *(const uint4 *)(s_act[r] + step_off + w * 8u);
+				float a0 = pair[0].x * __uint_as_float(packed.x << 16u);
+				float a1 = pair[0].y * __uint_as_float(packed.x & 0xffff0000u);
+				float a2 = pair[1].x * __uint_as_float(packed.y << 16u);
+				float a3 = pair[1].y * __uint_as_float(packed.y & 0xffff0000u);
+				a0 = fmaf(pair[2].x, __uint_as_float(packed.z << 16u), a0);
+				a1 = fmaf(pair[2].y, __uint_as_float(packed.z & 0xffff0000u), a1);
+				a2 = fmaf(pair[3].x, __uint_as_float(packed.w << 16u), a2);
+				a3 = fmaf(pair[3].y, __uint_as_float(packed.w & 0xffff0000u), a3);
+				chunk[r] += (a0 + a1) + (a2 + a3);
+			}
+	}
+	const float sc = LmUe8m0ToFloat(scale_code);
+	#pragma unroll
+	for ( uint32_t r = 0u; r < MAX_R; ++r )
+		if ( r < count ) acc[r] = fmaf(sc, chunk[r], acc[r]);
+}
+
+template<uint32_t EXPERTS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t MODE_RECV, uint32_t SLICE, uint32_t CELLS_PER_BLK = 4u, uint32_t STAGES = 3u>
+static __global__ __launch_bounds__(CELLS_PER_BLK * 32u, CELLS_PER_BLK == 4u ? 4 : 2)
+void D41CellFp4GemvKernel(const uint8_t *__restrict__ cells, const uint16_t *__restrict__ act_bf16,
+	const uint16_t *__restrict__ recv_base, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ group_row_offset,
+	const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ active_experts, uint32_t routes, uint64_t recv_stride)
+{
+	constexpr uint32_t THREADS = CELLS_PER_BLK * 32u, TILE_K = 128u, K_STEPS = 4u, K_ITERS = IN_DIM / TILE_K;
+	constexpr uint32_t TOTAL_CELLS = OUT_DIM / 16u, N_BLOCKS = TOTAL_CELLS / CELLS_PER_BLK;
+	constexpr uint32_t CELL_VECS = 17u, CELL_BYTES = CELL_VECS * 16u;
+	constexpr uint32_t TILE_VECS = CELLS_PER_BLK * CELL_VECS, TILE_BYTES = CELLS_PER_BLK * CELL_BYTES;
+	constexpr uint32_t W_VECS = K_STEPS * TILE_VECS, W_BYTES = K_STEPS * TILE_BYTES;
+	constexpr uint32_t W_PASSES = (W_VECS + THREADS - 1u) / THREADS;
+	constexpr uint32_t MAX_R = 4u, S_BLOCKS = SLICE / SPARK_DSV41_FLASH_FP8_BLOCK;
+	constexpr uint64_t TILE_STRIDE = (uint64_t)TOTAL_CELLS * CELL_BYTES;
+	constexpr uint64_t GROUP_BYTES = (uint64_t)(IN_DIM / 32u) * TILE_STRIDE;
+	static_assert(OUT_DIM % (CELLS_PER_BLK * 16u) == 0u && IN_DIM % 128u == 0u && W_PASSES == 3u && STAGES >= 2u, "cell fp4 gemv geometry");
+	__shared__ __align__(128) uint8_t s_w[STAGES * W_BYTES];
+	__shared__ __align__(16) uint16_t s_act[2][MAX_R][TILE_K];
+	const uint32_t active_idx = blockIdx.x / N_BLOCKS, n_block = blockIdx.x - active_idx * N_BLOCKS;
+	LmDependentWait();
+	LmDependentRelease();
+	const uint32_t active_count = __ldg(active_experts + EXPERTS);
+	if ( active_idx >= active_count )
+		return;
+	const uint32_t group = __ldg(active_experts + active_idx);
+	const uint32_t start = __ldg(group_row_offset + group), end = __ldg(group_row_offset + group + 1u);
+	if ( start >= end )
+		return;
+	const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(s_w);
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, sub = lane & 15u, half = lane >> 4u;
+	const uint32_t block_cell0 = n_block * CELLS_PER_BLK;
+	const uint8_t *group_cells = cells + (uint64_t)group * GROUP_BYTES + (uint64_t)block_cell0 * CELL_BYTES;
+	uint32_t w_off[W_PASSES];
+	#pragma unroll
+	for ( uint32_t p = 0u; p < W_PASSES; ++p )
+	{
+		const uint32_t v = threadIdx.x + p * THREADS;
+		if ( v < W_VECS )
+		{
+			const uint32_t kt = v / TILE_VECS, in_kt = v - kt * TILE_VECS;
+			w_off[p] = (uint32_t)((uint64_t)kt * TILE_STRIDE + in_kt * 16u);
+		}
+		else
+			w_off[p] = 0u;
+	}
+	const uint8_t *r0 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 0ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r1 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 1ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r2 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 2ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r3 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 3ull * recv_stride) : (const uint8_t *)0;
+	const uint64_t sc_off_base = (uint64_t)routes * SLICE;
+	for ( uint32_t first = start; first < end; first += MAX_R )
+	{
+		const uint32_t count = end - first < MAX_R ? end - first : MAX_R;
+		uint32_t src_tok[MAX_R];
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+			src_tok[r] = r < count ? (MODE_RECV == 0u ? __ldg(route_source_token + first + r) : first + r) : 0u;
+		const uint8_t *w_base = group_cells;
+		auto produce_w = [&](uint32_t st_off)
+		{
+			const uint32_t w_stage = sbase + st_off;
+			#pragma unroll
+			for ( uint32_t p = 0u; p < W_PASSES; ++p )
+				if ( threadIdx.x + p * THREADS < W_VECS )
+					LmCellMxCopy(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
+			w_base += (uint64_t)K_STEPS * TILE_STRIDE;
+		};
+		auto load_act = [&](uint32_t k_idx, uint32_t abuf)
+		{
+			if ( threadIdx.x < count * 16u )
+			{
+				const uint32_t r = threadIdx.x >> 4u, q = threadIdx.x & 15u;
+				if constexpr ( MODE_RECV == 0u )
+					((uint4 *)s_act[abuf][r])[q] = __ldg((const uint4 *)(act_bf16 + (uint64_t)src_tok[r] * IN_DIM + k_idx * TILE_K) + q);
+				else
+				{
+					const uint32_t elem = k_idx * TILE_K + q * 8u;
+					const uint32_t sr = elem / SLICE, within = elem - sr * SLICE;
+					const uint8_t *rb = sr == 0u ? r0 : sr == 1u ? r1 : sr == 2u ? r2 : r3;
+					const uint32_t route_i = src_tok[r];
+					const float sc = __uint_as_float((uint32_t)__ldg(rb + sc_off_base + (uint64_t)route_i * S_BLOCKS + (within >> 5u)) << 23u);
+					((uint4 *)s_act[abuf][r])[q] = D41DequantE4m3x8(D41LoadU8x8(rb + (uint64_t)route_i * SLICE + within), sc);
+				}
+			}
+		};
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+		auto advance = [](uint32_t &off) { off += W_BYTES; if ( off == STAGES * W_BYTES ) off = 0u; };
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < K_ITERS ) produce_w(sp_off);
+			LmCellMmaCommit();
+			++kp;
+			advance(sp_off);
+		}
+		if ( count == 1u )
+		{
+			float acc1[1] = { 0.0f };
+			for ( uint32_t k_step = 0u; k_step < K_ITERS; ++k_step )
+			{
+				const uint32_t abuf = k_step & 1u;
+				load_act(k_step, abuf);
+				LmCellMmaWait<STAGES - 2u>();
+				__syncthreads();
+				if ( kp < K_ITERS ) { produce_w(sp_off); ++kp; advance(sp_off); }
+				LmCellMmaCommit();
+				const uint8_t *w_stage = s_w + sc_off + warp * CELL_BYTES;
+				#pragma unroll
+				for ( uint32_t s_it = 0u; s_it < 2u; ++s_it )
+				{
+					const uint32_t step = half + s_it * 2u;
+					const uint8_t *cell_ptr = w_stage + step * TILE_BYTES;
+					const uint4 weight = *(const uint4 *)(cell_ptr + sub * 16u);
+					const uint8_t sc_code = cell_ptr[256u + sub];
+					D41CellFp4AccumTile<1u>(weight, sc_code, (const uint16_t (*)[128])s_act[abuf], step * 32u, 1u, acc1);
+				}
+				advance(sc_off);
+			}
+			LmCellMmaWait<0u>();
+			acc1[0] += __shfl_xor_sync(0xffffffffu, acc1[0], 16u);
+			if ( half == 0u )
+				output_bf16[(uint64_t)first * OUT_DIM + (block_cell0 + warp) * 16u + sub] = LmFloatToBf16(acc1[0]);
+		}
+		else
+		{
+			float acc[MAX_R];
+			#pragma unroll
+			for ( uint32_t r = 0u; r < MAX_R; ++r ) acc[r] = 0.0f;
+			for ( uint32_t k_step = 0u; k_step < K_ITERS; ++k_step )
+			{
+				const uint32_t abuf = k_step & 1u;
+				load_act(k_step, abuf);
+				LmCellMmaWait<STAGES - 2u>();
+				__syncthreads();
+				if ( kp < K_ITERS ) { produce_w(sp_off); ++kp; advance(sp_off); }
+				LmCellMmaCommit();
+				const uint8_t *w_stage = s_w + sc_off + warp * CELL_BYTES;
+				#pragma unroll
+				for ( uint32_t s_it = 0u; s_it < 2u; ++s_it )
+				{
+					const uint32_t step = half + s_it * 2u;
+					const uint8_t *cell_ptr = w_stage + step * TILE_BYTES;
+					const uint4 weight = *(const uint4 *)(cell_ptr + sub * 16u);
+					const uint8_t sc_code = cell_ptr[256u + sub];
+					D41CellFp4AccumTile<MAX_R>(weight, sc_code, s_act[abuf], step * 32u, count, acc);
+				}
+				advance(sc_off);
+			}
+			LmCellMmaWait<0u>();
+			#pragma unroll
+			for ( uint32_t r = 0u; r < MAX_R; ++r )
+				acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], 16u);
+			if ( half == 0u )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < MAX_R; ++r )
+					if ( r < count )
+						output_bf16[(uint64_t)(first + r) * OUT_DIM + (block_cell0 + warp) * 16u + sub] = LmFloatToBf16(acc[r]);
+		}
+		if ( first + MAX_R < end ) __syncthreads();
 	}
 }
 
