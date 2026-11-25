@@ -140,7 +140,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <a class="btn" href="#reproduce">Run on your engine</a>
         <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">Read full spec</a>
       </div>
-      <p class="note">Reference scorer: <span class="mono">tools/rais_score.py</span> · Reference OpenAI-compatible runner: <span class="mono">tools/rais_bench.py</span>. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>46.7</b> Certified Fleet RAIS) from verbatim receipts in <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
+      <p class="note">Reference scorer: <span class="mono">tools/rais_score.py</span> · Reference OpenAI-compatible runner: <span class="mono">tools/rais_bench.py</span>. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) Wave-4B sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>47.6</b> Certified Fleet RAIS, +0.96 vs <span class="mono">99fc2a2c1</span>) from verbatim receipts in <span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>, plus live <span class="mono">1x-gb10</span> Zero-NVIDIA NVRM (<b>63.3</b> VALID vs CUDA 63.2) and <span class="mono">1x-m5-ultra</span> Apple M5 Ultra Metal 4.0 (<b>20.3</b> VALID).</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.0</b> · Physical Law</span><span>0–100 scale</span></div>
@@ -288,7 +288,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>Fleet scorecard and hardware rooflines.</h2>
-    <p class="prose">Generated directly via <span class="mono">python3 tools/rais_score.py score --format html-data</span> from verbatim single-release live 16× DGX Spark receipts (<span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>). All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>46.7</b> Certified Fleet RAIS; pending hardware profiles remain unmeasured and are never interpolated.</p>
+    <p class="prose">Generated directly via <span class="mono">python3 tools/rais_score.py score --format html-data</span> from verbatim single-release live 16× DGX Spark receipts (<span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>), single-GB10 Zero-NVIDIA NVRM receipts (<span class="mono">qualification/hardware/1x-gb10/rais-qwen38-27b-nvrm.jsonl</span>), and Apple M5 Ultra Metal 4.0 receipts (<span class="mono">qualification/hardware/1x-m5-ultra/rais-qwen38-27b-metal4.jsonl</span>). All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>47.6</b> Certified Fleet RAIS; pending hardware profiles remain unmeasured and are never interpolated.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">

@@ -72,7 +72,7 @@ h1 { max-width: 14em; }
 <aside class="rais-banner" aria-label="RAIS v1.0 벤치마크 공개 안내">
   <div class="wrap rais-banner-inner">
     <span class="rais-badge">RAIS v1.0 공개</span>
-    <p class="rais-banner-copy">연산·메모리·네트워크 3대 루프라인 기반 공개 추론 벤치마크. DGX Spark 16대 실측: <b>19 / 19 모델 전원 VALID 인증</b>, <b class="num">46.7 / 100</b> 인증 플릿 RAIS — K-EXAONE 2.0 <b class="num">60.0</b>, Kimi K3 <b class="num">57.6</b>, Solar Open 2 <b class="num">53.1</b>, Qwen 3.8 Max <b class="num">52.7</b>, DeepSeek V4.1 Flash <b class="num">46.3</b>(콜드 프리필 <span class="num">19.2k</span> tok/s).</p>
+    <p class="rais-banner-copy">연산·메모리·네트워크 3대 루프라인 기반 공개 추론 벤치마크. DGX Spark 16대 실측: <b>19 / 19 모델 전원 VALID 인증</b>, <b class="num">47.6 / 100</b> 인증 플릿 RAIS — K-EXAONE 2.0 <b class="num">64.0</b>, Solar Open 2 <b class="num">53.8</b>, Qwen 3.8 Max <b class="num">53.6</b>, Kimi K3.1 Pro <b class="num">53.3</b>, DeepSeek V4.1 Flash <b class="num">46.9</b>(32K 프리필 <span class="num">15.7k</span> tok/s); 단일 GB10 제로-NVIDIA NVRM <b class="num">63.3</b>(CUDA <span class="num">63.2</span> 상회).</p>
     <a class="btn small solid rais-banner-cta" href="rais-ko.html">RAIS v1.0 보기</a>
   </div>
 </aside>
@@ -341,7 +341,7 @@ curl $OPENAI_BASE_URL/chat/completions \
       <div class="bar top"><span>K3, 추측</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, 단일 요청</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 3대 루프라인 표준인 <a href="rais-ko.html">RAIS v1.0 스코어카드</a> 기준 DGX Spark 16대 플릿에서 19개 모델 전원(플릿 비중 100%)이 VALID 인증을 통과해 <b>인증 플릿 RAIS 46.7 / 100</b>을 기록했습니다(K-EXAONE 2.0 <b>60.0</b>, Kimi K3 <b>57.6</b>, Solar Open 2 <b>53.1</b>, Qwen 3.8 Max <b>52.7</b>, Qwen 3.8 27B <b>49.9</b>, DeepSeek V4.1 Flash <b>46.3</b>·콜드 프리필 11.0k–19.2k tok/s). 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)와 <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>에 공개되어 있습니다.</p>
+    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 3대 루프라인 표준인 <a href="rais-ko.html">RAIS v1.0 스코어카드</a> 기준 DGX Spark 16대 플릿에서 19개 모델 전원(플릿 비중 100%)이 VALID 인증을 통과해 <b>인증 플릿 RAIS 47.6 / 100</b>을 기록했습니다(K-EXAONE 2.0 <b>64.0</b>, Kimi K3 <b>54.5</b>, Solar Open 2 <b>53.8</b>, Qwen 3.8 Max <b>53.6</b>, Kimi K3.1 Pro <b>53.3</b>, Qwen 3.8 27B <b>50.9</b>, DeepSeek V4.1 Flash <b>46.9</b>·32K 프리필 15.7k tok/s). 단일 GB10에서는 제로-NVIDIA NVRM 스택이 Qwen 3.8 27B에서 <b>63.3</b> VALID로 CUDA(<b>63.2</b>)를 앞섰습니다. 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)와 <span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>에 공개되어 있습니다.</p>
   </div>
 </section>
 
