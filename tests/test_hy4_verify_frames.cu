@@ -232,7 +232,7 @@ struct VfRig
 			target[index] = Bf16(Uniform(seed, index));
 	}
 
-	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output)
+	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output, uint32_t last_rows_only = 0u, uint32_t gather_context = 0u)
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
 		std::vector<uint32_t> position(count), sequence(count);
@@ -256,6 +256,8 @@ struct VfRig
 		step.rows = count;
 		step.sequences = sequences;
 		step.commit = commit;
+		step.last_rows_only = last_rows_only;
+		step.gather_context = gather_context;
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -595,10 +597,67 @@ static void Check(void)
 	rig.Close();
 }
 
+template<class G>
+static void CheckPrefixExact(void)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 12u, 16u, 23u, 64u, 128u };
+	static constexpr uint32_t kCached = 2u * G::kPageSlots;
+	static constexpr uint32_t kMaxTotal = kCached + 128u;
+	VfRig<G> rig;
+	const char *model = G::Tag();
+	std::vector<VfRow> all_rows(kMaxTotal);
+	std::vector<uint8_t> cached_kv;
+	if ( rig.Open() == 0 )
+	{
+		Require(0, model, "prefix-exact synthetic stage opens", 0u, 0u, 0u);
+		return;
+	}
+	for ( uint32_t position = 0u; position < kMaxTotal; ++position )
+		all_rows[position] = { 0u, position, 0u };
+	Require(rig.Run(all_rows.data(), kCached, 1u, 0, 1u, kCached) != 0, model, "cached prefix prefill runs", kCached, 0u, 0u);
+	cached_kv = rig.Save();
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = kCached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		std::vector<uint8_t> cold_kv;
+		Require(cudaMemset(rig.kv, 0, rig.kLatentRegion + rig.kIndexRegion) == cudaSuccess, model, "prefix-exact KV reset succeeds", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data(), total, 1u, &cold_out, 1u, total) != 0, model, "cold prefill runs", total, delta, 0u);
+		cold_kv = rig.Save();
+		Require(Finite(cold_out) != 0u, model, "cold prefill rows are finite", total, delta, 0u);
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)kCached * G::kHidden), cold_out.end());
+		Require(rig.Load(cached_kv) != 0, model, "cached KV restore succeeds", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, 1u, &warm_out, 1u, total) != 0, model, "warm delta prefill runs", kCached, delta, 0u);
+		Require(FirstDifference(warm_out, cold_tail, G::kHidden) == UINT32_MAX, model,
+			"warm delta prefill equals cold prefill bit for bit (delta, first differing row)", delta, FirstDifference(warm_out, cold_tail, G::kHidden), 0u);
+		Require(rig.KvMatches(rig.Save(), cold_kv, total) != 0u, model,
+			"warm delta prefill leaves the same KV as cold prefill bit for bit (delta)", delta, 0u, 0u);
+	}
+	{
+		std::vector<uint16_t> b1_out, b8_out;
+		VfRow b8_rows[8];
+		Require(rig.Load(cached_kv) != 0, model, "B1==B8 KV restore succeeds", 0u, 0u, 0u);
+		VfRow b1_row = { 0u, kCached, 5u };
+		Require(rig.Run(&b1_row, 1u, 1u, &b1_out, 0u, 0u) != 0, model, "B1 decode runs", 0u, 0u, 0u);
+		Require(rig.Load(cached_kv) != 0, model, "B8 KV restore succeeds", 0u, 0u, 0u);
+		b8_rows[0] = b1_row;
+		for ( uint32_t r = 1u; r < 8u; ++r )
+			b8_rows[r] = { 1u, r - 1u, 20u + r };
+		Require(rig.Run(b8_rows, 8u, 1u, &b8_out, 0u, 0u) != 0, model, "B8 decode runs", 0u, 0u, 0u);
+		Require(memcmp(b1_out.data(), b8_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+			"B8 lane0 equals B1 decode bit for bit", 0u, 0u, 0u);
+	}
+	Require(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", 0u, 0u, 0u);
+	printf("%s %s prefix-exact + B1==B8: cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
+	rig.Close();
+}
+
 int main(void)
 {
 	Check<SmallHy4>();
 	Check<SmallHy4Fp8>();
+	CheckPrefixExact<SmallHy4>();
+	CheckPrefixExact<SmallHy4Fp8>();
 	if ( vf_failures != 0 )
 	{
 		printf("FAIL hy4 verify frames: %d failures\n", vf_failures);
