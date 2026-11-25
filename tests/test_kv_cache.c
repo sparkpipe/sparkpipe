@@ -3664,6 +3664,89 @@ static void SparkTestKvEmptyLaneRejectsWithoutBusy(void)
 	assert(SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){1u},1u,SPARK_STATUS_OK,0u) == SPARK_STATUS_OK);
 }
 
+static void SparkTestKvMemoryStoreSparseAndPunchHole(void)
+{
+	SparkKvPageStoreConfiguration configuration;
+	SparkKvPageStore store;
+	const uint64_t page_bytes = 65536u;
+	uint8_t *staging,*source,*dest;
+	struct stat info;
+	SparkStatus status;
+	uint32_t index;
+	staging = (uint8_t *)malloc((size_t)page_bytes);
+	source = (uint8_t *)malloc((size_t)page_bytes);
+	dest = (uint8_t *)malloc((size_t)page_bytes);
+	assert(staging != 0 && source != 0 && dest != 0);
+	for (index=0u; index<page_bytes; index++)
+		source[index] = (uint8_t)((index * 13u + 7u) & 0xffu);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_KV_PAGE_STORE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_KV_PAGE_STORE_CONFIGURATION_BYTES;
+	configuration.flags = SPARK_KV_PAGE_STORE_FLAG_MEMORY;
+	configuration.logical_page_capacity = 8u;
+	configuration.transfer_capacity = 1u;
+	configuration.page_bytes = page_bytes;
+	configuration.maximum_backing_bytes = 4u * page_bytes;
+	configuration.backing_path = "sparkpipe-test-sparse-memory";
+	configuration.staging_address = staging;
+	configuration.staging_bytes = page_bytes;
+	assert(SparkKvPageStoreInitialize(&store,&configuration) == SPARK_STATUS_OK);
+	assert(fstat(store.file_descriptor,&info) == 0);
+	assert((uint64_t)info.st_size == 4u * page_bytes);
+#if defined(__linux__)
+	assert(info.st_blocks == 0);
+#endif
+	status = SparkKvPageStoreWriteback(&store,0u,0u,1u,(uintptr_t)source,page_bytes,0u,0u);
+	while ( status == SPARK_STATUS_BUSY )
+	{
+		assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+		status = SparkKvPageStoreWriteback(&store,0u,0u,1u,(uintptr_t)source,page_bytes,0u,0u);
+	}
+	assert(status == SPARK_STATUS_OK && store.backing_page_count == 1u);
+#if defined(__linux__)
+	assert(fstat(store.file_descriptor,&info) == 0 && info.st_blocks > 0);
+#endif
+	memset(dest,0,(size_t)page_bytes);
+	status = SparkKvPageStoreReadback(&store,0u,1u,(uintptr_t)dest,page_bytes);
+	while ( status == SPARK_STATUS_BUSY )
+	{
+		assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+		status = SparkKvPageStoreReadback(&store,0u,1u,(uintptr_t)dest,page_bytes);
+	}
+	assert(status == SPARK_STATUS_OK && memcmp(dest,source,(size_t)page_bytes) == 0);
+	assert(SparkKvPageStoreInvalidate(&store,0u,1u) == SPARK_STATUS_OK && store.backing_page_count == 0u);
+#if defined(__linux__) && defined(FALLOC_FL_PUNCH_HOLE) && defined(FALLOC_FL_KEEP_SIZE)
+	SparkTestBusyStart();
+	for (;;)
+	{
+		assert(fstat(store.file_descriptor,&info) == 0);
+		if ( info.st_blocks == 0 )
+			break;
+		SparkTestYieldBusy();
+	}
+#endif
+	status = SparkKvPageStoreWriteback(&store,1u,0u,2u,(uintptr_t)source,page_bytes,0u,0u);
+	while ( status == SPARK_STATUS_BUSY )
+	{
+		assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+		status = SparkKvPageStoreWriteback(&store,1u,0u,2u,(uintptr_t)source,page_bytes,0u,0u);
+	}
+	assert(status == SPARK_STATUS_OK);
+	memset(dest,0,(size_t)page_bytes);
+	status = SparkKvPageStoreReadback(&store,1u,2u,(uintptr_t)dest,page_bytes);
+	while ( status == SPARK_STATUS_BUSY )
+	{
+		assert(SparkKvPageStoreWaitForTransfers(&store) == SPARK_STATUS_OK);
+		status = SparkKvPageStoreReadback(&store,1u,2u,(uintptr_t)dest,page_bytes);
+	}
+	assert(status == SPARK_STATUS_OK && memcmp(dest,source,(size_t)page_bytes) == 0);
+	SparkKvPageStoreDestroy(&store);
+	free(dest);
+	free(source);
+	free(staging);
+	printf("PASS kv memory page store: sparse on open, allocates on write, punches holes on release, rewrites cleanly\n");
+}
+
 int main(void)
 {
 	int32_t status;
@@ -3761,5 +3844,6 @@ int main(void)
 	SparkTestKvPageCacheUnreadPrefixIsDropped();
 	SparkTestKvPageCacheDeduplicatedPublishIsARead();
 	SparkTestKvEmptyLaneRejectsWithoutBusy();
+	SparkTestKvMemoryStoreSparseAndPunchHole();
 	return(0);
 }

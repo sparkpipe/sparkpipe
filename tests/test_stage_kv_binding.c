@@ -2269,6 +2269,79 @@ static void TestHighConcurrencyLanes(uint32_t lanes)
 	printf("high concurrency kv binding: %u concurrent resident lanes admit, claim, upload, finish and quiesce cleanly\n",lanes);
 }
 
+static SparkStatus TestLazyRecurrentCopy(void *context,uint32_t direction,uint32_t slot,void *buffer,uint64_t bytes,SparkDeviceQueue *queue)
+{
+	uint8_t *store = (uint8_t *)context;
+	assert(store != 0 && slot < 8u && bytes == TEST_RECURRENT_BYTES && buffer != 0);
+	(void)queue;
+	if ( direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER )
+		memcpy(buffer,store + (size_t)slot * TEST_RECURRENT_BYTES,TEST_RECURRENT_BYTES);
+	else
+		memcpy(store + (size_t)slot * TEST_RECURRENT_BYTES,buffer,TEST_RECURRENT_BYTES);
+	return(SPARK_STATUS_OK);
+}
+
+static void TestRecurrentLaneStateLazyAndTrim(void)
+{
+	SparkStageKvConfiguration configuration;
+	uint8_t lanes_data[8u * TEST_RECURRENT_BYTES];
+	const uint32_t lanes = SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS + 2u;
+	uint32_t slot,index;
+	TestStep step;
+	TestFinished finished;
+	SparkDeviceQueue *queue = (SparkDeviceQueue *)(uintptr_t)0x54u;
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	configuration.resident_sequence_capacity = lanes;
+	configuration.logical_page_count = lanes * (TEST_POSITIONS / TEST_BLOCK) * 2u;
+	configuration.physical_page_count = lanes * (TEST_POSITIONS / TEST_BLOCK);
+	configuration.backing_maximum_bytes = (uint64_t)(configuration.logical_page_count + 2u) * TEST_PAGE_BYTES;
+	configuration.recurrent.copy = TestLazyRecurrentCopy;
+	configuration.recurrent.context = lanes_data;
+	configuration.recurrent.memory_bytes = (uint64_t)(2u * lanes + 2u) * TEST_RECURRENT_BYTES;
+	memset(lanes_data,0,sizeof(lanes_data));
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	assert(BINDING.lane_state_allocated_count == 0u);
+	for (slot=0u; slot<lanes; slot++)
+	{
+		memset(&finished,0,sizeof(finished));
+		StepInit(&step,100u + slot,slot,0u,4u);
+		StepPublish(&step,4u,(uint8_t)(0x20u + slot));
+		StepStart(&step);
+		for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+			lanes_data[slot * TEST_RECURRENT_BYTES + index] = (uint8_t)(0x40u + slot + index);
+		assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
+		assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+		assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+		assert(BINDING.lane_state_allocated_count == slot + 1u);
+	}
+	for (slot=0u; slot<lanes; slot++)
+		ReleaseSequence(100u + slot,slot);
+	assert(BINDING.lane_state_allocated_count == SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS);
+	{
+		SparkStatus reset;
+		uint32_t attempt = 0u;
+		while ( (reset = SparkStageKvBindingReset(&BINDING,2u)) == SPARK_STATUS_BUSY && attempt++ < 1000u )
+			SleepMs(1u);
+		assert(reset == SPARK_STATUS_OK);
+	}
+	assert(BINDING.lane_state_allocated_count == 0u);
+	memset(&finished,0,sizeof(finished));
+	StepInit(&step,200u,0u,4u,5u);
+	StepPrefix(&step,4u,0x20u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
+	assert(BINDING.lane_state_allocated_count == 1u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&step) == SPARK_STATUS_OK);
+	memset(lanes_data,0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		assert(lanes_data[index] == (uint8_t)(0x40u + index));
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	Close();
+	printf("A11 lazy lane_state: 0 slots at init, allocated per-slot on demand, trimmed to warm watermark on release, trimmed to 0 on reset, and restores cleanly after trim: ok\n");
+}
+
 static void RunScenarios(void)
 {
 	if ( POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD )
@@ -2310,6 +2383,7 @@ static void RunScenarios(void)
 	TestSnapshotStatelessChain();
 	TestStatelessBoundaryProbeKeepsChain();
 	TestStagedReplyCheckpoint();
+	TestRecurrentLaneStateLazyAndTrim();
 	TestReleaseAfterFailedRun();
 }
 

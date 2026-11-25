@@ -36,6 +36,9 @@ typedef struct CudaAllocation
 } CudaAllocation;
 
 #define CUDA_BOUNCE_BYTES (8ull << 20)
+#define CUDA_PARALLEL_ZERO_THRESHOLD_BYTES (16ull << 20)
+#define CUDA_PARALLEL_ZERO_SLICE_MIN_BYTES (4ull << 20)
+#define CUDA_PARALLEL_ZERO_MAX_THREADS 8u
 
 typedef struct CudaQueue
 {
@@ -596,6 +599,62 @@ static CudaAllocation *CudaNew(SparkDeviceAllocation *allocation, CudaMemoryKind
 	return(cuda);
 }
 
+typedef struct CudaZeroSlice
+{
+	uint8_t *base;
+	size_t bytes;
+} CudaZeroSlice;
+
+static void *CudaZeroWorker(void *argument)
+{
+	CudaZeroSlice *slice = (CudaZeroSlice *)argument;
+	memset(slice->base,0,slice->bytes);
+	return(0);
+}
+
+static void CudaZeroHost(void *base, uint64_t bytes)
+{
+	pthread_t threads[CUDA_PARALLEL_ZERO_MAX_THREADS];
+	CudaZeroSlice slices[CUDA_PARALLEL_ZERO_MAX_THREADS];
+	long cpus;
+	uint32_t workers,launched = 0u,index;
+	uint64_t chunk,offset;
+	if ( bytes < CUDA_PARALLEL_ZERO_THRESHOLD_BYTES )
+	{
+		memset(base,0,(size_t)bytes);
+		return;
+	}
+	cpus = sysconf(_SC_NPROCESSORS_ONLN);
+	workers = cpus > 1 ? (uint32_t)cpus : 1u;
+	if ( workers > CUDA_PARALLEL_ZERO_MAX_THREADS )
+		workers = CUDA_PARALLEL_ZERO_MAX_THREADS;
+	if ( bytes / CUDA_PARALLEL_ZERO_SLICE_MIN_BYTES < workers )
+		workers = (uint32_t)(bytes / CUDA_PARALLEL_ZERO_SLICE_MIN_BYTES);
+	if ( workers <= 1u )
+	{
+		memset(base,0,(size_t)bytes);
+		return;
+	}
+	chunk = (bytes + workers - 1u) / workers;
+	chunk = (chunk + cuda_page_bytes - 1u) / cuda_page_bytes * cuda_page_bytes;
+	for ( index = 0u, offset = 0u; index < workers && offset < bytes; index++, offset += chunk )
+	{
+		slices[index].base = (uint8_t *)base + offset;
+		slices[index].bytes = (size_t)(bytes - offset < chunk ? bytes - offset : chunk);
+		if ( index + 1u == workers || offset + chunk >= bytes )
+		{
+			memset(slices[index].base,0,slices[index].bytes);
+			break;
+		}
+		if ( pthread_create(&threads[launched],0,CudaZeroWorker,&slices[index]) == 0 )
+			launched++;
+		else
+			memset(slices[index].base,0,slices[index].bytes);
+	}
+	for ( index = 0u; index < launched; index++ )
+		(void)pthread_join(threads[index],0);
+}
+
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 {
 	CudaAllocation *cuda;
@@ -665,7 +724,7 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 		pthread_mutex_unlock(&cuda_zero_stream_gate);
 	}
 	else
-		memset(cuda->base,0,(size_t)allocation->bytes);
+		CudaZeroHost(cuda->base,allocation->bytes);
 	allocation->device = (SparkDeviceAddress)(uintptr_t)device;
 	allocation->backend = cuda;
 	if ( status != SPARK_STATUS_OK )

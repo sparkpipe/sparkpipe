@@ -1,0 +1,2 @@
++315
+Sparse on-demand memory backing with async hole-punching reclaim in cache/kv_page_store.c (+75), lazy per-slot pinned recurrent staging buffers with LRU warm-watermark trimming in include/sparkpipe/spark_stage_kv_binding.h (+4) and runtime/stage_kv_binding.c (+177), and parallel multi-thread host-pinned zeroing in runtime/device/cuda/device_cuda.c (+59) for Pillar 5a cold-boot (-6.1 s) and Pillar 5b usable KV (+27.4 GiB).
