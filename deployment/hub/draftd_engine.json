@@ -177,6 +177,72 @@
     "context_bytes": 4294967296,
     "wait_ms": 30
    }
+  },
+  {
+   "name": "glm-5.3-fp8",
+   "host": "127.0.0.1",
+   "draft_port": 7792,
+   "target_model": "glm-5.3-fp8",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7791,
+    "model_tag": "glm53_full_tp16_stage",
+    "hidden": 6144,
+    "entries": "o2,o20,o39,o58,o75"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/glm53_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/glm53dspark.bf16.tp1.rank0.sp",
+    "model": "glm53dspark",
+    "revision": "198b3ced9d2d",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "glm-5.3-flash-fp8",
+   "host": "127.0.0.1",
+   "draft_port": 7802,
+   "target_model": "glm-5.3-flash-fp8",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7801,
+    "model_tag": "glm53_flash_stage",
+    "hidden": 4096,
+    "entries": "o5,o14,o24,o33,o42"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/glm53_flash_dflash2_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/glm53flashdflash2.bf16.tp1.rank0.sp",
+    "model": "glm53flashdflash2",
+    "revision": "6cc6c481eee9",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "qwen3.8-27b-fp8",
+   "host": "127.0.0.1",
+   "draft_port": 7812,
+   "target_model": "qwen3.8-27b-fp8",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7811,
+    "model_tag": "qwen38_27b_fp8_stage",
+    "hidden": 5120,
+    "entries": "o1,o16,o31,o46,o61"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/qwen38_dspine_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/qwen27bdspine.bf16.tp1.rank0.sp",
+    "model": "qwen27bdspine",
+    "revision": "ac90f1df842e",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
   }
  ]
 }

@@ -435,10 +435,10 @@ name in the root's config, and the two user units. The lane's `hub_start` and
 (`DRAFTD_SERVER`, `DRAFTD_ENGINE_*`, `DRAFTD_WEIGHTD_UNIT`), and
 `tests/test_model_swap_hub_services.py` keeps them equal to the record.
 
-One engine draft server (`sparkpipe-draftd-engine`) serves all eight engine
+One engine draft server (`sparkpipe-draftd-engine`) serves all eleven engine
 lanes from one root, `/srv/workspace/sparkpipe/draftd-engine`, with one weightd
 (`sparkpipe-weightd-hub`). Its config, `deployment/hub/draftd_engine.json`,
-lists the eight lanes:
+lists the eleven lanes:
 
 | Lane | Draft and tap ports | Module and pack | Context cap |
 | --- | --- | --- | --- |
@@ -450,6 +450,9 @@ lists the eight lanes:
 | `glm-5.3-flash` | 7762, 7761 | `glm53_flash_dflash2_draft_stage.so`, `glm53flashdflash2.bf16.tp1` | 8 GiB |
 | `k-exaone-2.0` | 7772, 7771 | `kexaone2_dspark_draft_stage.so`, `kexaone2dspark.bf16.tp1` | 8 GiB |
 | `a.x-k2` | 7782, 7781 | `axk2_dspark_draft_stage.so`, `axk2dspark.bf16.tp1` | 4 GiB |
+| `glm-5.3-fp8` | 7792, 7791 | `glm53_dspark_draft_stage.so`, `glm53dspark.bf16.tp1` | 8 GiB |
+| `glm-5.3-flash-fp8` | 7802, 7801 | `glm53_flash_dflash2_draft_stage.so`, `glm53flashdflash2.bf16.tp1` | 8 GiB |
+| `qwen3.8-27b-fp8` | 7812, 7811 | `qwen38_dspine_draft_stage.so`, `qwen27bdspine.bf16.tp1` | 8 GiB |
 
 An engine lane opens its draft and tap ports when it is activated and closes
 them when it is deactivated, so a lane still served by `block_draftd.py`

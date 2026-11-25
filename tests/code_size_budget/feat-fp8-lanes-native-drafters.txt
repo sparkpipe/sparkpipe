@@ -1,0 +1,2 @@
++89
+node/draftd.c raises DRAFTD_MAX_LANES from 8 to 32 with exact heap allocation for DraftdLane and 8192-byte control reply buffer (+7 lines) to host the 3 FP8 native-drafter lanes alongside the 8 existing engine lanes, plus +82 pre-existing lines over ceiling on origin/main 29986b376.
