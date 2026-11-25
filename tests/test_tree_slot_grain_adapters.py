@@ -127,6 +127,7 @@ ADAPTERS = (
             '-DGLM53_FLASH_MODULE_TAG="glm53_flash"',
             '-DGLM53_FLASH_MODEL_ID="zai-org/GLM-5.3-Flash"',
             '-DGLM53_FLASH_MODEL_REVISION="test"',
+            '-DGLM53_FLASH_PROGRAM="glm53_flash"',
         ],
         "SparkGlm53FlashTp16StageModel",
         64,
