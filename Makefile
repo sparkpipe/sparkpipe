@@ -958,6 +958,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_flash_decode_replay.py \
 	tests/test_fused_kernels.py \
 	tests/test_dependent_wait_audit.py \
+	tests/test_build_log_errors.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
 	tests/test_mesh_status_tool.py \

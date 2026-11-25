@@ -74,8 +74,13 @@ kernel names in order (attention output, attention core, attention input,
 shared expert, mHC, router) against `tools/dsv41_flash_decode_reference.json`,
 the same sequences on rank 0 of the four-node lane, and the sequences of the
 fused kernels (`docs/FUSED_KERNELS.md`): the mHC kernel, and the attention
-output kernel with the projections that follow it. `tests/test_dsv41_flash_decode_replay.py`
-checks the summary on a synthetic trace.
+output kernel with the projections that follow it. The attention input
+sequence is four kernels: the query norm and the KV norm, rotation and QDQ
+run as one kernel (`D41QKvNormRopeQdqKernel`), where the measurements below
+and the reference trace ran them as two, so its time is the same work over
+one kernel fewer. `tests/test_dsv41_flash_decode_replay.py` checks the
+summary on a synthetic trace, and that every kernel name the summary matches
+is a kernel in the tree.
 
 ## Measurements (2026-11-22, CUDA flavour, two GB10 hosts, 30 steps after 5)
 

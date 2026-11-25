@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('dsv41_flash_decode_replay', ROOT / 'tools/dsv41_flash_decode_replay.py')
 REPLAY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REPLAY)
+
+
+def kernel_names():
+    names = set()
+    for folder in ('inference', 'model-families', 'modules', 'ring', 'runtime', 'tools'):
+        for path in sorted((ROOT / folder).rglob('*.cu*')):
+            for match in re.finditer(r'__global__([^;{}]*)', path.read_text(errors='replace')):
+                header = re.sub(r'__(?:launch_bounds|cluster_dims)__\s*\((?:[^()]|\([^()]*\))*\)', ' ', match.group(1))
+                name = re.search(r'([A-Za-z_]\w*)\s*\(', header)
+                if name is not None:
+                    names.add(name.group(1))
+    return names
 
 
 def record(start, end, name):
@@ -64,6 +77,16 @@ class DecodeReplayTest(unittest.TestCase):
         self.assertEqual(plain['side_prefetch_us'], 0.0)
         self.assertAlmostEqual(plain['against_trace']['mhc']['ratio'], 1.0)
         self.assertAlmostEqual(plain['against_trace']['attention_core']['ratio'], 0.65)
+
+    def test_every_name_the_summary_matches_is_a_kernel_in_the_tree(self):
+        defined = kernel_names()
+        wanted = {REPLAY.MARK, *REPLAY.SIDE}
+        for pattern in REPLAY.SEQUENCES.values():
+            for want in pattern:
+                wanted.update(want if isinstance(want, tuple) else (want,))
+        self.assertEqual(sorted(wanted - defined), [])
+        for prefix in REPLAY.COLLECTIVE:
+            self.assertTrue(any(name.startswith(prefix) for name in defined), prefix)
 
     def test_steps_that_differ_are_refused(self):
         names = ['A', 'B']

@@ -1,0 +1,2 @@
++84
+The sm_121a compile gate prints what failed: tools/build_log_errors.py (83 lines) takes the compiler, linker, toolkit, make, Python and REFUSED or FAIL lines out of a phase log, and every failing phase of tools/cuda13_sm121a_compile_gate.sh reports through it (the gate script itself does not grow); one more line registers tests/test_build_log_errors.py in PYTHON_TESTS.

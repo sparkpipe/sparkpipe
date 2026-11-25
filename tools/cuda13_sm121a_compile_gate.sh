@@ -17,6 +17,14 @@ gate_phase()
 	phase_wall="${SECONDS}"
 	phase_cpu="${children}"
 }
+gate_fail()
+{
+	local code="$1" log="${output_directory}/logs/$2" message="$3"
+	shift 3
+	python3 -I "${repository_root}/tools/build_log_errors.py" "$@" "${log}" >&2 || tail -n 40 "${log}" >&2 || true
+	echo "${message}" >&2
+	exit "${code}"
+}
 "${repository_root}/tools/source_package_gate.sh"
 if [[ "${cuda_architecture}" != "sm_121a" ]]; then
 	echo "CUDA gate requires CUDA_ARCH=sm_121a, got ${cuda_architecture}" >&2
@@ -103,7 +111,8 @@ compile_cuda()
 	fi
 	"${nvcc_binary}" "${object_flags[@]}" "${include_flags[@]}" "$@" \
 		-c "${source_path}" -o "${object_path}" \
-		2> "${output_directory}/logs/${artifact_name}.ptxas.txt"
+		2> "${output_directory}/logs/${artifact_name}.ptxas.txt" ||
+		gate_fail 12 "${artifact_name}.ptxas.txt" "${relative_source} does not compile for sm_121a; see logs/${artifact_name}.ptxas.txt"
 	"${nvcc_binary}" "${ptx_flags[@]}" "${include_flags[@]}" "$@" \
 		-ptx "${source_path}" -o "${ptx_path}"
 	if ! grep -Eq '^\.target[[:space:]]+sm_121a' "${ptx_path}"; then
@@ -161,8 +170,7 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs
 	CUDA_ARCH=sm_121a \
 	CUDA_HOME="${cuda_home}" \
 	> "${output_directory}/logs/adapters.txt" 2>&1; then
-	echo "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt" >&2
-	exit 5
+	gate_fail 5 adapters.txt "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt"
 fi
 gate_phase "adapters and CUDA programs"
 read -r -a stage_runner_binaries <<<"$(make_variable STAGE_RUNNER_BINARIES)"
@@ -171,9 +179,7 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
 	CUDA_ARCH=sm_121a \
 	CUDA_HOME="${cuda_home}" \
 	> "${output_directory}/logs/stage_runner_binaries.txt" 2>&1; then
-	grep -E 'undefined reference|error' "${output_directory}/logs/stage_runner_binaries.txt" | head -n 20 >&2 || true
-	echo "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt" >&2
-	exit 11
+	gate_fail 11 stage_runner_binaries.txt "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt"
 fi
 gate_phase "stage-runner binaries"
 for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
@@ -196,9 +202,8 @@ for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
 	fi
 done
 if ! python3 -I "${repository_root}/tools/dependent_wait_audit.py" "${audited[@]}" > "${output_directory}/logs/dependent_wait_audit.txt" 2>&1; then
-	grep -E '^(REFUSED|dependent)' "${output_directory}/logs/dependent_wait_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/dependent_wait_audit.txt" >&2
-	echo "a kernel stores to global memory before it waits for the kernel it depends on; see logs/dependent_wait_audit.txt" >&2
-	exit 9
+	gate_fail 9 dependent_wait_audit.txt "a kernel stores to global memory before it waits for the kernel it depends on; see logs/dependent_wait_audit.txt" \
+		--also '^dependent' --limit 200
 fi
 
 gate_phase "target and dependent-wait audits"
@@ -207,9 +212,7 @@ if ! make -C "${repository_root}" test-nvrm-launch \
 	CUDA_ARCH=sm_121a \
 	CUDA_HOME="${cuda_home}" \
 	> "${output_directory}/logs/nvrm_launch_arguments.txt" 2>&1; then
-	tail -n 40 "${output_directory}/logs/nvrm_launch_arguments.txt" >&2
-	echo "the nvrm flavour's LM_LAUNCH does not convert arguments to their kernel parameter types; see logs/nvrm_launch_arguments.txt" >&2
-	exit 8
+	gate_fail 8 nvrm_launch_arguments.txt "the nvrm flavour's LM_LAUNCH does not convert arguments to their kernel parameter types; see logs/nvrm_launch_arguments.txt"
 fi
 
 gate_phase "nvrm launch arguments"
@@ -221,12 +224,11 @@ if ! make -C "${repository_root}" -j"$(nproc)" tools hosted-release-gate \
 	CUDA_ARCH=sm_121a \
 	CUDA_HOME="${cuda_home}" \
 	> "${output_directory}/logs/hosted_release_gate.txt" 2>&1; then
-	grep -E '^(FAIL|hosted-release-gate)' "${output_directory}/logs/hosted_release_gate.txt" >&2 || tail -n 40 "${output_directory}/logs/hosted_release_gate.txt" >&2
 	if [[ -d "${hosted_release_root}" ]]; then
-		python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
+		python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json" || true
 	fi
-	echo "the hosted release root does not build or does not match tools/hosted_release_debt.json; see logs/hosted_release_gate.txt and hosted_release_findings.json" >&2
-	exit 6
+	gate_fail 6 hosted_release_gate.txt "the hosted release root does not build or does not match tools/hosted_release_debt.json; see logs/hosted_release_gate.txt and hosted_release_findings.json" \
+		--also '^hosted-release-gate' --limit 200
 fi
 python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
 grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
@@ -240,9 +242,8 @@ for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
 done
 if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" "${spill_audited[@]}" \
 	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
-	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
-	echo "a skinny, cell, stream GEMM or attention kernel keeps a stack frame or local memory, or the attention PENDING list in tools/kernel_spill_audit.py does not match; see logs/kernel_spill_audit.txt" >&2
-	exit 10
+	gate_fail 10 kernel_spill_audit.txt "a skinny, cell, stream GEMM or attention kernel keeps a stack frame or local memory, or the attention PENDING list in tools/kernel_spill_audit.py does not match; see logs/kernel_spill_audit.txt" \
+		--also '^kernel' --limit 200
 fi
 grep -E '^kernel spill audit' "${output_directory}/logs/kernel_spill_audit.txt"
 
