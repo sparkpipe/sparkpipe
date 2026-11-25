@@ -1,0 +1,2 @@
++573
+Native Block-128 FP8 + BF16 mixed support in model-families/hy4/source/hy4_stage.cuh and tools/hy4_tp16_pack.py for hy4-fp8; Block-128 FP8 and MLA q_lora_rank support in model-families/ling/ (spark_ling_family.h Ling31FlashGeometry, ling_stage.cuh) and tools/ling3_tp16_pack.py for ling-3.1-flash and ling-3.2-air; plus RAIS MODEL_SPECS entries (hy4-fp8, ling-3.1-flash, ling-3.2-air) in tools/rais_score.py.

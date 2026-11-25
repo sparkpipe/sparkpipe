@@ -28,7 +28,14 @@ struct SmallHy4 : Hy4Geometry<SPARK_HY4_TP16_STAGE_TP_DEGREE>
 	static constexpr uint32_t kExperts = 32u;
 	static constexpr uint32_t kLocalExperts = 16u;
 	static constexpr uint32_t kMoeInter = 256u;
+	static constexpr bool kMixedFp8 = false;
 	static const char *Tag(void) { return "hy4-preview"; }
+};
+
+struct SmallHy4Fp8 : SmallHy4
+{
+	static constexpr bool kMixedFp8 = true;
+	static const char *Tag(void) { return "hy4-fp8"; }
 };
 
 static HyScaled Mxfp8(uint64_t rows, uint64_t columns)
@@ -42,8 +49,37 @@ static HyScaled Mxfp8(uint64_t rows, uint64_t columns)
 		host[index] = E4m3(Uniform(seed, (uint32_t)index));
 	for ( uint64_t index = 0u; index < scales; ++index )
 		host[payload + index] = (uint8_t)(exponent + (int)(Mix(seed + (uint32_t)index) % 3u) - 1);
-	weight.weight = Device(host.data(), host.size());
-	weight.scale = weight.weight + payload;
+	const uint8_t *dev = Device(host.data(), host.size());
+	weight.weight = dev;
+	weight.scale = dev + payload;
+	weight.codec = HY_CODEC_MXFP8;
+	return weight;
+}
+
+static HyScaled Fp8Block128(uint64_t rows, uint64_t columns)
+{
+	const uint64_t payload = rows * columns, scales = rows * (columns / HY_FP8_BLOCK);
+	const float base = 1.0f / sqrtf((float)columns);
+	std::vector<uint8_t> w_host(payload);
+	std::vector<float> s_host(scales);
+	const uint32_t seed = vf_seed++;
+	HyScaled weight;
+	for ( uint64_t index = 0u; index < payload; ++index )
+		w_host[index] = E4m3(Uniform(seed, (uint32_t)index));
+	for ( uint64_t index = 0u; index < scales; ++index )
+		s_host[index] = base * (0.75f + 0.5f * ((float)(Mix(seed + (uint32_t)index) & 255u) / 255.0f));
+	weight.weight = Device(w_host.data(), w_host.size());
+	weight.scale = Device(s_host.data(), s_host.size() * sizeof(float));
+	weight.codec = HY_CODEC_FP8_BLOCK128;
+	return weight;
+}
+
+static HyScaled Bf16Scaled(uint64_t rows, uint64_t columns)
+{
+	HyScaled weight;
+	weight.weight = Matrix(rows, columns);
+	weight.scale = 0;
+	weight.codec = HY_CODEC_BF16;
 	return weight;
 }
 
@@ -68,6 +104,24 @@ struct VfRig
 	uint32_t host_context[VF_SLOTS];
 	SparkStageRunnerStep last;
 
+	static HyScaled Spine(uint64_t rows, uint64_t columns)
+	{
+		return G::kMixedFp8 ? Bf16Scaled(rows, columns) : Mxfp8(rows, columns);
+	}
+
+	static HyScaled LayerProj(uint32_t index, uint64_t rows, uint64_t columns, bool preview_bf16)
+	{
+		if constexpr ( G::kMixedFp8 )
+			return index == 0u ? Bf16Scaled(rows, columns) : Fp8Block128(rows, columns);
+		else
+			return preview_bf16 ? Bf16Scaled(rows, columns) : Mxfp8(rows, columns);
+	}
+
+	static HyScaled ExpertMat(uint64_t rows, uint64_t columns)
+	{
+		return G::kMixedFp8 ? Fp8Block128(rows, columns) : Mxfp8(rows, columns);
+	}
+
 	void Layer(uint32_t index)
 	{
 		HyLayer *layer = &state->layers[index];
@@ -79,37 +133,37 @@ struct VfRig
 		layer->mlp_hc_scale = Tensor<float>(2u, 0.2f, 1.0f);
 		layer->input_norm = Tensor<uint16_t>(G::kHidden, 0.2f, 1.0f);
 		layer->post_norm = Tensor<uint16_t>(G::kHidden, 0.2f, 1.0f);
-		layer->q_a = Mxfp8(G::kQLora, G::kHidden);
+		layer->q_a = Spine(G::kQLora, G::kHidden);
 		layer->q_norm = Tensor<uint16_t>(G::kQLora, 0.2f, 1.0f);
-		layer->q_b = Mxfp8((uint64_t)S::kRankHeads * S::kQkDim, G::kQLora);
-		layer->kv_a = Mxfp8(S::kSlot, G::kHidden);
+		layer->q_b = Spine((uint64_t)S::kRankHeads * S::kQkDim, G::kQLora);
+		layer->kv_a = Spine(S::kSlot, G::kHidden);
 		layer->kv_norm = Tensor<uint16_t>(G::kLatent, 0.2f, 1.0f);
 		layer->uk = Tensor<uint16_t>((uint64_t)S::kRankHeads * G::kLatent * G::kNope, 1.7f / sqrtf((float)G::kNope), 0.0f);
 		layer->uv = Tensor<uint16_t>((uint64_t)S::kRankHeads * G::kValueDim * G::kLatent, 1.7f / sqrtf((float)G::kLatent), 0.0f);
-		layer->gate = Matrix((uint64_t)S::kRankHeads * G::kValueDim, G::kHidden);
-		layer->out = Mxfp8(G::kHidden, (uint64_t)S::kRankHeads * G::kValueDim);
+		layer->gate = LayerProj(index, (uint64_t)S::kRankHeads * G::kValueDim, G::kHidden, true);
+		layer->out = LayerProj(index, G::kHidden, (uint64_t)S::kRankHeads * G::kValueDim, false);
 		layer->sinks = Tensor<float>(G::kHeads, 0.5f, 0.0f);
 		if ( G::IndexerLayer(index) )
 		{
-			layer->index_q = Mxfp8(S::kIndexWidth, G::kQLora);
-			layer->index_k = Mxfp8(G::kIndexDim, G::kHidden);
+			layer->index_q = Spine(S::kIndexWidth, G::kQLora);
+			layer->index_k = Spine(G::kIndexDim, G::kHidden);
 			layer->index_k_norm = Tensor<float>(G::kIndexDim, 0.2f, 1.0f);
 			layer->index_k_bias = Tensor<float>(G::kIndexDim, 0.1f, 0.0f);
 			layer->index_weights = Matrix(G::kIndexHeads, G::kHidden);
 		}
 		if ( index < G::kDenseLayers )
 		{
-			layer->ffn_gate_up = Mxfp8(2u * VF_FFN, G::kHidden);
-			layer->ffn_down = Mxfp8(G::kHidden, VF_FFN);
+			layer->ffn_gate_up = Spine(2u * VF_FFN, G::kHidden);
+			layer->ffn_down = Spine(G::kHidden, VF_FFN);
 			return;
 		}
 		layer->router = Matrix(G::kExperts, G::kHidden);
 		layer->router_bias = Tensor<float>(G::kExperts, 0.05f, 0.0f);
-		layer->moe_w1 = Mxfp8((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
-		layer->moe_w3 = Mxfp8((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
-		layer->moe_w2 = Mxfp8((uint64_t)G::kLocalExperts * G::kHidden, G::kMoeInter);
-		layer->shared_gate_up = Mxfp8(2u * VF_FFN, G::kHidden);
-		layer->shared_down = Mxfp8(G::kHidden, VF_FFN);
+		layer->moe_w1 = ExpertMat((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+		layer->moe_w3 = ExpertMat((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+		layer->moe_w2 = ExpertMat((uint64_t)G::kLocalExperts * G::kHidden, G::kMoeInter);
+		layer->shared_gate_up = Spine(2u * VF_FFN, G::kHidden);
+		layer->shared_down = Spine(G::kHidden, VF_FFN);
 	}
 
 	int Open(void)
@@ -544,6 +598,7 @@ static void Check(void)
 int main(void)
 {
 	Check<SmallHy4>();
+	Check<SmallHy4Fp8>();
 	if ( vf_failures != 0 )
 	{
 		printf("FAIL hy4 verify frames: %d failures\n", vf_failures);
