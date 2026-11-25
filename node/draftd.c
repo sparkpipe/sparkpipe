@@ -19,7 +19,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define DRAFTD_MAX_LANES 8u
+#define DRAFTD_MAX_LANES 32u
 #define DRAFTD_POLL_MS 100
 #define DRAFTD_NS_PER_MS UINT64_C(1000000)
 #define DRAFTD_REPORT_EVERY 64u
@@ -35,7 +35,7 @@
 #endif
 #define DRAFTD_PATH_BYTES 512u
 #define DRAFTD_CONTROL_LINE_BYTES 256u
-#define DRAFTD_CONTROL_REPLY_BYTES 4096u
+#define DRAFTD_CONTROL_REPLY_BYTES 8192u
 #define DRAFTD_CONTROL_IO_SECONDS 5
 #define DRAFTD_CONTROL_WAIT_SECONDS 900
 #define DRAFTD_BIND_TIMEOUT_NS UINT64_C(900000000000)
@@ -936,16 +936,15 @@ static int DraftdWait(DraftdLane *lanes, uint32_t lane_count, int control_fd, ui
 static int DraftdServe(const char *path)
 {
 	SparkJsonDocument document;
-	DraftdLane lanes[DRAFTD_MAX_LANES];
+	DraftdLane *lanes = 0;
 	char control_path[DRAFTD_PATH_BYTES] = "";
-	uint32_t lane_count = 0u, control_ready = 0u, engines = 0u;
+	uint32_t lane_capacity = 0u, lane_count = 0u, control_ready = 0u, engines = 0u;
 	int32_t root, array, element;
 	int result = 0, control_fd = -1;
 	memset(&document, 0, sizeof(document));
-	memset(lanes, 0, sizeof(lanes));
 	if ( SparkJsonLoadFile(path, &document) != SPARK_STATUS_OK || (root = SparkJsonGetRootToken(&document)) < 0 ||
-		(array = SparkJsonFindObjectMember(&document, root, "lanes")) < 0 || SparkJsonGetArrayElementCount(&document, array) == 0u ||
-		SparkJsonGetArrayElementCount(&document, array) > DRAFTD_MAX_LANES )
+		(array = SparkJsonFindObjectMember(&document, root, "lanes")) < 0 ||
+		(lane_capacity = SparkJsonGetArrayElementCount(&document, array)) == 0u || lane_capacity > DRAFTD_MAX_LANES )
 	{
 		fprintf(stderr, "sparkpipe_draftd: %s must be a JSON object whose \"lanes\" array has 1 to %u lanes\n", path, DRAFTD_MAX_LANES);
 		SparkJsonDocumentDestroy(&document);
@@ -956,6 +955,13 @@ static int DraftdServe(const char *path)
 	{
 		SparkJsonDocumentDestroy(&document);
 		return 2;
+	}
+	lanes = (DraftdLane *)calloc(lane_capacity, sizeof(DraftdLane));
+	if ( lanes == 0 )
+	{
+		fprintf(stderr, "sparkpipe_draftd: out of memory allocating %u lanes\n", lane_capacity);
+		SparkJsonDocumentDestroy(&document);
+		return 1;
 	}
 	for ( element = SparkJsonGetArrayElementFirst(&document, array); element >= 0 && result == 0;
 		element = SparkJsonGetArrayElementNext(&document, array, element) )
@@ -994,6 +1000,7 @@ static int DraftdServe(const char *path)
 			DraftdReport(&lanes[index]);
 		DraftdLaneClose(&lanes[index]);
 	}
+	free(lanes);
 	if ( control_fd >= 0 )
 	{
 		(void)close(control_fd);

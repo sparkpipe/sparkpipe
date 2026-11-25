@@ -63,7 +63,37 @@
       "state_budget_bytes": 12884901888,
       "memory_max": "28G",
       "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7792,
+        "target_model": "glm-5.3-fp8",
+        "depth": 8,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-glm53-fp8",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/glm-5.3-dspark-redhatai",
+        "window": 2040,
+        "context_bytes": 8589934592,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-glm53-fp8.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "glm-5.3-fp8",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o2,o20,o39,o58,o75",
+        "rank": 15,
+        "stream": "10.10.250.2:7791"
+      }
     },
     "glm-5.3-flash": {
       "launcher": "stage_lane",
@@ -125,7 +155,37 @@
       "state_budget_bytes": 12884901888,
       "memory_max": "24G",
       "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7802,
+        "target_model": "glm-5.3-flash-fp8",
+        "depth": 7,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-glm53f-fp8",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/glm-5.3-flash-dflash2-incoai-6cc6c481eee9",
+        "window": 2048,
+        "context_bytes": 8589934592,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-glm53f-fp8.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "glm-5.3-flash-fp8",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o5,o14,o24,o33,o42",
+        "rank": 15,
+        "stream": "10.10.250.2:7801"
+      }
     },
     "sage-s2.1-flash": {
       "launcher": "stage_lane",
@@ -295,7 +355,43 @@
       "state_budget_bytes": 5368709120,
       "memory_max": "16G",
       "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7812,
+        "target_model": "qwen3.8-27b-fp8",
+        "depth": 15,
+        "wait_ms": 30,
+        "min_confidence": 0.0
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-q27-fp8",
+        "source": "/srv/workspace/sparkpipe/draftd-q27-dspine",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/qwen3.8-27b-dspine-b16-ac90f1df842e",
+        "target_shard": "/srv/workspace/sparkpipe/drafter-weights/qwen3.8-27b/head-e3ccfb68dc41.safetensors",
+        "target_names": {
+          "embed": "model.language_model.embed_tokens.weight",
+          "head": "lm_head.weight",
+          "norm": "model.language_model.norm.weight"
+        },
+        "window": 8176,
+        "context_bytes": 8589934592,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-q27-fp8.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "qwen3.8-27b-fp8",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o1,o16,o31,o46,o61,final",
+        "rank": 15,
+        "stream": "10.10.250.2:7811"
+      }
     },
     "deepseek-v4.1-flash": {
       "launcher": "stage_lane",

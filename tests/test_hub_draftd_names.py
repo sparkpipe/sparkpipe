@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,9 @@ ENGINE_LANES = (
     "glm-5.3-flash",
     "k-exaone-2.0",
     "a.x-k2",
+    "glm-5.3-fp8",
+    "glm-5.3-flash-fp8",
+    "qwen3.8-27b-fp8",
 )
 
 
@@ -123,6 +127,12 @@ def engine_configs():
     assert config["control_socket"].startswith(root + "/") and config["weightd_socket"].startswith(root + "/"), "the sockets live in the engine root"
     served = {lane["name"]: lane for lane in config["lanes"]}
     assert sorted(served) == sorted(lanes[record_id]["draftd"]["engine"]["lane"] for record_id in ENGINE_LANES), f"the engine config serves {sorted(served)}"
+    max_lanes = int(re.search(r"#define DRAFTD_MAX_LANES (\d+)u", (ROOT / "node/draftd.c").read_text()).group(1))
+    assert len(config["lanes"]) <= max_lanes, f"draftd_engine.json has {len(config['lanes'])} lanes, exceeding DRAFTD_MAX_LANES={max_lanes}"
+    draft_ports = [lane["draft_port"] for lane in config["lanes"]]
+    tap_ports = [lane["taps"]["port"] for lane in config["lanes"]]
+    assert len(set(draft_ports)) == len(draft_ports) and len(set(tap_ports)) == len(tap_ports) and not (set(draft_ports) & set(tap_ports)), (
+        f"draftd_engine.json ports must be unique across all lanes: draft={draft_ports} tap={tap_ports}")
     for record_id in ENGINE_LANES:
         record = lanes[record_id]
         lane = served[record["draftd"]["engine"]["lane"]]
