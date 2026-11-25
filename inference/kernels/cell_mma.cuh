@@ -168,6 +168,21 @@ static __device__ __forceinline__ uint32_t LmCellMmaPackExact(float low, float h
 	return(packed);
 }
 
+static __device__ __forceinline__ float2 LmCellMmaE2m1PairHw(uint32_t word, uint32_t byte)
+{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+	uint32_t widened;
+	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
+		: "=r"(widened) : "r"(word >> (8u * byte)));
+	float lo, hi;
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(lo) : "h"((uint16_t)(widened & 0xffffu)));
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(hi) : "h"((uint16_t)(widened >> 16u)));
+	return(make_float2(lo, hi));
+#else
+	return(LmSkinnyE2m1Pair(word, byte));
+#endif
+}
+
 static __device__ __forceinline__ uint32_t LmCellMmaE2m1Bf16Fused(uint32_t word, uint32_t byte, uint32_t scale_bf16x2)
 {
 	uint32_t widened, bits, out;
@@ -326,7 +341,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 						#pragma unroll
 						for ( j = 0u; j < 4u; j++ )
 						{
-							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+							const float2 pair = LmCellMmaE2m1PairHw(current[f],j);
 							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
 						}
 					}
@@ -398,7 +413,10 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	float global = 1.0f;
 	LmDependentWait();
 	if ( group >= args.groups )
+	{
+		LmDependentRelease();
 		return;
+	}
 	if constexpr ( SCALES == 2u )
 		global = stride.global[group];
 	end = args.group_row_offset[group + 1u];
@@ -439,6 +457,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 		else
 			LmCellMmaRows<1u,SCALES,BITS,STAGE_ELEMENTS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
 	}
+	LmDependentRelease();
 }
 
 static int32_t LmCellMmaLaunchSegments(LmSkinnyCellArguments &args, LmCellMmaSegments &segments, const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k)

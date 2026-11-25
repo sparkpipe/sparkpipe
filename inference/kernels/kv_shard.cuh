@@ -287,16 +287,28 @@ template<class Geometry, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmKvShardStoreKernel(LmKvShardView view, const uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ position_of_row, uint32_t row_count, uint32_t elements)
 {
-	uint32_t row = blockIdx.x,index;
+	uint32_t row = blockIdx.x, index;
 	uint8_t *slot;
+	LmDependentWait();
+	LmDependentRelease();
 	if ( row >= row_count || SparkKvShardOwns(view.shard,position_of_row[row]) == 0u )
 		return;
 	slot = (uint8_t *)LmKvShardSlotRequired<Geometry>(
 		view,sequence_of_row[row],position_of_row[row],row,LM_KV_ACCESS_WRITE);
 	if ( slot == 0 )
 		return;
+	const uint16_t *src = rows_bf16 + (uint64_t)row * elements;
+	if ( ((elements & 7u) == 0u) && (((uintptr_t)slot & 15u) == 0u) && (((uintptr_t)src & 15u) == 0u) )
+	{
+		const uint32_t vecs = elements >> 3u;
+		uint4 *dst4 = (uint4 *)slot;
+		const uint4 *src4 = (const uint4 *)src;
+		for (index = threadIdx.x; index < vecs; index += THREADS)
+			dst4[index] = src4[index];
+		return;
+	}
 	for (index = threadIdx.x; index < elements; index += THREADS)
-		((uint16_t *)slot)[index] = rows_bf16[((uint64_t)row * elements) + index];
+		((uint16_t *)slot)[index] = src[index];
 }
 
 template<class Geometry, uint32_t THREADS>
@@ -304,9 +316,11 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmKvShardPathMoveKernel(LmKvShardView view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ path_rows, const uint32_t *__restrict__ path_count, const uint32_t *__restrict__ slots, uint32_t elements)
 {
 	const uint32_t index = blockIdx.x;
-	uint32_t source,destination,element;
+	uint32_t source, destination, element;
 	const uint8_t *from;
 	uint8_t *to;
+	LmDependentWait();
+	LmDependentRelease();
 	if ( index == 0u || index >= path_count[0] )
 		return;
 	source = slots[path_rows[index]];
@@ -317,6 +331,15 @@ void LmKvShardPathMoveKernel(LmKvShardView view, const uint32_t *__restrict__ se
 	to = (uint8_t *)LmKvShardSlotRequired<Geometry>(view,sequence_of_row[path_rows[0]],destination,path_rows[0],LM_KV_ACCESS_WRITE);
 	if ( from == 0 || to == 0 )
 		return;
+	if ( ((elements & 7u) == 0u) && (((uintptr_t)from & 15u) == 0u) && (((uintptr_t)to & 15u) == 0u) )
+	{
+		const uint32_t vecs = elements >> 3u;
+		uint4 *dst4 = (uint4 *)to;
+		const uint4 *src4 = (const uint4 *)from;
+		for (element = threadIdx.x; element < vecs; element += THREADS)
+			dst4[element] = src4[element];
+		return;
+	}
 	for (element = threadIdx.x; element < elements; element += THREADS)
 		((uint16_t *)to)[element] = ((const uint16_t *)from)[element];
 }
@@ -326,7 +349,10 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmKvShardGatherPackKernel(LmKvShardView view, const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_offset, const uint32_t *__restrict__ key_context, uint32_t key_begin, uint32_t key_end, uint8_t *__restrict__ keys)
 {
 	static_assert(Geometry::kSlotBytes % 16u == 0u, "a gathered key moves as whole 16-byte words");
-	uint32_t entry = blockIdx.y, sequence = sequences[entry], context = key_context[sequence], count, local, position, index;
+	LmDependentWait();
+	LmDependentRelease();
+	const uint32_t entry = blockIdx.y, sequence = sequences[entry], context = key_context[sequence], seq_offset = key_offset[sequence];
+	uint32_t count, local, position, index;
 	const uint8_t *slot;
 	uint4 *target, zero = {0u, 0u, 0u, 0u};
 	count = SparkKvShardGatherKeys(view.shard, context);
@@ -335,9 +361,10 @@ void LmKvShardGatherPackKernel(LmKvShardView view, const uint32_t *__restrict__ 
 	{
 		position = SparkKvShardLocalPosition(view.shard, local);
 		slot = position < context ? LmKvShardSlotRequired<Geometry>(view, sequence, position, entry, LM_KV_ACCESS_READ) : 0;
-		target = (uint4 *)(keys + ((uint64_t)key_offset[sequence] + local) * Geometry::kSlotBytes);
+		target = (uint4 *)(keys + ((uint64_t)seq_offset + local) * Geometry::kSlotBytes);
+		const uint4 *src4 = (const uint4 *)slot;
 		for (index = threadIdx.x; index < Geometry::kSlotBytes / 16u; index += THREADS)
-			target[index] = slot != 0 ? ((const uint4 *)slot)[index] : zero;
+			target[index] = src4 != 0 ? __ldcs(src4 + index) : zero;
 	}
 }
 
@@ -346,17 +373,31 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmKvShardGatherUnpackKernel(SparkKvShard shard, const uint8_t *__restrict__ gathered, uint64_t chunk_bytes, uint64_t section_offset, const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_offset, const uint32_t *__restrict__ key_context, const uint32_t *__restrict__ page_base, uint8_t *__restrict__ pages)
 {
 	static_assert(SLOT_BYTES % 16u == 0u, "a gathered key moves as whole 16-byte words");
-	uint32_t entry = blockIdx.y, sequence = sequences[entry], context = key_context[sequence], position, index;
-	uint64_t byte;
+	LmDependentWait();
+	LmDependentRelease();
+	const uint32_t entry = blockIdx.y, sequence = sequences[entry], context = key_context[sequence];
+	const uint64_t seq_offset = key_offset[sequence], seq_page_base = page_base[sequence];
+	const uint64_t chunk_slots = chunk_bytes / SLOT_BYTES;
+	const uint64_t base_slot = section_offset / SLOT_BYTES + seq_offset;
+	const bool cs_pow2 = chunk_slots != 0u && (chunk_slots & (chunk_slots - 1u)) == 0u;
+#if defined(__CUDA_ARCH__)
+	const uint32_t cs_shift = cs_pow2 ? (63u - (uint32_t)__clzll((long long)chunk_slots)) : 0u;
+#else
+	const uint32_t cs_shift = cs_pow2 ? (63u - (uint32_t)__builtin_clzll(chunk_slots)) : 0u;
+#endif
+	const uint64_t cs_mask = chunk_slots - 1u;
+	uint32_t position, index;
 	const uint4 *source;
 	uint4 *target;
 	for (position = blockIdx.x; position < context; position += gridDim.x)
 	{
-		byte = section_offset + ((uint64_t)key_offset[sequence] + SparkKvShardLocalIndex(shard, position)) * SLOT_BYTES;
-		source = (const uint4 *)(gathered + ((byte / chunk_bytes) * shard.degree + SparkKvShardOwner(shard, position)) * chunk_bytes + byte % chunk_bytes);
-		target = (uint4 *)(pages + (((uint64_t)page_base[sequence] + position / PAGE_SLOTS) * PAGE_SLOTS + position % PAGE_SLOTS) * SLOT_BYTES);
+		const uint64_t slot_idx = base_slot + SparkKvShardLocalIndex(shard, position);
+		const uint64_t chunk = cs_pow2 ? (slot_idx >> cs_shift) : (slot_idx / chunk_slots);
+		const uint64_t rem = cs_pow2 ? (slot_idx & cs_mask) : (slot_idx - chunk * chunk_slots);
+		source = (const uint4 *)(gathered + (chunk * shard.degree + SparkKvShardOwner(shard, position)) * chunk_bytes + rem * SLOT_BYTES);
+		target = (uint4 *)(pages + ((seq_page_base + position / PAGE_SLOTS) * PAGE_SLOTS + position % PAGE_SLOTS) * SLOT_BYTES);
 		for (index = threadIdx.x; index < SLOT_BYTES / 16u; index += THREADS)
-			target[index] = source[index];
+			target[index] = __ldcs(source + index);
 	}
 }
 
@@ -364,9 +405,12 @@ template<uint32_t PAGE_SLOTS, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmKvShardGatherTableKernel(const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_context, const uint32_t *__restrict__ page_base, uint32_t page_table_stride, uint32_t *__restrict__ page_table)
 {
+	LmDependentWait();
+	LmDependentRelease();
 	uint32_t entry = blockIdx.x, sequence = sequences[entry], pages = (key_context[sequence] + PAGE_SLOTS - 1u) / PAGE_SLOTS, page;
+	const uint32_t base = page_base[sequence];
 	for (page = threadIdx.x; page < pages && page < page_table_stride; page += THREADS)
-		page_table[(uint64_t)sequence * page_table_stride + page] = page_base[sequence] + page;
+		page_table[(uint64_t)sequence * page_table_stride + page] = base + page;
 }
 
 template<uint32_t SLOT_BYTES, uint32_t PAGE_SLOTS, uint32_t THREADS>
@@ -391,8 +435,8 @@ static inline SparkGpuError LmKvShardGatherUnpackLaunch(
 		chunk_bytes == 0u || chunk_bytes % SLOT_BYTES != 0u || section_offset % SLOT_BYTES != 0u )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( page_table != 0 )
-		LM_LAUNCH((LmKvShardGatherTableKernel<PAGE_SLOTS, THREADS>), sequence_count, THREADS, 0, stream, sequences, key_context, page_base, page_table_stride, page_table);
-	LM_LAUNCH((LmKvShardGatherUnpackKernel<SLOT_BYTES, PAGE_SLOTS, THREADS>), dim3(most_context < LM_KV_SHARD_UNPACK_BLOCKS ? most_context : LM_KV_SHARD_UNPACK_BLOCKS, sequence_count), THREADS, 0, stream, shard, gathered, chunk_bytes, section_offset, sequences, key_offset, key_context, page_base, pages);
+		LM_LAUNCH_DEPENDENT((LmKvShardGatherTableKernel<PAGE_SLOTS, THREADS>), sequence_count, THREADS, 0, stream, sequences, key_context, page_base, page_table_stride, page_table);
+	LM_LAUNCH_DEPENDENT((LmKvShardGatherUnpackKernel<SLOT_BYTES, PAGE_SLOTS, THREADS>), dim3(most_context < LM_KV_SHARD_UNPACK_BLOCKS ? most_context : LM_KV_SHARD_UNPACK_BLOCKS, sequence_count), THREADS, 0, stream, shard, gathered, chunk_bytes, section_offset, sequences, key_offset, key_context, page_base, pages);
 	return(SparkGpuPeekAtLastError());
 }
 
@@ -400,6 +444,8 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmKvShardRemapKernel(SparkKvShard shard, SparkKvShardSectionLayout layout, const uint32_t *__restrict__ old_bound, uint32_t capacity, uint32_t *__restrict__ table)
 {
+	LmDependentWait();
+	LmDependentRelease();
 	uint32_t position, old = *old_bound;
 	for (position = blockIdx.x * THREADS + threadIdx.x; position < capacity; position += gridDim.x * THREADS)
 		table[position] = position < old ? (uint32_t)SparkKvShardSectionSlot(shard, layout, position) : LM_KV_PAGE_UNMAPPED;
@@ -409,6 +455,8 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmKvRowsRemapKernel(const uint32_t *__restrict__ position_of_row, uint32_t row_count, uint32_t tail_slot, uint32_t capacity, uint32_t *__restrict__ table, LmKvAccessError *error)
 {
+	LmDependentWait();
+	LmDependentRelease();
 	uint32_t row, position;
 	for (row = blockIdx.x * THREADS + threadIdx.x; row < row_count; row += gridDim.x * THREADS)
 	{
@@ -438,7 +486,7 @@ static inline SparkGpuError LmKvShardRemapLaunch(
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( layout.keys == 0u )
 		layout.chunk_bytes = layout.slot_bytes = 1u;
-	LM_LAUNCH((LmKvShardRemapKernel<THREADS>), blocks < LM_KV_SHARD_UNPACK_BLOCKS ? blocks : LM_KV_SHARD_UNPACK_BLOCKS, THREADS, 0, stream, shard, layout, old_bound, capacity, table);
+	LM_LAUNCH_DEPENDENT((LmKvShardRemapKernel<THREADS>), blocks < LM_KV_SHARD_UNPACK_BLOCKS ? blocks : LM_KV_SHARD_UNPACK_BLOCKS, THREADS, 0, stream, shard, layout, old_bound, capacity, table);
 	return(SparkGpuPeekAtLastError());
 }
 
@@ -454,7 +502,7 @@ static inline SparkGpuError LmKvRowsRemapLaunch(
 {
 	if ( position_of_row == 0 || table == 0 || row_count == 0u || capacity == 0u )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((LmKvRowsRemapKernel<THREADS>), (row_count + THREADS - 1u) / THREADS, THREADS, 0, stream, position_of_row, row_count, tail_slot, capacity, table, error);
+	LM_LAUNCH_DEPENDENT((LmKvRowsRemapKernel<THREADS>), (row_count + THREADS - 1u) / THREADS, THREADS, 0, stream, position_of_row, row_count, tail_slot, capacity, table, error);
 	return(SparkGpuPeekAtLastError());
 }
 
@@ -472,7 +520,7 @@ static inline SparkGpuError LmKvShardGatherPackLaunch(
 	if ( sequences == 0 || key_offset == 0 || key_context == 0 || keys == 0 || sequence_count == 0u || most_keys == 0u ||
 		SparkKvShardValid(view.shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(view.pages) )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(most_keys, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, 0u, LM_KV_SHARD_KEYS_ALL, keys);
+	LM_LAUNCH_DEPENDENT((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(most_keys, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, 0u, LM_KV_SHARD_KEYS_ALL, keys);
 	return(SparkGpuPeekAtLastError());
 }
 
@@ -491,7 +539,7 @@ static inline SparkGpuError LmKvShardGatherPackRangeLaunch(
 	if ( sequences == 0 || key_offset == 0 || key_context == 0 || keys == 0 || sequence_count == 0u || key_end <= key_begin ||
 		SparkKvShardValid(view.shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(view.pages) )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(key_end - key_begin, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, key_begin, key_end, keys);
+	LM_LAUNCH_DEPENDENT((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(key_end - key_begin, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, key_begin, key_end, keys);
 	return(SparkGpuPeekAtLastError());
 }
 #endif

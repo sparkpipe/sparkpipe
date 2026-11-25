@@ -305,16 +305,28 @@ static LM_SCALE_HOST_DEVICE __forceinline__ uint32_t LmScaleTensorContains(
         k_index < scale->input_dimension;
 }
 
+static LM_SCALE_HOST_DEVICE __forceinline__ uint32_t LmScaleCtz32(uint32_t value)
+{
+#if defined(__CUDA_ARCH__)
+    return (uint32_t)(__ffs((int)value) - 1);
+#else
+    return (uint32_t)__builtin_ctz(value);
+#endif
+}
+
 static LM_SCALE_HOST_DEVICE __forceinline__ uint64_t LmScaleTensorIndex(
     const LmScaleTensor *scale,
     uint32_t group_index,
     uint32_t row_index,
     uint32_t k_index)
 {
+    const uint32_t rg = scale->row_group_size;
+    const uint32_t kg = scale->k_group_size;
+    const uint32_t row_group = rg == 1u ? row_index : (((rg & (rg - 1u)) == 0u) ? (row_index >> LmScaleCtz32(rg)) : (row_index / rg));
+    const uint32_t k_group = ((kg & (kg - 1u)) == 0u) ? (k_index >> LmScaleCtz32(kg)) : (k_index / kg);
     return ((uint64_t)group_index * scale->group_stride_entries) +
-        ((uint64_t)(row_index / scale->row_group_size) *
-            scale->row_group_stride_entries) +
-        (uint64_t)(k_index / scale->k_group_size);
+        ((uint64_t)row_group * scale->row_group_stride_entries) +
+        (uint64_t)k_group;
 }
 
 static LM_SCALE_DEVICE __forceinline__ float LmScaleTensorLoadByIndex(
@@ -327,16 +339,28 @@ static LM_SCALE_DEVICE __forceinline__ float LmScaleTensorLoadByIndex(
     }
     if (scale->encoding == LM_SCALE_ENCODING_F32)
     {
+#if defined(__CUDA_ARCH__)
+        return __ldg(((const float *)scale->data) + index);
+#else
         return ((const float *)scale->data)[index];
+#endif
     }
     if (scale->encoding == LM_SCALE_ENCODING_UE4M3 ||
         scale->encoding == LM_SCALE_ENCODING_UE4M3_F32_GLOBAL)
     {
+#if defined(__CUDA_ARCH__)
+        return LmUe4m3ToFloat(__ldg(((const uint8_t *)scale->data) + index));
+#else
         return LmUe4m3ToFloat(((const uint8_t *)scale->data)[index]);
+#endif
     }
     if (scale->encoding == LM_SCALE_ENCODING_UE8M0)
     {
+#if defined(__CUDA_ARCH__)
+        return LmUe8m0ToFloat(__ldg(((const uint8_t *)scale->data) + index));
+#else
         return LmUe8m0ToFloat(((const uint8_t *)scale->data)[index]);
+#endif
     }
     return 0.0f;
 }
@@ -359,7 +383,13 @@ static LM_SCALE_DEVICE __forceinline__ float LmScaleTensorLoad(
         scale,
         LmScaleTensorIndex(scale, group_index, row_index, k_index));
     if (scale->encoding == LM_SCALE_ENCODING_UE4M3_F32_GLOBAL)
+    {
+#if defined(__CUDA_ARCH__)
+        value *= __ldg(((const float *)scale->global_data) + group_index);
+#else
         value *= ((const float *)scale->global_data)[group_index];
+#endif
+    }
     return value;
 }
 
