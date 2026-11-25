@@ -95,14 +95,13 @@ void LmPrefillSparseUnionKernel(
 {
 	constexpr uint32_t WORDS = LM_PREFILL_UNION_WINDOW / 32u;
 	constexpr uint32_t WARPS = LM_PREFILL_UNION_THREADS / 32u;
-	constexpr uint32_t WARP_WORDS = WORDS / WARPS;
 	constexpr uint32_t MERGED = ROWS_PER_BLOCK * SELECTED;
 	static_assert(ROWS_PER_BLOCK >= 1u && ROWS_PER_BLOCK <= 8u, "one membership bit per row of a block");
 	static_assert(WORDS % (WARPS * 32u) == 0u, "each warp scans whole 32-word rounds of the window");
 	static_assert(MERGED < 65536u, "a window's union index fits 16 bits");
-	__shared__ uint32_t present[WORDS];
+	__shared__ __align__(16) uint32_t present[WORDS];
 	__shared__ uint16_t below[WORDS];
-	__shared__ uint32_t member[(MERGED + 3u) / 4u];
+	__shared__ __align__(16) uint32_t member[(MERGED + 3u) / 4u];
 	__shared__ uint32_t length[ROWS_PER_BLOCK];
 	__shared__ uint32_t begin[ROWS_PER_BLOCK];
 	__shared__ uint32_t end[ROWS_PER_BLOCK];
@@ -145,6 +144,9 @@ void LmPrefillSparseUnionKernel(
 	for (window = span[0] - span[0] % LM_PREFILL_UNION_WINDOW; span[0] <= span[1] && window <= span[1]; window += LM_PREFILL_UNION_WINDOW)
 	{
 		window_end = window + LM_PREFILL_UNION_WINDOW;
+		const uint32_t raw_words = span[1] < window_end ? (((uint32_t)(span[1] - window) >> 5u) + 1u) : WORDS;
+		const uint32_t active_words = ((raw_words + (WARPS * 32u) - 1u) / (WARPS * 32u)) * (WARPS * 32u);
+		const uint32_t active_warp_words = active_words / WARPS;
 		if (threadIdx.x < ROWS_PER_BLOCK)
 		{
 			const uint32_t *list = selected + (uint64_t)(first_row + threadIdx.x) * SELECTED;
@@ -152,10 +154,8 @@ void LmPrefillSparseUnionKernel(
 			end[threadIdx.x] = length[threadIdx.x] == 0u || list[length[threadIdx.x] - 1u] < window_end ? length[threadIdx.x]
 				: LmPrefillCountBelow(list, length[threadIdx.x], (uint32_t)window_end, 0u);
 		}
-		for (word = threadIdx.x; word < WORDS; word += LM_PREFILL_UNION_THREADS)
-			present[word] = 0u;
-		for (word = threadIdx.x; word < (MERGED + 3u) / 4u; word += LM_PREFILL_UNION_THREADS)
-			member[word] = 0u;
+		for (word = threadIdx.x; word < (active_words >> 2u); word += LM_PREFILL_UNION_THREADS)
+			((uint4 *)present)[word] = uint4{0u, 0u, 0u, 0u};
 		__syncthreads();
 		for (row = 0u; row < ROWS_PER_BLOCK; row++)
 			for (index = begin[row] + threadIdx.x; index < end[row]; index += LM_PREFILL_UNION_THREADS)
@@ -165,11 +165,12 @@ void LmPrefillSparseUnionKernel(
 			}
 		__syncthreads();
 		carry = 0u;
-		for (index = 0u; index < WARP_WORDS / 32u; index++)
+		for (index = 0u; index < active_warp_words / 32u; index++)
 		{
-			word = warp * WARP_WORDS + index * 32u + lane;
+			word = warp * active_warp_words + index * 32u + lane;
 			bits = __popc(present[word]);
 			inclusive = bits;
+			#pragma unroll
 			for (shift = 1u; shift < 32u; shift <<= 1u)
 			{
 				neighbour = __shfl_up_sync(0xffffffffu, inclusive, shift);
@@ -183,13 +184,19 @@ void LmPrefillSparseUnionKernel(
 		__syncthreads();
 		base = 0u;
 		window_count = 0u;
+		#pragma unroll
 		for (index = 0u; index < WARPS; index++)
 		{
 			base += index < warp ? warp_total[index] : 0u;
 			window_count += warp_total[index];
 		}
-		for (index = 0u; index < WARP_WORDS / 32u; index++)
-			below[warp * WARP_WORDS + index * 32u + lane] += (uint16_t)base;
+		for (index = 0u; index < active_warp_words / 32u; index++)
+			below[warp * active_warp_words + index * 32u + lane] += (uint16_t)base;
+		const uint32_t member_words = (window_count + 3u) >> 2u;
+		for (word = threadIdx.x; word < (member_words >> 2u); word += LM_PREFILL_UNION_THREADS)
+			((uint4 *)member)[word] = uint4{0u, 0u, 0u, 0u};
+		for (word = (member_words & ~3u) + threadIdx.x; word < member_words; word += LM_PREFILL_UNION_THREADS)
+			member[word] = 0u;
 		__syncthreads();
 		for (row = 0u; row < ROWS_PER_BLOCK; row++)
 			for (index = begin[row] + threadIdx.x; index < end[row]; index += LM_PREFILL_UNION_THREADS)
@@ -200,9 +207,9 @@ void LmPrefillSparseUnionKernel(
 				atomicOr(&member[bits >> 2u], (1u << row) << ((bits & 3u) * 8u));
 			}
 		__syncthreads();
-		for (index = 0u; index < WARP_WORDS / 32u; index++)
+		for (index = 0u; index < active_warp_words / 32u; index++)
 		{
-			word = warp * WARP_WORDS + index * 32u + lane;
+			word = warp * active_warp_words + index * 32u + lane;
 			bits = present[word];
 			offset = below[word];
 			while (bits != 0u)
@@ -255,7 +262,6 @@ void LmLatentAttentionPrefillKernel(
 	constexpr uint32_t HALF_STEPS = K_STEPS / 2u;
 	constexpr uint32_t WARP_COLUMNS = LATENT / LM_PREFILL_ATTN_WARPS;
 	constexpr uint32_t COLUMN_FRAGS = WARP_COLUMNS / 8u;
-	constexpr uint32_t TILE_CHUNKS = TILE * CHUNKS;
 	static_assert((QUERIES == 16u || QUERIES == 32u) && LM_PREFILL_ATTN_WARPS == 8u && TILE == 32u, "one or two 16-query tiles, a k-half and one or two 8-key fragments per warp");
 	static_assert(QUERIES % HEADS == 0u && HEADS <= QUERIES && ROWS_PER_BLOCK <= 32u, "a block holds whole rows of heads, one row bit each");
 	static_assert(DIM % 64u == 0u && K_STEPS % 2u == 0u, "the query-key width must split into two halves of 16-wide steps");
@@ -284,12 +290,14 @@ void LmLatentAttentionPrefillKernel(
 	uint32_t query_frag[HALF_STEPS][4];
 	float output[QUERY_TILES][COLUMN_FRAGS][4];
 	uint32_t row_limit[ROWS_PER_BLOCK];
-	uint32_t sequence,last_position,listed_keys,tiles,tile,row,index,chunk,column,step,frag,q,m,shift;
+	uint32_t sequence,first_position_min,last_position,listed_keys,tiles,tile,row,index,chunk,column,step,frag,q,m,shift;
 	uint32_t next_position = 0xffffffffu,next_members = 0u;
+	const float scale_log2 = qk_scale * 1.4426950408889634f;
 
 	if (block_table != 0 && entry == LM_PREFILL_ATTN_EMPTY_BLOCK)
 		return;
 	sequence = sequence_of_row[first_row];
+	first_position_min = 0xffffffffu;
 	last_position = 0u;
 	for (row = first_row; row < row_end; row++)
 	{
@@ -299,6 +307,7 @@ void LmLatentAttentionPrefillKernel(
 				LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
 			return;
 		}
+		first_position_min = row_position[row] < first_position_min ? row_position[row] : first_position_min;
 		last_position = row_position[row] > last_position ? row_position[row] : last_position;
 	}
 	if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
@@ -337,14 +346,40 @@ void LmLatentAttentionPrefillKernel(
 	auto copy = [&](uint32_t which)
 	{
 		const uint32_t buffer = which & 1u;
-		uint32_t item,slot_index,piece;
-		for (item = threadIdx.x; item < TILE_CHUNKS; item += LM_PREFILL_ATTN_THREADS)
+		constexpr uint32_t SLOTS_PER_WARP = TILE / LM_PREFILL_ATTN_WARPS;
+		constexpr uint32_t WARP_ITERS = (SLOTS_PER_WARP * CHUNKS) / 32u;
+		if constexpr (CHUNKS >= 32u)
 		{
-			slot_index = item / CHUNKS;
-			piece = item % CHUNKS;
-			const uint8_t *slot = slots[buffer * TILE + slot_index];
-			LmPrefillCopy(key_base + (buffer * TILE + slot_index) * ROW_BYTES + LmPrefillSwizzle(slot_index,piece) * 16u,
-				slot != 0 ? (const void *)(slot + piece * 16u) : (const void *)query_latent_bf16, slot != 0 ? 16u : 0u);
+			const uint8_t *s0 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 0u];
+			const uint8_t *s1 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 1u];
+			const uint8_t *s2 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 2u];
+			const uint8_t *s3 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 3u];
+			#pragma unroll
+			for (uint32_t iter = 0u; iter < WARP_ITERS; ++iter)
+			{
+				const uint32_t k = iter * 32u + lane;
+				const uint32_t s = (k >= CHUNKS) + (k >= 2u * CHUNKS) + (k >= 3u * CHUNKS);
+				const uint32_t piece = k - s * CHUNKS;
+				const uint32_t slot_index = warp * SLOTS_PER_WARP + s;
+				const uint8_t *slot = (s == 0u) ? s0 : (s == 1u) ? s1 : (s == 2u) ? s2 : s3;
+				LmPrefillCopy(key_base + (buffer * TILE + slot_index) * ROW_BYTES + LmPrefillSwizzle(slot_index, piece) * 16u,
+					slot != 0 ? (const void *)(slot + piece * 16u) : (const void *)query_latent_bf16, slot != 0 ? 16u : 0u);
+			}
+		}
+		else
+		{
+			#pragma unroll
+			for (uint32_t s = 0u; s < SLOTS_PER_WARP; ++s)
+			{
+				const uint32_t slot_index = warp * SLOTS_PER_WARP + s;
+				const uint8_t *slot = slots[buffer * TILE + slot_index];
+				const uint32_t dst_row = key_base + (buffer * TILE + slot_index) * ROW_BYTES;
+				const uint32_t bytes = slot != 0 ? 16u : 0u;
+				#pragma unroll
+				for (uint32_t piece = lane; piece < CHUNKS; piece += 32u)
+					LmPrefillCopy(dst_row + LmPrefillSwizzle(slot_index, piece) * 16u,
+						slot != 0 ? (const void *)(slot + piece * 16u) : (const void *)query_latent_bf16, bytes);
+			}
 		}
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 	};
@@ -412,10 +447,6 @@ void LmLatentAttentionPrefillKernel(
 		const uint32_t buffer = tile & 1u;
 		const uint32_t tile_base = key_base + buffer * TILE * ROW_BYTES;
 		uint32_t ahead_position = 0xffffffffu,ahead_members = 0u;
-		if (threadIdx.x < TILE && tile + 2u < tiles)
-			prefetch(next_position);
-		if (threadIdx.x < TILE && tile + 3u < tiles)
-			listing(tile + 3u, ahead_position, ahead_members);
 		if (tile + 1u < tiles)
 		{
 			copy(tile + 1u);
@@ -423,6 +454,10 @@ void LmLatentAttentionPrefillKernel(
 		}
 		else
 			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		if (threadIdx.x < TILE && tile + 2u < tiles)
+			prefetch(next_position);
+		if (threadIdx.x < TILE && tile + 3u < tiles)
+			listing(tile + 3u, ahead_position, ahead_members);
 		__syncthreads();
 		{
 			float score[KEY_FRAGS][4];
@@ -460,13 +495,15 @@ void LmLatentAttentionPrefillKernel(
 		__syncthreads();
 		{
 			const uint32_t own = threadIdx.x / QUERY_THREADS,part = threadIdx.x % QUERY_THREADS;
-			float value[QUERY_KEYS],weight[QUERY_KEYS],peak,previous_max,next_max,scale,total;
+			const bool full_dense_tile = !SPARSE && (first_row + (own / HEADS) < row_end) && ((tile + 1u) * TILE - 1u <= first_position_min);
+			float value[QUERY_KEYS],weight[QUERY_KEYS],peak,previous_max,next_max,scale,shift_val,total;
 #pragma unroll
 			for (index = 0u; index < QUERY_KEYS; index++)
 			{
 				const uint32_t key = part + index * QUERY_THREADS;
-				value[index] = (score_parts[own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key] + score_parts[(QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key]) * qk_scale;
-				value[index] = ((key_rows[buffer * TILE + key] >> (own / HEADS)) & 1u) != 0u ? value[index] : -INFINITY;
+				value[index] = score_parts[own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key] + score_parts[(QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key];
+				if (!full_dense_tile)
+					value[index] = ((key_rows[buffer * TILE + key] >> (own / HEADS)) & 1u) != 0u ? value[index] : -INFINITY;
 			}
 			peak = value[0];
 #pragma unroll
@@ -477,11 +514,12 @@ void LmLatentAttentionPrefillKernel(
 				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
 			previous_max = running_max[own];
 			next_max = fmaxf(previous_max, peak);
-			scale = previous_max == -INFINITY ? 0.0f : __expf(previous_max - next_max);
+			scale = previous_max == -INFINITY ? 0.0f : SparkMathExp2Fast((previous_max - next_max) * scale_log2);
+			shift_val = next_max == -INFINITY ? 0.0f : next_max * scale_log2;
 #pragma unroll
 			for (index = 0u; index < QUERY_KEYS; index++)
 			{
-				weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : __expf(value[index] - next_max);
+				weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(value[index], scale_log2, -shift_val));
 				weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
 			}
 #pragma unroll
@@ -496,7 +534,7 @@ void LmLatentAttentionPrefillKernel(
 			__syncwarp();
 			if (part == 0u)
 			{
-				running_sum[own] = running_sum[own] * scale + total;
+				running_sum[own] = fmaf(running_sum[own], scale, total);
 				running_max[own] = next_max;
 				rescale[own] = scale;
 			}
@@ -508,13 +546,16 @@ void LmLatentAttentionPrefillKernel(
 			for (m = 0u; m < QUERY_TILES; m++)
 			{
 				const float low_scale = rescale[m * 16u + (lane >> 2u)],high_scale = rescale[m * 16u + (lane >> 2u) + 8u];
-#pragma unroll
-				for (frag = 0u; frag < COLUMN_FRAGS; frag++)
+				if (low_scale != 1.0f || high_scale != 1.0f)
 				{
-					output[m][frag][0] *= low_scale;
-					output[m][frag][1] *= low_scale;
-					output[m][frag][2] *= high_scale;
-					output[m][frag][3] *= high_scale;
+#pragma unroll
+					for (frag = 0u; frag < COLUMN_FRAGS; frag++)
+					{
+						output[m][frag][0] *= low_scale;
+						output[m][frag][1] *= low_scale;
+						output[m][frag][2] *= high_scale;
+						output[m][frag][3] *= high_scale;
+					}
 				}
 			}
 #pragma unroll
@@ -555,20 +596,23 @@ void LmLatentAttentionPrefillKernel(
 	}
 #pragma unroll
 	for (m = 0u; m < QUERY_TILES; m++)
+	{
+		const uint32_t q_lo = m * 16u + (lane >> 2u), q_hi = q_lo + 8u;
+		const uint32_t row_lo = first_row + q_lo / HEADS, row_hi = first_row + q_hi / HEADS;
+		const float inv_lo = row_lo < row_end ? 1.0f / running_sum[q_lo] : 0.0f;
+		const float inv_hi = row_hi < row_end ? 1.0f / running_sum[q_hi] : 0.0f;
 #pragma unroll
 		for (frag = 0u; frag < COLUMN_FRAGS; frag++)
-#pragma unroll
-			for (index = 0u; index < 4u; index += 2u)
-			{
-				q = m * 16u + (lane >> 2u) + (index >> 1u) * 8u;
-				row = first_row + q / HEADS;
-				if (row >= row_end)
-					continue;
-				column = warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u;
-				const float inverse = 1.0f / running_sum[q];
-				*(uint32_t *)(output_bf16 + ((uint64_t)row * HEADS + q % HEADS) * LATENT + column) =
-					(uint32_t)LmFloatToBf16(output[m][frag][index] * inverse) | ((uint32_t)LmFloatToBf16(output[m][frag][index + 1u] * inverse) << 16u);
-			}
+		{
+			column = warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u;
+			if (row_lo < row_end)
+				*(uint32_t *)(output_bf16 + ((uint64_t)row_lo * HEADS + q_lo % HEADS) * LATENT + column) =
+					LmPackBf16Pair(output[m][frag][0] * inv_lo, output[m][frag][1] * inv_lo);
+			if (row_hi < row_end)
+				*(uint32_t *)(output_bf16 + ((uint64_t)row_hi * HEADS + q_hi % HEADS) * LATENT + column) =
+					LmPackBf16Pair(output[m][frag][2] * inv_hi, output[m][frag][3] * inv_hi);
+		}
+	}
 }
 
 template<uint32_t ROWS_PER_BLOCK>
