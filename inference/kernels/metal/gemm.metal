@@ -24,6 +24,7 @@ kernel void spark_gemm(constant SparkGemvParams &p [[buffer(0)]], device bfloat 
 	auto tile_right = right.slice(0, n0);
 	auto product = operation.template get_destination_cooperative_tensor<decltype(tile_left), decltype(tile_right), float>();
 	operation.run(tile_left, tile_right, product);
+	#pragma clang loop unroll(full)
 	for ( uint16_t i = 0; i < product.get_capacity(); ++i )
 		if ( product.is_valid_element(i) )
 		{
@@ -187,6 +188,8 @@ kernel void spark_gemm_rows(constant SparkGemvParams &p [[buffer(0)]], device bf
 template [[host_name("spark_gemm_rows16")]] kernel void spark_gemm_rows<16>(constant SparkGemvParams &p [[buffer(0)]], device bfloat *x [[buffer(1)]],
 	device bfloat *w [[buffer(2)]], device void *out [[buffer(3)]], uint3 group [[threadgroup_position_in_grid]]);
 template [[host_name("spark_gemm_rows32")]] kernel void spark_gemm_rows<32>(constant SparkGemvParams &p [[buffer(0)]], device bfloat *x [[buffer(1)]],
+	device bfloat *w [[buffer(2)]], device void *out [[buffer(3)]], uint3 group [[threadgroup_position_in_grid]]);
+template [[host_name("spark_gemm_rows64")]] kernel void spark_gemm_rows<64>(constant SparkGemvParams &p [[buffer(0)]], device bfloat *x [[buffer(1)]],
 	device bfloat *w [[buffer(2)]], device void *out [[buffer(3)]], uint3 group [[threadgroup_position_in_grid]]);
 
 kernel void spark_gemm_reduce(constant SparkGemvParams &p [[buffer(0)]], device const float *partial [[buffer(1)]], device void *out [[buffer(2)]],

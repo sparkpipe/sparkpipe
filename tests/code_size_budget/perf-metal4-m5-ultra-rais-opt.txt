@@ -1,0 +1,2 @@
++32
+Wire Metal 4.0 spark_gemm_rows64, GQA-grouped decode attention (gqa4/gqa6), and Metal compute pipeline caching in device_ops and device_metal.
