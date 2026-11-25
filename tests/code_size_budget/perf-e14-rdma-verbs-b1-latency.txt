@@ -1,0 +1,2 @@
++177
+E14 RDMA verbs doorbell batching, unsignaled WR chaining, and small-payload B1 collective micro-latency: O(1) QPN CQ drain, distinct-UAR BlueFlame ping-pong, inline small payloads, unsignaled broadcast chaining, and locked hot doorbell spin in node/weightd_mesh.c (+96), inline writes, batched recv WR chaining, and signaled-stride amortization in ring/transport/weight_stream.c (+61), and throttled coherent-fabric spin checks in inference/runner/mesh_fast_kernels.cuh (+20).

@@ -215,6 +215,43 @@ int main(void)
 		}
 	}
 
+	{
+		CHECK(WeightStreamSignalStride(1u) == 1u && WeightStreamSignalStride(2u) == 1u &&
+			WeightStreamSignalStride(8u) == 4u && WeightStreamSignalStride(16u) == 8u &&
+			WeightStreamSignalStride(64u) == WEIGHT_STREAM_SIGNAL_STRIDE,
+			"signal stride respects queue depth bounds and caps at stride limit");
+		CHECK(LinksOpen(LINKS_PAIR,3u,&stream,log_path) == SPARK_STATUS_OK && stream != 0,"e14 verbs test opens stream");
+		if ( stream != 0 )
+		{
+			uint32_t before = spark_stub_ibv_posted_count();
+			SparkStubIbvPostedWork w0,w1,w2;
+			CHECK(WeightStreamWrite(stream,1u,0u,0u,32u,0x101u,0u,1u) == SPARK_STATUS_OK,
+				"e14: 32-byte unsignaled inline write posts");
+			CHECK(WeightStreamWrite(stream,1u,64u,64u,64u,0x102u,0u,1u) == SPARK_STATUS_OK,
+				"e14: 64-byte unsignaled inline write posts");
+			CHECK(WeightStreamWrite(stream,1u,128u,128u,256u,0x103u,1u,3u) == SPARK_STATUS_OK,
+				"e14: 256-byte signaled DMA write chains retire count 3");
+			CHECK(spark_stub_ibv_posted_count() == before + 3u &&
+				spark_stub_ibv_posted(before,&w0) == 0 &&
+				spark_stub_ibv_posted(before + 1u,&w1) == 0 &&
+				spark_stub_ibv_posted(before + 2u,&w2) == 0,
+				"e14: all three WRs recorded");
+			CHECK((w0.flags & IBV_SEND_INLINE) != 0 && (w0.flags & IBV_SEND_SIGNALED) == 0 && w0.length == 32u,
+				"e14: small 32-byte WR uses IBV_SEND_INLINE and unsignaled");
+			CHECK((w1.flags & IBV_SEND_INLINE) != 0 && (w1.flags & IBV_SEND_SIGNALED) == 0 && w1.length == 64u,
+				"e14: 64-byte boundary WR uses IBV_SEND_INLINE and unsignaled");
+			CHECK((w2.flags & IBV_SEND_INLINE) == 0 && (w2.flags & IBV_SEND_SIGNALED) != 0 && w2.length == 256u &&
+				(uint32_t)(w2.wr_id >> WEIGHT_STREAM_RETIRE_SHIFT) == 3u && (uint32_t)w2.wr_id == 1u,
+				"e14: large WR uses DMA, sets signaled, and carries batched retire count");
+			CHECK(stream->links[WEIGHT_STREAM_PAIR].outstanding[1] == 3u,
+				"e14: outstanding tracks all 3 posted WRs");
+			CHECK(WeightStreamPostReceives(stream->links[WEIGHT_STREAM_PAIR].qps[1],128u) == SPARK_STATUS_OK,
+				"e14: batched chained ibv_post_recv succeeds across multiple batches");
+			SparkWeightStreamClose(stream);
+			stream = 0;
+		}
+	}
+
 	(void)unlink(log_path);
 	fprintf(stderr,"test_weight_stream_links: %u checks, %u failures\n",links_checks,links_failures);
 	return links_failures != 0u ? 1 : 0;

@@ -61,9 +61,12 @@ static __global__ void SparkTpMeshFastPublishKernel(
         control->round_seq = tag;
         control->seq = sequence;
         entry[0] = tag;
-        control->copy_ns += SparkTpGlobalTimerNs() - started;
+        const uint64_t now = SparkTpGlobalTimerNs();
+        control->copy_ns += now - started;
+        control->wait_started_ns = now;
     }
-    control->wait_started_ns = SparkTpGlobalTimerNs();
+    else
+        control->wait_started_ns = SparkTpGlobalTimerNs();
     __threadfence();
     LmDependentRelease();
 }
@@ -114,6 +117,7 @@ static __global__ void SparkTpMeshFastPairGatherKernel(
         const uint64_t started = s_wait_start;
         uint32_t missing = pair_only != 0u ? (tid == (rank ^ 1u) ? 1u : 0u) :
             (tid < degree && tid != rank ? 1u : 0u);
+        uint32_t spins = 0u;
         uint64_t seen = 0u,diag = 0u,fault = 0u;
         arr_base = control->wait_started_ns;
         for (;;)
@@ -124,23 +128,26 @@ static __global__ void SparkTpMeshFastPairGatherKernel(
                 arr_landed = SparkTpFastTimerNs();
             }
             if ( __all_sync(0xffffffffu,missing == 0u) ) break;
-            if ( tid == 0u )
+            if ( (++spins & 31u) == 0u )
             {
-                const uint64_t now = SparkTpFastTimerNs();
-                if ( cancel != 0 && (diag = SparkTpLdAcquireU64(cancel)) != expected )
-                    fault = SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | tag;
-                else if ( now > started && now - started > timeout_ns )
-                    fault = tag;
-            }
-            fault = __shfl_sync(0xffffffffu,fault,0);
-            if ( fault != 0u )
-            {
-                if ( fault == tag )
+                if ( tid == 0u )
                 {
-                    uint32_t first = (uint32_t)(__ffs(__ballot_sync(0xffffffffu,missing != 0u)) - 1);
-                    diag = __shfl_sync(0xffffffffu,seen,first);
+                    const uint64_t now = SparkTpFastTimerNs();
+                    if ( cancel != 0 && (diag = SparkTpLdAcquireU64(cancel)) != expected )
+                        fault = SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | tag;
+                    else if ( now > started && now - started > timeout_ns )
+                        fault = tag;
                 }
-                break;
+                fault = __shfl_sync(0xffffffffu,fault,0);
+                if ( fault != 0u )
+                {
+                    if ( fault == tag )
+                    {
+                        uint32_t first = (uint32_t)(__ffs(__ballot_sync(0xffffffffu,missing != 0u)) - 1);
+                        diag = __shfl_sync(0xffffffffu,seen,first);
+                    }
+                    break;
+                }
             }
         }
         if ( tid == 0u ) { *(volatile uint32_t *)&wait_over = 1u; arr_end = SparkTpGlobalTimerNs(); }
@@ -200,27 +207,34 @@ static __global__ void SparkTpMeshFastAllToAllStagePublishKernel(
                 const volatile uint64_t *cancel = (const volatile uint64_t *)(uintptr_t)control->cancel_cell;
                 const uint64_t expected = control->cancel_expected;
                 s_wait_start = SparkTpFastTimerNs();
-                for (;;)
+                for ( uint32_t spins = 0u;; )
                 {
-                    const uint64_t now = SparkTpFastTimerNs();
                     if ( SparkTpLdAcquireU64(shipped_cell) == previous )
                     {
-                        if ( peer == rank && now > s_wait_start ) control->source_wait_ns += now - s_wait_start;
+                        if ( peer == rank )
+                        {
+                            const uint64_t now = SparkTpFastTimerNs();
+                            if ( now > s_wait_start ) control->source_wait_ns += now - s_wait_start;
+                        }
                         break;
                     }
-                    if ( SparkTpLdcvU64(&control->error_word) != 0u ) break;
-                    if ( cancel != 0 && SparkTpLdAcquireU64(cancel) != expected )
+                    if ( (++spins & 15u) == 0u )
                     {
-                        atomicCAS((unsigned long long *)&control->error_word,0ull,
-                            SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | previous);
-                        break;
+                        const uint64_t now = SparkTpFastTimerNs();
+                        if ( SparkTpLdcvU64(&control->error_word) != 0u ) break;
+                        if ( cancel != 0 && SparkTpLdAcquireU64(cancel) != expected )
+                        {
+                            atomicCAS((unsigned long long *)&control->error_word,0ull,
+                                SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | previous);
+                            break;
+                        }
+                        if ( now > s_wait_start && now - s_wait_start > timeout_ns )
+                        {
+                            atomicCAS((unsigned long long *)&control->error_word,0ull,previous);
+                            break;
+                        }
                     }
-                    if ( now > s_wait_start && now - s_wait_start > timeout_ns )
-                    {
-                        atomicCAS((unsigned long long *)&control->error_word,0ull,previous);
-                        break;
-                    }
-                    __nanosleep(200u);
+                    __nanosleep(50u);
                 }
             }
         }
@@ -313,13 +327,16 @@ static __global__ void SparkTpMeshFastStreamRecvKernel(
             const uint64_t expected = control->cancel_expected;
             uint32_t go = 0u;
             s_peer_start = SparkTpFastTimerNs();
-            for (;;)
+            for ( uint32_t spins = 0u;; )
             {
-                const uint64_t now = SparkTpFastTimerNs();
                 if ( SparkTpLdAcquireU64(tail) == tag ) { go = 1u; break; }
-                if ( SparkTpLdcvU64(&control->error_word) != 0u ) break;
-                if ( cancel != 0 && SparkTpLdAcquireU64(cancel) != expected ) break;
-                if ( now > s_peer_start && now - s_peer_start > timeout_ns ) break;
+                if ( (++spins & 31u) == 0u )
+                {
+                    const uint64_t now = SparkTpFastTimerNs();
+                    if ( SparkTpLdcvU64(&control->error_word) != 0u ) break;
+                    if ( cancel != 0 && SparkTpLdAcquireU64(cancel) != expected ) break;
+                    if ( now > s_peer_start && now - s_peer_start > timeout_ns ) break;
+                }
             }
             s_go = go;
         }
@@ -419,8 +436,9 @@ static __global__ void SparkTpMeshFastStreamAllReduceKernel(
     {
         if ( tid < 32u )
         {
-            uint32_t newly = 0u;
+            uint32_t newly = 0u,spins = 0u;
             uint64_t seen = 0u,diag = 0u,fault = 0u;
+            const uint32_t record_arr = prefetch == 0 && blockIdx.x == 0u ? 1u : 0u;
             for (;;)
             {
                 uint32_t just = 0u;
@@ -428,29 +446,32 @@ static __global__ void SparkTpMeshFastStreamAllReduceKernel(
                 {
                     missing = 0u;
                     just = 1u;
-                    arr_landed = SparkTpFastTimerNs();
+                    if ( record_arr != 0u ) arr_landed = SparkTpFastTimerNs();
                 }
                 newly = __ballot_sync(0xffffffffu,just != 0u);
                 if ( newly != 0u ) break;
-                if ( tid == 0u )
+                if ( (++spins & 31u) == 0u )
                 {
-                    const uint64_t base = s_wait_start,now = SparkTpFastTimerNs();
-                    if ( SparkTpLdcvU64(&control->error_word) != 0u ) fault = UINT64_MAX;
-                    else if ( cancel != 0 && (diag = SparkTpLdAcquireU64(cancel)) != expected )
-                        fault = SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | tag;
-                    else if ( now > base && now - base > timeout_ns )
-                        fault = tag;
-                }
-                fault = __shfl_sync(0xffffffffu,fault,0);
-                if ( fault != 0u )
-                {
-                    if ( fault == tag )
+                    if ( tid == 0u )
                     {
-                        uint32_t first = __ffs(__ballot_sync(0xffffffffu,missing != 0u)) - 1u;
-                        seen = __shfl_sync(0xffffffffu,seen,first);
-                        diag = seen;
+                        const uint64_t base = s_wait_start,now = SparkTpFastTimerNs();
+                        if ( SparkTpLdcvU64(&control->error_word) != 0u ) fault = UINT64_MAX;
+                        else if ( cancel != 0 && (diag = SparkTpLdAcquireU64(cancel)) != expected )
+                            fault = SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | tag;
+                        else if ( now > base && now - base > timeout_ns )
+                            fault = tag;
                     }
-                    break;
+                    fault = __shfl_sync(0xffffffffu,fault,0);
+                    if ( fault != 0u )
+                    {
+                        if ( fault == tag )
+                        {
+                            uint32_t first = __ffs(__ballot_sync(0xffffffffu,missing != 0u)) - 1u;
+                            seen = __shfl_sync(0xffffffffu,seen,first);
+                            diag = seen;
+                        }
+                        break;
+                    }
                 }
             }
             if ( tid == 0u )
@@ -599,8 +620,9 @@ static __global__ void SparkTpMeshFastRsagStreamReducePublishKernel(
     {
         if ( tid < 32u )
         {
-            uint32_t newly = 0u;
+            uint32_t newly = 0u,spins = 0u;
             uint64_t seen = 0u,diag = 0u,fault = 0u;
+            const uint32_t record_arr = prefetch == 0 && blockIdx.x == 0u ? 1u : 0u;
             for (;;)
             {
                 uint32_t just = 0u;
@@ -608,29 +630,32 @@ static __global__ void SparkTpMeshFastRsagStreamReducePublishKernel(
                 {
                     missing = 0u;
                     just = 1u;
-                    arr_landed = SparkTpFastTimerNs();
+                    if ( record_arr != 0u ) arr_landed = SparkTpFastTimerNs();
                 }
                 newly = __ballot_sync(0xffffffffu,just != 0u);
                 if ( newly != 0u ) break;
-                if ( tid == 0u )
+                if ( (++spins & 31u) == 0u )
                 {
-                    const uint64_t base = s_wait_start,now = SparkTpFastTimerNs();
-                    if ( SparkTpLdcvU64(&control->error_word) != 0u ) fault = UINT64_MAX;
-                    else if ( cancel != 0 && (diag = SparkTpLdAcquireU64(cancel)) != expected )
-                        fault = SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | tag;
-                    else if ( now > base && now - base > timeout_ns )
-                        fault = tag;
-                }
-                fault = __shfl_sync(0xffffffffu,fault,0);
-                if ( fault != 0u )
-                {
-                    if ( fault == tag )
+                    if ( tid == 0u )
                     {
-                        uint32_t first = __ffs(__ballot_sync(0xffffffffu,missing != 0u)) - 1u;
-                        seen = __shfl_sync(0xffffffffu,seen,first);
-                        diag = seen;
+                        const uint64_t base = s_wait_start,now = SparkTpFastTimerNs();
+                        if ( SparkTpLdcvU64(&control->error_word) != 0u ) fault = UINT64_MAX;
+                        else if ( cancel != 0 && (diag = SparkTpLdAcquireU64(cancel)) != expected )
+                            fault = SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED | tag;
+                        else if ( now > base && now - base > timeout_ns )
+                            fault = tag;
                     }
-                    break;
+                    fault = __shfl_sync(0xffffffffu,fault,0);
+                    if ( fault != 0u )
+                    {
+                        if ( fault == tag )
+                        {
+                            uint32_t first = __ffs(__ballot_sync(0xffffffffu,missing != 0u)) - 1u;
+                            seen = __shfl_sync(0xffffffffu,seen,first);
+                            diag = seen;
+                        }
+                        break;
+                    }
                 }
             }
             if ( tid == 0u )
@@ -859,13 +884,16 @@ static __global__ void SparkTpMeshFastWideStreamGatherKernel(
             const uint32_t nap = length >= 65536u ? 50u : 0u;
             uint32_t go = 0u;
             s_peer_start = SparkTpFastTimerNs();
-            for (;;)
+            for ( uint32_t spins = 0u;; )
             {
-                const uint64_t now = SparkTpFastTimerNs();
                 if ( SparkTpLdAcquireU64(tail) == tag ) { go = 1u; break; }
-                if ( SparkTpLdcvU64(&control->error_word) != 0u ) break;
-                if ( cancel != 0 && SparkTpLdAcquireU64(cancel) != expected ) break;
-                if ( now > s_peer_start && now - s_peer_start > timeout_ns ) break;
+                if ( (++spins & 31u) == 0u )
+                {
+                    const uint64_t now = SparkTpFastTimerNs();
+                    if ( SparkTpLdcvU64(&control->error_word) != 0u ) break;
+                    if ( cancel != 0 && SparkTpLdAcquireU64(cancel) != expected ) break;
+                    if ( now > s_peer_start && now - s_peer_start > timeout_ns ) break;
+                }
                 if ( nap != 0u ) __nanosleep(nap);
             }
             s_go = go;
