@@ -54,6 +54,18 @@ struct SmallAxk2 : Axk2Geometry
 	static const char *Tag(void) { return "a.x-k2"; }
 };
 
+struct SmallGlm53FullInter128 : SmallGlm53Full
+{
+	static constexpr uint32_t kExpertInter = 128u;
+	static const char *Tag(void) { return "glm-5.3-full-inter128"; }
+};
+
+struct SmallAxk2Inter128 : SmallAxk2
+{
+	static constexpr uint32_t kExpertInter = 128u;
+	static const char *Tag(void) { return "a.x-k2-inter128"; }
+};
+
 static const uint8_t *Fp8Block(uint64_t groups, uint64_t rows, uint64_t columns, uint64_t *payload_bytes)
 {
 	const uint64_t blocks = (columns + 127u) / 128u, payload = groups * rows * columns;
@@ -101,13 +113,13 @@ static const uint8_t *ExpertBlock(uint64_t groups, uint64_t rows, uint64_t colum
 	return (const uint8_t *)Matrix(groups * rows, columns);
 }
 
-template<class G>
+template<class G, uint32_t MAX_ROWS = VF_MAX_FRAME, uint32_t PAGES = VF_PAGES>
 struct VfRig
 {
 	using M = GlmModel<G>;
 	using S = GlmShape<G>;
 	using State = typename M::State;
-	static constexpr uint64_t kPool = (uint64_t)VF_SLOTS * VF_PAGES;
+	static constexpr uint64_t kPool = (uint64_t)VF_SLOTS * PAGES;
 	static constexpr uint64_t kLatentRegion = kPool * GlmKv<S>::kPageBytes;
 	static constexpr uint64_t kIndexRegion = (uint64_t)G::kIndexLayers * kPool * GlmIndexKv<S>::kPageBytes;
 	State *state;
@@ -186,7 +198,7 @@ struct VfRig
 
 	int Open(void)
 	{
-		std::vector<uint32_t> table(VF_SLOTS * VF_PAGES);
+		std::vector<uint32_t> table(VF_SLOTS * PAGES);
 		SparkStageRunnerKv attach;
 		memset(this, 0, sizeof(*this));
 		bus.hidden = G::kHidden;
@@ -197,10 +209,10 @@ struct VfRig
 		state->services = &services;
 		state->tp_degree = 1u;
 		state->heads = G::kHeads;
-		state->max_rows = VF_MAX_FRAME;
-		state->scatter_rows = VF_MAX_FRAME;
+		state->max_rows = MAX_ROWS;
+		state->scatter_rows = MAX_ROWS < GLM_SCATTER_ROWS ? MAX_ROWS : GLM_SCATTER_ROWS;
 		state->slots = VF_SLOTS;
-		state->max_positions = VF_PAGES * GLM_PAGE_SLOTS;
+		state->max_positions = PAGES * GLM_PAGE_SLOTS;
 		state->shard.degree = 1u;
 		state->shard.grain = 1u;
 		if ( M::Size(state) != SPARK_STATUS_OK )
@@ -212,15 +224,15 @@ struct VfRig
 			cudaDeviceGetAttribute((int *)&multiprocessors, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
 			cudaMalloc((void **)&kv, kLatentRegion + kIndexRegion) != cudaSuccess || cudaMemset(kv, 0, kLatentRegion + kIndexRegion) != cudaSuccess ||
 			cudaMalloc((void **)&page_table, table.size() * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&positions, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&sequence_of_row, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&tree_slots, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&forks, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&offsets, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&row_indices, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&positions, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&sequence_of_row, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&tree_slots, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&forks, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&offsets, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&row_indices, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&kept, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&context, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&hidden, (uint64_t)VF_MAX_FRAME * G::kHidden * sizeof(uint16_t)) != cudaSuccess )
+			cudaMalloc((void **)&hidden, (uint64_t)MAX_ROWS * G::kHidden * sizeof(uint16_t)) != cudaSuccess )
 			return 0;
 		for ( uint32_t index = 0u; index < table.size(); ++index )
 			table[index] = index;
@@ -232,7 +244,7 @@ struct VfRig
 		attach.layer_stride_bytes = attach.layer_page_bytes;
 		attach.layer_count = S::kLayers;
 		attach.page_table = page_table;
-		attach.page_table_stride = VF_PAGES;
+		attach.page_table_stride = PAGES;
 		attach.pool_page_count = (uint32_t)kPool;
 		attach.sequence_count = VF_SLOTS;
 		attach.context_shard = state->shard;
@@ -250,7 +262,7 @@ struct VfRig
 			target[index] = Bf16(Uniform(seed, index));
 	}
 
-	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output)
+	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output, uint32_t last_rows_only = 0u)
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
 		std::vector<uint32_t> position(count), sequence(count);
@@ -273,6 +285,7 @@ struct VfRig
 		step.rows = count;
 		step.sequences = sequences;
 		step.commit = commit;
+		step.last_rows_only = last_rows_only;
 		step.context = state->max_positions;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -390,9 +403,9 @@ struct VfRig
 		if ( a.size() != b.size() )
 			return 0u;
 		for ( uint32_t sequence = 0u; sequence < VF_SLOTS; ++sequence )
-			for ( uint32_t position = 0u; position < VF_PAGES * GLM_PAGE_SLOTS; ++position )
+			for ( uint32_t position = 0u; position < PAGES * GLM_PAGE_SLOTS; ++position )
 			{
-				const uint64_t page = (uint64_t)sequence * VF_PAGES + position / GLM_PAGE_SLOTS, slot = position % GLM_PAGE_SLOTS;
+				const uint64_t page = (uint64_t)sequence * PAGES + position / GLM_PAGE_SLOTS, slot = position % GLM_PAGE_SLOTS;
 				if ( sequence == 0u && position >= limit )
 					continue;
 				for ( uint32_t layer = 0u; layer < S::kLayers; ++layer )
@@ -602,10 +615,53 @@ static void Check(void)
 	printf("%s %s: frames of 1-%u rows, %u rejection points\n", vf_failures == 0 ? "ok" : "checked", model, VF_MAX_FRAME, checked);
 }
 
+template<class G>
+static void CheckPrefixExact(void)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 12u, 16u, 23u, 64u, 128u };
+	static constexpr uint32_t kCached = 9u * GLM_PAGE_SLOTS;
+	static constexpr uint32_t kMaxTotal = kCached + 128u;
+	VfRig<G, 768u, 16u> rig;
+	const char *model = G::Tag();
+	std::vector<VfRow> all_rows(kMaxTotal);
+	std::vector<uint8_t> cached_kv;
+	if ( rig.Open() == 0 )
+	{
+		Require(0, model, "prefix-exact synthetic stage opens", 0u, 0u, 0u);
+		return;
+	}
+	for ( uint32_t position = 0u; position < kMaxTotal; ++position )
+		all_rows[position] = { 0u, position, 0u };
+	Require(rig.Run(all_rows.data(), kCached, 1u, 0, 1u) != 0, model, "cached prefix prefill runs", kCached, 0u, 0u);
+	cached_kv = rig.Save();
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = kCached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		std::vector<uint8_t> cold_kv;
+		Require(cudaMemset(rig.kv, 0, rig.kLatentRegion + rig.kIndexRegion) == cudaSuccess, model, "prefix-exact KV reset succeeds", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data(), total, 1u, &cold_out, 1u) != 0, model, "cold prefill runs", total, delta, 0u);
+		cold_kv = rig.Save();
+		Require(Finite(cold_out) != 0u, model, "cold prefill rows are finite", total, delta, 0u);
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)kCached * G::kHidden), cold_out.end());
+		Require(rig.Load(cached_kv) != 0, model, "cached KV restore succeeds", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, 1u, &warm_out, 1u) != 0, model, "warm delta prefill runs", kCached, delta, 0u);
+		Require(FirstDifference(warm_out, cold_tail, G::kHidden) == UINT32_MAX, model,
+			"warm delta prefill equals cold prefill bit for bit (delta, first differing row)", delta, FirstDifference(warm_out, cold_tail, G::kHidden), 0u);
+		Require(rig.KvMatches(rig.Save(), cold_kv, total) != 0u, model,
+			"warm delta prefill leaves the same KV as cold prefill bit for bit (delta)", delta, 0u, 0u);
+	}
+	Require(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", 0u, 0u, 0u);
+	printf("%s %s prefix-exact: cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
+}
+
 int main(void)
 {
 	Check<SmallGlm53Full>();
 	Check<SmallAxk2>();
+	CheckPrefixExact<SmallGlm53FullInter128>();
+	CheckPrefixExact<SmallAxk2Inter128>();
+	CheckPrefixExact<SmallAxk2>();
 	if ( vf_failures != 0 )
 	{
 		printf("FAIL glm52 verify frames: %d failures\n", vf_failures);
