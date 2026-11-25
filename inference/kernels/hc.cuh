@@ -26,12 +26,27 @@
 #define LM_HC_STAGED_GROUPS 2u
 #define LM_HC_STAGED_THREADS (LM_HC_STAGED_GROUPS * LM_HC_SINKHORN_THREADS)
 #define LM_HC_STAGED_SLOTS 3u
+#define LM_HC_SINKHORN_MULTI_WARPS 4u
 #define LM_HC_MAX_DEVICES 64u
 
 template<uint32_t STREAMS>
 __global__ void LmHcExpandFlatKernel(const uint16_t *hidden, uint16_t *streams, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+#ifdef __CUDACC__
+	if ( (width & 7u) == 0u && LmIsAligned16(hidden) && LmIsAligned16(streams) )
+	{
+		const uint32_t octets = width >> 3u;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < octets; q += gridDim.x * blockDim.x )
+		{
+			const uint4 v = __ldg((const uint4 *)(hidden + (uint64_t)row * width + (q << 3u)));
+			#pragma unroll
+			for ( uint32_t s = 0u; s < STREAMS; ++s )
+				*(uint4 *)(streams + ((uint64_t)row * STREAMS + s) * width + (q << 3u)) = v;
+		}
+		return;
+	}
+#endif
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < STREAMS * width; index += gridDim.x * blockDim.x )
 		streams[(uint64_t)row * STREAMS * width + index] = hidden[(uint64_t)row * width + index % width];
 }
@@ -54,6 +69,7 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmHcMixKernel(const uint16_t *streams, const float *fn, const float *base, const float *scale, float *post, uint16_t *mixed,
 	uint32_t rows, uint32_t width, float norm_epsilon, float hc_epsilon, float post_magnitude)
 {
+	LmDependentWait();
 	constexpr uint32_t WARPS = THREADS / 32u;
 	__shared__ float reduction[LM_HC_MIX_ROWS][MIXES + 1u][WARPS];
 	__shared__ float weights[LM_HC_MIX_ROWS][STREAMS];
@@ -113,12 +129,14 @@ void LmHcMixKernel(const uint16_t *streams, const float *fn, const float *base, 
 			mixed[(uint64_t)(first + r) * width + d] = LmFloatToBf16(total);
 		}
 	}
+	LmDependentRelease();
 }
 
 template<uint32_t STREAMS, uint32_t WIDTH>
 __global__ __launch_bounds__(LM_HC_MIX_LOADERS)
 void LmHcMixDotKernel(const uint16_t *streams, const float *fn, float *partial, uint32_t mixes)
 {
+	LmDependentWait();
 	constexpr uint32_t FLAT = STREAMS * WIDTH, STEPS = FLAT / LM_HC_MIX_LANES;
 	static_assert(FLAT % LM_HC_MIX_LANES == 0u, "every lane walks the same number of columns");
 	__shared__ float coefficient[STEPS][LM_HC_MIX_SLICE];
@@ -143,6 +161,7 @@ void LmHcMixDotKernel(const uint16_t *streams, const float *fn, float *partial, 
 				dot = fmaf(value[step][threadIdx.x], value[step][threadIdx.x], dot);
 		partial[((uint64_t)row * mixes + mix) * LM_HC_MIX_LANES + lane_first + threadIdx.x] = dot;
 	}
+	LmDependentRelease();
 }
 
 template<uint32_t STREAMS, uint32_t MIXES, uint32_t WIDTH>
@@ -150,6 +169,7 @@ __global__ __launch_bounds__(LM_HC_MIX_LANES, 1)
 void LmHcMixRowKernel(const uint16_t *streams, const float *partial, const float *base, const float *scale, float *post, uint16_t *mixed,
 	float norm_epsilon, float hc_epsilon, float post_magnitude)
 {
+	LmDependentWait();
 	constexpr uint32_t WARPS = LM_HC_MIX_LANES / 32u, FLAT = STREAMS * WIDTH;
 	__shared__ float reduction[MIXES + 1u][WARPS];
 	__shared__ float weights[STREAMS];
@@ -183,6 +203,7 @@ void LmHcMixRowKernel(const uint16_t *streams, const float *partial, const float
 			total = fmaf(weights[s], LmBf16ToFloat(streams[(uint64_t)row * FLAT + s * WIDTH + d]), total);
 		mixed[(uint64_t)row * WIDTH + d] = LmFloatToBf16(total);
 	}
+	LmDependentRelease();
 }
 
 static inline uint64_t LmHcMixPartialBytes(uint64_t rows, uint32_t mixes)
@@ -194,6 +215,18 @@ template<uint32_t THREADS, uint32_t STREAMS, uint32_t MIXES, uint32_t WIDTH>
 static void LmHcMix(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *partial, float *post, uint16_t *mixed,
 	uint32_t rows, float norm_epsilon, float hc_epsilon, float magnitude, SparkGpuStream stream)
 {
+#ifdef __CUDACC__
+	if ( rows <= LM_HC_MIX_SPLIT_ROWS )
+	{
+		LM_LAUNCH_DEPENDENT((LmHcMixDotKernel<STREAMS,WIDTH>), dim3(MIXES + 1u, LM_HC_MIX_LANES / LM_HC_MIX_SLICE, rows), LM_HC_MIX_LOADERS, 0, stream, streams, fn,
+			partial, MIXES + 1u);
+		LM_LAUNCH_DEPENDENT((LmHcMixRowKernel<STREAMS,MIXES,WIDTH>), dim3((WIDTH + LM_HC_MIX_LANES - 1u) / LM_HC_MIX_LANES, rows), LM_HC_MIX_LANES, 0, stream, streams,
+			partial, base, scale, post, mixed, norm_epsilon, hc_epsilon, magnitude);
+		return;
+	}
+	LM_LAUNCH_DEPENDENT((LmHcMixKernel<THREADS,STREAMS,MIXES>), (rows + LM_HC_MIX_ROWS - 1u) / LM_HC_MIX_ROWS, THREADS, 0, stream, streams, fn, base, scale, post, mixed,
+		rows, WIDTH, norm_epsilon, hc_epsilon, magnitude);
+#else
 	if ( rows <= LM_HC_MIX_SPLIT_ROWS )
 	{
 		LM_LAUNCH((LmHcMixDotKernel<STREAMS,WIDTH>), dim3(MIXES + 1u, LM_HC_MIX_LANES / LM_HC_MIX_SLICE, rows), LM_HC_MIX_LOADERS, 0, stream, streams, fn,
@@ -204,12 +237,41 @@ static void LmHcMix(const uint16_t *streams, const float *fn, const float *scale
 	}
 	LM_LAUNCH((LmHcMixKernel<THREADS,STREAMS,MIXES>), (rows + LM_HC_MIX_ROWS - 1u) / LM_HC_MIX_ROWS, THREADS, 0, stream, streams, fn, base, scale, post, mixed,
 		rows, WIDTH, norm_epsilon, hc_epsilon, magnitude);
+#endif
 }
 
 template<uint32_t STREAMS>
 __global__ void LmHcPostKernel(uint16_t *streams, const float *post, const uint16_t *output, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+#ifdef __CUDACC__
+	if ( (width & 7u) == 0u && LmIsAligned16(streams) && LmIsAligned16(output) )
+	{
+		float p[STREAMS];
+		#pragma unroll
+		for ( uint32_t s = 0u; s < STREAMS; ++s )
+			p[s] = __ldg(post + (uint64_t)row * STREAMS + s);
+		const uint32_t octets = width >> 3u;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < octets; q += gridDim.x * blockDim.x )
+		{
+			const uint32_t offset = q << 3u;
+			float x[8];
+			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(output + (uint64_t)row * width + offset)), x);
+			#pragma unroll
+			for ( uint32_t s = 0u; s < STREAMS; ++s )
+			{
+				uint4 *dst = (uint4 *)(streams + ((uint64_t)row * STREAMS + s) * width + offset);
+				float cur[8], out[8];
+				LmLoadBf16x8AsFloat(*dst, cur);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					out[k] = fmaf(p[s], x[k], cur[k]);
+				*dst = LmPackUint4FloatToBf16(out);
+			}
+		}
+		return;
+	}
+#endif
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < STREAMS * width; index += gridDim.x * blockDim.x )
 	{
 		const uint64_t at = (uint64_t)row * STREAMS * width + index;
@@ -242,8 +304,13 @@ static __device__ __forceinline__ void LmHcSinkhornPartialTask(const uint16_t *_
 		for ( uint32_t step = 0u; step < LM_HC_SINKHORN_UNROLL; ++step )
 		{
 			const uint32_t element = base + step * LM_HC_SINKHORN_THREADS;
+#ifdef __CUDACC__
+			value[step] = element < flat ? LmBf16ToFloat(__ldg(source + element)) : 0.0f;
+			factor[step] = element >= flat ? 0.0f : weight != 0 ? __ldg(weight + element) : value[step];
+#else
 			value[step] = element < flat ? LmBf16ToFloat(source[element]) : 0.0f;
 			factor[step] = element >= flat ? 0.0f : weight != 0 ? weight[element] : value[step];
+#endif
 		}
 #pragma unroll
 		for ( uint32_t step = 0u; step < LM_HC_SINKHORN_UNROLL; ++step )
@@ -260,7 +327,9 @@ template<uint32_t STREAMS>
 __global__ void LmHcSinkhornPartialKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
 	uint32_t width)
 {
+	LmDependentWait();
 	LmHcSinkhornPartialTask<STREAMS>(streams, fn, partials, width, blockIdx.x, blockIdx.y);
+	LmDependentRelease();
 }
 
 template<uint32_t STREAMS, uint32_t ROWS>
@@ -275,7 +344,7 @@ struct LmHcStagedShape
 #ifdef __CUDACC__
 static __device__ __forceinline__ void LmHcStageCopy(uint32_t shared, const void *source, uint32_t bytes)
 {
-	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
 }
 
 static __device__ __forceinline__ void LmHcStageCommit(void)
@@ -289,10 +358,141 @@ static __device__ __forceinline__ void LmHcStageWait(void)
 	asm volatile("cp.async.wait_group %0;\n" :: "n"(PENDING) : "memory");
 }
 
+template<uint32_t STREAMS, uint32_t ROWS, uint32_t TASK_GROUPS, uint32_t STAGES = 3u>
+struct LmHcSplitStagedShape
+{
+	static constexpr uint32_t kGroupTasks = (LmHcSinkhornShape<STREAMS>::kTasks + TASK_GROUPS - 1u) / TASK_GROUPS;
+	static constexpr uint32_t kFnBytes = kGroupTasks * LM_HC_SINKHORN_THREADS * (uint32_t)sizeof(float);
+	static constexpr uint32_t kSlotBytes = kFnBytes + ROWS * LM_HC_SINKHORN_THREADS * (uint32_t)sizeof(uint16_t);
+	static constexpr uint32_t kShared = STAGES * kSlotBytes;
+};
+
+template<uint32_t STREAMS, uint32_t ROWS, uint32_t TASK_GROUPS, uint32_t STAGES = 3u, uint32_t MIN_BLOCKS = 2u>
+__global__ __launch_bounds__(LM_HC_SINKHORN_THREADS, MIN_BLOCKS) void LmHcSinkhornPartialStagedSplitKernel(const uint16_t *__restrict__ streams,
+	const float *__restrict__ fn, float *__restrict__ partials, uint32_t width, uint32_t rows)
+{
+	LmDependentWait();
+	using S = LmHcSinkhornShape<STREAMS>;
+	using T = LmHcSplitStagedShape<STREAMS,ROWS,TASK_GROUPS,STAGES>;
+	constexpr uint32_t FN_VECTORS = LM_HC_SINKHORN_THREADS / 4u, ROW_VECTORS = LM_HC_SINKHORN_THREADS / 8u;
+	extern __shared__ __align__(16) uint8_t lm_hc_split_stage[];
+	const uint32_t thread = threadIdx.x, lane = thread & 31u, warp = thread >> 5u;
+	const uint32_t first_row = blockIdx.x * ROWS, task_first = blockIdx.y * T::kGroupTasks, flat = STREAMS * width;
+	const uint32_t steps = (flat + LM_HC_SINKHORN_THREADS - 1u) / LM_HC_SINKHORN_THREADS;
+	const uint32_t stage = (uint32_t)__cvta_generic_to_shared(lm_hc_split_stage);
+	float total[T::kGroupTasks][ROWS];
+#pragma unroll
+	for ( uint32_t task = 0u; task < T::kGroupTasks; ++task )
+#pragma unroll
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+			total[task][r] = 0.0f;
+	auto produce = [&](uint32_t step)
+	{
+		const uint32_t base = step * LM_HC_SINKHORN_THREADS, at = stage + (step % STAGES) * T::kSlotBytes;
+		for ( uint32_t vector = threadIdx.x; vector < T::kGroupTasks * FN_VECTORS; vector += LM_HC_SINKHORN_THREADS )
+		{
+			const uint32_t mix = task_first + vector / FN_VECTORS, element = base + (vector % FN_VECTORS) * 4u;
+			const uint32_t live = mix < S::kMix && element < flat ? 1u : 0u;
+			LmHcStageCopy(at + vector * 16u, live != 0u ? (const void *)(fn + (uint64_t)mix * flat + element) : (const void *)fn,
+				live != 0u ? 16u : 0u);
+		}
+		for ( uint32_t vector = threadIdx.x; vector < ROWS * ROW_VECTORS; vector += LM_HC_SINKHORN_THREADS )
+		{
+			const uint32_t row = first_row + vector / ROW_VECTORS, element = base + (vector % ROW_VECTORS) * 8u;
+			const uint32_t live = row < rows && element < flat ? 1u : 0u;
+			LmHcStageCopy(at + T::kFnBytes + vector * 16u, live != 0u ? (const void *)(streams + (uint64_t)row * flat + element) : (const void *)streams,
+				live != 0u ? 16u : 0u);
+		}
+	};
+#pragma unroll
+	for ( uint32_t step = 0u; step + 1u < STAGES; ++step )
+	{
+		if ( step < steps )
+			produce(step);
+		LmHcStageCommit();
+	}
+	for ( uint32_t step = 0u; step < steps; ++step )
+	{
+		LmHcStageWait<STAGES - 2u>();
+		__syncthreads();
+		if ( step + STAGES - 1u < steps )
+			produce(step + STAGES - 1u);
+		LmHcStageCommit();
+		const uint8_t *slot = lm_hc_split_stage + (step % STAGES) * T::kSlotBytes;
+		const float *factors = (const float *)slot;
+		const uint16_t *values = (const uint16_t *)(slot + T::kFnBytes);
+		if ( step * LM_HC_SINKHORN_THREADS + thread < flat )
+		{
+			float value[ROWS];
+#pragma unroll
+			for ( uint32_t r = 0u; r < ROWS; ++r )
+				value[r] = first_row + r < rows ? LmBf16ToFloat(values[r * LM_HC_SINKHORN_THREADS + thread]) : 0.0f;
+#pragma unroll
+			for ( uint32_t task = 0u; task < T::kGroupTasks; ++task )
+			{
+				const uint32_t mix = task_first + task;
+				if ( mix < S::kMix )
+				{
+					const float factor = factors[task * LM_HC_SINKHORN_THREADS + thread];
+#pragma unroll
+					for ( uint32_t r = 0u; r < ROWS; ++r )
+						total[task][r] += factor * value[r];
+				}
+				else if ( mix == S::kMix )
+				{
+#pragma unroll
+					for ( uint32_t r = 0u; r < ROWS; ++r )
+						total[task][r] += value[r] * value[r];
+				}
+			}
+		}
+	}
+	LmHcStageWait<0u>();
+#pragma unroll
+	for ( uint32_t task = 0u; task < T::kGroupTasks; ++task )
+#pragma unroll
+		for ( uint32_t r = 0u; r < ROWS; ++r )
+		{
+			float sum = total[task][r];
+#pragma unroll
+			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+				sum += __shfl_down_sync(0xffffffffu, sum, offset);
+			if ( lane == 0u && task_first + task < S::kTasks && first_row + r < rows )
+				partials[((uint64_t)(first_row + r) * S::kTasks + task_first + task) * LM_HC_SINKHORN_WARPS + warp] = sum;
+		}
+	LmDependentRelease();
+}
+
+template<uint32_t STREAMS, uint32_t ROWS, uint32_t TASK_GROUPS, uint32_t STAGES = 3u, uint32_t MIN_BLOCKS = 2u>
+static int32_t LmHcSinkhornPartialStagedSplit(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, SparkGpuStream stream)
+{
+	using T = LmHcSplitStagedShape<STREAMS,ROWS,TASK_GROUPS,STAGES>;
+	static std::atomic<uint64_t> granted(0u);
+	int device = 0;
+	if ( rows == 0u || width == 0u || (STREAMS * width) % 8u != 0u || (((uintptr_t)streams | (uintptr_t)fn) & 15u) != 0u )
+		return LM_LAUNCH_ERR_SHAPE;
+	if ( T::kShared > 49152u )
+	{
+		if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_HC_MAX_DEVICES )
+			return LM_LAUNCH_ERR_ATTRIBUTE;
+		if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
+		{
+			if ( SparkGpuFuncSetAttribute((const void *)LmHcSinkhornPartialStagedSplitKernel<STREAMS,ROWS,TASK_GROUPS,STAGES,MIN_BLOCKS>,
+				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)T::kShared) != SPARK_GPU_SUCCESS )
+				return LM_LAUNCH_ERR_ATTRIBUTE;
+			granted.fetch_or(UINT64_C(1) << (uint32_t)device);
+		}
+	}
+	LM_LAUNCH_DEPENDENT((LmHcSinkhornPartialStagedSplitKernel<STREAMS,ROWS,TASK_GROUPS,STAGES,MIN_BLOCKS>), dim3((rows + ROWS - 1u) / ROWS, TASK_GROUPS),
+		LM_HC_SINKHORN_THREADS, T::kShared, stream, streams, fn, partials, width, rows);
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
 template<uint32_t STREAMS, uint32_t ROWS>
 __global__ __launch_bounds__(LM_HC_STAGED_THREADS, 1) void LmHcSinkhornPartialStagedKernel(const uint16_t *__restrict__ streams,
 	const float *__restrict__ fn, float *__restrict__ partials, uint32_t width, uint32_t rows)
 {
+	LmDependentWait();
 	using S = LmHcSinkhornShape<STREAMS>;
 	using T = LmHcStagedShape<STREAMS,ROWS>;
 	constexpr uint32_t FN_VECTORS = LM_HC_SINKHORN_THREADS / 4u, ROW_VECTORS = LM_HC_SINKHORN_THREADS / 8u;
@@ -377,6 +577,7 @@ __global__ __launch_bounds__(LM_HC_STAGED_THREADS, 1) void LmHcSinkhornPartialSt
 			if ( lane == 0u && task_first + task < S::kTasks && first_row + r < rows )
 				partials[((uint64_t)(first_row + r) * S::kTasks + task_first + task) * LM_HC_SINKHORN_WARPS + warp] = sum;
 		}
+	LmDependentRelease();
 }
 
 template<uint32_t STREAMS, uint32_t ROWS>
@@ -396,7 +597,7 @@ static int32_t LmHcSinkhornPartialStaged(const uint16_t *streams, const float *f
 			return LM_LAUNCH_ERR_ATTRIBUTE;
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
-	LM_LAUNCH((LmHcSinkhornPartialStagedKernel<STREAMS,ROWS>), (rows + ROWS - 1u) / ROWS, LM_HC_STAGED_THREADS, T::kShared, stream, streams, fn,
+	LM_LAUNCH_DEPENDENT((LmHcSinkhornPartialStagedKernel<STREAMS,ROWS>), (rows + ROWS - 1u) / ROWS, LM_HC_STAGED_THREADS, T::kShared, stream, streams, fn,
 		partials, width, rows);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
@@ -406,16 +607,24 @@ static int32_t LmHcSinkhornPartialStaged(const uint16_t *streams, const float *f
 template<uint32_t STREAMS>
 static int32_t LmHcSinkhornPartials(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, SparkGpuStream stream)
 {
-#ifdef __CUDACC__
-	if ( rows >= LM_HC_SINKHORN_WIDE_FROM )
-		return LmHcSinkhornPartialStaged<STREAMS,LM_HC_SINKHORN_WIDE_ROWS>(streams, fn, partials, rows, width, stream);
-	if ( rows >= LM_HC_SINKHORN_ROWS_FROM )
-		return LmHcSinkhornPartialStaged<STREAMS,LM_HC_SINKHORN_ROWS>(streams, fn, partials, rows, width, stream);
-#endif
 	if ( rows == 0u || width == 0u )
 		return LM_LAUNCH_ERR_SHAPE;
+#ifdef __CUDACC__
+	if ( (STREAMS * width) % 8u == 0u && (((uintptr_t)streams | (uintptr_t)fn) & 15u) == 0u )
+	{
+		if ( rows >= LM_HC_SINKHORN_WIDE_FROM )
+			return LmHcSinkhornPartialStaged<STREAMS,LM_HC_SINKHORN_WIDE_ROWS>(streams, fn, partials, rows, width, stream);
+		if ( rows >= 128u )
+			return LmHcSinkhornPartialStagedSplit<STREAMS, 8u, 3u, 3u, 2u>(streams, fn, partials, rows, width, stream);
+		if ( rows >= 16u )
+			return LmHcSinkhornPartialStagedSplit<STREAMS, 4u, 6u, 3u, 3u>(streams, fn, partials, rows, width, stream);
+	}
+	LM_LAUNCH_DEPENDENT((LmHcSinkhornPartialKernel<STREAMS>), dim3(LmHcSinkhornShape<STREAMS>::kTasks, rows), LM_HC_SINKHORN_THREADS, 0, stream, streams, fn,
+		partials, width);
+#else
 	LM_LAUNCH((LmHcSinkhornPartialKernel<STREAMS>), dim3(LmHcSinkhornShape<STREAMS>::kTasks, rows), LM_HC_SINKHORN_THREADS, 0, stream, streams, fn,
 		partials, width);
+#endif
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
@@ -472,8 +681,24 @@ __global__ void LmHcSinkhornKernel(const float *__restrict__ partials, const flo
 	float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb_out, uint32_t width, float rms_epsilon, uint32_t iterations,
 	float epsilon)
 {
+	LmDependentWait();
 	__shared__ float mix[LmHcSinkhornShape<STREAMS>::kTasks];
 	LmHcSinkhornRow<STREAMS>(partials, scale, base, pre, post, comb_out, width, rms_epsilon, iterations, epsilon, blockIdx.x, threadIdx.x, mix);
+	LmDependentRelease();
+}
+
+template<uint32_t STREAMS>
+__global__ __launch_bounds__(LM_HC_SINKHORN_MULTI_WARPS * 32u) void LmHcSinkhornMultiKernel(const float *__restrict__ partials,
+	const float *__restrict__ scale, const float *__restrict__ base, float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb_out,
+	uint32_t rows, uint32_t width, float rms_epsilon, uint32_t iterations, float epsilon)
+{
+	LmDependentWait();
+	__shared__ float mix[LM_HC_SINKHORN_MULTI_WARPS][LmHcSinkhornShape<STREAMS>::kTasks];
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t row = blockIdx.x * LM_HC_SINKHORN_MULTI_WARPS + warp;
+	if ( row < rows )
+		LmHcSinkhornRow<STREAMS>(partials, scale, base, pre, post, comb_out, width, rms_epsilon, iterations, epsilon, row, lane, mix[warp]);
+	LmDependentRelease();
 }
 
 template<uint32_t STREAMS>
@@ -483,7 +708,15 @@ static int32_t LmHcSinkhornMixes(const uint16_t *streams, const float *fn, const
 	const int32_t status = LmHcSinkhornPartials<STREAMS>(streams, fn, partials, rows, width, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
+#ifdef __CUDACC__
+	if ( rows >= 32u )
+		LM_LAUNCH_DEPENDENT((LmHcSinkhornMultiKernel<STREAMS>), (rows + LM_HC_SINKHORN_MULTI_WARPS - 1u) / LM_HC_SINKHORN_MULTI_WARPS,
+			LM_HC_SINKHORN_MULTI_WARPS * 32u, 0, stream, partials, scale, base, pre, post, comb, rows, width, rms_epsilon, iterations, epsilon);
+	else
+		LM_LAUNCH_DEPENDENT((LmHcSinkhornKernel<STREAMS>), rows, 32u, 0, stream, partials, scale, base, pre, post, comb, width, rms_epsilon, iterations, epsilon);
+#else
 	LM_LAUNCH((LmHcSinkhornKernel<STREAMS>), rows, 32u, 0, stream, partials, scale, base, pre, post, comb, width, rms_epsilon, iterations, epsilon);
+#endif
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
@@ -501,9 +734,47 @@ template<uint32_t STREAMS>
 __global__ void LmHcCollapseKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre, uint16_t *__restrict__ output,
 	uint32_t width)
 {
+	LmDependentWait();
 	const uint32_t row = blockIdx.y;
+#ifdef __CUDACC__
+	float p[STREAMS];
+	#pragma unroll
+	for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+		p[copy] = __ldg(pre + (uint64_t)row * STREAMS + copy);
+	if ( (width & 7u) == 0u && gridDim.x * blockDim.x < width && LmIsAligned16(streams) && LmIsAligned16(output) )
+	{
+		const uint32_t octets = width >> 3u;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < octets; q += gridDim.x * blockDim.x )
+		{
+			const uint32_t offset = q << 3u;
+			float total[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+			#pragma unroll
+			for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+			{
+				float x[8];
+				LmLoadBf16x8AsFloat(__ldg((const uint4 *)(streams + ((uint64_t)row * STREAMS + copy) * width + offset)), x);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					total[k] += p[copy] * x[k];
+			}
+			*(uint4 *)(output + (uint64_t)row * width + offset) = LmPackUint4FloatToBf16(total);
+		}
+		LmDependentRelease();
+		return;
+	}
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
+	{
+		float total = 0.0f;
+		#pragma unroll
+		for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+			total += p[copy] * LmBf16ToFloat(__ldg(streams + ((uint64_t)row * STREAMS + copy) * width + element));
+		output[(uint64_t)row * width + element] = LmFloatToBf16(total);
+	}
+#else
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
 		output[(uint64_t)row * width + element] = LmHcCollapseElement<STREAMS>(streams, pre, row, width, element);
+#endif
+	LmDependentRelease();
 }
 
 template<uint32_t STREAMS>
@@ -515,6 +786,50 @@ __global__ void LmHcPostBf16Kernel(const uint16_t *out_bf16,const uint16_t *snap
 	LmDependentRelease();
 	if ( row >= rows || hc == 0u || hc > STREAMS )
 		return;
+#ifdef __CUDACC__
+	if ( hc == STREAMS && (width & 7u) == 0u && LmIsAligned16(out_bf16) && LmIsAligned16(snapshot_bf16) && LmIsAligned16(streams_bf16) )
+	{
+		const uint32_t octets = width >> 3u;
+		if ( blockIdx.y * blockDim.x >= octets )
+			return;
+		float p[STREAMS], c[STREAMS][STREAMS];
+		#pragma unroll
+		for ( stream = 0u; stream < STREAMS; ++stream )
+			p[stream] = LmBf16ToFloat(LmFloatToBf16(__ldg(post_f32 + (uint64_t)row * STREAMS + stream)));
+		#pragma unroll
+		for ( source = 0u; source < STREAMS; ++source )
+			#pragma unroll
+			for ( stream = 0u; stream < STREAMS; ++stream )
+				c[source][stream] = LmBf16ToFloat(LmFloatToBf16(__ldg(comb_f32 + (uint64_t)row * STREAMS * STREAMS + source * STREAMS + stream)));
+		for ( uint32_t q = blockIdx.y * blockDim.x + threadIdx.x; q < octets; q += blockDim.x * gridDim.y )
+		{
+			const uint32_t offset = q << 3u;
+			float x[8], src[STREAMS][8];
+			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(out_bf16 + (uint64_t)row * width + offset)), x);
+			#pragma unroll
+			for ( source = 0u; source < STREAMS; ++source )
+				LmLoadBf16x8AsFloat(*(const uint4 *)(snapshot_bf16 + ((uint64_t)row * STREAMS + source) * width + offset), src[source]);
+			#pragma unroll
+			for ( stream = 0u; stream < STREAMS; ++stream )
+			{
+				float res[8];
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+				{
+					float v = 0.0f;
+					#pragma unroll
+					for ( source = 0u; source < STREAMS; ++source )
+						v = fmaf(c[source][stream], src[source][k], v);
+					v = LmBf16ToFloat(LmFloatToBf16(v));
+					const float contrib = LmBf16ToFloat(LmFloatToBf16(p[stream] * x[k]));
+					res[k] = contrib + v;
+				}
+				*(uint4 *)(streams_bf16 + ((uint64_t)row * STREAMS + stream) * width + offset) = LmPackUint4FloatToBf16(res);
+			}
+		}
+		return;
+	}
+#endif
 	for (index=threadIdx.x; index<hc; index+=blockDim.x)
 		post[index] = LmBf16ToFloat(LmFloatToBf16(post_f32[((uint64_t)row * hc) + index]));
 	for (index=threadIdx.x; index<(hc * hc); index+=blockDim.x)
@@ -545,6 +860,48 @@ __global__ void LmHcPostF32Kernel(const uint16_t *out_bf16,const uint16_t *snaps
 	float residual[STREAMS],out,value;
 	if ( row >= rows || hc == 0u || hc > STREAMS )
 		return;
+#ifdef __CUDACC__
+	if ( hc == STREAMS && (width & 7u) == 0u && LmIsAligned16(out_bf16) && LmIsAligned16(snapshot_bf16) && LmIsAligned16(streams_bf16) )
+	{
+		const uint32_t octets = width >> 3u;
+		if ( blockIdx.y * blockDim.x >= octets )
+			return;
+		float p[STREAMS], c[STREAMS][STREAMS];
+		#pragma unroll
+		for ( stream = 0u; stream < STREAMS; ++stream )
+			p[stream] = __ldg(post_f32 + (uint64_t)row * STREAMS + stream);
+		#pragma unroll
+		for ( stream = 0u; stream < STREAMS; ++stream )
+			#pragma unroll
+			for ( source = 0u; source < STREAMS; ++source )
+				c[stream][source] = __ldg(comb_f32 + (uint64_t)row * STREAMS * STREAMS + stream * STREAMS + source);
+		for ( uint32_t q = blockIdx.y * blockDim.x + threadIdx.x; q < octets; q += blockDim.x * gridDim.y )
+		{
+			const uint32_t offset = q << 3u;
+			float x[8], src[STREAMS][8];
+			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(out_bf16 + (uint64_t)row * width + offset)), x);
+			#pragma unroll
+			for ( source = 0u; source < STREAMS; ++source )
+				LmLoadBf16x8AsFloat(*(const uint4 *)(snapshot_bf16 + ((uint64_t)row * STREAMS + source) * width + offset), src[source]);
+			#pragma unroll
+			for ( stream = 0u; stream < STREAMS; ++stream )
+			{
+				float res[8];
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+				{
+					float v = 0.0f;
+					#pragma unroll
+					for ( source = 0u; source < STREAMS; ++source )
+						v = fmaf(c[stream][source], src[source][k], v);
+					res[k] = fmaf(p[stream], x[k], v);
+				}
+				*(uint4 *)(streams_bf16 + ((uint64_t)row * STREAMS + stream) * width + offset) = LmPackUint4FloatToBf16(res);
+			}
+		}
+		return;
+	}
+#endif
 	for (index=threadIdx.x; index<hc; index+=blockDim.x)
 		post[index] = post_f32[((uint64_t)row * hc) + index];
 	for (index=threadIdx.x; index<(hc * hc); index+=blockDim.x)
