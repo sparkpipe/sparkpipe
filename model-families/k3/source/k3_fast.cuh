@@ -825,8 +825,8 @@ static int32_t K3MoeCellsMmaFastLaunch(const void *w1_weight, const void *w2_wei
 		static bool w1_carveout_set = false;
 		if ( !w1_carveout_set )
 		{
-			(void)cudaFuncSetAttribute((const void *)K3CellMmaW1SituKernel<8u>,
-				cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+			(void)SparkGpuFuncSetAttribute((const void *)K3CellMmaW1SituKernel<8u>,
+				SPARK_GPU_FUNCTION_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT, 100);
 			w1_carveout_set = true;
 		}
 		LM_LAUNCH_DEPENDENT((K3CellMmaW1SituKernel<8u>), max_active * w1_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
