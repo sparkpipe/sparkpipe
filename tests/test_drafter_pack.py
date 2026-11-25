@@ -237,6 +237,53 @@ def test_glm53(scratch):
           f"glm53dspark: nested layer_count refuses out-of-range layer: {result.stderr}")
 
 
+def test_qwen38max(scratch):
+    checkpoint, target_a, target_b, out = (
+        scratch / "qwen38max", scratch / "qwen38max-target" / "model-bf16-00001.safetensors",
+        scratch / "qwen38max-target" / "model-bf16-00012.safetensors", scratch / "qwen38max-out")
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({
+        "architectures": ["DSparkDraftModel"], "num_hidden_layers": 2, "hidden_size": 8,
+        "block_size": 7, "markov_rank": 4,
+        "dflash_config": {"mask_token_id": 12, "projector_type": "dspark", "target_layer_ids": [4, 20, 36, 56, 72, 88]}}))
+    sources = write_safetensors(checkpoint / "model.safetensors", {
+        "fc.weight": ("BF16", [8, 48], None), "hidden_norm.weight": ("BF16", [8], None),
+        "norm.weight": ("BF16", [8], None), "layers.0.self_attn.q_proj.weight": ("BF16", [8, 8], None),
+        "layers.1.mlp.down_proj.weight": ("BF16", [8, 16], None),
+        "markov_head.markov_w1.weight": ("BF16", [32, 4], None),
+        "markov_head.markov_w2.weight": ("BF16", [32, 4], None),
+        "confidence_head.proj.weight": ("BF16", [1, 12], None), "confidence_head.proj.bias": ("BF16", [1], None)})
+    sources.update(write_safetensors(target_a, {
+        "model.embed_tokens.weight": ("BF16", [32, 8], None),
+        "model.layers.0.input_layernorm.weight": ("BF16", [8], None)}))
+    sources.update(write_safetensors(target_b, {
+        "lm_head.weight": ("BF16", [32, 8], None),
+        "model.norm.weight": ("BF16", [8], None),
+        "model.layers.91.self_attn.o_proj.weight": ("BF16", [8, 8], None),
+        "mtp.fc.weight": ("BF16", [8, 16], None),
+        "mtp.norm.weight": ("BF16", [8], None)}))
+    result = run("--drafter", "qwen38maxdspark", "--checkpoint", checkpoint, "--target", target_a, "--target", target_b,
+                 "--revision", "faaee89a1b84", "--out", out)
+    check(result.returncode == 0, f"qwen38maxdspark packs: {result.stderr}")
+    _, _, manifest, payloads = read_pack(out / "qwen38maxdspark.bf16.tp1.rank0.sp")
+    check(manifest["format"]["drafter"] == "qwen38maxdspark" and
+          set(payloads) == {name for name in sources if not name.startswith(("model.", "mtp.")) and name != "lm_head.weight"} |
+          {"target.embed", "target.head", "target.norm"}, f"qwen38maxdspark: packed names {sorted(payloads)}")
+    for name, blob in payloads.items():
+        check(blob == sources[manifest["tensors"][name]["source"]], f"qwen38maxdspark: {name} byte for byte")
+    receipt = json.loads((out / "qwen38maxdspark.bf16.tp1.rank0.sp.receipt.json").read_text())
+    check(len(receipt["skipped"]) == 4 and len(receipt["sources"]) == 3,
+          "qwen38maxdspark: skips target layers and mtp weights and records all 3 sources")
+    deep = scratch / "qwen38max-deep"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text((checkpoint / "config.json").read_text())
+    write_safetensors(deep / "model.safetensors", {"layers.2.input_layernorm.weight": ("BF16", [8], None)})
+    result = run("--drafter", "qwen38maxdspark", "--checkpoint", deep, "--target", target_a, "--target", target_b,
+                 "--revision", "faaee89a1b84", "--out", scratch / "o10")
+    check(result.returncode == 1 and "layer 2 is past num_hidden_layers = 2" in result.stderr,
+          f"qwen38maxdspark: layer_count refuses out-of-range layer: {result.stderr}")
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="drafter-pack-") as directory:
         scratch = Path(directory)
@@ -244,6 +291,7 @@ def main():
         test_dsv41(scratch)
         test_qwen(scratch)
         test_glm53(scratch)
+        test_qwen38max(scratch)
     for failure in FAILURES:
         print(f"FAIL {failure}")
     if FAILURES:
