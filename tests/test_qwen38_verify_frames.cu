@@ -1021,8 +1021,44 @@ static void Check(uint32_t linear_bytes, const char *model)
 		(unsigned long long)rig.recurrent_bytes);
 }
 
+static void CheckOverlayAndBatchInvariance(void)
+{
+	using G27 = Qwen38_27bGeometry<1u>;
+	using M27 = QwenHybridModel<G27>;
+	QwenHybridState<G27> st;
+	memset(&st, 0, sizeof(st));
+	st.tp_degree = 1u;
+	st.tp_rank = 0u;
+	st.max_rows = 1024u;
+	st.slots = 64u;
+	st.ffn_rows = 17408u;
+	st.linear_bytes = 2u;
+	st.max_positions = 32768u;
+	Need(M27::Shape(&st) == SPARK_STATUS_OK, "qwen3.8-27b", "Shape succeeds", 0u, 0u, 0u);
+	const uint64_t lane_bytes = M27::Plan(&st, 0, 1u);
+	Need(lane_bytes <= 132u * 1024u * 1024u, "qwen3.8-27b", "overlaid lane scratch stays within 132 MiB", (uint32_t)(lane_bytes >> 20u), 0u, 0u);
+	uint8_t *fake_base = (uint8_t *)0x100000000ULL;
+	(void)M27::Plan(&st, fake_base, 1u);
+	Need(st.attn_gathered == st.attn_local && st.received == st.send && st.merged_gate == 0, "qwen3.8-27b",
+		"tp1 attention aliases hold", 0u, 0u, 0u);
+	Need(st.gdn_qkvz == st.qkv && (uint8_t *)st.ba >= (uint8_t *)st.gdn_qkvz + 1024u * (st.gdn_channels + st.gdn_v) * sizeof(uint16_t),
+		"qwen3.8-27b", "gdn_qkvz overlays qkv+z without aliasing ba", 0u, 0u, 0u);
+	SparkStageRunnerStep step;
+	memset(&step, 0, sizeof(step));
+	step.commit = 0u;
+	step.sequences = 1u;
+	Need(M27::Exact(&step) == 1u, "qwen3.8-27b", "verify with <8 sequences is exact", 0u, 0u, 0u);
+	step.sequences = 8u;
+	Need(M27::Exact(&step) == 0u, "qwen3.8-27b", "batched verify with >=8 sequences uses fast path", 0u, 0u, 0u);
+	step.commit = 1u;
+	step.sequences = 1u;
+	Need(M27::Exact(&step) == 0u, "qwen3.8-27b", "commit step uses fast path", 0u, 0u, 0u);
+	printf("ok qwen3.8-27b overlay & exactness contract: lane_bytes=%llu MiB\n", (unsigned long long)(lane_bytes >> 20u));
+}
+
 int main(void)
 {
+	CheckOverlayAndBatchInvariance();
 	Check<Small27b>(1u, "qwen3.8-27b (fp8 linear)");
 	Check<Small27b>(2u, "qwen3.8-27b (bf16 linear)");
 	Check<SmallMax>(2u, "qwen3.8-max");
