@@ -18,7 +18,7 @@ SITES = {
     "inference/kernels/weight_prefetch.cuh": 1,
     "inference/runner/pass_prefill.cuh": 1,
     "inference/runner/stage_model_cuda.cuh": 2,
-    "inference/runner/stage_runner.cu": 1,
+    "inference/runner/stage_runner.cu": 2,
     "model-families/dsv41_flash/source/dsv41_flash_stage.cuh": 19,
     "model-families/gemma4/source/gemma4_stage.cuh": 1,
     "model-families/glm52/source/glm52_stage.cuh": 1,
@@ -37,7 +37,7 @@ SITES = {
     "modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu": 1,
     "modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu": 1,
     "modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu": 1,
-    "ring/transport/tp_device_collective.c": 29,
+    "ring/transport/tp_device_collective.c": 27,
     "runtime/spark_weightd_lazy_pack.c": 1,
 }
 HOST_VISIBLE = {
@@ -55,7 +55,7 @@ HOST_VISIBLE = {
     "modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu": 4,
     "modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu": 4,
     "node/model_residentd.c": 2,
-    "ring/transport/tp_device_collective.c": 2,
+    "ring/transport/tp_device_collective.c": 3,
 }
 HOST_CALL = re.compile(r"\bSparkGpu(HostAlloc|MallocHost|HostRegister|MallocManaged|HostGetDevicePointer|LaunchHostFunc)\s*\(")
 CALL = re.compile(r"\bSparkGpu(" + "|".join(sorted(list(ASYNC) + list(SYNC), key=len, reverse=True)) + r")\s*\(")

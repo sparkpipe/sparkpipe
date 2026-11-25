@@ -12,6 +12,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "runtime/launch.h"
+#include "model-families/glm52/include/sparkpipe/spark_glm52_model.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -20,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define G53_HIDDEN 6144u
+#define G53_HIDDEN SPARK_GLM52_MODEL_HIDDEN_DIMENSION
 #define G53_TAPS 5u
 #define G53_TAP_WIDTH (G53_TAPS * G53_HIDDEN)
 #define G53_LAYERS 3u
@@ -30,12 +31,12 @@
 #define G53_HALF (G53_HEAD_DIM / 2u)
 #define G53_Q_WIDTH (G53_HEADS * G53_HEAD_DIM)
 #define G53_KV_WIDTH (G53_KV_HEADS * G53_HEAD_DIM)
-#define G53_MLP 12288u
+#define G53_MLP SPARK_GLM52_MODEL_DSPARK_DRAFT_INTERMEDIATE_DIMENSION
 #define G53_BLOCK 8u
 #define G53_SLIDING 2048u
 #define G53_WINDOW (G53_SLIDING - G53_BLOCK)
 #define G53_COLUMNS (G53_WINDOW + G53_BLOCK)
-#define G53_VOCAB 154880u
+#define G53_VOCAB SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT
 #define G53_MARKOV 256u
 #define G53_CONFIDENCE (G53_HIDDEN + G53_MARKOV)
 #define G53_CANDIDATES 2048u

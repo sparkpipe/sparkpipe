@@ -12,6 +12,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "runtime/launch.h"
+#include "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -37,7 +38,7 @@
 #define G53F_SLIDING 2048u
 #define G53F_WINDOW 2048u
 #define G53F_COLUMNS (G53F_WINDOW + G53F_BLOCK)
-#define G53F_VOCAB 154880u
+#define G53F_VOCAB SPARK_GLM5_NEXT_MODEL_OUTPUT_VOCAB_COUNT
 #define G53F_CONV_GROUP 16u
 #define G53F_CONV_GROUPS (G53F_HIDDEN / G53F_CONV_GROUP)
 #define G53F_CONV_TAPS 2u

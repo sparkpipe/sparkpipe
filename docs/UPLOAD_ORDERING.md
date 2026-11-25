@@ -40,7 +40,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `inference/kernels/weight_prefetch.cuh` | 1 upload | Serving write after idle: the prefetch plan is published after a graph capture ends and before the graph's first launch. |
 | `inference/runner/pass_prefill.cuh` | 1 fill | Load: the pass's buffers at allocation. |
 | `inference/runner/stage_model_cuda.cuh` | 2 fills | Load. |
-| `inference/runner/stage_runner.cu` | 1 readback | Readback after sync: the group offsets, after `SparkGpuStreamSynchronize(state->stream)`. |
+| `inference/runner/stage_runner.cu` | 1 readback, 1 fill | Readback after sync: the group offsets, after `SparkGpuStreamSynchronize(state->stream)`. Fill: load, the chain step word, zeroed where `StageRunnerCreateBuffers` allocates it. Only the later steps of a decode chain advance the word, and the dispatch after such a chain zeroes it again on its own stream before its kernels read it. |
 | `model-families/dsv41_flash/source/dsv41_flash_stage.cuh` | 7 uploads, 11 readbacks, 1 device copy | Uploads: load (expert placement, token map, engram tables and resident engram rows, `Upload`). Readbacks: after sync (route and step dumps, the frame readback at 3039). Device copy: load, ordered on the legacy stream with the cell packing kernel it feeds, and followed by `SparkGpuDeviceSynchronize`. |
 | `model-families/gemma4/source/gemma4_stage.cuh` | 1 upload | Load: the YaRN table. |
 | `model-families/glm52/source/glm52_stage.cuh` | 1 upload | Load: the rope table. |
@@ -59,7 +59,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu` | 1 readback | Readback after sync: `KX2Readback`, the probe's reads of a sequence's paged keys and values (after the ingest that wrote them synchronized the module's stream), of the forward's rows and of each layer's output (after the forward's stream sync). The module uploads nothing at load: it builds its rope table on the device. |
 | `modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu` | 1 readback | Readback after sync: `G53FReadback`, the probe's reads of a sequence's window keys and values (after the ingest that wrote them synchronized the module's stream), of the forward's rows and of each layer's output (after the forward's stream sync). The module uploads nothing at load: it builds its rope table on the device. |
 | `modules/axk2_dspark_draft_stage/source/spark_axk2_dspark_module.cu` | 1 readback | Readback after sync: `Axk2Readback`, the probe's reads of a sequence's window keys and values (after the ingest that wrote them synchronized the module's stream), of the forward's rows and of each layer's output (after the forward's stream sync). The module uploads nothing at load: it builds its YaRN rope table on the device. |
-| `ring/transport/tp_device_collective.c` | 11 uploads, 15 readbacks, 3 fills | See below. |
+| `ring/transport/tp_device_collective.c` | 10 uploads, 15 readbacks, 2 fills | See below. |
 | `runtime/spark_weightd_lazy_pack.c` | 1 device copy | Load: on a device without unified memory, the bind copies a held pack from its device-read-only import into the spine it has just allocated, in 1 GiB pieces, and returns only after the copies land. No stream has work on that spine before the bind returns. |
 
 ### The mesh collective
@@ -67,11 +67,14 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 - **`EnsureCells`**, once per collective: a fill of the arrival ring, the zeroing of the round control block, and five 8-byte seeds from pageable variables.
   - The zeroing was `SparkGpuMemsetAsync(..., 0)`, legacy-stream work that the collective's kernels on the non-blocking submission stream do not wait for. It is now `SparkGpuMemset`, which has landed when it returns.
   - Class: load. Fixed for a discrete GPU: the seeds and fills land before any round runs.
-- **`SeedEpoch`**, per chain: two uploads from the pinned published cell and one fill. Every dispatch starts a chain, because the batch engine gives each submission its own request id.
+- **`SeedEpoch`**, per chain: one upload from the pinned published cell. It covers the control words from the expected cancel word up to the shipped cell: it sets the cancel word and the epoch and zeroes the rest. Every dispatch starts a chain, because the batch engine gives each submission its own request id.
   - `ChainKey` first checks that the active stream has finished.
-  - When there is an active stream, the three writes are now asynchronous on it, so they are ordered before the round kernels that follow on the same stream without any host wait. Switching streams requires the old one to be idle.
-  - Only the first chain, with no active stream yet, uses the synchronous copies and fill, which land before they return.
-  - Before: the pinned uploads were host-synchronous, and the fill was a race on any GPU. Class: serving write after idle; per step, stream-ordered.
+  - The upload is asynchronous on the queue the caller names through `ChainKeyQueue`, or on the active stream when the caller names none. It is ordered before the round kernels that follow on the same stream without any host wait.
+  - The stage runner names its own stream, which carries every round of a dispatch. A lane's rounds are issued on it too.
+  - A round on another stream requires the active stream to be idle first. The one such round is pass prefill's gather, issued on the pass's gather stream when a pass first opens. It is ordered behind the seed when the runner's stream is the active stream, and when a weight switch runs before the pass, because the switch synchronizes the runner's stream.
+  - **Not ordered:** a rank whose first collective work is a streamed prefill without a weight switch. The collective has no active stream yet, so nothing makes the gather round wait for the seed queued on the runner's stream. Before the seed took a queue, this case used the synchronous writes.
+  - Only a caller that names no queue, while the collective has no active stream, uses the synchronous upload, which lands before it returns. No stream has collective work then: it is the first chain, or `EndChain` found the stream idle.
+  - Class: serving write after idle; per step, stream-ordered.
 - **The rounds loop** (`EnqueueRoundsInternal`): two uploads of the round control words before the loop kernel launches.
   - They are now asynchronous on the submission stream, ordered before the loop kernel. The source is a pageable struct and a stack pair, which the copy stages before it returns.
   - Before: a race on a discrete GPU.
@@ -80,8 +83,8 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
   - Fixed: `ArmCapture` now synchronizes the collective's active stream, which `GraphPreLaunch` set to the launch stream, before it writes.
 - **`DisarmCapture`:** two reads of the sequence words after a capture.
   - Nothing executes during a capture, and the stream was idle when the capture was armed, so the values are final. Class: readback after sync.
-- **Readbacks after sync:** the rounds loop's control readback (1827), `GraphPreLaunch` (2292), and the timing readback (2676, 2679), each after a stream sync or terminal check.
-- **Monitoring reads:** the wait-kernel timeout report (1024, 1025), `DeviceRoundsDone`, `GraphProgress`, the stuck, arrival and diag dumps, and `GraphError`.
+- **Readbacks after sync:** the rounds loop's control readback in `EnqueueRoundsInternal`, `GraphPreLaunch`, and the two timing readbacks in `HardwareStats`, each after a stream sync or terminal check.
+- **Monitoring reads:** the two reads of the wait-kernel timeout report (`ReportWaitKernelTimeout`), `DeviceRoundsDone`, the two reads of `GraphProgress`, the stuck, arrival and diag dumps, and `GraphError`.
 - **`ClearGraphError`:** one upload of zero into the error word. No production code calls it.
 - **`ReportRecords`:** one upload of six zero words that clears the fault record (`fault_phase` to `guard_poisons`) after the host has printed it.
   - It runs only when the record holds a round-loop timeout or a guard poison. A healthy round leaves the record empty, and nothing is written.
@@ -138,7 +141,7 @@ Classes:
 | `modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu` | 5 | Staging per dispatch and one readback. The tap and position staging of `ingest`: each part of up to 256 rows is written, copied on the module's stream and written into the paged context with a stream sync before the next part reuses them. The block forward's descriptor and page table: written before ingest or forward, copied on the module's stream, and rewritten only after the stream sync that ends this one, which every path takes. The draft's picks (tokens, confidences and tree branches): readback after a wait, copied on the module's stream at the end of `propose` and read after its stream sync. |
 | `modules/axk2_dspark_draft_stage/source/spark_axk2_dspark_module.cu` | 4 | Staging per dispatch and one readback. The tap and position staging of `ingest`: each part of up to 256 rows is written, copied on the module's stream and written into the window with a stream sync before the next part reuses them. The draft's descriptor (positions, anchor, sampling rule, window span and mask): written before the forward, copied on the module's stream, and rewritten only by the next draft, after the stream sync that ends this one, which every path takes. The draft's picks (tokens, confidences and tree branches): readback after a wait, copied on the module's stream at the end of `propose` and read after its stream sync. |
 | `node/model_residentd.c` | 2 | The pipeline boundary, mapped for the host-RDMA transport. It is used only by a rank with a previous or next pipeline stage, which no served lane has, and is claimed per route. |
-| `ring/transport/tp_device_collective.c` | 2 | See below. |
+| `ring/transport/tp_device_collective.c` | 3 | See below. |
 | `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh` | 1 | The device alias of the collective's registered receive region: protocol cells. The mesh needs host page-table access, which GB10 has and the 5090 refuses at setup. |
 
 ### The stage runner
@@ -169,5 +172,8 @@ Classes:
 
 ### The mesh collective
 
-- **The published cell:** `ChainKey` writes the seed words only after it finds the active stream idle, and returns BUSY otherwise. Each control readback into the cell waits for its stream.
+- **The published cell:** `ChainKey` writes the seed words only after it finds the active stream idle, and returns BUSY otherwise.
+  - `GraphCancelSeed` rewrites the seed's cancel word only when the host has seen a newer cancel than the one last uploaded. A round that sees one fails its dispatch, so no seed upload of that dispatch is still queued.
+  - Each control readback into the cell is read after its stream is synchronized. `ReadControl` waits itself. The graph settle queues the readback, and the stage runner reads it after its sync of the dispatch stream.
 - **The registered receive region:** protocol cells. The host writes the base cell's rank map and degree, fences, then writes the value word. Kernels and peers read the value word.
+- **The registered staging export:** protocol cells. It is weightd's per-peer staging area, mapped into the engine, and the collective registers it only on a device without coherent pageable host access, as it does the receive region. Round kernels write each peer's slice into its staging slot and weightd ships it. A round is published on a band only after that band's shipped cell reports the previous round, so weightd has finished reading a slot before a kernel rewrites it. The engine's host code does not read or write the area.

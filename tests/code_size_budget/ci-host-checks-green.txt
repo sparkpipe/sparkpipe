@@ -1,0 +1,2 @@
++55
+Complexity ceiling repair with no behaviour change: the multi-lane draft planner in `runtime/model_batch_engine.c` becomes a lane-state struct and four helpers (+47: the struct and the function headers), the chat-suffix cache point in `node/model_api.c` moves into its own function (+6), and the two GLM-5.3 drafter modules include their model contract header (+2).
