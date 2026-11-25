@@ -51,8 +51,9 @@ class NodePackPrune(unittest.TestCase):
         self.keep = scratch / "keep.json"
         self.keep.write_text(json.dumps({"keep": [{"path": "motif3.tp16", "since": "2026-11-01", "reason": "staged for the Motif 3 driver"}]}))
         self.environment = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", FAKE_FLEET=str(self.fake), SPARK_LANES=str(self.lanes))
+        self.dsv41_model = document["lanes"]["deepseek-v4.1-flash"]["model"]
         self.used = []
-        for model in ("k3", "dsv41_flash"):
+        for model in ("k3", self.dsv41_model):
             for path in stage_lane.rank_weight_files(stage_lane.MODELS[model], 3):
                 self.used.append(self.put(path[len(f"/home/{HOST}/"):], 64))
         k3 = stage_lane.rank_pack_path(stage_lane.MODELS["k3"], 3)[len(f"/home/{HOST}/"):]
@@ -166,7 +167,7 @@ class NodePackPrune(unittest.TestCase):
                 self.assertFalse([path for path in named if path == entry["path"] or path.startswith(entry["path"] + "/")])
 
     def test_a_node_missing_a_named_file_deletes_nothing(self):
-        sibling = stage_lane.rank_weight_files(stage_lane.MODELS["dsv41_flash"], 3)[-1]
+        sibling = stage_lane.rank_weight_files(stage_lane.MODELS[self.dsv41_model], 3)[-1]
         Path(self.home.as_posix() + sibling[len(f"/home/{HOST}"):]).unlink()
         dry = self.run_tool()
         self.assertIn(f"MISSING {HOST} {sibling} is named by a lane record and absent", dry.stdout)
