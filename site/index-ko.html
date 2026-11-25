@@ -28,7 +28,13 @@
 <style>
 h1 { max-width: 14em; }
 .company div { grid-template-columns: 200px minmax(0, 1fr); }
-@media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } }
+.rais-banner { background: linear-gradient(90deg, color-mix(in srgb, var(--signal) 14%, var(--sheet)), var(--sheet) 55%, var(--raise)); border-bottom: 1px solid color-mix(in srgb, var(--signal) 40%, var(--rule)); }
+.rais-banner-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding-block: 12px; }
+.rais-badge { flex: none; font: 700 11px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; padding: 5px 8px; border-radius: 3px; background: var(--signal); color: var(--signal-ink); }
+.rais-banner-copy { flex: 1 1 360px; margin: 0; font-size: 14px; line-height: 1.45; color: var(--steel); }
+.rais-banner-copy b { color: var(--ink); font-weight: 600; }
+.rais-banner-cta { flex: none; margin-left: auto; }
+@media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } .rais-banner-cta { margin-left: 0; } }
 </style>
 </head>
 <body>
@@ -63,6 +69,13 @@ h1 { max-width: 14em; }
 </header>
 
 <main id="main">
+<aside class="rais-banner" aria-label="RAIS v1.0 벤치마크 공개 안내">
+  <div class="wrap rais-banner-inner">
+    <span class="rais-badge">RAIS v1.0 공개</span>
+    <p class="rais-banner-copy">연산·메모리·네트워크 3대 루프라인 기반 공개 추론 벤치마크. DGX Spark 16대 실측: <b>19 / 19 모델 전원 VALID 인증</b>, <b class="num">46.7 / 100</b> 인증 플릿 RAIS — K-EXAONE 2.0 <b class="num">60.0</b>, Kimi K3 <b class="num">57.6</b>, Solar Open 2 <b class="num">53.1</b>, Qwen 3.8 Max <b class="num">52.7</b>, DeepSeek V4.1 Flash <b class="num">46.3</b>(콜드 프리필 <span class="num">19.2k</span> tok/s).</p>
+    <a class="btn small solid rais-banner-cta" href="rais-ko.html">RAIS v1.0 보기</a>
+  </div>
+</aside>
 <section class="wrap hero">
   <p class="label hero-kicker">큰 코드베이스에서 일하는 엔지니어를 위해</p>
   <h1>내 코드베이스가 일주일 내내 캐시에 남는 나만의 플릿.</h1>
@@ -328,7 +341,7 @@ curl $OPENAI_BASE_URL/chat/completions \
       <div class="bar top"><span>K3, 추측</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, 단일 요청</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 3대 루프라인 표준인 <a href="rais-ko.html">RAIS v1.0 스코어카드</a> 기준 DGX Spark 16대 플릿에서 19개 모델 중 18종(플릿 비중 97.5%)이 VALID 인증을 통과해 <b>인증 플릿 RAIS 46.1 / 100</b>을 기록했습니다(K-EXAONE 2.0 <b>57.0</b>, Kimi K3.1 Pro <b>54.7</b>, Kimi K3 <b>54.3</b>, Solar Open 2 <b>50.9</b>, Qwen 3.8 Max <b>50.2</b>, DeepSeek V4.1 Flash <b>48.2</b>·콜드 프리필 10.7k–18.2k tok/s). 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)와 <span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>에 공개되어 있습니다.</p>
+    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 3대 루프라인 표준인 <a href="rais-ko.html">RAIS v1.0 스코어카드</a> 기준 DGX Spark 16대 플릿에서 19개 모델 전원(플릿 비중 100%)이 VALID 인증을 통과해 <b>인증 플릿 RAIS 46.7 / 100</b>을 기록했습니다(K-EXAONE 2.0 <b>60.0</b>, Kimi K3 <b>57.6</b>, Solar Open 2 <b>53.1</b>, Qwen 3.8 Max <b>52.7</b>, Qwen 3.8 27B <b>49.9</b>, DeepSeek V4.1 Flash <b>46.3</b>·콜드 프리필 11.0k–19.2k tok/s). 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)와 <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>에 공개되어 있습니다.</p>
   </div>
 </section>
 

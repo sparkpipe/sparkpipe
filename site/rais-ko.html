@@ -140,7 +140,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <a class="btn" href="#reproduce">내 엔진에서 실행</a>
         <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">전체 명세(영문)</a>
       </div>
-      <p class="note">참조 채점기: <span class="mono">tools/rais_score.py</span> · OpenAI 호환 러너: <span class="mono">tools/rais_bench.py</span>. DGX Spark 16대(<span class="mono">16x-gb10-1x100g</span>) 실측 스윕 공개: <b>19개 모델 중 18종 VALID 인증</b>(플릿 비중 97.5%, <b>인증 플릿 RAIS 46.1</b>, 엄격 <b>44.9</b>). 원본 기록: <span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
+      <p class="note">참조 채점기: <span class="mono">tools/rais_score.py</span> · OpenAI 호환 러너: <span class="mono">tools/rais_bench.py</span>. DGX Spark 16대(<span class="mono">16x-gb10-1x100g</span>) 단일 릴리스 실측 스윕 공개: <b>19개 표준 모델 전원 VALID 인증</b>(플릿 비중 100%, <b>인증 플릿 RAIS 46.7</b>). 원본 기록: <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.0</b> · 물리적 하한</span><span>0–100 척도</span></div>
@@ -288,7 +288,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>플릿 스코어카드 및 하드웨어 루프라인.</h2>
-    <p class="prose">DGX Spark 16대 실측 원본 기록(<span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>)을 <span class="mono">python3 tools/rais_score.py score --format html-data</span>로 직접 채점해 생성했습니다. 19개 표준 모델 중 18종(플릿 비중 97.5%, 티어 1 전 5종 및 티어 2 전 7종 포함)이 모든 이진 정확성 게이트를 통과(<span class="mono">VALID</span>)해 <b>인증 플릿 RAIS 46.1</b>(엄격 <b>44.9</b>)을 기록했습니다. <span class="mono">qwen3.8-flash</span>는 원시 completion 배치 프로브의 즉시 EOS 종료로 <span class="mono">INVALID</span>로 투명하게 표기하며, 미측정 세부 지표와 대기 프로필은 추정하지 않습니다.</p>
+    <p class="prose">DGX Spark 16대 단일 릴리스 실측 원본 기록(<span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>)을 <span class="mono">python3 tools/rais_score.py score --format html-data</span>로 직접 채점해 생성했습니다. 티어 1·2·3 전체를 포함한 19개 표준 모델 전원(플릿 비중 100%)이 4개 이진 정확성 게이트를 오류 0건으로 통과(<span class="mono">VALID</span>)해 <b>인증 플릿 RAIS 46.7</b>을 기록했습니다. 미측정 대기 하드웨어 프로필은 추정하거나 보간하지 않습니다.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
