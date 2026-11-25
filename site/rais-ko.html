@@ -91,10 +91,25 @@ h1 { max-width: 16em; }
 .gate-pill.fail { background: var(--error-fill); color: var(--error); border: 1px solid color-mix(in srgb, var(--error) 45%, transparent); }
 .gate-pill.warn { background: color-mix(in srgb, var(--signal) 12%, transparent); color: var(--signal); border: 1px solid color-mix(in srgb, var(--signal) 40%, transparent); }
 .rais-meta-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; font: 500 12px/1.5 var(--mono); color: var(--steel); }
+.rais-hist-box { border: 1px solid var(--rule); border-radius: 6px; background: var(--screen); padding: 18px 20px; display: grid; gap: 16px; }
+.rais-hist-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px 18px; }
+.rais-hist-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; font: 600 12px/1.3 var(--mono); color: var(--screen-ink); }
+.rais-hist-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.rais-hist-dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+.rais-hist-svg-wrap { width: 100%; overflow-x: auto; }
+.rais-hist-svg { width: 100%; min-width: 560px; height: auto; display: block; }
+.rais-hist-subgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rais-hist-subcard { border: 1px solid var(--screen-rule); border-radius: 4px; background: var(--screen-panel); padding: 9px 11px; display: grid; gap: 3px; }
+.rais-hist-subcard .k { font: 500 11px/1.3 var(--mono); color: var(--screen-dim); }
+.rais-hist-subcard .v { font: 700 14px/1.2 var(--mono); color: var(--screen-ink); display: flex; justify-content: space-between; gap: 6px; }
+.rais-hist-subcard .d { font-size: 11px; font-weight: 600; }
+.rais-hist-subcard .d.up { color: #86efac; }
+.rais-hist-subcard .d.down { color: var(--error); }
+.rais-hist-subcard .d.flat { color: var(--screen-dim); }
 .num-th { text-align: right; }
 td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 @media (max-width: 960px) {
-  .roof-cards, .rais-kpi, .rais-rf-grid, .rais-pillars-grid, .rais-sub-grid { grid-template-columns: minmax(0, 1fr); }
+  .roof-cards, .rais-kpi, .rais-rf-grid, .rais-pillars-grid, .rais-sub-grid, .rais-hist-subgrid { grid-template-columns: minmax(0, 1fr); }
   .rais-kpi div + div { border-left: 0; border-top: 1px solid var(--rule); }
 }
 </style>
@@ -281,9 +296,63 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
 </section>
 
+<section id="history" class="sec">
+  <div class="sec-rail">
+    <p class="label">03 시간별 추이</p>
+    <p class="label">시계열 기록</p>
+  </div>
+  <div class="sec-body">
+    <h2>시간에 따른 RAIS 향상 추이 및 세부 지표 변화.</h2>
+    <p class="prose">DGX Spark 16대 단일 릴리스 실측 스윕은 4개 축, 12개 세부 지표, 19개 모델별 실측치와 함께 <span class="mono">qualification/rais_history.jsonl</span>에 누적 기록됩니다. 보기를 전환해 플릿 전체 추이, 12개 세부 지표, 또는 개별 모델의 개선 곡선을 한눈에 확인하고, 각 릴리스 지점을 클릭해 기준선 대비 증감을 비교할 수 있습니다.</p>
+
+    <div class="rais-hist-box">
+      <div class="rais-hist-head">
+        <div class="rais-control">
+          <span class="label">차트 보기</span>
+          <div class="rais-pills" role="group" aria-label="시계열 차트 보기">
+            <button type="button" class="rais-pill" data-hist-view="fleet" aria-pressed="true">플릿 &amp; 4개 축</button>
+            <button type="button" class="rais-pill" data-hist-view="p1" aria-pressed="false">P1 디코드</button>
+            <button type="button" class="rais-pill" data-hist-view="p2" aria-pressed="false">P2 추측</button>
+            <button type="button" class="rais-pill" data-hist-view="p3" aria-pressed="false">P3 배치</button>
+            <button type="button" class="rais-pill" data-hist-view="p4" aria-pressed="false">P4 프리필</button>
+            <button type="button" class="rais-pill" data-hist-view="model" aria-pressed="false">개별 모델</button>
+          </div>
+        </div>
+        <div class="rais-control" id="rais-hist-model-wrap" style="display:none">
+          <label class="label" for="rais-hist-model">모델</label>
+          <select id="rais-hist-model"></select>
+        </div>
+      </div>
+      <div id="rais-hist-legend" class="rais-hist-legend"></div>
+      <div id="rais-hist-chart" class="rais-hist-svg-wrap"></div>
+      <div id="rais-hist-snapshot" class="rais-meta-row"></div>
+      <div id="rais-hist-subgrid" class="rais-hist-subgrid"></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>릴리스 (UTC)</th>
+            <th>인증</th>
+            <th class="num-th">플릿 RAIS</th>
+            <th class="num-th">기준 대비 Δ</th>
+            <th class="num-th">기본 R</th>
+            <th class="num-th">P1 디코드</th>
+            <th class="num-th">P2 추측</th>
+            <th class="num-th">P3 배치</th>
+            <th class="num-th">P4 프리필</th>
+          </tr>
+        </thead>
+        <tbody id="rais-hist-rows"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
 <section id="scorecard" class="sec">
   <div class="sec-rail">
-    <p class="label">03 실측 스코어카드</p>
+    <p class="label">04 실측 스코어카드</p>
     <p class="label">19개 플릿 모델</p>
   </div>
   <div class="sec-body">
