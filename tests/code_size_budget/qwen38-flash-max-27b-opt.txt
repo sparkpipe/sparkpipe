@@ -1,0 +1,2 @@
++898
+qwen38 GB10 (sm_121a) performance optimization: fused bit-exact NVFP4 MoE skinny W1+W3+SwiGLU and W2 kernels, direct gathered radix-select indexer mask eliminating scatter/memset/chunk loop, fused HC4 down+gate+inject and up+mix kernels, 64-row/block exact BF16 verify GEMV kernel, warp-level GDN head RMSNorm-gate, and 8 KB staged RMSNorm across qwen3.8-flash, qwen3.8-max, and qwen3.8-27b.
