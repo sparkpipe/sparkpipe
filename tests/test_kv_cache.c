@@ -3630,6 +3630,40 @@ static void SparkTestKvSharedPrefixAcrossCaches(void)
 	printf("PASS kv shared prefix: one cache publishes window pages, another imports the chain onto the same window slots, holders track both, and the private pool seal leaves window pages to the window\n");
 }
 
+static void SparkTestKvEmptyLaneRejectsWithoutBusy(void)
+{
+	SparkTestKvTransactions fixture;
+	SparkModelDriverFrame frame;
+	SparkTestKvTransactionsInitialize(&fixture,2u);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	frame = SparkTestKvTransactionFrame(&fixture.request);
+	assert(SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) == SPARK_STATUS_OK);
+	assert(SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u,1u},2u,SPARK_STATUS_IO_ERROR,0u) == SPARK_STATUS_IO_ERROR);
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_VALIDATION_FAILED);
+	fixture.request.admission_flags = 0u;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_VALIDATION_FAILED);
+	assert(SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) == SPARK_STATUS_VALIDATION_FAILED);
+	fixture.request.cache_lane_count = 1u;
+	fixture.request.active_slot_count = 1u;
+	fixture.request.new_token_count = 1u;
+	fixture.request.cache_lanes = &fixture.lanes[1];
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_OK);
+	frame = SparkTestKvTransactionFrame(&fixture.request);
+	assert(SparkKvLaneTransactionsClaim(&fixture.transactions,&frame) == SPARK_STATUS_OK);
+	fixture.request.cache_lane_count = 2u;
+	fixture.request.active_slot_count = 2u;
+	fixture.request.new_token_count = 2u;
+	fixture.request.cache_lanes = fixture.lanes;
+	fixture.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	assert(SparkKvLaneTransactionsAdmit(&fixture.transactions,&fixture.request) == SPARK_STATUS_BUSY);
+	assert(SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){1u},1u,SPARK_STATUS_OK,0u) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
 	int32_t status;
@@ -3726,5 +3760,6 @@ int main(void)
 	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	SparkTestKvPageCacheUnreadPrefixIsDropped();
 	SparkTestKvPageCacheDeduplicatedPublishIsARead();
+	SparkTestKvEmptyLaneRejectsWithoutBusy();
 	return(0);
 }

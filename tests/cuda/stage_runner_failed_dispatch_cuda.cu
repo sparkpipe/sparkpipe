@@ -9,6 +9,12 @@
 
 static int failures;
 static uint32_t failing_steps;
+static uint32_t end_chain_calls;
+static uint32_t verify_deferred_calls;
+static uint32_t end_chain_busy_once;
+static uint32_t active_chain;
+static uint64_t inject_graph_error;
+static SparkStageRunnerState *active_state;
 
 extern "C" {
 
@@ -70,6 +76,7 @@ uint32_t SparkTpDeviceCollectivePublished(const SparkTpDeviceCollective *collect
 SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *collective, void *stream)
 {
 	(void)collective; (void)stream;
+	verify_deferred_calls++;
 	return SPARK_STATUS_OK;
 }
 
@@ -88,13 +95,15 @@ SparkStatus SparkTpDeviceCollectiveGraphSettle(SparkTpDeviceCollective *collecti
 SparkStatus SparkTpDeviceCollectiveGraphSettleBegin(SparkTpDeviceCollective *collective, void *queue)
 {
 	(void)collective; (void)queue;
-	return SPARK_STATUS_UNSUPPORTED;
+	return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveGraphSettleFinish(SparkTpDeviceCollective *collective, uint64_t *error_out)
 {
-	(void)collective; (void)error_out;
-	return SPARK_STATUS_UNSUPPORTED;
+	(void)collective;
+	if ( error_out != 0 )
+		*error_out = inject_graph_error;
+	return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(SparkTpDeviceCollective *collective, void *stream)
@@ -112,6 +121,13 @@ SparkStatus SparkTpDeviceCollectiveGraphCancelSeed(SparkTpDeviceCollective *coll
 SparkStatus SparkTpDeviceCollectiveEndChain(SparkTpDeviceCollective *collective, void *cuda_stream)
 {
 	(void)collective; (void)cuda_stream;
+	end_chain_calls++;
+	if ( end_chain_busy_once != 0u )
+	{
+		end_chain_busy_once = 0u;
+		return SPARK_STATUS_BUSY;
+	}
+	active_chain = 0u;
 	return SPARK_STATUS_OK;
 }
 
@@ -124,6 +140,9 @@ SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,
 SparkStatus SparkTpDeviceCollectiveChainKeyQueue(SparkTpDeviceCollective *collective, uint64_t request_id, void *queue)
 {
 	(void)collective; (void)request_id; (void)queue;
+	if ( active_chain != 0u )
+		return SPARK_STATUS_BUSY;
+	active_chain = 1u;
 	return SPARK_STATUS_OK;
 }
 
@@ -171,6 +190,23 @@ static SparkStatus FailingStep(void *model, const SparkStageRunnerStep *step, vo
 	(void)stream;
 	failing_steps++;
 	return SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus GraphFailStep(void *model, const SparkStageRunnerStep *step, void *stream)
+{
+	(void)model;
+	(void)step;
+	(void)stream;
+	active_state->graph_launched = 1u;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus OkStep(void *model, const SparkStageRunnerStep *step, void *stream)
+{
+	(void)model;
+	(void)step;
+	(void)stream;
+	return SPARK_STATUS_OK;
 }
 
 static void Expect(int condition, const char *name)
@@ -266,6 +302,23 @@ int main(void)
 		"the runner's stream is idle");
 	Expect(EmbeddedRows(seen, table, first, FAILED_ROWS) == FAILED_ROWS,
 		"the next dispatch may rewrite the token staging as soon as a failed dispatch returns: the failed one embedded its own tokens");
+
+	active_state = state;
+	state->device_collective_created = 1;
+	end_chain_calls = 0u;
+	verify_deferred_calls = 0u;
+	active_chain = 0u;
+	end_chain_busy_once = 1u;
+	inject_graph_error = (UINT64_C(0xfcb31) << 32u) | 584u;
+	model_interface.step = GraphFailStep;
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_IO_ERROR,
+		"a failed graph collective returns terminal IO_ERROR");
+	Expect(active_chain == 0u && end_chain_calls == 2u && state->graph_launched == 0u && verify_deferred_calls != 0u,
+		"a failed graph collective settles and closes its active collective chain before returning");
+	inject_graph_error = 0ull;
+	model_interface.step = OkStep;
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK,
+		"the next dispatch after a failed graph collective runs cleanly without hitting BUSY");
 
 	cudaFreeHost(input);
 	cudaFreeHost(state->token_ids_host);

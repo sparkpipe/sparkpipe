@@ -1,0 +1,2 @@
++22
+fix-axk2-b8-verify-collective-and-wedge: snapshot both alternating weightd mesh doorbell cells atomically in one two-pass read so rapid even/odd direct-pipelined publishes cannot skip the even round; end active collective chains and verify deferred rounds on failed stage runner dispatches while returning terminal IO_ERROR from StageRunnerGraphSettleFinish and post-claim StageServingSubmit; reject EMPTY KV lane ownership as VALIDATION_FAILED instead of spinning BUSY.

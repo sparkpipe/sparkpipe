@@ -1957,7 +1957,11 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_RECONNECT_MS);
 	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
+	if ( status == SPARK_STATUS_BUSY )
+		status = SPARK_STATUS_IO_ERROR;
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
+	if ( finished == SPARK_STATUS_BUSY )
+		finished = SPARK_STATUS_IO_ERROR;
 	if ( state->saves_held != 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 	{
 		if ( status == SPARK_STATUS_OK && finished == SPARK_STATUS_OK && SparkStageKvBindingHoldSaves(&state->kv, 0u) == SPARK_STATUS_OK )
