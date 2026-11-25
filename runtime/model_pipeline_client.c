@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_error_site.h"
 
 #include <poll.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -817,6 +818,21 @@ static void SparkModelPipelineClientPublishSession(SparkModelPipelineClient *pip
 	pipeline->session_fingerprint = fingerprint;
 }
 
+typedef struct SparkModelPipelineConnectTask
+{
+	const SparkModelPipelineClientConfiguration *configuration;
+	SparkModelPipelineClient *pipeline;
+	uint32_t stage;
+	SparkStatus status;
+} SparkModelPipelineConnectTask;
+
+static void *SparkModelPipelineConnectWorker(void *argument)
+{
+	SparkModelPipelineConnectTask *task = (SparkModelPipelineConnectTask *)argument;
+	task->status = SparkModelPipelineClientConnectRank(task->configuration,task->pipeline,task->stage);
+	return(0);
+}
+
 SparkStatus SparkModelPipelineClientConnect(
 	const SparkModelPipelineClientConfiguration *configuration,
 	SparkModelPipelineClient **pipeline_out)
@@ -834,8 +850,46 @@ SparkStatus SparkModelPipelineClientConnect(
 	if ( pipeline == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkModelPipelineClientInitializeState(configuration,pipeline);
-	for (stage=0u; status==SPARK_STATUS_OK && stage<pipeline->rank_count; stage++)
-		status = SparkModelPipelineClientConnectRank(configuration,pipeline,stage);
+	if ( status == SPARK_STATUS_OK && pipeline->rank_count <= 1u )
+	{
+		for (stage=0u; status==SPARK_STATUS_OK && stage<pipeline->rank_count; stage++)
+			status = SparkModelPipelineClientConnectRank(configuration,pipeline,stage);
+	}
+	else if ( status == SPARK_STATUS_OK )
+	{
+		SparkModelPipelineConnectTask *tasks = (SparkModelPipelineConnectTask *)calloc(pipeline->rank_count,sizeof(*tasks));
+		pthread_t *threads = (pthread_t *)calloc(pipeline->rank_count,sizeof(*threads));
+		uint8_t *started = (uint8_t *)calloc(pipeline->rank_count,sizeof(*started));
+		if ( tasks == 0 || threads == 0 || started == 0 )
+		{
+			free(tasks);
+			free(threads);
+			free(started);
+			SparkModelPipelineClientDestroy(pipeline);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		for (stage=0u; stage<pipeline->rank_count; stage++)
+		{
+			tasks[stage].configuration = configuration;
+			tasks[stage].pipeline = pipeline;
+			tasks[stage].stage = stage;
+			tasks[stage].status = SPARK_STATUS_OK;
+			if ( pthread_create(&threads[stage],0,SparkModelPipelineConnectWorker,&tasks[stage]) == 0 )
+				started[stage] = 1u;
+			else
+				tasks[stage].status = SparkModelPipelineClientConnectRank(configuration,pipeline,stage);
+		}
+		for (stage=0u; stage<pipeline->rank_count; stage++)
+		{
+			if ( started[stage] != 0u )
+				(void)pthread_join(threads[stage],0);
+			if ( status == SPARK_STATUS_OK && tasks[stage].status != SPARK_STATUS_OK )
+				status = tasks[stage].status;
+		}
+		free(tasks);
+		free(threads);
+		free(started);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkModelPipelineClientDestroy(pipeline);

@@ -578,6 +578,7 @@ static void DraftdLaneStep(DraftdLane *lane)
 		(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
 	}
 	DraftdEngineWaitStep(lane, ingested);
+	SparkDraftServerBeginBatch(lane->server);
 	while ( lane->answer_pending == 0u && lane->waiting == 0u && SparkDraftServerAdvance(lane->server, &request) == SPARK_STATUS_OK )
 	{
 		if ( lane->engine != 0u && DraftdEnginePropose(lane, &request) == 0u )
@@ -600,6 +601,7 @@ static void DraftdLaneStep(DraftdLane *lane)
 				(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
 		}
 	}
+	SparkDraftServerFlushBatch(lane->server);
 	SparkDraftServerGetStats(lane->server, &stats);
 	if ( stats.requests >= lane->requests_reported + DRAFTD_REPORT_EVERY )
 	{

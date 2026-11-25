@@ -65,6 +65,8 @@ uint32_t SparkDraftServerPollFds(const SparkDraftServer *server, int *fds, uint3
 SparkStatus SparkDraftServerAdvance(SparkDraftServer *server, SparkDraftServerRequest *request_out);
 SparkStatus SparkDraftServerAnswer(SparkDraftServer *server, uint32_t server_status, const SparkDraftBridgeNode *nodes, uint32_t node_count,
 	const SparkDraftBridgeProposalInfo *info);
+void SparkDraftServerBeginBatch(SparkDraftServer *server);
+void SparkDraftServerFlushBatch(SparkDraftServer *server);
 void SparkDraftServerGetStats(const SparkDraftServer *server, SparkDraftServerStats *stats_out);
 
 #ifdef __cplusplus
