@@ -110,7 +110,7 @@ class TestRaisWeightsAndCatalog(unittest.TestCase):
 
     def test_all_deployment_lanes_and_fleet_weights(self) -> None:
         lanes = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))["lanes"]
-        self.assertEqual(len(lanes), 21)
+        self.assertEqual(len(lanes), 23)
         for lane_name, lane_cfg in lanes.items():
             self.assertIn(lane_name, rais_score.MODEL_SPECS)
             spec = rais_score.MODEL_SPECS[lane_name]
