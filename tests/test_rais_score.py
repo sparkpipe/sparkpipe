@@ -482,6 +482,110 @@ class TestRaisBenchCli(unittest.TestCase):
         self.assertAlmostEqual(rais_bench.compute_effective_alpha(0, 0, 768), 1.0, places=4)
         self.assertAlmostEqual(rais_bench.compute_effective_alpha(16, 48, 0), 4.0, places=4)
 
+    def test_synthetic_token_ids_and_tokenizer_bin_against_tokenizerless_server(self) -> None:
+        seen_lengths: list[int] = []
+        mutate_spec = {"enabled": False}
+
+        class TokenizerlessHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if "prompt" in body or "prompt_token_ids" not in body:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error":{"code":"tokenizer_unavailable"}}')
+                    return
+                ids = body["prompt_token_ids"]
+                seen_lengths.append(len(ids))
+                seed = sum((i + 1) * int(tok) for i, tok in enumerate(ids[:64])) % 10000
+                out_toks = [2000 + ((seed + j * 13) % 5000) for j in range(4)]
+                if mutate_spec["enabled"] and body.get("speculation") is True:
+                    out_toks[-1] += 1
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                chunks = [
+                    {"choices": [{"text": "", "finish_reason": None}], "tokens": out_toks[:2]},
+                    {"choices": [{"text": "", "finish_reason": None}], "tokens": out_toks[2:]},
+                    {"choices": [{"text": "", "finish_reason": "length"}], "usage": {"prompt_tokens": len(ids), "completion_tokens": len(out_toks)}, "tokens": []},
+                ]
+                for item in chunks:
+                    self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
+                self.wfile.write(b"data: [DONE]\n\n")
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TokenizerlessHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            parser = rais_bench.build_parser()
+            args = parser.parse_args([
+                "--base-url", url,
+                "--model", "qwen3.8-27b",
+                "--hardware", "1x-m5-ultra",
+                "--tier", "fast",
+                "--max-batch", "4",
+                "--spec-toggle", "speculation",
+                "--no-b8-spec",
+                "--synthetic-token-ids",
+            ])
+            record = rais_bench.run_benchmark(args)
+            self.assertEqual(record["prompt_mode"], "synthetic")
+            self.assertEqual(record["gates"]["errors"], 0)
+            self.assertTrue(record["gates"]["prose_exact"])
+            self.assertTrue(record["gates"]["code_exact"])
+            self.assertTrue(record["gates"]["prefix_exact"])
+            self.assertIn(256, seen_lengths)
+            self.assertIn(8192 + 128, seen_lengths)
+            self.assertIn(32768, seen_lengths)
+            scored = rais_score.score_model(record, "1x-m5-ultra")
+            self.assertEqual(scored["status"], "VALID")
+
+            mutate_spec["enabled"] = True
+            bad_record = rais_bench.run_benchmark(args)
+            self.assertFalse(bad_record["gates"]["prose_exact"])
+            self.assertFalse(bad_record["gates"]["code_exact"])
+
+            mutate_spec["enabled"] = False
+            with tempfile.TemporaryDirectory() as tmp:
+                tok_json = Path(tmp) / "tokenizer.json"
+                tok_json.write_text("{}", encoding="utf-8")
+                tok_bin = Path(tmp) / "fake_tokenize.py"
+                tok_bin.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import sys\n"
+                    "p = sys.argv[sys.argv.index('--prompt-file') + 1]\n"
+                    "words = open(p, encoding='utf-8').read().split() or ['x']\n"
+                    "for i, w in enumerate(words):\n"
+                    "    print(1500 + (sum(ord(c) for c in w) + i) % 10000)\n",
+                    encoding="utf-8",
+                )
+                tok_bin.chmod(0o755)
+                args_tok = parser.parse_args([
+                    "--base-url", url,
+                    "--model", "qwen3.8-27b",
+                    "--hardware", "1x-gb10",
+                    "--tier", "fast",
+                    "--max-batch", "4",
+                    "--spec-toggle", "speculation",
+                    "--no-b8-spec",
+                    "--tokenizer-json", str(tok_json),
+                    "--tokenizer-bin", str(tok_bin),
+                ])
+                tok_record = rais_bench.run_benchmark(args_tok)
+                self.assertEqual(tok_record["prompt_mode"], "tokenizer")
+                self.assertEqual(tok_record["gates"]["errors"], 0)
+                self.assertTrue(tok_record["gates"]["prose_exact"])
+                self.assertTrue(tok_record["gates"]["code_exact"])
+                self.assertTrue(tok_record["gates"]["prefix_exact"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 class TestRaisDivisorReconstitution(unittest.TestCase):
     def test_reconstitution_preserves_index_continuity_and_chains(self) -> None:

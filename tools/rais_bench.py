@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import math
+import os
+import re
 import statistics
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -82,6 +87,15 @@ FOLLOWUP_DELTA_128 = (
     "and exact bottleneck labels.\n\nAnswer:\n1. "
 )
 
+FOLLOWUP_TURN2 = (
+    "\n\nConfirm the ordering above and include one concrete metric for each bottleneck.\n\n"
+    "Verification:\n1. "
+)
+
+
+SYNTHETIC_VOCAB_MIN = 1000
+SYNTHETIC_VOCAB_SPAN = 29000
+
 
 def build_prompt_for_tokens(target_tokens: int, nonce: str) -> str:
     target_chars = max(64, int(target_tokens * 4.0))
@@ -95,6 +109,188 @@ def build_prompt_for_tokens(target_tokens: int, nonce: str) -> str:
         total += len(line)
         step += 1
     return "".join(chunks)
+
+
+def synthetic_tokens_for_text(text: str, target_tokens: int | None = None) -> list[int]:
+    pieces = re.findall(r"\w+|[^\w\s]", text) or ["token"]
+    mapped: list[int] = []
+    for piece in pieces:
+        digest = hashlib.sha256(piece.encode("utf-8")).digest()
+        val = int.from_bytes(digest[:4], "little")
+        mapped.append(SYNTHETIC_VOCAB_MIN + (val % SYNTHETIC_VOCAB_SPAN))
+    if target_tokens is None:
+        return mapped
+    out: list[int] = []
+    while len(out) < target_tokens:
+        out.extend(mapped)
+    return out[:target_tokens]
+
+
+def synthetic_tokens_for_length(target_tokens: int, nonce: str) -> list[int]:
+    count = max(1, int(target_tokens))
+    out: list[int] = []
+    block = 0
+    while len(out) < count:
+        digest = hashlib.sha256(f"{nonce}:{block}".encode("utf-8")).digest()
+        for offset in range(0, 32, 2):
+            if len(out) >= count:
+                break
+            val = int.from_bytes(digest[offset:offset + 2], "little")
+            out.append(SYNTHETIC_VOCAB_MIN + (val % SYNTHETIC_VOCAB_SPAN))
+        block += 1
+    return out
+
+
+class PromptEncoder:
+    def __init__(
+        self,
+        tokenizer_json: str | None = None,
+        tokenizer_compiled: str | None = None,
+        tokenizer_bin: str | None = None,
+        synthetic_token_ids: bool = False,
+    ) -> None:
+        self.tokenizer_json = tokenizer_json
+        self.tokenizer_compiled = tokenizer_compiled
+        self.tokenizer_bin = tokenizer_bin
+        self._hf_tokenizer: Any = None
+        self._cache: dict[str, list[int]] = {}
+        if tokenizer_json or tokenizer_compiled:
+            self.mode = "tokenizer"
+            self._init_tokenizer()
+        elif synthetic_token_ids:
+            self.mode = "synthetic"
+        else:
+            self.mode = "text"
+
+    def _init_tokenizer(self) -> None:
+        if self.tokenizer_bin:
+            if not Path(self.tokenizer_bin).is_file():
+                raise RuntimeError(f"tokenizer binary not found: {self.tokenizer_bin}")
+            return
+        if self.tokenizer_compiled:
+            default_bin = SCRIPT_DIR.parent / "build" / "sparkpipe_tokenize_prompt"
+            if default_bin.is_file():
+                self.tokenizer_bin = str(default_bin)
+                return
+            raise RuntimeError("--tokenizer-compiled requires --tokenizer-bin pointing to sparkpipe_tokenize_prompt")
+        try:
+            import tokenizers
+
+            self._hf_tokenizer = tokenizers.Tokenizer.from_file(self.tokenizer_json)
+        except Exception as exc:
+            default_bin = SCRIPT_DIR.parent / "build" / "sparkpipe_tokenize_prompt"
+            if default_bin.is_file():
+                self.tokenizer_bin = str(default_bin)
+                return
+            raise RuntimeError(
+                f"unable to load --tokenizer-json without python tokenizers or --tokenizer-bin: {exc}"
+            ) from exc
+
+    def is_token_mode(self) -> bool:
+        return self.mode != "text"
+
+    def encode_text(self, text: str) -> list[int]:
+        cached = self._cache.get(text)
+        if cached is not None:
+            return list(cached)
+        if self.mode == "synthetic":
+            ids = synthetic_tokens_for_text(text)
+            self._cache[text] = ids
+            return list(ids)
+        if self._hf_tokenizer is not None:
+            ids = [int(t) for t in self._hf_tokenizer.encode(text, add_special_tokens=False).ids]
+        else:
+            flag = "--tokenizer-compiled" if self.tokenizer_compiled else "--tokenizer-json"
+            tok_path = self.tokenizer_compiled or self.tokenizer_json
+            tmp_path: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+                    handle.write(text)
+                    tmp_path = handle.name
+                proc = subprocess.run(
+                    [str(self.tokenizer_bin), flag, str(tok_path), "--prompt-file", tmp_path],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                ids = [int(line.strip()) for line in proc.stdout.splitlines() if line.strip().isdigit()]
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+        if not ids:
+            raise RuntimeError("tokenizer returned zero token IDs for prompt")
+        self._cache[text] = ids
+        return list(ids)
+
+    def prompt_field_for_text(self, text: str, target_tokens: int | None = None) -> dict[str, Any]:
+        if self.mode == "text":
+            return {"prompt": text}
+        if self.mode == "synthetic":
+            return {"prompt_token_ids": synthetic_tokens_for_text(text, target_tokens=target_tokens)}
+        return {"prompt_token_ids": self.encode_text(text)}
+
+    def prompt_field_for_target(self, target_tokens: int, nonce: str) -> tuple[dict[str, Any], Any]:
+        if self.mode == "text":
+            prompt = build_prompt_for_tokens(target_tokens, nonce)
+            return {"prompt": prompt}, prompt
+        if self.mode == "synthetic":
+            ids = synthetic_tokens_for_length(target_tokens, nonce)
+            return {"prompt_token_ids": ids}, ids
+        scale = 1.35
+        while True:
+            prompt = build_prompt_for_tokens(int(target_tokens * scale) + 64, nonce)
+            ids = self.encode_text(prompt)
+            if len(ids) >= target_tokens:
+                trimmed = ids[:target_tokens]
+                return {"prompt_token_ids": trimmed}, trimmed
+            scale *= 1.5
+
+    def extend_prompt(self, base_handle: Any, delta_text: str, delta_target_tokens: int = 128) -> tuple[dict[str, Any], Any]:
+        if self.mode == "text":
+            combined = str(base_handle) + delta_text
+            return {"prompt": combined}, combined
+        base_ids = list(base_handle) if isinstance(base_handle, list) else self.encode_text(str(base_handle))
+        if self.mode == "synthetic":
+            delta_ids = synthetic_tokens_for_text(delta_text, target_tokens=delta_target_tokens)
+        else:
+            delta_ids = self.encode_text(delta_text)
+        combined_ids = base_ids + delta_ids
+        return {"prompt_token_ids": combined_ids}, combined_ids
+
+    def batch_prompt_field(self, base_handle: Any, idx: int, stream_prefix: bool = False) -> dict[str, Any]:
+        if self.mode == "text":
+            return {"prompt": format_batch_prompt(str(base_handle), idx, stream_prefix=stream_prefix)}
+        if self.mode == "synthetic":
+            base_ids = list(base_handle) if isinstance(base_handle, list) else synthetic_tokens_for_text(str(base_handle))
+            tag = [
+                SYNTHETIC_VOCAB_MIN + ((idx + 1) * 131 % SYNTHETIC_VOCAB_SPAN),
+                SYNTHETIC_VOCAB_MIN + ((idx + 1) * 997 % SYNTHETIC_VOCAB_SPAN),
+                SYNTHETIC_VOCAB_MIN + ((idx + 1) * 4093 % SYNTHETIC_VOCAB_SPAN),
+            ]
+            ids = (tag + base_ids) if stream_prefix else (base_ids + tag)
+            return {"prompt_token_ids": ids}
+        if isinstance(base_handle, str):
+            return {"prompt_token_ids": self.encode_text(format_batch_prompt(base_handle, idx, stream_prefix=stream_prefix))}
+        base_ids = list(base_handle)
+        if stream_prefix:
+            marker_ids = self.encode_text(f"Task {idx + 1}: ")
+            return {"prompt_token_ids": marker_ids + base_ids}
+        marker_ids = self.encode_text(f"\n\n[Stream {idx + 1}]{FOLLOWUP_DELTA_128}")
+        return {"prompt_token_ids": base_ids + marker_ids}
+
+
+def outputs_match(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    a_ids = a.get("token_ids") or []
+    b_ids = b.get("token_ids") or []
+    a_text = a.get("text") or ""
+    b_text = b.get("text") or ""
+    if a_ids or b_ids:
+        if a_ids != b_ids:
+            return False
+        if a_text or b_text:
+            return a_text == b_text
+        return len(a_ids) > 0
+    return a_text == b_text
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -156,6 +352,7 @@ def stream_completion(
 
     started = time.monotonic()
     token_times: list[float] = []
+    token_ids: list[int] = []
     event_times: list[float] = []
     event_token_counts: list[int] = []
     text_parts: list[str] = []
@@ -177,6 +374,7 @@ def stream_completion(
                 "started": started,
                 "http_status": http_status,
                 "token_times": token_times,
+                "token_ids": token_ids,
                 "event_times": event_times,
                 "event_token_counts": event_token_counts,
                 "text": "",
@@ -219,8 +417,10 @@ def stream_completion(
                     text_parts.append(delta_text)
                 if isinstance(tokens_list, list) and tokens_list:
                     count = len(tokens_list)
-                    for _ in range(count):
+                    for tok in tokens_list:
                         token_times.append(rel)
+                        if isinstance(tok, int):
+                            token_ids.append(tok)
                     event_times.append(rel)
                     event_token_counts.append(count)
                 elif isinstance(delta_text, str) and delta_text:
@@ -244,6 +444,7 @@ def stream_completion(
         "started": started,
         "http_status": http_status,
         "token_times": token_times,
+        "token_ids": token_ids,
         "event_times": event_times,
         "event_token_counts": event_token_counts,
         "text": "".join(text_parts),
@@ -304,6 +505,7 @@ def summarize_stream(result: dict[str, Any]) -> dict[str, Any]:
         "cached_tokens": cached_tokens,
         "completion_tokens": completion_tokens,
         "text": result["text"],
+        "token_ids": list(result.get("token_ids") or []),
     }
     if times:
         out["ttft_ms"] = round(times[0] * 1000.0, 2)
@@ -375,22 +577,29 @@ def run_concurrent_batch(
     model: str,
     batch_size: int,
     max_tokens: int,
-    prompt_base: str,
+    prompt_base: Any,
     spec_body: dict[str, Any],
     api_key: str | None,
     timeout: float,
     endpoint: str = "completions",
     stream_prefix: bool = False,
+    encoder: PromptEncoder | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any] | None] = [None] * batch_size
+    prompt_fields = [
+        encoder.batch_prompt_field(prompt_base, i, stream_prefix=stream_prefix)
+        if encoder is not None
+        else {"prompt": format_batch_prompt(str(prompt_base), i, stream_prefix=stream_prefix)}
+        for i in range(batch_size)
+    ]
 
     def worker(idx: int) -> None:
-        body = {
+        body: dict[str, Any] = {
             "model": model,
-            "prompt": format_batch_prompt(prompt_base, idx, stream_prefix=stream_prefix),
             "max_tokens": max_tokens,
             "temperature": 0,
         }
+        body.update(prompt_fields[idx])
         body.update(spec_body)
         results[idx] = stream_completion(base_url, body, api_key=api_key, timeout=timeout, endpoint=endpoint)
 
@@ -509,12 +718,25 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     plan = tier_plan(args.tier, model_spec, args.max_batch)
     if getattr(args, "b8_spec", None) is not None:
         plan["run_b8_spec"] = bool(args.b8_spec)
+    encoder = PromptEncoder(
+        tokenizer_json=getattr(args, "tokenizer_json", None),
+        tokenizer_compiled=getattr(args, "tokenizer_compiled", None),
+        tokenizer_bin=getattr(args, "tokenizer_bin", None),
+        synthetic_token_ids=bool(getattr(args, "synthetic_token_ids", False)),
+    )
     endpoint_mode = getattr(args, "endpoint", "completions") or "completions"
-    active_endpoint = "chat" if endpoint_mode == "chat" else "completions"
+    active_endpoint = "completions" if encoder.is_token_mode() else ("chat" if endpoint_mode == "chat" else "completions")
     endpoint_fallback: str | None = None
 
     if args.dry_run:
-        return {"dry_run": True, "model": model_name, "hardware": args.hardware, "endpoint": active_endpoint, "plan": plan}
+        return {
+            "dry_run": True,
+            "model": model_name,
+            "hardware": args.hardware,
+            "endpoint": active_endpoint,
+            "prompt_mode": encoder.mode,
+            "plan": plan,
+        }
 
     if args.swap_url:
         swap_model(args.swap_url, model_name, args.swap_token, args.timeout)
@@ -522,13 +744,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     def do_stream(body: dict[str, Any]) -> dict[str, Any]:
         nonlocal active_endpoint, endpoint_fallback
         raw = stream_completion(args.base_url, body, api_key=args.api_key, timeout=args.timeout, endpoint=active_endpoint)
-        if endpoint_mode == "auto" and active_endpoint == "completions" and is_immediate_eos(raw):
+        if not encoder.is_token_mode() and endpoint_mode == "auto" and active_endpoint == "completions" and is_immediate_eos(raw):
             active_endpoint = "chat"
             endpoint_fallback = "immediate_eos"
             raw = stream_completion(args.base_url, body, api_key=args.api_key, timeout=args.timeout, endpoint=active_endpoint)
         return raw
 
-    def do_batch(batch_size: int, max_tokens: int, prompt_base: str, spec_body: dict[str, Any], stream_prefix: bool = False) -> dict[str, Any]:
+    def do_batch(batch_size: int, max_tokens: int, prompt_base: Any, spec_body: dict[str, Any], stream_prefix: bool = False) -> dict[str, Any]:
         nonlocal active_endpoint, endpoint_fallback
         res = run_concurrent_batch(
             args.base_url,
@@ -541,8 +763,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             args.timeout,
             endpoint=active_endpoint,
             stream_prefix=stream_prefix,
+            encoder=encoder,
         )
-        if endpoint_mode == "auto" and active_endpoint == "completions" and res.get("immediate_eos"):
+        if not encoder.is_token_mode() and endpoint_mode == "auto" and active_endpoint == "completions" and res.get("immediate_eos"):
             active_endpoint = "chat"
             endpoint_fallback = "immediate_eos"
             res = run_concurrent_batch(
@@ -556,6 +779,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 args.timeout,
                 endpoint=active_endpoint,
                 stream_prefix=stream_prefix,
+                encoder=encoder,
             )
         return res
 
@@ -563,16 +787,20 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     spec_opt = _spec_payload(args.spec_toggle, True)
     errors_count = 0
 
+    prose_field = encoder.prompt_field_for_text(PROSE_PROMPT, target_tokens=256 if encoder.mode == "synthetic" else None)
+    code_field = encoder.prompt_field_for_text(CODE_PROMPT, target_tokens=256 if encoder.mode == "synthetic" else None)
+    edit_field = encoder.prompt_field_for_text(EDIT_PROMPT, target_tokens=256 if encoder.mode == "synthetic" else None)
+
     b1_rates: list[float] = []
     p50_list: list[float] = []
     p99_list: list[float] = []
-    nospec_prose_text = ""
+    nospec_prose_res: dict[str, Any] | None = None
     nospec_prose_chunk = 1.0
 
     for rep in range(plan["b1_repeats"]):
-        body = {
+        body: dict[str, Any] = {
             "model": model_name,
-            "prompt": PROSE_PROMPT,
+            **prose_field,
             "max_tokens": plan["b1_short_tokens"],
             "temperature": 0,
         }
@@ -582,7 +810,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             errors_count += 1
         else:
             if rep == 0:
-                nospec_prose_text = res["text"]
+                nospec_prose_res = res
                 nospec_prose_chunk = float(res.get("chunk_mean") or 1.0)
             if res.get("decode_tok_s"):
                 b1_rates.append(res["decode_tok_s"])
@@ -601,9 +829,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.spec_toggle and args.spec_toggle != "none":
         domain_prompts = (
-            ("prose", PROSE_PROMPT, nospec_prose_text, nospec_prose_chunk),
-            ("code", CODE_PROMPT, "", 1.0),
-            ("edit", EDIT_PROMPT, "", 1.0),
+            ("prose", prose_field, nospec_prose_res, nospec_prose_chunk),
+            ("code", code_field, None, 1.0),
+            ("edit", edit_field, None, 1.0),
         )
         spec_tok_rates: list[float] = []
         nospec_tok_rates: list[float] = []
@@ -615,15 +843,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         total_tree_branch_accepted = 0
         log_used = False
 
-        for domain, prompt_text, cached_nospec_text, cached_chunk_mean in domain_prompts:
-            if cached_nospec_text:
-                base_text = cached_nospec_text
+        for domain, prompt_field, cached_nospec_res, cached_chunk_mean in domain_prompts:
+            if cached_nospec_res is not None:
+                base_res = cached_nospec_res
                 base_rate = b1_short_tok_s
                 base_chunk = cached_chunk_mean
             else:
-                nb = {
+                nb: dict[str, Any] = {
                     "model": model_name,
-                    "prompt": prompt_text,
+                    **prompt_field,
                     "max_tokens": plan["spec_tokens"],
                     "temperature": 0,
                 }
@@ -632,13 +860,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 if nr["error"] is not None:
                     errors_count += 1
                     continue
-                base_text = nr["text"]
+                base_res = nr
                 base_rate = nr.get("decode_tok_s")
                 base_chunk = float(nr.get("chunk_mean") or 1.0)
 
-            sb = {
+            sb: dict[str, Any] = {
                 "model": model_name,
-                "prompt": prompt_text,
+                **prompt_field,
                 "max_tokens": plan["spec_tokens"],
                 "temperature": 0,
             }
@@ -650,7 +878,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 errors_count += 1
                 continue
 
-            exact = sr["text"] == base_text
+            exact = outputs_match(sr, base_res)
             if domain == "prose":
                 prose_exact = exact
             else:
@@ -758,10 +986,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     spec_metrics["verify_v_b8"] = round(a_b8 / (b8_spec_agg / b8_nospec), 4)
 
     nonce_8k = f"pf8k-{time.time_ns()}"
-    prompt_8k = build_prompt_for_tokens(plan["prefill_8k_tokens"], nonce_8k)
-    cold_8k_full = prompt_8k + FOLLOWUP_DELTA_128
+    _, prompt_8k_handle = encoder.prompt_field_for_target(plan["prefill_8k_tokens"], nonce_8k)
+    cold_8k_field, cold_8k_handle = encoder.extend_prompt(prompt_8k_handle, FOLLOWUP_DELTA_128, delta_target_tokens=plan["warm_new_tokens"])
     cold_8k_res = summarize_stream(
-        do_stream({"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
+        do_stream({"model": model_name, **cold_8k_field, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
     )
     prefill_8k_tokens = cold_8k_res.get("prompt_tokens") or plan["prefill_8k_tokens"]
     prefill_8k_tok_s = None
@@ -771,17 +999,21 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         prefill_8k_tok_s = round(prefill_8k_tokens * 1000.0 / cold_8k_res["ttft_ms"], 2)
 
     warm_gx_res = summarize_stream(
-        do_stream({"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
+        do_stream({"model": model_name, **cold_8k_field, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
     )
     prefix_exact = False
     if warm_gx_res["error"] is not None:
         errors_count += 1
     else:
-        prefix_exact = warm_gx_res["text"] == cold_8k_res["text"]
+        prefix_exact = outputs_match(warm_gx_res, cold_8k_res)
 
-    warm_8k_turn2 = cold_8k_full + " Confirm the ordering and include one concrete metric."
+    warm_8k_field, _ = encoder.extend_prompt(
+        cold_8k_handle,
+        FOLLOWUP_TURN2,
+        delta_target_tokens=plan["warm_new_tokens"],
+    )
     warm_8k_res = summarize_stream(
-        do_stream({"model": model_name, "prompt": warm_8k_turn2, "max_tokens": 16, "temperature": 0, **nospec_opt})
+        do_stream({"model": model_name, **warm_8k_field, "max_tokens": 16, "temperature": 0, **nospec_opt})
     )
     warm_8k_ttft_ms = None
     if warm_8k_res["error"] is not None:
@@ -800,13 +1032,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     warm_100k_ttft_ms = None
     warm_100k_prefix = None
 
-    long_prompt_for_decode = ""
+    long_prompt_for_decode: Any = None
     for target_len in plan["prefill_long_targets"]:
         nonce_l = f"pfl-{target_len}-{time.time_ns()}"
-        p_long = build_prompt_for_tokens(target_len, nonce_l)
+        p_long_field, p_long_handle = encoder.prompt_field_for_target(target_len, nonce_l)
         out_toks = plan["b1_long_tokens"] if target_len == max(plan["prefill_long_targets"]) else 1
         r_long = summarize_stream(
-            do_stream({"model": model_name, "prompt": p_long, "max_tokens": out_toks, "temperature": 0, **nospec_opt})
+            do_stream({"model": model_name, **p_long_field, "max_tokens": out_toks, "temperature": 0, **nospec_opt})
         )
         if r_long["error"] is not None:
             errors_count += 1
@@ -822,11 +1054,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         if target_len == max(plan["prefill_long_targets"]):
             b1_long_ctx = pt
             b1_long_tok_s = r_long.get("decode_tok_s")
-            long_prompt_for_decode = p_long
+            long_prompt_for_decode = p_long_handle
 
-    if len(plan["warm_targets"]) > 1 and long_prompt_for_decode:
+    if len(plan["warm_targets"]) > 1 and long_prompt_for_decode is not None:
+        w100_field, _ = encoder.extend_prompt(long_prompt_for_decode, FOLLOWUP_DELTA_128, delta_target_tokens=plan["warm_new_tokens"])
         r_w100 = summarize_stream(
-            do_stream({"model": model_name, "prompt": long_prompt_for_decode + FOLLOWUP_DELTA_128, "max_tokens": 16, "temperature": 0, **nospec_opt})
+            do_stream({"model": model_name, **w100_field, "max_tokens": 16, "temperature": 0, **nospec_opt})
         )
         if r_w100["error"] is not None:
             errors_count += 1
@@ -834,8 +1067,11 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             warm_100k_ttft_ms = r_w100.get("ttft_ms")
             warm_100k_prefix = b1_long_ctx
 
-    if long_prompt_for_decode:
-        b8_long_prompt = long_prompt_for_decode if b8_long_ctx >= b1_long_ctx else build_prompt_for_tokens(b8_long_ctx, f"b8l-{time.time_ns()}")
+    if long_prompt_for_decode is not None:
+        if b8_long_ctx >= b1_long_ctx:
+            b8_long_prompt = long_prompt_for_decode
+        else:
+            _, b8_long_prompt = encoder.prompt_field_for_target(b8_long_ctx, f"b8l-{time.time_ns()}")
         b8_long_res = do_batch(min(8, args.max_batch), plan["b8_long_tokens"], b8_long_prompt, nospec_opt)
         if b8_long_res.get("failed"):
             errors_count += len(b8_long_res.get("errors") or [1])
@@ -876,6 +1112,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "hardware": args.hardware,
         "base_url": args.base_url,
         "endpoint": active_endpoint,
+        "prompt_mode": encoder.mode,
         "metrics": metrics_payload,
         "gates": {
             "prose_exact": prose_exact,
@@ -899,6 +1136,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spec-toggle", default="speculation", help="JSON field name toggling speculation, or 'none'.")
     parser.add_argument("--b8-spec", action=argparse.BooleanOptionalAction, default=None, help="Enable or disable the B=8 batched speculation probe.")
     parser.add_argument("--endpoint", default="completions", choices=("completions", "chat", "auto"), help="Endpoint mode: completions, chat, or auto (fallback on immediate token-0 EOS).")
+    parser.add_argument("--tokenizer-json", default=None, help="Optional HuggingFace tokenizer.json path to send prompt_token_ids instead of prompt text.")
+    parser.add_argument("--tokenizer-compiled", default=None, help="Optional SparkPipe compiled tokenizer path (used with --tokenizer-bin) to send prompt_token_ids.")
+    parser.add_argument("--tokenizer-bin", default=None, help="Optional sparkpipe_tokenize_prompt binary path for zero-dep real tokenization.")
+    parser.add_argument("--synthetic-token-ids", action="store_true", help="Send deterministic vocab-safe non-EOS prompt_token_ids for tokenizerless endpoints.")
     parser.add_argument("--api-key", default=None, help="Optional Bearer token for /v1/completions.")
     parser.add_argument("--api-log", default=None, help="Optional engine API log path for exact verify/draft counters.")
     parser.add_argument("--swap-url", default=None, help="Optional model swap endpoint URL.")
