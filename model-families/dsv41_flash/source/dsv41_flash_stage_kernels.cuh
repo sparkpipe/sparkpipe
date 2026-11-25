@@ -1199,9 +1199,12 @@ static __global__ __launch_bounds__(D41K_THREADS) void D41WindowFoldSpreadKernel
 	__shared__ float s_wt[BLOCK_HEADS][TILE];
 	__shared__ float s_max[BLOCK_HEADS];
 	__shared__ float s_sum[BLOCK_HEADS];
+	__shared__ float s_sin[D41K_ROPE_PAIRS], s_cos[D41K_ROPE_PAIRS];
 	const uint32_t row = blockIdx.x, hbase = blockIdx.y * BLOCK_HEADS, lane_index = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
 	LmDependentWait();
 	const uint32_t position = positions[row], lane = row_lane[row];
+	if ( threadIdx.x < D41K_ROPE_PAIRS )
+		D41RopeTurn(position, 0, inverse_frequency[threadIdx.x], 1u, &s_sin[threadIdx.x], &s_cos[threadIdx.x]);
 	const uint32_t wave_first = position - row_ordinal[row];
 	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
 	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
@@ -1293,8 +1296,7 @@ static __global__ __launch_bounds__(D41K_THREADS) void D41WindowFoldSpreadKernel
 	__syncthreads();
 	if ( threadIdx.x < D41K_ROPE_PAIRS )
 	{
-		float sine, cosine;
-		D41RopeTurn(position, 0, inverse_frequency[threadIdx.x], 1u, &sine, &cosine);
+		const float sine = s_sin[threadIdx.x], cosine = s_cos[threadIdx.x];
 		const uint32_t off = D41K_LATENT - 2u * D41K_ROPE_PAIRS + 2u * threadIdx.x;
 		#pragma unroll
 		for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
@@ -1342,31 +1344,29 @@ D41WindowFoldSpreadClusterKernel(const float *__restrict__ records, uint32_t has
 	__shared__ float folded_max[HEADS];
 	__shared__ float folded_sum[HEADS];
 	__shared__ float ftmp_s[2];
+	__shared__ float s_sin[D41K_ROPE_PAIRS], s_cos[D41K_ROPE_PAIRS];
 	__shared__ uint16_t s_slice[HEADS][D41K_WINDOW_PART_SLICE];
 	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
 	const uint32_t part = blockIdx.x, row = blockIdx.y, lane_index = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
 	LmDependentWait();
 	const uint32_t position = positions[row], lane = row_lane[row];
+	if ( part == D41K_WINDOW_PARTS - 1u && threadIdx.x < D41K_ROPE_PAIRS )
+		D41RopeTurn(position, 0, inverse_frequency[threadIdx.x], 1u, &s_sin[threadIdx.x], &s_cos[threadIdx.x]);
 	const uint32_t wave_first = position - row_ordinal[row];
 	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
 	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
 	const uint32_t key_first = part * D41K_WINDOW_PART_KEYS;
 	const uint32_t key_count = count > key_first ? (count - key_first < D41K_WINDOW_PART_KEYS ? count - key_first : D41K_WINDOW_PART_KEYS) : 0u;
 	const uint16_t *slot_ring = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride;
-	float q0[HEADS], q1[HEADS], carried_max[HEADS], carried_sum[HEADS];
+	float q0[HEADS], q1[HEADS], carried_max[HEADS];
+	const float carried_sum = threadIdx.x < HEADS && has_carried != 0u ? __ldg(records + ((uint64_t)row * HEADS + threadIdx.x) * D41K_RECORD + 1u) : 0.0f;
 	#pragma unroll
 	for ( uint32_t h = 0u; h < HEADS; ++h )
 	{
 		const uint16_t *q = query + ((uint64_t)row * HEADS + h) * D41K_LATENT;
 		q0[h] = LmBf16ToFloat(__ldg(q + threadIdx.x));
 		q1[h] = LmBf16ToFloat(__ldg(q + threadIdx.x + D41K_THREADS));
-		if ( has_carried != 0u )
-		{
-			const float *rec = records + ((uint64_t)row * HEADS + h) * D41K_RECORD;
-			carried_max[h] = __ldg(rec);
-			carried_sum[h] = __ldg(rec + 1u);
-		}
-		else { carried_max[h] = -INFINITY; carried_sum[h] = 0.0f; }
+		carried_max[h] = has_carried != 0u ? __ldg(records + ((uint64_t)row * HEADS + h) * D41K_RECORD) : -INFINITY;
 	}
 	if ( threadIdx.x < count )
 		kptr[threadIdx.x] = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + threadIdx.x);
@@ -1438,8 +1438,9 @@ D41WindowFoldSpreadClusterKernel(const float *__restrict__ records, uint32_t has
 		{
 			if ( threadIdx.x < count )
 			{
-				const float (*remote)[D41K_WINDOW_PART_KEYS] = cluster.map_shared_rank(part_scores, threadIdx.x / D41K_WINDOW_PART_KEYS);
-				score = remote[h][threadIdx.x % D41K_WINDOW_PART_KEYS];
+				const uint32_t local = (uint32_t)__cvta_generic_to_shared(&part_scores[h][threadIdx.x % D41K_WINDOW_PART_KEYS]);
+				uint32_t remote;
+				asm volatile("mapa.shared::cluster.u32 %0, %2, %3;\nld.shared::cluster.f32 %1, [%0];" : "=&r"(remote), "=f"(score) : "r"(local), "r"(threadIdx.x / D41K_WINDOW_PART_KEYS));
 			}
 			prev_in_warp = D41WarpPrefixMax(score, lane_index, &warp_max[warp]);
 		}
@@ -1453,7 +1454,7 @@ D41WindowFoldSpreadClusterKernel(const float *__restrict__ records, uint32_t has
 	if ( threadIdx.x < HEADS )
 	{
 		const uint32_t h = threadIdx.x;
-		float running_sum = carried_sum[h];
+		float running_sum = carried_sum;
 		for ( uint32_t i = 0u; i < count; ++i ) running_sum = running_sum * keep[h][i] + added[h][i];
 		folded_sum[h] = running_sum;
 	}
@@ -1502,8 +1503,7 @@ D41WindowFoldSpreadClusterKernel(const float *__restrict__ records, uint32_t has
 			asm volatile("bar.sync 2, 64;\n" ::: "memory");
 			if ( threadIdx.x < D41K_ROPE_PAIRS )
 			{
-				float sine, cosine;
-				D41RopeTurn(position, 0, inverse_frequency[threadIdx.x], 1u, &sine, &cosine);
+				const float sine = s_sin[threadIdx.x], cosine = s_cos[threadIdx.x];
 				#pragma unroll
 				for ( uint32_t h = 0u; h < HEADS; ++h )
 				{

@@ -2000,7 +2000,21 @@ nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_
 		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
 		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps build/test_nvrm_large_transfers build/test_nvrm_weightd_attach
+build/test_nvrm_host_visibility: tests/nvrm/host_visibility.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_host_visibility: tests/nvrm/host_visibility.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-host-visibility
+.PHONY: nvrm-host-visibility
+nvrm-host-visibility: nvrm-gpu-present build/test_nvrm_host_visibility build/cuda_host_visibility
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
+	./build/cuda_host_visibility cuda || status=1; \
+	./build/test_nvrm_host_visibility nvrm || status=1; \
+	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps build/test_nvrm_large_transfers build/test_nvrm_weightd_attach build/test_nvrm_host_visibility
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present

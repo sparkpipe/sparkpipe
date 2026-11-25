@@ -1,0 +1,2 @@
++14
+Eliminate the 9 hot-path spill-audit refusals (and 14 pending LmLatentShardPrefillKernel frames) across dsv41_flash_stage_kernels.cuh and attn_shard_prefill.cuh, update dsv41_flash_decode_replay.cu to D41QKvNormRopeQdq, and wire the nvrm-host-visibility CUDA/NVRM GPU gate into Makefile.
