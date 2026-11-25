@@ -338,9 +338,8 @@ static SparkStatus ReplayAttention(D41ModelState *state, const D41Layer *layer, 
 	if ( D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms,
 		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, state->qrq, rows, D41_QLORA, stream);
-	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
-		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
+	D41QKvNormRopeQdq(state->q_latent, layer->q_norm, state->qrq, (uint8_t *)0, (uint8_t *)0,
+		state->kv, layer->kv_norm, step->positions, frequency, state->window_kv, rows, stream);
 	if ( D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->q_local, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
