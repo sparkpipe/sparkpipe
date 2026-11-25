@@ -2342,6 +2342,84 @@ static void TestRecurrentLaneStateLazyAndTrim(void)
 	printf("A11 lazy lane_state: 0 slots at init, allocated per-slot on demand, trimmed to warm watermark on release, trimmed to 0 on reset, and restores cleanly after trim: ok\n");
 }
 
+static SparkStatus TestLargeRecurrentCopy(void *context,uint32_t direction,uint32_t slot,void *buffer,uint64_t bytes,SparkDeviceQueue *queue)
+{
+	uint8_t *store = (uint8_t *)context;
+	(void)queue;
+	if ( direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER )
+		memcpy(buffer,store + (size_t)slot * (size_t)bytes,(size_t)bytes);
+	else
+		memcpy(store + (size_t)slot * (size_t)bytes,buffer,(size_t)bytes);
+	return(SPARK_STATUS_OK);
+}
+
+static void TestRecurrentStagedBounceAndStateTrim(void)
+{
+	SparkStageKvConfiguration configuration;
+	const uint64_t lane_bytes = 1024u * 1024u;
+	const uint32_t lanes = SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS + 2u;
+	uint8_t *lanes_data;
+	uint32_t slot,slots[6];
+	TestStep steps[6],restore;
+	TestFinished finished;
+	SparkDeviceQueue *queue = 0;
+	lanes_data = (uint8_t *)calloc((size_t)lanes,(size_t)lane_bytes);
+	assert(lanes_data != 0);
+	assert(SparkDeviceQueueCreate(&queue,"kvtest staged") == SPARK_STATUS_OK);
+	MakeDirectories();
+	ConfigureRecurrent(&configuration);
+	configuration.resident_sequence_capacity = lanes;
+	configuration.logical_page_count = lanes * (TEST_POSITIONS / TEST_BLOCK) * 2u;
+	configuration.physical_page_count = lanes * (TEST_POSITIONS / TEST_BLOCK);
+	configuration.backing_maximum_bytes = (uint64_t)(configuration.logical_page_count + 2u) * TEST_PAGE_BYTES;
+	configuration.recurrent.lane_bytes = lane_bytes;
+	configuration.recurrent.copy = TestLargeRecurrentCopy;
+	configuration.recurrent.context = lanes_data;
+	configuration.recurrent.memory_bytes = (uint64_t)(2u * lanes + 2u) * lane_bytes;
+	assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+	assert(BINDING.staged_map != 0 && BINDING.lane_state_allocated_count == 0u);
+	for (slot=0u; slot<lanes; slot++)
+	{
+		slots[slot] = slot;
+		memset(lanes_data + (size_t)slot * (size_t)lane_bytes,(int)(0x30u + slot),(size_t)lane_bytes);
+		StepInit(&steps[slot],300u + slot,slot,0u,4u);
+		StepPublish(&steps[slot],4u,(uint8_t)(0x50u + slot));
+		steps[slot].lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED;
+		StepStart(&steps[slot]);
+	}
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,slots,lanes,queue) == SPARK_STATUS_OK);
+	assert(BINDING.lane_state_allocated_count == 0u && BINDING.staged_bounce[0].host != 0);
+	for (slot=0u; slot<lanes; slot++)
+	{
+		assert(BINDING.lane_staged_in_map[slot] == 1u);
+		memset(&finished,0,sizeof(finished));
+		assert(StepFinish(&steps[slot],SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+		assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	}
+	for (slot=0u; slot<lanes; slot++)
+		ReleaseSequence(300u + slot,slot);
+	assert(atomic_load(&BINDING.recurrent_staged_commits) == lanes);
+	assert(BINDING.staged_bounce[0].host == 0 && BINDING.staged_bounce[1].host == 0);
+	assert(BINDING.state_store.backing_page_count <= SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS);
+	for (slot=0u; slot<lanes; slot++)
+		assert(BINDING.lane_staged_in_map[slot] == 0u);
+	memset(&finished,0,sizeof(finished));
+	StepInit(&restore,400u,0u,4u,5u);
+	StepPrefix(&restore,4u,(uint8_t)(0x50u + lanes - 1u));
+	assert(StepAdmit(&restore,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
+	assert(StepAdmit(&restore,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&restore) == SPARK_STATUS_OK);
+	memset(lanes_data,0,(size_t)lane_bytes);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&restore.slot,1u,queue) == SPARK_STATUS_OK);
+	assert(lanes_data[0] == (uint8_t)(0x30u + lanes - 1u) && lanes_data[lane_bytes - 1u] == (uint8_t)(0x30u + lanes - 1u));
+	assert(StepFinish(&restore,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	ReleaseSequence(400u,0u);
+	Close();
+	SparkDeviceQueueDestroy(queue);
+	free(lanes_data);
+	printf("staged bounce and state store trim: large staged captures bounce without per-slot pinned allocs, commit cleanly, trim state store to warm slots, and restore exact bytes: ok\n");
+}
+
 static void RunScenarios(void)
 {
 	if ( POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD )
@@ -2384,6 +2462,7 @@ static void RunScenarios(void)
 	TestStatelessBoundaryProbeKeepsChain();
 	TestStagedReplyCheckpoint();
 	TestRecurrentLaneStateLazyAndTrim();
+	TestRecurrentStagedBounceAndStateTrim();
 	TestReleaseAfterFailedRun();
 }
 

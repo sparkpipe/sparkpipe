@@ -1,0 +1,2 @@
++469
+kv page store parallel mapped memory I/O and recurrent staged bounce/state-store trimming: adds MAP_SHARED memfd mapping with an 8-stripe fused parallel memcpy+Ck128 worker pool in cache/kv_page_store.c and bounded 2-slot pinned DMA bounce into sparse anonymous staged memory plus automatic state_store warm-slot trimming in runtime/stage_kv_binding.c, lifting 1x-gb10 Zero-NVIDIA NVRM RAIS v1.1 from 78.37 to 80.82 VALID (warm_8k 628.22 -> 480.58 ms, B=64 136.10 -> 140.47 tok/s, usable KV 24.921 -> 42.851 GiB).
