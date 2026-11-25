@@ -133,12 +133,77 @@ static __device__ __forceinline__ float GemmaHalfWarpSum(float value)
 	return value;
 }
 
-static __device__ __forceinline__ uint4 GemmaLoadRankMajor8(const uint4 *__restrict__ gathered4, uint32_t rows, uint32_t row, uint32_t local_v,
-	uint32_t logical_v)
+template<uint32_t LOCAL_V>
+static __device__ __forceinline__ uint4 GemmaLoadRankMajor8Const(const uint4 *__restrict__ gathered4, uint32_t rows, uint32_t row, uint32_t logical_v)
 {
-	const uint32_t rank = logical_v / local_v;
-	const uint32_t elem = logical_v % local_v;
-	return gathered4[(((uint64_t)rank * rows) + row) * local_v + elem];
+	const uint32_t rank = logical_v / LOCAL_V;
+	const uint32_t elem = logical_v % LOCAL_V;
+	return __ldg(gathered4 + (((uint64_t)rank * rows) + row) * LOCAL_V + elem);
+}
+
+static __global__ void GemmaInitSlidingInvFreqKernel(float *__restrict__ dst, uint32_t half, uint32_t width, float theta)
+{
+	const uint32_t pair = threadIdx.x;
+	if ( pair < half )
+		dst[pair] = __powf(theta, -2.0f * (float)pair / (float)width);
+}
+
+template<uint32_t HD, uint32_t ROPE_W, uint32_t ROT_PAIRS, bool FULL>
+static __device__ __forceinline__ void GemmaRopeInReg(uint4 *out_v, const float *__restrict__ inv_freq, float pos, float rope_scale, uint32_t lane)
+{
+	constexpr uint32_t HD_V = HD >> 3u;
+	constexpr uint32_t SLOTS = (HD_V + 31u) / 32u;
+	constexpr uint32_t ROPE_V = ROPE_W >> 3u;
+	constexpr uint32_t HALF_V = ROPE_V >> 1u;
+	if constexpr ( SLOTS == 1u )
+	{
+		uint4 partner;
+		partner.x = __shfl_xor_sync(0xffffffffu, out_v[0].x, HALF_V);
+		partner.y = __shfl_xor_sync(0xffffffffu, out_v[0].y, HALF_V);
+		partner.z = __shfl_xor_sync(0xffffffffu, out_v[0].z, HALF_V);
+		partner.w = __shfl_xor_sync(0xffffffffu, out_v[0].w, HALF_V);
+		if ( lane < ROPE_V )
+		{
+			const bool is_hi = lane >= HALF_V;
+			const uint32_t pair_base = (lane & (HALF_V - 1u)) << 3u;
+			float mine[8], other[8], res[8];
+			LmLoadBf16x8AsFloat(out_v[0], mine);
+			LmLoadBf16x8AsFloat(partner, other);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				float lo = is_hi ? other[k] : mine[k];
+				float hi = is_hi ? mine[k] : other[k];
+				const float angle = pos * __ldg(inv_freq + pair_base + k);
+				LmRopePairRounded<LM_ROPE_ROUNDED_TERMS>(&lo, &hi, angle, rope_scale);
+				res[k] = is_hi ? hi : lo;
+			}
+			out_v[0] = LmPackUint4FloatToBf16(res);
+		}
+	}
+	else
+	{
+		static_assert(SLOTS == 2u && ROPE_W == HD, "two-slot RoPE covers full 512-dim head");
+		const uint32_t pair_base = lane << 3u;
+		if ( ROT_PAIRS == 0u || pair_base < ROT_PAIRS )
+		{
+			float lo_v[8], hi_v[8];
+			LmLoadBf16x8AsFloat(out_v[0], lo_v);
+			LmLoadBf16x8AsFloat(out_v[1], hi_v);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				const uint32_t pair = pair_base + k;
+				if ( ROT_PAIRS == 0u || pair < ROT_PAIRS )
+				{
+					const float angle = pos * __ldg(inv_freq + pair);
+					LmRopePairRounded<LM_ROPE_ROUNDED_TERMS>(&lo_v[k], &hi_v[k], angle, rope_scale);
+				}
+			}
+			out_v[0] = LmPackUint4FloatToBf16(lo_v);
+			out_v[1] = LmPackUint4FloatToBf16(hi_v);
+		}
+	}
 }
 
 template<uint32_t HD, bool WEIGHTED, bool ROUND_FIRST>
@@ -191,7 +256,7 @@ template<class G, bool FULL>
 __global__ __launch_bounds__(GM_THREADS, 2)
 static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, const float *__restrict__ q_norm, const float *__restrict__ k_norm,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ store_positions, const uint32_t *__restrict__ sequence_of_row,
-	const float *__restrict__ full_inv_freq, LmKvShardView kv_view, uint16_t *__restrict__ query_out, uint32_t rows, uint32_t local_rows)
+	const float *__restrict__ inv_freq, LmKvShardView kv_view, uint16_t *__restrict__ query_out, uint32_t rows)
 {
 	using S = GemmaShape<G>;
 	using Kv = typename std::conditional<FULL, typename S::FullKvGeometry, typename S::SlidingKvGeometry>::type;
@@ -200,25 +265,24 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 	constexpr uint32_t HEADS = FULL ? G::kFullHeads : G::kSlidingHeads;
 	constexpr uint32_t QW = FULL ? S::kFullQ : S::kSlidingQ;
 	constexpr uint32_t KVW = FULL ? S::kFullKv : S::kSlidingKv;
+	constexpr uint32_t FUSED = FULL ? S::kFullFused : S::kSlidingFused;
+	constexpr uint32_t LOCAL_V = (FUSED / G::kTpDegree) >> 3u;
 	constexpr uint32_t HD_V = HD >> 3u;
 	constexpr uint32_t Q_V = QW >> 3u;
 	constexpr uint32_t KV_V = KVW >> 3u;
 	constexpr uint32_t SLOTS = (HD_V + 31u) / 32u;
 	constexpr uint32_t ROPE_W = FULL ? S::kFullRopeWidth : HD;
-	constexpr uint32_t ROPE_V = ROPE_W >> 3u;
-	constexpr uint32_t HALF = ROPE_W / 2u;
+	constexpr uint32_t ROT_PAIRS = FULL ? G::kFullRopePairs : 0u;
 	constexpr bool DO_ROPE = !FULL || G::kFullRope;
 	constexpr bool KEY_IS_VAL = FULL && G::kKeyIsValue;
 	constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
 	constexpr uint32_t TASKS = HEADS + 2u * KVH;
-	__shared__ __align__(16) uint16_t rope_smem[WARPS][DO_ROPE ? ROPE_W : 1u];
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t task = blockIdx.x * WARPS + warp, row = blockIdx.y;
 	LmDependentWait();
 	if ( task < TASKS && row < rows )
 	{
 		const uint4 *gathered4 = (const uint4 *)gathered;
-		const uint32_t local_v = local_rows >> 3u;
 		if ( task < HEADS )
 		{
 			const uint32_t h = task;
@@ -228,34 +292,11 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 			{
 				const uint32_t c = s * 32u + lane;
 				if ( c < HD_V )
-					in_v[s] = GemmaLoadRankMajor8(gathered4, rows, row, local_v, h * HD_V + c);
+					in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, h * HD_V + c);
 			}
 			GemmaHeadNormVec<HD, G::kQkNormWeighted, G::kNormRoundFirst>(in_v, q_norm, out_v, lane, G::kNormEpsilon, G::kQueryMultiply);
 			if constexpr ( DO_ROPE )
-			{
-				#pragma unroll
-				for ( uint32_t s = 0u; s < SLOTS; ++s )
-				{
-					const uint32_t c = s * 32u + lane;
-					if ( c < ROPE_V )
-						*(uint4 *)(rope_smem[warp] + (c << 3u)) = out_v[s];
-				}
-				__syncwarp();
-				const float pos = (float)positions[row];
-				for ( uint32_t pair = lane; pair < HALF; pair += 32u )
-				{
-					const float angle = pos * (FULL ? full_inv_freq[pair] : __powf(G::kSlidingTheta, -2.0f * (float)pair / (float)ROPE_W));
-					LmRopeRotate<LM_ROPE_HALF_SPLIT, LM_ROPE_ROUNDED_TERMS>(rope_smem[warp], 0u, pair, HALF, angle, FULL ? G::kFullRopeScale : 1.0f);
-				}
-				__syncwarp();
-				#pragma unroll
-				for ( uint32_t s = 0u; s < SLOTS; ++s )
-				{
-					const uint32_t c = s * 32u + lane;
-					if ( c < ROPE_V )
-						out_v[s] = *(const uint4 *)(rope_smem[warp] + (c << 3u));
-				}
-			}
+				GemmaRopeInReg<HD, ROPE_W, ROT_PAIRS, FULL>(out_v, inv_freq, (float)__ldg(positions + row), FULL ? G::kFullRopeScale : 1.0f, lane);
 			uint4 *q4 = (uint4 *)query_out + ((uint64_t)row * HEADS + h) * HD_V;
 			#pragma unroll
 			for ( uint32_t s = 0u; s < SLOTS; ++s )
@@ -267,10 +308,10 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 		}
 		else
 		{
-			const uint32_t store_pos = store_positions[row];
+			const uint32_t store_pos = __ldg(store_positions + row);
 			if ( SparkKvShardOwns(kv_view.shard, store_pos) != 0u )
 			{
-				uint16_t *slot = (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, sequence_of_row[row], store_pos, row, LM_KV_ACCESS_WRITE);
+				uint16_t *slot = (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, __ldg(sequence_of_row + row), store_pos, row, LM_KV_ACCESS_WRITE);
 				if ( slot != 0 )
 				{
 					if ( task < HEADS + KVH )
@@ -282,34 +323,11 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 						{
 							const uint32_t c = s * 32u + lane;
 							if ( c < HD_V )
-								in_v[s] = GemmaLoadRankMajor8(gathered4, rows, row, local_v, Q_V + kh * HD_V + c);
+								in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, Q_V + kh * HD_V + c);
 						}
 						GemmaHeadNormVec<HD, G::kQkNormWeighted, G::kNormRoundFirst>(in_v, k_norm, out_v, lane, G::kNormEpsilon, 1.0f);
 						if constexpr ( DO_ROPE )
-						{
-							#pragma unroll
-							for ( uint32_t s = 0u; s < SLOTS; ++s )
-							{
-								const uint32_t c = s * 32u + lane;
-								if ( c < ROPE_V )
-									*(uint4 *)(rope_smem[warp] + (c << 3u)) = out_v[s];
-							}
-							__syncwarp();
-							const float pos = (float)positions[row];
-							for ( uint32_t pair = lane; pair < HALF; pair += 32u )
-							{
-								const float angle = pos * (FULL ? full_inv_freq[pair] : __powf(G::kSlidingTheta, -2.0f * (float)pair / (float)ROPE_W));
-								LmRopeRotate<LM_ROPE_HALF_SPLIT, LM_ROPE_ROUNDED_TERMS>(rope_smem[warp], 0u, pair, HALF, angle, FULL ? G::kFullRopeScale : 1.0f);
-							}
-							__syncwarp();
-							#pragma unroll
-							for ( uint32_t s = 0u; s < SLOTS; ++s )
-							{
-								const uint32_t c = s * 32u + lane;
-								if ( c < ROPE_V )
-									out_v[s] = *(const uint4 *)(rope_smem[warp] + (c << 3u));
-							}
-						}
+							GemmaRopeInReg<HD, ROPE_W, ROT_PAIRS, FULL>(out_v, inv_freq, (float)__ldg(positions + row), FULL ? G::kFullRopeScale : 1.0f, lane);
 						uint4 *k4 = (uint4 *)slot + kh * HD_V;
 						#pragma unroll
 						for ( uint32_t s = 0u; s < SLOTS; ++s )
@@ -329,7 +347,7 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 						{
 							const uint32_t c = s * 32u + lane;
 							if ( c < HD_V )
-								in_v[s] = GemmaLoadRankMajor8(gathered4, rows, row, local_v, src_base + c);
+								in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, src_base + c);
 						}
 						if constexpr ( G::kValueNorm )
 							GemmaHeadNormVec<HD, false, false>(in_v, (const float *)0, out_v, lane, G::kNormEpsilon, 1.0f);
@@ -499,7 +517,7 @@ static void GemmaPostNormAddNextKernel(uint16_t *__restrict__ residual, const ui
 		}
 	}
 	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, post_eps);
-	const float mult = HAS_SCALAR ? scalar[0] : 1.0f;
+	const float mult = HAS_SCALAR ? __ldg(scalar) : 1.0f;
 	float total2 = 0.0f;
 	#pragma unroll
 	for ( uint32_t slot = 0u; slot < 4u; ++slot )
@@ -565,7 +583,7 @@ static void GemmaPostNormAddNextKernel(uint16_t *__restrict__ residual, const ui
 }
 
 template<uint32_t THREADS, bool ROUND_FIRST>
-__global__ __launch_bounds__(THREADS, 1)
+__global__ __launch_bounds__(THREADS, 2)
 static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uint16_t *__restrict__ dense, const uint16_t *__restrict__ moe,
 	const float *__restrict__ dense_norm, const float *__restrict__ moe_norm, const float *__restrict__ post_norm, const float *__restrict__ scalar,
 	const float *__restrict__ next_weight, uint16_t *__restrict__ next_out, uint32_t width, float post_eps, float norm_eps)
@@ -574,7 +592,7 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 	const uint64_t base = (uint64_t)blockIdx.x * width;
 	const uint16_t *dense_row = dense + base, *moe_row = moe + base;
 	uint16_t *res_row = residual + base;
-	uint4 d_staged[2], m_staged[2], c_staged[2];
+	uint4 d_staged[2], m_staged[2];
 	float dense_total = 0.0f, moe_total = 0.0f, total = 0.0f;
 	LmDependentWait();
 	#pragma unroll
@@ -602,8 +620,8 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 			float dv[8], mv[8], dn[8], mn[8], comb[8];
 			LmLoadBf16x8AsFloat(d_staged[slot], dv);
 			LmLoadBf16x8AsFloat(m_staged[slot], mv);
-			LmLoadFloat8(dense_norm + offset, dn);
-			LmLoadFloat8(moe_norm + offset, mn);
+			LmLoadWeight8(dense_norm, offset, dn);
+			LmLoadWeight8(moe_norm, offset, mn);
 			#pragma unroll
 			for ( uint32_t k = 0u; k < 8u; ++k )
 			{
@@ -611,11 +629,11 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 				comb[k] = c;
 				total += c * c;
 			}
-			c_staged[slot] = LmPackUint4FloatToBf16(comb);
+			d_staged[slot] = LmPackUint4FloatToBf16(comb);
 		}
 	}
 	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, post_eps);
-	const float multiplier = scalar[0];
+	const float multiplier = __ldg(scalar);
 	float total2 = 0.0f;
 	#pragma unroll
 	for ( uint32_t slot = 0u; slot < 2u; ++slot )
@@ -624,15 +642,15 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 		if ( offset < width )
 		{
 			float comb[8], pn[8], rv[8], out[8];
-			LmLoadBf16x8AsFloat(c_staged[slot], comb);
-			LmLoadFloat8(post_norm + offset, pn);
+			LmLoadBf16x8AsFloat(d_staged[slot], comb);
+			LmLoadWeight8(post_norm, offset, pn);
 			LmLoadBf16x8AsFloat(*(const uint4 *)(res_row + offset), rv);
 			#pragma unroll
 			for ( uint32_t k = 0u; k < 8u; ++k )
 				out[k] = SparkMathRoundBf16(rv[k] + SparkMathRoundBf16(comb[k] * scale * pn[k])) * multiplier;
 			const uint4 packed = LmPackUint4FloatToBf16(out);
 			*(uint4 *)(res_row + offset) = packed;
-			c_staged[slot] = packed;
+			d_staged[slot] = packed;
 			if ( next_out != 0 )
 				total2 = LmSumSqBf16x8(packed, total2);
 		}
@@ -649,7 +667,7 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 			if ( offset < width )
 			{
 				float x[8], w[8], out[8];
-				LmLoadBf16x8AsFloat(c_staged[slot], x);
+				LmLoadBf16x8AsFloat(d_staged[slot], x);
 				LmLoadWeight8(next_weight, offset, w);
 				#pragma unroll
 				for ( uint32_t k = 0u; k < 8u; ++k )
@@ -814,33 +832,114 @@ static void GemmaSigmoidTopkLocalKernel(const void *__restrict__ logits, const f
 }
 
 template<class G>
-static __device__ __forceinline__ void GemmaSoftmaxShared(const uint16_t *__restrict__ logits, uint32_t row, float *__restrict__ s_probs,
-	float *__restrict__ reduction)
+static __device__ __forceinline__ void GemmaSoftmaxTopkWarp(const uint16_t *__restrict__ logits, const float *__restrict__ expert_scale, uint32_t row,
+	uint32_t expert_first, uint32_t *__restrict__ fault, uint32_t *__restrict__ out_exp, float *__restrict__ out_wt, uint32_t lane)
 {
-	constexpr uint32_t WIDTH = G::kExperts;
-	constexpr uint32_t per_thread = (WIDTH + GM_THREADS - 1u) / GM_THREADS;
-	const uint64_t row_base = (uint64_t)row * WIDTH;
-	float top = -INFINITY, sum = 0.0f;
-	float staged[per_thread];
+	constexpr uint32_t EXPERTS = G::kExperts;
+	constexpr uint32_t PER_LANE = (EXPERTS + 31u) / 32u;
+	const uint64_t row_base = (uint64_t)row * EXPERTS;
+	float vals[PER_LANE];
+	float top = -INFINITY;
 	#pragma unroll
-	for ( uint32_t slot = 0u; slot < per_thread; ++slot )
+	for ( uint32_t j = 0u; j < PER_LANE; ++j )
 	{
-		const uint32_t index = threadIdx.x + slot * GM_THREADS;
-		staged[slot] = index < WIDTH ? LmBf16ToFloat(logits[row_base + index]) : -INFINITY;
-		top = fmaxf(top, staged[slot]);
+		const uint32_t e = j * 32u + lane;
+		vals[j] = e < EXPERTS ? LmBf16ToFloat(logits[row_base + e]) : -INFINITY;
+		top = fmaxf(top, vals[j]);
 	}
-	top = LmBlockMax<GM_THREADS>(top, reduction);
 	#pragma unroll
-	for ( uint32_t slot = 0u; slot < per_thread; ++slot )
+	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
+		top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, offset));
+	float wsum[PER_LANE];
+	#pragma unroll
+	for ( uint32_t j = 0u; j < PER_LANE; ++j )
 	{
-		staged[slot] = threadIdx.x + slot * GM_THREADS < WIDTH ? expf(staged[slot] - top) : 0.0f;
-		sum += staged[slot];
+		const uint32_t e = j * 32u + lane;
+		vals[j] = e < EXPERTS ? expf(vals[j] - top) : 0.0f;
+		wsum[j] = GemmaWarpSum(vals[j]);
 	}
-	sum = LmBlockSumOnce<GM_THREADS>(sum, reduction);
+	float sum = 0.0f;
+	if constexpr ( PER_LANE == 1u )
+		sum = wsum[0];
+	else if constexpr ( PER_LANE == 2u )
+		sum = wsum[0] + wsum[1];
+	else if constexpr ( PER_LANE == 4u )
+		sum = (wsum[0] + wsum[2]) + (wsum[1] + wsum[3]);
+	else
+	{
+		#pragma unroll
+		for ( uint32_t j = 0u; j < PER_LANE; ++j )
+			sum += wsum[j];
+	}
+	uint64_t key[PER_LANE];
 	#pragma unroll
-	for ( uint32_t slot = 0u; slot < per_thread; ++slot )
-		if ( threadIdx.x + slot * GM_THREADS < WIDTH )
-			s_probs[threadIdx.x + slot * GM_THREADS] = staged[slot] / sum;
+	for ( uint32_t j = 0u; j < PER_LANE; ++j )
+	{
+		const uint32_t e = j * 32u + lane;
+		if ( e < EXPERTS )
+		{
+			vals[j] /= sum;
+			key[j] = ((uint64_t)LmTopkRouteKey(vals[j]) << 32u) | (uint64_t)(0xffffffffu - e);
+		}
+		else
+		{
+			vals[j] = 0.0f;
+			key[j] = 0ull;
+		}
+	}
+	uint32_t chosen = 0u, high = 0u;
+	float my_p = 0.0f;
+	#pragma unroll
+	for ( uint32_t round = 0u; round < G::kTopK; ++round )
+	{
+		uint64_t best = 0ull;
+		#pragma unroll
+		for ( uint32_t j = 0u; j < PER_LANE; ++j )
+			best = key[j] > best ? key[j] : best;
+		high = __reduce_max_sync(0xffffffffu, (uint32_t)(best >> 32u));
+		const uint32_t low = __reduce_max_sync(0xffffffffu, (uint32_t)(best >> 32u) == high ? (uint32_t)best : 0u);
+		const uint64_t winner = ((uint64_t)high << 32u) | (uint64_t)low;
+		const uint32_t e = 0xffffffffu - low;
+		float picked_p = 0.0f;
+		#pragma unroll
+		for ( uint32_t j = 0u; j < PER_LANE; ++j )
+			if ( key[j] == winner )
+			{
+				picked_p = vals[j];
+				key[j] = 0ull;
+			}
+		picked_p = __shfl_sync(0xffffffffu, picked_p, (int)(e & 31u));
+		if ( lane == round )
+		{
+			chosen = e;
+			my_p = picked_p;
+		}
+	}
+	if ( lane == 0u )
+		LmTopkRouteFault(fault, high);
+	constexpr uint32_t WIDTH = G::kTopK <= 1u ? 1u : G::kTopK <= 2u ? 2u : G::kTopK <= 4u ? 4u : G::kTopK <= 8u ? 8u : G::kTopK <= 16u ? 16u : 32u;
+	float tree = lane < G::kTopK ? my_p : 0.0f;
+	#pragma unroll
+	for ( uint32_t step = WIDTH / 2u; step > 0u; step >>= 1u )
+	{
+		const float other = __shfl_down_sync(0xffffffffu, tree, step);
+		tree = lane < step ? tree + other : tree;
+	}
+	const float total = __shfl_sync(0xffffffffu, tree, 0) + 1e-20f;
+	if ( lane < G::kTopK )
+	{
+		const float wt = (my_p / total) * __ldg(expert_scale + chosen);
+		if ( chosen >= expert_first && chosen < expert_first + G::kLocalExperts )
+		{
+			out_exp[lane] = chosen - expert_first;
+			out_wt[lane] = wt;
+		}
+		else
+		{
+			out_exp[lane] = G::kLocalExperts;
+			out_wt[lane] = 0.0f;
+		}
+	}
 }
 
 template<class G>
@@ -851,39 +950,18 @@ static void GemmaSoftmaxRouteSmallKernel(const uint16_t *__restrict__ logits, co
 	uint32_t *__restrict__ route_source_token, float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up,
 	uint32_t *__restrict__ tile_prefix_up, uint32_t n_down, uint32_t *__restrict__ tile_prefix_down)
 {
-	__shared__ float s_probs[G::kExperts];
-	__shared__ float reduction[LmBlockWarps<GM_THREADS>()];
 	__shared__ uint32_t s_exp[32];
 	__shared__ float s_wt[32];
 	const uint32_t routes = rows * G::kTopK, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	LmDependentWait();
-	for ( uint32_t r = 0u; r < rows; ++r )
-	{
-		GemmaSoftmaxShared<G>(logits, r, s_probs, reduction);
-		__syncthreads();
-		if ( warp == 0u )
-			LmTopkWarpRow<G::kTopK, true, LM_TOPK_SCORE_IDENTITY>(s_probs, G::kExperts, s_exp + r * G::kTopK, s_wt + r * G::kTopK,
-				(const float *)0, (const uint16_t *)0, 1.0f, fault, 0u, lane);
-		__syncthreads();
-	}
+	if ( warp < rows )
+		GemmaSoftmaxTopkWarp<G>(logits, expert_scale, warp, expert_first, fault, s_exp + warp * G::kTopK, s_wt + warp * G::kTopK, lane);
+	__syncthreads();
 	if ( threadIdx.x < routes )
 	{
-		const uint32_t ge = s_exp[threadIdx.x];
-		const float wt = s_wt[threadIdx.x] * expert_scale[ge];
-		if ( ge >= expert_first && ge < expert_first + G::kLocalExperts )
-		{
-			s_exp[threadIdx.x] = ge - expert_first;
-			s_wt[threadIdx.x] = wt;
-		}
-		else
-		{
-			s_exp[threadIdx.x] = G::kLocalExperts;
-			s_wt[threadIdx.x] = 0.0f;
-		}
 		route_expert[threadIdx.x] = s_exp[threadIdx.x];
 		route_weight[threadIdx.x] = s_wt[threadIdx.x];
 	}
-	__syncthreads();
 	LmRouteBuildSmallBody<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
 		tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
 	__syncthreads();
@@ -898,36 +976,16 @@ static void GemmaSoftmaxRouteSmallKernel(const uint16_t *__restrict__ logits, co
 
 template<class G>
 __global__ __launch_bounds__(GM_THREADS, 2)
-static void GemmaSoftmaxTopkLocalKernel(const uint16_t *__restrict__ logits, const float *__restrict__ expert_scale, uint32_t expert_first,
-	uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
+static void GemmaSoftmaxTopkLocalKernel(const uint16_t *__restrict__ logits, const float *__restrict__ expert_scale, uint32_t rows,
+	uint32_t expert_first, uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
 {
-	__shared__ float s_probs[G::kExperts];
-	__shared__ float reduction[LmBlockWarps<GM_THREADS>()];
-	const uint32_t row = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t row = blockIdx.x * WARPS + warp;
 	LmDependentWait();
-	GemmaSoftmaxShared<G>(logits, row, s_probs, reduction);
-	__syncthreads();
-	if ( warp == 0u )
-	{
-		const uint64_t base = (uint64_t)row * G::kTopK;
-		LmTopkWarpRow<G::kTopK, true, LM_TOPK_SCORE_IDENTITY>(s_probs, G::kExperts, route_expert + base, route_weight + base,
-			(const float *)0, (const uint16_t *)0, 1.0f, fault, 0u, lane);
-		if ( lane < G::kTopK )
-		{
-			const uint32_t ge = route_expert[base + lane];
-			const float wt = route_weight[base + lane] * expert_scale[ge];
-			if ( ge >= expert_first && ge < expert_first + G::kLocalExperts )
-			{
-				route_expert[base + lane] = ge - expert_first;
-				route_weight[base + lane] = wt;
-			}
-			else
-			{
-				route_expert[base + lane] = G::kLocalExperts;
-				route_weight[base + lane] = 0.0f;
-			}
-		}
-	}
+	if ( row < rows )
+		GemmaSoftmaxTopkWarp<G>(logits, expert_scale, row, expert_first, fault, route_expert + (uint64_t)row * G::kTopK,
+			route_weight + (uint64_t)row * G::kTopK, lane);
 	LmDependentRelease();
 }
 
@@ -1018,7 +1076,7 @@ static void GemmaMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, con
 	{
 		const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
 		for ( uint32_t c = blockIdx.x * GM_THREADS + threadIdx.x; c < chunks; c += gridDim.x * GM_THREADS )
-			out4[c] = HAS_SHARED ? __ldcs(shared4 + c) : zero;
+			out4[c] = HAS_SHARED ? shared4[c] : zero;
 	}
 	else
 	{
@@ -1026,9 +1084,9 @@ static void GemmaMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, con
 		{
 			float acc[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 			for ( uint32_t k = 0u; k < count; ++k )
-				LmAddBf16x8(acc, __ldcs(packed4 + (uint64_t)active_rows[k] * chunks + c));
+				LmAddBf16x8(acc, packed4[(uint64_t)active_rows[k] * chunks + c]);
 			if constexpr ( HAS_SHARED )
-				LmAddBf16x8(acc, __ldcs(shared4 + c));
+				LmAddBf16x8(acc, shared4[c]);
 			out4[c] = LmPackUint4FloatToBf16(acc);
 		}
 	}
@@ -1246,6 +1304,763 @@ static void GemmaMoeB1W2FinalizeKernel(const uint16_t *__restrict__ w2, const ui
 	LmDependentRelease();
 }
 
+static __device__ __forceinline__ void GemmaTilePrefixScan(const uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ prefix, uint32_t groups,
+	uint32_t tile_m, uint32_t n_tiles)
+{
+	const uint32_t lane = threadIdx.x & 31u;
+	if ( threadIdx.x < 32u )
+	{
+		const uint32_t per_lane = (groups + 31u) / 32u, first = lane * per_lane;
+		uint32_t own = 0u;
+		for ( uint32_t g = first; g < first + per_lane && g < groups; ++g )
+		{
+			const uint32_t r = group_row_offset[g + 1u] - group_row_offset[g];
+			own += (r + tile_m - 1u) / tile_m * n_tiles;
+		}
+		uint32_t running = own;
+		#pragma unroll
+		for ( uint32_t offset = 1u; offset < 32u; offset <<= 1u )
+		{
+			const uint32_t other = __shfl_up_sync(0xffffffffu, running, offset);
+			if ( lane >= offset )
+				running += other;
+		}
+		uint32_t off = running - own;
+		for ( uint32_t g = first; g < first + per_lane && g < groups; ++g )
+		{
+			prefix[g] = off;
+			const uint32_t r = group_row_offset[g + 1u] - group_row_offset[g];
+			off += (r + tile_m - 1u) / tile_m * n_tiles;
+		}
+		if ( lane == 31u )
+			prefix[groups] = running;
+	}
+	__syncthreads();
+}
+
+template<uint32_t BYTES, bool GROUPED>
+struct GemmaMmaSmem
+{
+	__align__(128) uint8_t buf[BYTES];
+	uint32_t prefix[257u];
+};
+
+template<uint32_t BYTES>
+struct GemmaMmaSmem<BYTES, false>
+{
+	__align__(128) uint8_t buf[BYTES];
+};
+
+static __device__ __forceinline__ uint32_t GemmaGroupedTotalTiles(const uint32_t *__restrict__ group_row_offset, uint32_t groups, uint32_t tile_m,
+	uint32_t n_tiles)
+{
+	uint32_t total = 0u;
+	for ( uint32_t g = 0u; g < groups; ++g )
+		total += (__ldg(group_row_offset + g + 1u) - __ldg(group_row_offset + g) + tile_m - 1u) / tile_m * n_tiles;
+	return total;
+}
+
+static __device__ __forceinline__ void GemmaGroupedTileScan(const uint32_t *__restrict__ group_row_offset, uint32_t groups, uint32_t tile,
+	uint32_t tile_m, uint32_t n_tiles, uint32_t &grp, uint32_t &row_base, uint32_t &row_limit, uint32_t &nt)
+{
+	uint32_t off = 0u;
+	for ( uint32_t g = 0u; g < groups; ++g )
+	{
+		const uint32_t first = __ldg(group_row_offset + g), end = __ldg(group_row_offset + g + 1u);
+		const uint32_t cnt = (end - first + tile_m - 1u) / tile_m * n_tiles;
+		if ( tile < off + cnt )
+		{
+			grp = g;
+			row_limit = end;
+			const uint32_t within = tile - off;
+			row_base = first + (within / n_tiles) * tile_m;
+			nt = within % n_tiles;
+			return;
+		}
+		off += cnt;
+	}
+	grp = 0u; row_base = 0u; row_limit = 0u; nt = 0u;
+}
+
+static __device__ __forceinline__ void GemmaGroupedTileLookup(const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ prefix,
+	uint32_t groups, uint32_t tile, uint32_t tile_m, uint32_t n_tiles, uint32_t &grp, uint32_t &row_base, uint32_t &row_limit, uint32_t &nt)
+{
+	uint32_t lo = 0u, hi = groups;
+	while ( lo + 1u < hi )
+	{
+		const uint32_t mid = (lo + hi) >> 1u;
+		if ( prefix[mid] <= tile ) lo = mid;
+		else hi = mid;
+	}
+	grp = lo;
+	const uint32_t first = group_row_offset[grp];
+	row_limit = group_row_offset[grp + 1u];
+	const uint32_t within = tile - prefix[grp];
+	row_base = first + (within / n_tiles) * tile_m;
+	nt = within % n_tiles;
+}
+
+template<uint32_t ACT_MODE>
+static __device__ __forceinline__ uint16_t GemmaMmaActValue(float g_acc, float u_acc, float wt, float limit)
+{
+	const float g = SparkMathRoundBf16(g_acc);
+	const float u = SparkMathRoundBf16(u_acc);
+	if constexpr ( ACT_MODE == 3u )
+		return LmFloatToBf16(SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(g)) * u * wt);
+	else
+		return LmFloatToBf16(SparkMathGateLimitedGlu(g, u, limit) * wt);
+}
+
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES, bool DUAL, bool GROUPED, bool LDCS_B>
+__global__ __launch_bounds__(THREADS, 2)
+static void GemmaMmaKernel(const uint16_t *__restrict__ w0, const uint16_t *__restrict__ w1, const uint16_t *__restrict__ act,
+	uint16_t *__restrict__ out0, uint16_t *__restrict__ out1, const uint32_t *__restrict__ group_row_offset,
+	const uint32_t *__restrict__ source_row_map, uint32_t rows, uint32_t groups, uint32_t K, uint32_t n0, uint32_t n1)
+{
+	constexpr uint32_t KSTEPS = TILE_K / 16u, ROW_CHUNKS = TILE_K / 8u, ROW_BYTES = TILE_K * 2u;
+	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
+	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
+	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
+	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
+	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
+	constexpr bool USE_PREFIX = GROUPED && (STAGES * STAGE_BYTES <= 48000u);
+	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid MMA warp tile");
+	__shared__ GemmaMmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
+	uint8_t *const smem = smem_s.buf;
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
+	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
+	const uint32_t k_tiles = K / TILE_K;
+	const uint32_t n0_tiles = (n0 + TILE_N - 1u) / TILE_N;
+	const uint32_t n_tiles = DUAL ? (n0_tiles + (n1 + TILE_N - 1u) / TILE_N) : n0_tiles;
+	LmDependentWait();
+	uint32_t total_tiles;
+	if constexpr ( USE_PREFIX )
+	{
+		GemmaTilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
+		total_tiles = smem_s.prefix[groups];
+	}
+	else if constexpr ( GROUPED )
+		total_tiles = GemmaGroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
+	else
+		total_tiles = ((rows + TILE_M - 1u) / TILE_M) * n_tiles;
+	auto swz = [](uint32_t r, uint32_t c) -> uint32_t { return (c & ~7u) | LmStreamSwizzle8(r, c & 7u); };
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
+	{
+		uint32_t grp = 0u, row_base, row_limit, nt;
+		if constexpr ( USE_PREFIX )
+			GemmaGroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
+		else if constexpr ( GROUPED )
+			GemmaGroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
+		else
+		{
+			const uint32_t m_tiles = (rows + TILE_M - 1u) / TILE_M;
+			row_base = (tile % m_tiles) * TILE_M;
+			row_limit = rows;
+			nt = tile / m_tiles;
+		}
+		const bool second = DUAL && nt >= n0_tiles;
+		const uint32_t col_base = (second ? nt - n0_tiles : nt) * TILE_N;
+		const uint32_t cur_n = second ? n1 : n0;
+		const uint16_t *w_ptr = second ? w1 : w0;
+		uint16_t *o_ptr = second ? out1 : out0;
+		const uint16_t *a_src[A_PER_T];
+		uint32_t a_mask = 0u, b_mask = 0u;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < A_PER_T; ++q )
+		{
+			const uint32_t r = row0 + q * ROW_STEP;
+			const uint32_t packed = row_base + r;
+			const uint32_t valid = packed < row_limit ? 1u : 0u;
+			const uint32_t src_r = valid != 0u ? (GROUPED && source_row_map != 0 ? source_row_map[packed] : packed) : 0u;
+			a_src[q] = act + (uint64_t)src_r * K + col0 * 8u;
+			a_mask |= valid << q;
+		}
+		const uint16_t *b_base = w_ptr + (((uint64_t)grp * cur_n) + col_base + row0) * K + col0 * 8u;
+		const uint64_t b_step = (uint64_t)ROW_STEP * K;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			b_mask |= (col_base + row0 + q * ROW_STEP < cur_n ? 1u : 0u) << q;
+		auto issue_k = [&](uint32_t st_off)
+		{
+			const uint32_t stage = shared_base + st_off;
+			#pragma unroll
+			for ( uint32_t q = 0u; q < A_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t dst = stage + r * ROW_BYTES + swz(r, col0) * 16u;
+				const uint32_t valid = (a_mask >> q) & 1u;
+				LmStreamCopy(dst, valid != 0u ? a_src[q] : act, valid << 4u);
+				a_src[q] += TILE_K;
+			}
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t off = A_BYTES + r * ROW_BYTES + swz(r, col0) * 16u;
+				const uint32_t valid = (b_mask >> q) & 1u;
+				const uint16_t *src = valid != 0u ? b_base + q * b_step : w_ptr;
+				if constexpr ( LDCS_B )
+					*(uint4 *)(smem + st_off + off) = valid != 0u ? __ldcs((const uint4 *)src) : make_uint4(0u, 0u, 0u, 0u);
+				else
+					LmStreamCopy(stage + off, src, valid << 4u);
+			}
+			b_base += TILE_K;
+		};
+		auto advance = [](uint32_t &off)
+		{
+			if constexpr ( STAGES == 2u )
+				off ^= STAGE_BYTES;
+			else
+			{
+				off += STAGE_BYTES;
+				if ( off == STAGES * STAGE_BYTES )
+					off = 0u;
+			}
+		};
+		uint32_t a_reg[2][MF][4], b_reg[2][NF][2];
+		float total[MF][NF][4];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+				total[i][j][0] = total[i][j][1] = total[i][j][2] = total[i][j][3] = 0.0f;
+		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
+		{
+			#pragma unroll
+			for ( uint32_t ii = 0u; ii < MF; ++ii )
+			{
+				const uint32_t r = warp_m * WARP_M + ii * 16u + (lane & 15u);
+				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
+				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + swz(r, c) * 16u);
+			}
+			#pragma unroll
+			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
+			{
+				const uint32_t r = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
+				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
+				uint32_t tmp[4];
+				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + r * ROW_BYTES + swz(r, c) * 16u);
+				b_reg[buf][jj][0] = tmp[0];
+				b_reg[buf][jj][1] = tmp[1];
+				b_reg[buf][jj + 1u][0] = tmp[2];
+				b_reg[buf][jj + 1u][1] = tmp[3];
+			}
+		};
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < k_tiles )
+				issue_k(sp_off);
+			LmStreamCommit();
+			kp++;
+			advance(sp_off);
+		}
+		if constexpr ( STAGES >= 3u )
+		{
+			LmStreamWait<STAGES - 2u>();
+			__syncthreads();
+			load_frag(0u, 0u, shared_base + sc_off);
+			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+			{
+				const uint32_t stage_s = shared_base + sc_off;
+				#pragma unroll
+				for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
+				{
+					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if ( ks == 0u )
+					{
+						if ( kp < k_tiles )
+						{
+							issue_k(sp_off);
+							kp++;
+							advance(sp_off);
+						}
+						LmStreamCommit();
+					}
+					if ( ks + 1u < KSTEPS )
+						load_frag(nxt, ks + 1u, stage_s);
+					else if ( kt + 1u < k_tiles )
+					{
+						LmStreamWait<STAGES - 2u>();
+						__syncthreads();
+						advance(sc_off);
+						load_frag(nxt, 0u, shared_base + sc_off);
+					}
+					#pragma unroll
+					for ( uint32_t i = 0u; i < MF; ++i )
+						#pragma unroll
+						for ( uint32_t j = 0u; j < NF; ++j )
+							LmMmaBf16(total[i][j], a_reg[cur][i], b_reg[cur][j]);
+				}
+			}
+		}
+		else
+		{
+			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+			{
+				LmStreamWait<0u>();
+				__syncthreads();
+				const uint32_t stage_s = shared_base + sc_off;
+				if ( kp < k_tiles )
+				{
+					issue_k(sp_off);
+					kp++;
+					advance(sp_off);
+				}
+				LmStreamCommit();
+				load_frag(0u, 0u, stage_s);
+				#pragma unroll
+				for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
+				{
+					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if ( ks + 1u < KSTEPS )
+						load_frag(nxt, ks + 1u, stage_s);
+					#pragma unroll
+					for ( uint32_t i = 0u; i < MF; ++i )
+						#pragma unroll
+						for ( uint32_t j = 0u; j < NF; ++j )
+							LmMmaBf16(total[i][j], a_reg[cur][i], b_reg[cur][j]);
+				}
+				advance(sc_off);
+			}
+		}
+		LmStreamWait<0u>();
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 4u; e += 2u )
+				{
+					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
+					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+					if ( r < row_limit && c < cur_n )
+						*(uint32_t *)(o_ptr + (uint64_t)r * cur_n + c) = (uint32_t)LmFloatToBf16(total[i][j][e]) |
+							((uint32_t)LmFloatToBf16(total[i][j][e + 1u]) << 16u);
+				}
+		if ( tile + gridDim.x < total_tiles )
+			__syncthreads();
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t ACT_MODE>
+__global__ __launch_bounds__(THREADS, 2)
+static void GemmaMmaGateUpActKernel(const uint16_t *__restrict__ w_gate, const uint16_t *__restrict__ w_up, const uint16_t *__restrict__ act,
+	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ source_row_map,
+	uint16_t *__restrict__ out, uint32_t groups, uint32_t K, uint32_t N, float limit)
+{
+	constexpr uint32_t TILE_K = 64u, KSTEPS = 4u, ROW_CHUNKS = 8u, ROW_BYTES = 128u, STAGES = 2u;
+	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
+	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
+	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + 2u * B_BYTES;
+	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
+	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
+	constexpr bool USE_PREFIX = (STAGES * STAGE_BYTES <= 48000u);
+	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid fused gate-up MMA tile");
+	__shared__ GemmaMmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
+	uint8_t *const smem = smem_s.buf;
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
+	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
+	const uint32_t k_tiles = K / TILE_K, n_tiles = (N + TILE_N - 1u) / TILE_N;
+	LmDependentWait();
+	uint32_t total_tiles;
+	if constexpr ( USE_PREFIX )
+	{
+		GemmaTilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
+		total_tiles = smem_s.prefix[groups];
+	}
+	else
+		total_tiles = GemmaGroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
+	{
+		uint32_t grp, row_base, row_limit, nt;
+		if constexpr ( USE_PREFIX )
+			GemmaGroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
+		else
+			GemmaGroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
+		const uint32_t col_base = nt * TILE_N;
+		const uint16_t *a_src[A_PER_T];
+		uint32_t a_mask = 0u, b_mask = 0u;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < A_PER_T; ++q )
+		{
+			const uint32_t packed = row_base + row0 + q * ROW_STEP;
+			const uint32_t valid = packed < row_limit ? 1u : 0u;
+			const uint32_t src_r = valid != 0u ? source_row_map[packed] : 0u;
+			a_src[q] = act + (uint64_t)src_r * K + col0 * 8u;
+			a_mask |= valid << q;
+		}
+		const uint64_t g_off = (((uint64_t)grp * N) + col_base + row0) * K + col0 * 8u;
+		const uint16_t *bg_base = w_gate + g_off, *bu_base = w_up + g_off;
+		const uint64_t b_step = (uint64_t)ROW_STEP * K;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			b_mask |= (col_base + row0 + q * ROW_STEP < N ? 1u : 0u) << q;
+		auto issue_k = [&](uint32_t st_off)
+		{
+			const uint32_t stage = shared_base + st_off;
+			#pragma unroll
+			for ( uint32_t q = 0u; q < A_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t valid = (a_mask >> q) & 1u;
+				LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? a_src[q] : act, valid << 4u);
+				a_src[q] += TILE_K;
+			}
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
+				const uint32_t valid = (b_mask >> q) & 1u;
+				LmStreamCopy(stage + A_BYTES + sw, valid != 0u ? bg_base + q * b_step : w_gate, valid << 4u);
+				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, valid != 0u ? bu_base + q * b_step : w_up, valid << 4u);
+			}
+			bg_base += TILE_K;
+			bu_base += TILE_K;
+		};
+		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
+		float tg[MF][NF][4], tu[MF][NF][4];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+			{
+				tg[i][j][0] = tg[i][j][1] = tg[i][j][2] = tg[i][j][3] = 0.0f;
+				tu[i][j][0] = tu[i][j][1] = tu[i][j][2] = tu[i][j][3] = 0.0f;
+			}
+		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
+		{
+			#pragma unroll
+			for ( uint32_t ii = 0u; ii < MF; ++ii )
+			{
+				const uint32_t r = warp_m * WARP_M + ii * 16u + (lane & 15u);
+				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
+				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
+			}
+			#pragma unroll
+			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
+			{
+				const uint32_t r = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
+				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
+				const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
+				uint32_t tmp[4];
+				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + off);
+				bg_reg[buf][jj][0] = tmp[0]; bg_reg[buf][jj][1] = tmp[1];
+				bg_reg[buf][jj + 1u][0] = tmp[2]; bg_reg[buf][jj + 1u][1] = tmp[3];
+				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + B_BYTES + off);
+				bu_reg[buf][jj][0] = tmp[0]; bu_reg[buf][jj][1] = tmp[1];
+				bu_reg[buf][jj + 1u][0] = tmp[2]; bu_reg[buf][jj + 1u][1] = tmp[3];
+			}
+		};
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+		if ( kp < k_tiles )
+			issue_k(sp_off);
+		LmStreamCommit();
+		kp++;
+		sp_off ^= STAGE_BYTES;
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+		{
+			LmStreamWait<0u>();
+			__syncthreads();
+			const uint32_t stage_s = shared_base + sc_off;
+			if ( kp < k_tiles )
+			{
+				issue_k(sp_off);
+				kp++;
+				sp_off ^= STAGE_BYTES;
+			}
+			LmStreamCommit();
+			load_frag(0u, 0u, stage_s);
+			#pragma unroll
+			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
+			{
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks + 1u < KSTEPS )
+					load_frag(nxt, ks + 1u, stage_s);
+				#pragma unroll
+				for ( uint32_t i = 0u; i < MF; ++i )
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+					{
+						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+					}
+			}
+			sc_off ^= STAGE_BYTES;
+		}
+		LmStreamWait<0u>();
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 4u; e += 2u )
+				{
+					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
+					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+					if ( r < row_limit && c < N )
+					{
+						const float wt = __ldg(packed_weight + r);
+						const uint16_t lo = GemmaMmaActValue<ACT_MODE>(tg[i][j][e], tu[i][j][e], wt, limit);
+						const uint16_t hi = GemmaMmaActValue<ACT_MODE>(tg[i][j][e + 1u], tu[i][j][e + 1u], wt, limit);
+						*(uint32_t *)(out + (uint64_t)r * N + c) = (uint32_t)lo | ((uint32_t)hi << 16u);
+					}
+				}
+		if ( tile + gridDim.x < total_tiles )
+			__syncthreads();
+	}
+	LmDependentRelease();
+}
+
+static __device__ __forceinline__ float GemmaBf16Dot8Exact(const float *wf, const float *af)
+{
+	float a0 = fmaf(wf[0], af[0], 0.0f);
+	float a1 = wf[1] * af[1];
+	a0 = fmaf(wf[2], af[2], a0);
+	a1 = fmaf(wf[3], af[3], a1);
+	a0 = fmaf(wf[4], af[4], a0);
+	a1 = fmaf(wf[5], af[5], a1);
+	a0 = fmaf(wf[6], af[6], a0);
+	a1 = fmaf(wf[7], af[7], a1);
+	return a0 + a1;
+}
+
+template<bool DUAL>
+__global__ __launch_bounds__(GM_THREADS, 2)
+static void GemmaExactSplitDenseKernel(const uint16_t *__restrict__ w0, const uint16_t *__restrict__ w1, const uint16_t *__restrict__ act,
+	uint16_t *__restrict__ out0, float *__restrict__ out0_f32, uint16_t *__restrict__ out1, uint32_t rows, uint32_t K, uint32_t n0, uint32_t n1)
+{
+	constexpr uint32_t SPLIT_W = 8u, BN = 4u, RT = 8u;
+	__shared__ float partial[SPLIT_W][BN][RT];
+	const uint32_t warp = threadIdx.x >> 5u, sub = threadIdx.x & 31u;
+	const uint32_t n0_tiles = (n0 + BN - 1u) / BN;
+	const uint32_t nt = blockIdx.x, r0 = blockIdx.y * RT;
+	const uint32_t count = rows - r0 < RT ? rows - r0 : RT;
+	const bool second = DUAL && nt >= n0_tiles;
+	const uint32_t col0 = (second ? nt - n0_tiles : nt) * BN;
+	const uint32_t cur_n = second ? n1 : n0;
+	const uint16_t *w_ptr = second ? w1 : w0;
+	uint16_t *o_ptr = second ? out1 : out0;
+	float *o_f32 = second ? (float *)0 : out0_f32;
+	const uint32_t chunks = K >> 3u;
+	const uint32_t first = chunks * warp / SPLIT_W, last = chunks * (warp + 1u) / SPLIT_W, seg = last - first;
+	const uint4 *w_rows[BN];
+	#pragma unroll
+	for ( uint32_t b = 0u; b < BN; ++b )
+		w_rows[b] = (const uint4 *)(w_ptr + (uint64_t)(col0 + b < cur_n ? col0 + b : 0u) * K) + first;
+	float acc[BN][RT];
+	#pragma unroll
+	for ( uint32_t b = 0u; b < BN; ++b )
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RT; ++r )
+			acc[b][r] = 0.0f;
+	LmDependentWait();
+	for ( uint32_t c = sub; c < seg; c += 32u )
+	{
+		float wf[BN][8];
+		#pragma unroll
+		for ( uint32_t b = 0u; b < BN; ++b )
+			LmSkinnyUnpackBf16x8(__ldg(w_rows[b] + c), wf[b]);
+		const uint32_t col_elem = (first + c) * 8u;
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RT; ++r )
+		{
+			const uint32_t rr = r0 + (r < count ? r : 0u);
+			float af[8];
+			LmSkinnyUnpackBf16x8(__ldg((const uint4 *)(act + (uint64_t)rr * K + col_elem)), af);
+			#pragma unroll
+			for ( uint32_t b = 0u; b < BN; ++b )
+				acc[b][r] = fmaf(1.0f, GemmaBf16Dot8Exact(wf[b], af), acc[b][r]);
+		}
+	}
+	#pragma unroll
+	for ( uint32_t b = 0u; b < BN; ++b )
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RT; ++r )
+		{
+			#pragma unroll
+			for ( uint32_t step = 16u; step > 0u; step >>= 1u )
+				acc[b][r] += __shfl_xor_sync(0xffffffffu, acc[b][r], step);
+			if ( sub == 0u )
+				partial[warp][b][r] = acc[b][r];
+		}
+	__syncthreads();
+	if ( warp == 0u )
+	{
+		const uint32_t b = sub >> 3u, r = sub & 7u;
+		if ( col0 + b < cur_n && r < count )
+		{
+			float total = 0.0f;
+			#pragma unroll
+			for ( uint32_t w = 0u; w < SPLIT_W; ++w )
+				total += partial[w][b][r];
+			const uint64_t idx = (uint64_t)(r0 + r) * cur_n + (col0 + b);
+			if ( o_f32 != 0 )
+				o_f32[idx] = total;
+			else
+				o_ptr[idx] = LmFloatToBf16(total);
+		}
+	}
+	LmDependentRelease();
+}
+
+template<class G, bool GELU>
+__global__ __launch_bounds__(128u, 4)
+static void GemmaMoeExactW1W3ActKernel(const uint16_t *__restrict__ w1, const uint16_t *__restrict__ w3, const uint16_t *__restrict__ act,
+	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token,
+	uint16_t *__restrict__ out, float limit)
+{
+	constexpr uint32_t WARPS = 4u, RG = 8u;
+	constexpr uint32_t K = G::kHidden, N = G::kMoeInter, CHUNKS = K >> 3u;
+	constexpr uint32_t N_TILES = (N + WARPS - 1u) / WARPS;
+	__shared__ uint32_t prefix[G::kLocalExperts + 1u];
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	LmDependentWait();
+	GemmaTilePrefixScan(group_row_offset, prefix, G::kLocalExperts, RG, N_TILES);
+	const uint32_t total_tiles = prefix[G::kLocalExperts];
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
+	{
+		uint32_t grp, r0, row_limit, nt;
+		GemmaGroupedTileLookup(group_row_offset, prefix, G::kLocalExperts, tile, RG, N_TILES, grp, r0, row_limit, nt);
+		const uint32_t count = row_limit - r0 < RG ? row_limit - r0 : RG;
+		const uint32_t col = nt * WARPS + warp;
+		if ( col < N )
+		{
+			uint32_t src_r[RG];
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+				src_r[r] = r < count ? __ldg(route_source_token + r0 + r) : 0u;
+			const uint4 *w1_row = (const uint4 *)w1 + ((uint64_t)grp * N + col) * CHUNKS;
+			const uint4 *w3_row = (const uint4 *)w3 + ((uint64_t)grp * N + col) * CHUNKS;
+			float g_acc[RG], u_acc[RG];
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				g_acc[r] = 0.0f;
+				u_acc[r] = 0.0f;
+			}
+			for ( uint32_t c = lane; c < CHUNKS; c += 32u )
+			{
+				float wg[8], wu[8];
+				LmSkinnyUnpackBf16x8(__ldcs(w1_row + c), wg);
+				LmSkinnyUnpackBf16x8(__ldcs(w3_row + c), wu);
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+				{
+					if ( r < count )
+					{
+						float af[8];
+						LmSkinnyUnpackBf16x8(__ldg((const uint4 *)(act + (uint64_t)src_r[r] * K) + c), af);
+						g_acc[r] = fmaf(1.0f, GemmaBf16Dot8Exact(wg, af), g_acc[r]);
+						u_acc[r] = fmaf(1.0f, GemmaBf16Dot8Exact(wu, af), u_acc[r]);
+					}
+				}
+			}
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				if ( r < count )
+				{
+					#pragma unroll
+					for ( uint32_t step = 16u; step > 0u; step >>= 1u )
+					{
+						g_acc[r] += __shfl_xor_sync(0xffffffffu, g_acc[r], step);
+						u_acc[r] += __shfl_xor_sync(0xffffffffu, u_acc[r], step);
+					}
+					if ( lane == 0u )
+					{
+						const float wt = __ldg(packed_weight + r0 + r);
+						out[(uint64_t)(r0 + r) * N + col] = GemmaMmaActValue<GELU ? 3u : 4u>(g_acc[r], u_acc[r], wt, limit);
+					}
+				}
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
+template<class G>
+__global__ __launch_bounds__(128u, 4)
+static void GemmaMoeExactW2Kernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ act, const uint32_t *__restrict__ group_row_offset,
+	uint16_t *__restrict__ out)
+{
+	constexpr uint32_t WARPS = 4u, RG = 8u, NPG = 2u;
+	constexpr uint32_t K = G::kMoeInter, N = G::kHidden, CHUNKS = K >> 3u;
+	constexpr uint32_t COLS_PER_BLK = WARPS * NPG;
+	constexpr uint32_t N_TILES = (N + COLS_PER_BLK - 1u) / COLS_PER_BLK;
+	__shared__ uint32_t prefix[G::kLocalExperts + 1u];
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	LmDependentWait();
+	GemmaTilePrefixScan(group_row_offset, prefix, G::kLocalExperts, RG, N_TILES);
+	const uint32_t total_tiles = prefix[G::kLocalExperts];
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
+	{
+		uint32_t grp, r0, row_limit, nt;
+		GemmaGroupedTileLookup(group_row_offset, prefix, G::kLocalExperts, tile, RG, N_TILES, grp, r0, row_limit, nt);
+		const uint32_t count = row_limit - r0 < RG ? row_limit - r0 : RG;
+		const uint32_t col0 = nt * COLS_PER_BLK + warp * NPG;
+		if ( col0 < N )
+		{
+			const bool has1 = col0 + 1u < N;
+			const uint4 *w0 = (const uint4 *)w2 + ((uint64_t)grp * N + col0) * CHUNKS;
+			const uint4 *w1 = has1 ? w0 + CHUNKS : w0;
+			float acc0[RG], acc1[RG];
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				acc0[r] = 0.0f;
+				acc1[r] = 0.0f;
+			}
+			for ( uint32_t c = lane; c < CHUNKS; c += 32u )
+			{
+				float wf0[8], wf1[8];
+				LmSkinnyUnpackBf16x8(__ldcs(w0 + c), wf0);
+				LmSkinnyUnpackBf16x8(__ldcs(w1 + c), wf1);
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+				{
+					if ( r < count )
+					{
+						float af[8];
+						LmSkinnyUnpackBf16x8(__ldg((const uint4 *)(act + (uint64_t)(r0 + r) * K) + c), af);
+						acc0[r] = fmaf(1.0f, GemmaBf16Dot8Exact(wf0, af), acc0[r]);
+						acc1[r] = fmaf(1.0f, GemmaBf16Dot8Exact(wf1, af), acc1[r]);
+					}
+				}
+			}
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				if ( r < count )
+				{
+					#pragma unroll
+					for ( uint32_t step = 16u; step > 0u; step >>= 1u )
+					{
+						acc0[r] += __shfl_xor_sync(0xffffffffu, acc0[r], step);
+						acc1[r] += __shfl_xor_sync(0xffffffffu, acc1[r], step);
+					}
+					if ( lane == 0u )
+					{
+						out[(uint64_t)(r0 + r) * N + col0] = LmFloatToBf16(acc0[r]);
+						if ( has1 )
+							out[(uint64_t)(r0 + r) * N + col0 + 1u] = LmFloatToBf16(acc1[r]);
+					}
+				}
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
 template<class G>
 struct GemmaModel : CudaStage<GemmaModel<G>>
 {
@@ -1281,11 +2096,127 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static const char *ReportTag(void) { return G::ReportTag(); }
 	static const char *WeightdModel(void) { return G::Name(); }
 
+	static int32_t DenseMma(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t K, uint32_t N,
+		uint32_t sms, SparkGpuStream stream)
+	{
+		if ( rows > 128u && (N > 3072u || (N >= 640u && K > 512u)) )
+			return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, K, N, 0u, 0u, sms, stream);
+		const bool k128 = (K & 127u) == 0u;
+		if ( rows <= 32u )
+		{
+			if ( k128 && N >= 1024u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 128u, 128u, 2u, 2u, false, false, true>), ((rows + 31u) / 32u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 31u) / 32u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+		}
+		else if ( rows <= 64u )
+		{
+			if ( k128 && N >= 1024u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 128u, 128u, 2u, 2u, false, false, true>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+		}
+		else if ( rows <= 128u )
+		{
+			if ( N >= 1024u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<128u, 32u, 64u, 256u, 4u, 2u, false, false, true>), ((rows + 127u) / 128u) * ((N + 31u) / 32u), 256u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+		}
+		else if ( N <= 256u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+				weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+		else
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 64u, 64u, 256u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 63u) / 64u), 256u, 0, stream,
+				weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	static int32_t DualDenseMma(const uint16_t *w0, const uint16_t *w1, const uint16_t *source, uint16_t *out0, uint16_t *out1, uint32_t rows,
+		uint32_t K, uint32_t n0, uint32_t n1, SparkGpuStream stream)
+	{
+		if ( rows <= 128u )
+		{
+			const uint32_t nt = (n0 + 31u) / 32u + (n1 + 31u) / 32u;
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, true, false, false>), ((rows + 63u) / 64u) * nt, 128u, 0, stream,
+				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+		}
+		else if ( rows <= 1024u )
+		{
+			const uint32_t nt = (n0 + 63u) / 64u + (n1 + 63u) / 64u;
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 64u, 64u, 256u, 2u, 3u, true, false, false>), ((rows + 63u) / 64u) * nt, 256u, 0, stream,
+				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+		}
+		else
+		{
+			const uint32_t nt = (n0 + 63u) / 64u + (n1 + 63u) / 64u;
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<128u, 64u, 64u, 256u, 4u, 2u, true, false, false>), ((rows + 127u) / 128u) * nt, 256u, 0, stream,
+				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+		}
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	template<bool GELU>
+	static int32_t MoeW1W3ActMma(const State *state, const GemmaLayer *layer, const uint16_t *act, uint32_t rows, uint32_t sms, SparkGpuStream stream)
+	{
+		constexpr uint32_t ACT_MODE = GELU ? 3u : 4u;
+		const uint32_t local_mean = (rows * G::kTopK + G::kExperts - 1u) / G::kExperts;
+		const uint32_t grid = sms * 2u;
+		if ( local_mean <= 16u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaGateUpActKernel<16u, 64u, 128u, 1u, ACT_MODE>), grid, 128u, 0, stream,
+				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->route_source_token,
+				state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		else if ( local_mean <= 32u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaGateUpActKernel<32u, 64u, 256u, 2u, ACT_MODE>), grid, 256u, 0, stream,
+				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->route_source_token,
+				state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		else
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaGateUpActKernel<64u, 64u, 256u, 2u, ACT_MODE>), grid, 256u, 0, stream,
+				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->route_source_token,
+				state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	static int32_t MoeDownMma(const State *state, const GemmaLayer *layer, uint32_t rows, uint32_t sms, SparkGpuStream stream)
+	{
+		const uint32_t local_mean = (rows * G::kTopK + G::kExperts - 1u) / G::kExperts;
+		if ( local_mean <= 16u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 64u, 64u, 128u, 1u, 3u, false, true, false>), sms * 3u, 128u, 0, stream,
+				layer->moe_w2, (const uint16_t *)0, state->expert_act, state->expert_out, (uint16_t *)0, state->group_row_offset,
+				(const uint32_t *)0, rows * G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, 0u);
+		else if ( local_mean <= 32u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 64u, 64u, 256u, 2u, 3u, false, true, false>), sms * 2u, 256u, 0, stream,
+				layer->moe_w2, (const uint16_t *)0, state->expert_act, state->expert_out, (uint16_t *)0, state->group_row_offset,
+				(const uint32_t *)0, rows * G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, 0u);
+		else
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 128u, 64u, 256u, 2u, 2u, false, true, false>), sms * 2u, 256u, 0, stream,
+				layer->moe_w2, (const uint16_t *)0, state->expert_act, state->expert_out, (uint16_t *)0, state->group_row_offset,
+				(const uint32_t *)0, rows * G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, 0u);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
 	static int32_t Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
+		const uint32_t exact = step->commit == 0u ? 1u : 0u;
+		if ( exact == 0u && destination_f32 == 0 && rows > LM_SKINNY_ROWS_WIDE &&
+			(input_dimension & 63u) == 0u && (output_dimension & 31u) == 0u )
+			return DenseMma(weight, source, destination, rows, input_dimension, output_dimension, step->multiprocessors, stream);
+		if ( exact != 0u && rows > 8u && (input_dimension & 7u) == 0u &&
+			output_dimension <= LM_SKINNY_SPLIT_MAX_OUTPUTS && input_dimension >= 2048u )
+		{
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseKernel<false>), dim3((output_dimension + 3u) / 4u, (rows + 7u) / 8u), GM_THREADS, 0, stream,
+				weight, (const uint16_t *)0, source, destination, destination_f32, (uint16_t *)0, rows, input_dimension, output_dimension, 0u);
+			return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		}
 		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
-			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
+			exact, step->multiprocessors, stream);
 	}
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
@@ -1372,7 +2303,21 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			const uint32_t gate_out = G::kOutputGate ? width : (FULL ? S::kFullGateRows : S::kSlidingGateRows);
 			const bool allow_multi = local_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS || (local_rows + gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS) ||
 				(exact == 0u && rows > 1u);
-			if ( allow_multi && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
+			if ( exact == 0u && rows > LM_SKINNY_ROWS_WIDE && (G::kHidden & 63u) == 0u && (local_rows & 31u) == 0u && (gate_out & 31u) == 0u )
+			{
+				if ( DualDenseMma(layer->qkv, layer->gate, state->normed, state->attn_local, state->gate_logits, rows, G::kHidden, local_rows, gate_out, stream) == LM_LAUNCH_OK )
+					gate_done = true;
+			}
+			else if ( exact != 0u && rows > 8u && local_rows <= LM_SKINNY_SPLIT_MAX_OUTPUTS && gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS &&
+				G::kHidden >= 2048u )
+			{
+				const uint32_t nt = (local_rows + 3u) / 4u + (gate_out + 3u) / 4u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseKernel<true>), dim3(nt, (rows + 7u) / 8u), GM_THREADS, 0, stream,
+					layer->qkv, layer->gate, state->normed, state->attn_local, (float *)0, state->gate_logits, rows, G::kHidden, local_rows, gate_out);
+				if ( CudaStageLaunched() == SPARK_STATUS_OK )
+					gate_done = true;
+			}
+			else if ( allow_multi && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
 			{
 				const uint32_t allow_split = local_rows + gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS ? 1u : 0u;
 				const LmSkinnyDenseTarget targets[2] =
@@ -1393,7 +2338,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		(void)LM_LAUNCH_DEPENDENT((GemmaAttnPrepStoreKernel<G, FULL>), dim3((TASKS + WARPS - 1u) / WARPS, rows), GM_THREADS, 0, stream,
 			state->attn_gathered, G::kQkNormWeighted ? layer->q_norm : (const float *)0, G::kQkNormWeighted ? layer->k_norm : (const float *)0,
 			step->positions, step->tree != 0u ? step->slots : step->positions, step->sequence_of_row,
-			FULL ? state->full_inv_freq : (const float *)0, *view, state->query, rows, local_rows);
+			FULL ? state->full_inv_freq : state->full_inv_freq + (G::kFullDim / 2u), *view, state->query, rows);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<Kv,LmKvShardView,KVH,HD,HD>(*view, state->query, HEADS, step->sequence_of_row, step->context_length,
@@ -1499,14 +2444,42 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		LmLocalExpertRoutes expert_routes;
 		ExpertRoutes(state, step, rows, &expert_routes);
-		if ( ExpertProjection(expert_routes, layer->moe_w1, act_in, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
-			ExpertProjection(expert_routes, layer->moe_w3, act_in, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
+		const uint32_t exact = step->commit == 0u ? 1u : 0u;
+		if ( exact == 0u && (rows >= 16u || routes >= 128u) && (G::kHidden & 63u) == 0u && (G::kMoeInter & 63u) == 0u && G::kLocalExperts <= 256u )
+		{
+			if ( MoeW1W3ActMma<GELU>(state, layer, act_in, rows, step->multiprocessors, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( G::kHidden >= 256u && G::kLocalExperts <= 256u )
+		{
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeExactW1W3ActKernel<G, GELU>), step->multiprocessors * 4u, 128u, 0, stream,
+				layer->moe_w1, layer->moe_w3, act_in, state->packed_weight, state->group_row_offset, state->route_source_token,
+				state->expert_act, layer->swiglu_limit);
+		}
+		else
+		{
+			if ( ExpertProjection(expert_routes, layer->moe_w1, act_in, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
+				ExpertProjection(expert_routes, layer->moe_w3, act_in, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeActPackedKernel<GELU>), dim3(LmVecBlocks<GM_THREADS>(G::kMoeInter), routes), GM_THREADS, 0, stream,
+				state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter,
+				layer->swiglu_limit);
+		}
+		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		(void)LM_LAUNCH_DEPENDENT((GemmaMoeActPackedKernel<GELU>), dim3(LmVecBlocks<GM_THREADS>(G::kMoeInter), routes), GM_THREADS, 0, stream,
-			state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter,
-			layer->swiglu_limit);
-		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
+		if ( exact == 0u && routes >= 8u && (G::kMoeInter & 63u) == 0u && (G::kHidden & 63u) == 0u && G::kLocalExperts <= 256u )
+		{
+			if ( MoeDownMma(state, layer, rows, step->multiprocessors, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( exact != 0u && G::kMoeInter >= 256u && G::kLocalExperts <= 256u )
+		{
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeExactW2Kernel<G>), step->multiprocessors * 4u, 128u, 0, stream,
+				layer->moe_w2, state->expert_act, state->group_row_offset, state->expert_out);
+			if ( CudaStageLaunched() != SPARK_STATUS_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		(void)LM_LAUNCH_DEPENDENT((GemmaMoeLocalFinalizeKernel<HAS_SHARED>), dim3(LmVecBlocks<GM_THREADS>(G::kHidden), rows), GM_THREADS, 0, stream,
 			state->expert_out, state->route_packed_row, state->route_expert, HAS_SHARED ? state->partial : (const uint16_t *)0, output,
@@ -1533,8 +2506,9 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		else
 		{
-			(void)LM_LAUNCH_DEPENDENT((GemmaSoftmaxTopkLocalKernel<G>), rows, GM_THREADS, 0, stream, state->router_logits, layer->expert_scale,
-				state->expert_first, step->route_fault, state->route_expert, state->route_weight);
+			constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
+			(void)LM_LAUNCH_DEPENDENT((GemmaSoftmaxTopkLocalKernel<G>), (rows + WARPS - 1u) / WARPS, GM_THREADS, 0, stream, state->router_logits,
+				layer->expert_scale, rows, state->expert_first, step->route_fault, state->route_expert, state->route_weight);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK || BuildRoutesPacked(state, rows, routes, stream) != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -1736,7 +2710,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			{ (void **)&state->gate_logits, G::kOutputGate ? rows * (S::kMaxQ / state->tp_degree) * sizeof(uint16_t) : G::kHeadGate ? rows * S::kMaxGateRows * sizeof(uint16_t) : 0u },
 			{ (void **)&state->gate_up, rows * 2u * state->ffn_rows * sizeof(uint16_t) },
 			{ (void **)&state->intermediate, rows * state->ffn_rows * sizeof(uint16_t) },
-			{ (void **)&state->full_inv_freq, lane == 0u ? (G::kFullDim / 2u) * sizeof(float) : 0u },
+			{ (void **)&state->full_inv_freq, lane == 0u ? (G::kFullDim / 2u + G::kSlidingDim / 2u) * sizeof(float) : 0u },
 			{ (void **)&state->moe_normed, G::kMoe ? width : 0u },
 			{ (void **)&state->router_logits, rows * G::kExperts * sizeof(uint16_t) },
 			{ (void **)&state->router_probs, rows * G::kExperts * sizeof(float) },
@@ -1956,6 +2930,8 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			}
 		}
+		LM_LAUNCH((GemmaInitSlidingInvFreqKernel), 1u, G::kSlidingDim / 2u, 0, (SparkGpuStream)0,
+			state->full_inv_freq + (G::kFullDim / 2u), G::kSlidingDim / 2u, G::kSlidingDim, G::kSlidingTheta);
 		if ( SparkGpuMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		return SPARK_STATUS_OK;
