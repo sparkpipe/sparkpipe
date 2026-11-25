@@ -220,8 +220,19 @@ python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g 
 python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g --format json
 python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g --format html-data
 python3 tools/rais_score.py compare baseline.jsonl after.jsonl --hardware 16x-gb10-1x100g --label-a SparkPipe --label-b vLLM
+python3 tools/rais_score.py reconstitute overlap.jsonl --hardware 16x-gb10-1x100g --new-weights basket_v2.json --output basket_v2_divisor.json
 python3 tools/rais_score.py import-hillclimb qualification/batch-sweep-20261018/glm-5.3-flash.jsonl --score
 ```
+
+## 8. Basket Reconstitution & S&P / Dow-Jones Continuity Divisor
+
+Every model in RAIS keeps its standalone `0–100` score on a given hardware profile (`1x100g` single-switch or `2x100g` dual-switch, `4x` or `16x`), so external head-to-head comparisons (`SparkPipe` vs `vLLM`, `SGLang`, or tuned forks) remain direct and timeless.
+
+When the fleet basket evolves—retiring superseded models (for example rotating out `kimi-k3` once `kimi-k3.1-pro` replaces it) and admitting newer frontier releases—the composite **RAIS Fleet Index** stays continuous across generations using an S&P 500 / Dow-Jones continuity divisor $D_k$:
+
+$$\text{RAIS\_Index}(t) = \frac{\sum_{i \in B_k} w_i \cdot S_i(t)}{D_k}, \qquad D_k = D_{k-1} \cdot \frac{\sum_{i \in B_k} w_i^{\text{new}} \cdot S_i(t_k)}{\sum_{j \in B_{k-1}} w_j^{\text{old}} \cdot S_j(t_k)}$$
+
+At reconstitution snapshot $t_k$, an overlap receipt runs all models in $B_{k-1} \cup B_k$ on the same build and hardware profile. `tools/rais_score.py reconstitute` solves for $D_k$ so `index_before == index_after` (zero discontinuity), while future improvements on $B_k$ move `fleet_rais_index` proportionally. Both single-switch (`16x-gb10-1x100g`, `4x-gb10-1x100g`) and dual-switch (`16x-gb10-2x100g`, `4x-gb10-2x100g`) hardware profiles are scored under identical formulas.
 
 ### 7.3 Standardized RAIS JSONL Record
 
