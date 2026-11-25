@@ -166,6 +166,8 @@ def load(path):
                 f'{kernel["name"]}: threads is a multiple of 32 from 32 to 1024')
         require(isinstance(kernel.get('rows_max'), int) and 1 <= kernel['rows_max'] <= 16, f'{kernel["name"]}: rows_max is 1 to 16')
         require(isinstance(kernel.get('shared_bytes'), str), f'{kernel["name"]}: shared_bytes is a C expression')
+        require('dependent_launch' not in kernel or isinstance(kernel['dependent_launch'], bool),
+                f'{kernel["name"]}: dependent_launch is a boolean')
         names = set()
         for argument in kernel.get('arguments', []):
             check_argument(kernel, argument, names)
@@ -242,6 +244,9 @@ def emit_header(plan):
         lines.append('{')
         lines.append(f'\textern __shared__ float {shared}[];')
         lines.append('\tuint32_t block = blockIdx.x;')
+        if kernel.get('dependent_launch'):
+            lines.append('\tLmDependentWait();')
+            lines.append('\tLmDependentRelease();')
         for role in kernel['roles']:
             per_row = role['blocks_per_row']
             values = dict(role['bind'], threads=f'{threads}u', blocks_per_row=f'({per_row})')
@@ -278,7 +283,8 @@ def emit_header(plan):
         if derived:
             lines.append(f'\t{kernel["arguments_type"]} launch = *arguments;')
             lines += [f'\tlaunch.{argument["name"]} = ({argument["type"]})({argument["derived"]});' for argument in derived]
-        lines.append(f'\tLM_LAUNCH(({name}), rows * ({total}), {threads}u, {kernel["shared_bytes"]}, stream, {"launch" if derived else "*arguments"}, rows);')
+        launch_macro = 'LM_LAUNCH_DEPENDENT' if kernel.get('dependent_launch') else 'LM_LAUNCH'
+        lines.append(f'\t{launch_macro}(({name}), rows * ({total}), {threads}u, {kernel["shared_bytes"]}, stream, {"launch" if derived else "*arguments"}, rows);')
         lines.append('\treturn SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;')
         lines.append('}')
         lines.append('')
