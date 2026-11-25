@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/scale.cuh"
@@ -67,39 +68,108 @@ static __device__ void LmGemmConsume(
     static_assert(
         FormatB::kScaleGroup == 0u || FormatB::kScaleGroup >= 2u,
         "a weight scale group below two splits a fragment");
-    const uint32_t m_frags = TILE_M / FormatA::kMmaM;
-    const uint32_t n_frags = TILE_N / WARPS / FormatA::kMmaN;
-    const uint32_t pitch_a = LmTileBytes(1u, TILE_K, FormatA::kStoredBits);
-    const uint32_t pitch_b = INTERLEAVED_B
+    constexpr uint32_t m_frags = TILE_M / FormatA::kMmaM;
+    constexpr uint32_t n_frags = TILE_N / WARPS / FormatA::kMmaN;
+    constexpr uint32_t pitch_a = LmTileBytes(1u, TILE_K, FormatA::kStoredBits);
+    constexpr uint32_t pitch_b = INTERLEAVED_B
         ? (TILE_K / 2u)
         : LmTileBytes(1u, TILE_K, FormatB::kStoredBits);
-    const uint32_t steps = TILE_K / FormatA::kMmaK;
+    constexpr uint32_t steps = TILE_K / FormatA::kMmaK;
+    const bool a_has_scale = scale_a.encoding != LM_SCALE_ENCODING_NONE;
+    const bool b_has_scale = scale_b.encoding != LM_SCALE_ENCODING_NONE;
     uint32_t step, mi, ni, neuron, k_base, reg;
-    uint32_t a[4], b[2];
+    uint32_t a[4], b_frags[n_frags][2];
 
     for (step = 0u; step < steps; ++step)
     {
         k_base = step * FormatA::kMmaK;
+        #pragma unroll
+        for (ni = 0u; ni < n_frags; ++ni)
+        {
+            neuron = (warp * (TILE_N / WARPS)) + (ni * FormatA::kMmaN);
+            const uint32_t local_row = neuron + FormatB::OperandBRow(lane);
+            if constexpr ( INTERLEAVED_B )
+            {
+                const uint32_t cell = local_row / 16u;
+                const uint32_t r16 = local_row % 16u;
+                const uint32_t scale_byte = (TILE_K == 128u)
+                    ? LmSwizzledOffset((cell * 17u) + 16u,
+                        (r16 * 4u) + (k_base / 32u),
+                        pitch_b, 64u)
+                    : ((cell * 17u) + 16u) * pitch_b + r16;
+                const float scale = FormatB::ScaleDecode(stage_b[scale_byte]);
+                #pragma unroll
+                for (reg = 0u; reg < 2u; ++reg)
+                {
+                    const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                    b_frags[ni][reg] = FormatB::Fragment(
+                        stage_b,
+                        (cell * 17u) + r16,
+                        local_k,
+                        pitch_b,
+                        scale);
+                }
+            }
+            else if constexpr ( FormatB::kScaleGroup == 0u || FormatB::kScaleGroup >= FormatA::kMmaK )
+            {
+                const float scale = b_has_scale
+                    ? LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + k_base)
+                    : 1.0f;
+                #pragma unroll
+                for (reg = 0u; reg < 2u; ++reg)
+                {
+                    const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                    b_frags[ni][reg] = FormatB::Fragment(
+                        stage_b,
+                        local_row,
+                        local_k,
+                        pitch_b,
+                        scale);
+                }
+            }
+            else
+            {
+                #pragma unroll
+                for (reg = 0u; reg < 2u; ++reg)
+                {
+                    const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                    const float scale = b_has_scale
+                        ? LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + local_k)
+                        : 1.0f;
+                    b_frags[ni][reg] = FormatB::Fragment(
+                        stage_b,
+                        local_row,
+                        local_k,
+                        pitch_b,
+                        scale);
+                }
+            }
+        }
+        #pragma unroll
         for (mi = 0u; mi < m_frags; ++mi)
         {
+            #pragma unroll
             for (reg = 0u; reg < 4u; ++reg)
             {
                 const uint32_t local_row =
                     (mi * FormatA::kMmaM) + FormatA::OperandARow(lane, reg);
                 const uint32_t local_k = k_base + FormatA::OperandAK(lane, reg);
-                uint32_t scale_row = row_base + local_row;
-                if ( source_row_map != 0 &&
-                    scale_a.encoding != LM_SCALE_ENCODING_NONE )
+                float scale = 1.0f;
+                if ( a_has_scale )
                 {
-                    if ( scale_row >= row_limit )
-                        scale_row = row_base;
-                    scale_row = LmRouteSourceRow(source_row_map, scale_row);
+                    uint32_t scale_row = row_base + local_row;
+                    if ( source_row_map != 0 )
+                    {
+                        if ( scale_row >= row_limit )
+                            scale_row = row_base;
+                        scale_row = LmRouteSourceRow(source_row_map, scale_row);
+                    }
+                    scale = LmScaleTensorLoad(
+                        &scale_a,
+                        0u,
+                        scale_row,
+                        global_k_base + local_k);
                 }
-                const float scale = LmScaleTensorLoad(
-                    &scale_a,
-                    0u,
-                    scale_row,
-                    global_k_base + local_k);
                 if constexpr ( INTERLEAVED_B && TILE_K == 128u )
                 {
                     a[reg] = FormatA::Fragment(
@@ -119,69 +189,30 @@ static __device__ void LmGemmConsume(
                         scale);
                 }
             }
+            #pragma unroll
             for (ni = 0u; ni < n_frags; ++ni)
-            {
-                neuron =
-                    (warp * (TILE_N / WARPS)) + (ni * FormatA::kMmaN);
-                for (reg = 0u; reg < 2u; ++reg)
-                {
-                    const uint32_t local_row =
-                        neuron + FormatB::OperandBRow(lane);
-                    const uint32_t local_k =
-                        k_base + FormatB::OperandBK(lane, reg);
-                    if constexpr ( INTERLEAVED_B )
-                    {
-                        const uint32_t cell = local_row / 16u;
-                        const uint32_t r16 = local_row % 16u;
-                        const uint32_t scale_byte = (TILE_K == 128u)
-                            ? LmSwizzledOffset((cell * 17u) + 16u,
-                                (r16 * 4u) + (local_k / 32u),
-                                pitch_b, 64u)
-                            : ((cell * 17u) + 16u) * pitch_b + r16;
-                        const float scale = FormatB::ScaleDecode(
-                            stage_b[scale_byte]);
-                        b[reg] = FormatB::Fragment(
-                            stage_b,
-                            (cell * 17u) + r16,
-                            local_k,
-                            pitch_b,
-                            scale);
-                    }
-                    else
-                    {
-                        const float scale = LmScaleTensorLoad(
-                            &scale_b,
-                            group_index,
-                            neuron_base + local_row,
-                            global_k_base + local_k);
-                        b[reg] = FormatB::Fragment(
-                            stage_b,
-                            local_row,
-                            local_k,
-                            pitch_b,
-                            scale);
-                    }
-                }
-                LmMmaBf16(total[(mi * n_frags) + ni], a, b);
-            }
+                LmMmaBf16(total[(mi * n_frags) + ni], a, b_frags[ni]);
         }
     }
 }
 
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS>
-static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4], uint32_t count, uint32_t row_base, uint32_t row_limit, uint32_t neuron_base, uint32_t warp, uint32_t lane)
+static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4], uint32_t, uint32_t row_base, uint32_t row_limit, uint32_t neuron_base, uint32_t warp, uint32_t lane)
 {
-	const uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
+	constexpr uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
+	constexpr uint32_t kCount = (TILE_M / Format::kMmaM) * n_frags;
 	uint16_t *output = (uint16_t *)args.output_bf16;
 	float *output_f32 = (float *)args.output_f32;
 	uint16_t *accumulate = (uint16_t *)args.accumulate_bf16;
 	uint64_t at;
 	uint32_t i,e,mi,ni,row,column;
-	for (i = 0u; i < count; ++i)
+	#pragma unroll
+	for (i = 0u; i < kCount; ++i)
 	{
 		mi = i / n_frags;
 		ni = i % n_frags;
-		for (e = 0u; e < 4u; ++e)
+		#pragma unroll
+		for (e = 0u; e < 4u; e += 2u)
 		{
 			row = row_base + (mi * Format::kMmaM) + LmMmaAccumulatorRow(lane,e);
 			column = neuron_base + (warp * (TILE_N / WARPS)) + (ni * Format::kMmaN)
@@ -190,25 +221,47 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 				continue;
 			at = ((uint64_t)row * args.output_row_stride) +
 				args.output_column_offset + column;
-			if ( accumulate != 0 )
+			if ( accumulate == 0 && column + 1u < args.output_dimension )
 			{
-				float sum = LmBf16ToFloat(accumulate[at]) + total[i][e];
-				accumulate[at] = LmFloatToBf16(sum);
-				if ( accumulate == output )
+				if ( output_f32 != 0 && (((uintptr_t)(output_f32 + at) & 7u) == 0u) )
+				{
+					*(float2 *)(output_f32 + at) = make_float2(total[i][e],total[i][e + 1u]);
 					continue;
+				}
+				if ( output_f32 == 0 && (((uintptr_t)(output + at) & 3u) == 0u) )
+				{
+					*(uint32_t *)(output + at) = LmPackBf16Pair(total[i][e],total[i][e + 1u]);
+					continue;
+				}
 			}
-			if ( output_f32 != 0 )
-				output_f32[at] = total[i][e];
-			else
-				output[at] = LmFloatToBf16(total[i][e]);
+			for (uint32_t p = 0u; p < 2u; ++p)
+			{
+				if ( column + p >= args.output_dimension )
+					continue;
+				const uint64_t pos = at + p;
+				if ( accumulate != 0 )
+				{
+					float sum = LmBf16ToFloat(accumulate[pos]) + total[i][e + p];
+					accumulate[pos] = LmFloatToBf16(sum);
+					if ( accumulate == output )
+						continue;
+				}
+				if ( output_f32 != 0 )
+					output_f32[pos] = total[i][e + p];
+				else
+					output[pos] = LmFloatToBf16(total[i][e + p]);
+			}
 		}
 	}
 }
 
-static __device__ __forceinline__ void LmGemmZero(float (*acc)[4], uint32_t count)
+template<uint32_t COUNT>
+static __device__ __forceinline__ void LmGemmZero(float (*acc)[4])
 {
 	uint32_t i,e;
-	for (i = 0u; i < count; ++i)
+	#pragma unroll
+	for (i = 0u; i < COUNT; ++i)
+		#pragma unroll
 		for (e = 0u; e < 4u; ++e)
 			acc[i][e] = 0.0f;
 }
@@ -323,18 +376,12 @@ void LmGemmKernel(
     uint8_t *stage_b_base = lm_shared + (STAGES * a_bytes);
     uint64_t *barrier =
         (uint64_t *)(lm_shared + (STAGES * (a_bytes + b_stride)));
-    const uint32_t count =
+    constexpr uint32_t count =
         (TILE_M / FormatA::kMmaM) *
         (TILE_N / WARPS / FormatA::kMmaN);
     const uint32_t neuron_tiles =
         (args.output_dimension + TILE_N - 1u) / TILE_N;
     const uint32_t k_tiles = (args.input_dimension + TILE_K - 1u) / TILE_K;
-    const uint32_t dense_rows = args.group_count == 1u
-        ? args.group_row_offset[1] - args.group_row_offset[0]
-        : 0u;
-    const uint32_t dense_tiles = args.group_count == 1u
-        ? ((dense_rows + TILE_M - 1u) / TILE_M) * neuron_tiles
-        : 0u;
     float total[
         (TILE_M / FormatA::kMmaM) *
         (TILE_N / WARPS / FormatA::kMmaN)][4];
@@ -345,6 +392,13 @@ void LmGemmKernel(
     uint32_t phase;
 
     LmPipelineInitialise<STAGES>(barrier, INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE ? 1u + blockDim.x : 1u);
+    LmDependentWait();
+    const uint32_t dense_rows = args.group_count == 1u
+        ? args.group_row_offset[1] - args.group_row_offset[0]
+        : 0u;
+    const uint32_t dense_tiles = args.group_count == 1u
+        ? ((dense_rows + TILE_M - 1u) / TILE_M) * neuron_tiles
+        : 0u;
     phase = 0u;
     total_tiles = args.group_count == 1u
         ? dense_tiles
@@ -362,7 +416,7 @@ void LmGemmKernel(
             ((in_group / neuron_tiles) * TILE_M);
         row_limit = args.group_row_offset[group + 1u];
         neuron_base = (in_group % neuron_tiles) * TILE_N;
-        LmGemmZero(total, count);
+        LmGemmZero<count>(total);
         for (stage = 0u;
              stage + 1u < STAGES && stage < k_tiles;
              ++stage)
@@ -446,15 +500,61 @@ void LmGemmKernel(
         __syncthreads();
     }
     LmPipelineRelease<STAGES>(barrier);
+    LmDependentRelease();
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmGemmTilePrefixKernel(const uint32_t *__restrict__ group_row_offset, uint32_t group_count, uint32_t tile_m, uint32_t neuron_tiles, uint32_t *__restrict__ tile_prefix)
 {
-	uint32_t index,rows,total = 0u;
-	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+	LmDependentWait();
+	if ( blockIdx.x != 0u )
+	{
+		LmDependentRelease();
 		return;
+	}
+#if defined(__CUDA_ARCH__)
+	if constexpr ( THREADS >= 32u )
+	{
+		if ( threadIdx.x < 32u )
+		{
+			const uint32_t lane = threadIdx.x;
+			const uint32_t per_lane = (group_count + 31u) / 32u;
+			const uint32_t first = lane * per_lane;
+			uint32_t own = 0u;
+			for (uint32_t index = first; index < first + per_lane && index < group_count; ++index)
+			{
+				const uint32_t rows = group_row_offset[index + 1u] - group_row_offset[index];
+				own += ((rows + tile_m - 1u) / tile_m) * neuron_tiles;
+			}
+			uint32_t running = own;
+			#pragma unroll
+			for (uint32_t step = 1u; step < 32u; step <<= 1u)
+			{
+				const uint32_t other = __shfl_up_sync(0xffffffffu, running, step);
+				if ( lane >= step )
+					running += other;
+			}
+			uint32_t offset = running - own;
+			for (uint32_t index = first; index < first + per_lane && index < group_count; ++index)
+			{
+				tile_prefix[index] = offset;
+				const uint32_t rows = group_row_offset[index + 1u] - group_row_offset[index];
+				offset += ((rows + tile_m - 1u) / tile_m) * neuron_tiles;
+			}
+			if ( lane == 31u )
+				tile_prefix[group_count] = running;
+		}
+		LmDependentRelease();
+		return;
+	}
+#endif
+	uint32_t index,rows,total = 0u;
+	if ( threadIdx.x != 0u )
+	{
+		LmDependentRelease();
+		return;
+	}
 	for (index = 0u; index < group_count; ++index)
 	{
 		rows = group_row_offset[index + 1u] - group_row_offset[index];
@@ -462,4 +562,5 @@ void LmGemmTilePrefixKernel(const uint32_t *__restrict__ group_row_offset, uint3
 		total += ((rows + tile_m - 1u) / tile_m) * neuron_tiles;
 	}
 	tile_prefix[group_count] = total;
+	LmDependentRelease();
 }

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <math.h>
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/vec.cuh"
 
@@ -9,11 +10,13 @@
 static __global__ void LmRouteLocalKernel(uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global, uint32_t routes, uint32_t first_expert, uint32_t local_experts)
 {
 	const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( route >= routes ) return;
+	LmDependentWait();
+	if ( route >= routes ) { LmDependentRelease(); return; }
 	const uint32_t expert = route_expert[route];
 	route_global[route] = expert;
 	if ( expert >= first_expert && expert < first_expert + local_experts ) route_expert[route] = expert - first_expert;
 	else { route_expert[route] = local_experts; route_weight[route] = 0.0f; }
+	LmDependentRelease();
 }
 
 static __device__ __forceinline__ void LmPackedRouteWeight(const uint32_t *route_packed_row, const float *route_weight, float *packed_weight, uint32_t routes, uint32_t route)
@@ -23,7 +26,9 @@ static __device__ __forceinline__ void LmPackedRouteWeight(const uint32_t *route
 
 static __global__ void LmPackedRouteWeightKernel(const uint32_t *__restrict__ route_packed_row, const float *__restrict__ route_weight, float *__restrict__ packed_weight, uint32_t routes)
 {
+	LmDependentWait();
 	LmPackedRouteWeight(route_packed_row, route_weight, packed_weight, routes, blockIdx.x * blockDim.x + threadIdx.x);
+	LmDependentRelease();
 }
 
 static __device__ __forceinline__ uint16_t LmSwigluPackedValue(uint16_t gate, uint16_t up, float weight, float limit)
@@ -41,15 +46,16 @@ static __device__ __forceinline__ void LmPackedGateUpBody(const uint16_t *gate, 
 	const uint16_t *gate_row = gate + row_base, *up_row = up + row_base;
 	uint16_t *output_row = output + row_base;
 	const uint32_t total_threads = gridDim.x * blockDim.x;
-	if ( LmIsAligned16(gate_row) && LmIsAligned16(up_row) && LmIsAligned16(output_row) && (width & 7u) == 0u && width >= total_threads * 8u )
+	if ( LmIsAligned16(gate_row) && LmIsAligned16(up_row) && LmIsAligned16(output_row) && (width & 7u) == 0u )
 	{
 		const uint4 *g4 = (const uint4 *)gate_row, *u4 = (const uint4 *)up_row;
 		uint4 *o4 = (uint4 *)output_row;
-		for (uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < (width >> 3u); c += total_threads)
+		const uint32_t chunks = width >> 3u;
+		for (uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += total_threads)
 		{
 			float g[8], u[8];
-			LmLoadBf16x8AsFloat(g4[c], g);
-			LmLoadBf16x8AsFloat(u4[c], u);
+			LmLoadBf16x8AsFloat(__ldg(g4 + c), g);
+			LmLoadBf16x8AsFloat(__ldg(u4 + c), u);
 			#pragma unroll
 			for (uint32_t k = 0u; k < 8u; ++k) g[k] = op(g[k], u[k]);
 			o4[c] = LmPackUint4FloatToBf16(g);
@@ -62,12 +68,16 @@ static __device__ __forceinline__ void LmPackedGateUpBody(const uint16_t *gate, 
 
 static __global__ void LmSwigluPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight, uint16_t *__restrict__ output, uint32_t width, float limit)
 {
+	LmDependentWait();
 	LmPackedGateUpBody(gate, up, output, width, LmSwigluPackedOp{weight[blockIdx.y], limit});
+	LmDependentRelease();
 }
 
 static __global__ void LmGeluTanhPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight, uint16_t *__restrict__ output, uint32_t width)
 {
+	LmDependentWait();
 	LmPackedGateUpBody(gate, up, output, width, LmGeluTanhPackedOp{weight[blockIdx.y]});
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS, uint32_t WIDTH>
@@ -77,6 +87,7 @@ __global__ static void LmRouterSoftmaxKernel(const uint16_t *logits, float *prob
 	__shared__ float reduction[LmBlockWarps<THREADS>()];
 	const uint64_t row_base = (uint64_t)blockIdx.x * WIDTH;
 	float top = -INFINITY, sum = 0.0f;
+	LmDependentWait();
 	if constexpr ( per_thread <= 8u )
 	{
 		float staged[per_thread];
@@ -107,6 +118,7 @@ __global__ static void LmRouterSoftmaxKernel(const uint16_t *logits, float *prob
 		sum = LmBlockSumOnce<THREADS>(sum, reduction);
 		for (uint32_t index = threadIdx.x; index < WIDTH; index += THREADS) probs[row_base + index] = expf(LmBf16ToFloat(logits[row_base + index]) - top) / sum;
 	}
+	LmDependentRelease();
 }
 
 #define LM_MOE_LOCAL_MAX_TOPK 32u
@@ -120,8 +132,29 @@ static __device__ __forceinline__ void LmMoeLocalFinalizeBody(const uint16_t *pa
 	const uint64_t row_base = (uint64_t)row * width;
 	uint16_t *out_row = output + row_base;
 	const uint16_t *shared_row = shared != 0 ? shared + row_base : 0;
+	LmDependentWait();
 	if ( top_k <= LM_MOE_LOCAL_MAX_TOPK )
 	{
+#if defined(__CUDA_ARCH__)
+		if ( blockDim.x >= 32u )
+		{
+			if ( threadIdx.x < 32u )
+			{
+				const uint32_t k = threadIdx.x;
+				const uint32_t route = row * top_k + k;
+				const bool active = k < top_k && route_expert[route] < local_experts;
+				const uint32_t mask = __ballot_sync(0xffffffffu, active);
+				if ( active )
+				{
+					const uint32_t pos = (uint32_t)__popc(mask & ((1u << k) - 1u));
+					active_rows[pos] = route_packed_row[route];
+					if constexpr ( WEIGHTED ) active_weights[pos] = route_weight[route];
+				}
+				if ( k == 0u ) active_count = (uint32_t)__popc(mask);
+			}
+		}
+		else
+#endif
 		if ( threadIdx.x == 0u )
 		{
 			uint32_t count = 0u;
@@ -142,15 +175,17 @@ static __device__ __forceinline__ void LmMoeLocalFinalizeBody(const uint16_t *pa
 			for (uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += gridDim.x * blockDim.x)
 			{
 				float acc[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+				#pragma unroll 4
 				for (uint32_t k = 0u; k < count; ++k)
 				{
-					const uint4 v = packed4[(uint64_t)active_rows[k] * chunks + c];
+					const uint4 v = __ldg(packed4 + (uint64_t)active_rows[k] * chunks + c);
 					if constexpr ( WEIGHTED ) LmFmaBf16x8(acc, v, active_weights[k]);
 					else LmAddBf16x8(acc, v);
 				}
-				if ( shared4 != 0 ) LmAddBf16x8(acc, shared4[c]);
+				if ( shared4 != 0 ) LmAddBf16x8(acc, __ldg(shared4 + c));
 				out4[c] = LmPackUint4FloatToBf16(acc);
 			}
+			LmDependentRelease();
 			return;
 		}
 		for (uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x)
@@ -164,6 +199,7 @@ static __device__ __forceinline__ void LmMoeLocalFinalizeBody(const uint16_t *pa
 			if ( shared_row != 0 ) total += LmBf16ToFloat(shared_row[element]);
 			out_row[element] = LmFloatToBf16(total);
 		}
+		LmDependentRelease();
 		return;
 	}
 	for (uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x)
@@ -181,6 +217,7 @@ static __device__ __forceinline__ void LmMoeLocalFinalizeBody(const uint16_t *pa
 		if ( shared_row != 0 ) total += LmBf16ToFloat(shared_row[element]);
 		out_row[element] = LmFloatToBf16(total);
 	}
+	LmDependentRelease();
 }
 
 static __global__ void LmMoeLocalWeightedFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row, const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint16_t *__restrict__ shared, uint16_t *__restrict__ output, uint32_t top_k, uint32_t local_experts, uint32_t width)

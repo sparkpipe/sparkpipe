@@ -18,7 +18,13 @@ static __device__ __forceinline__ bool LmIsAligned8(const void *pointer) { retur
 
 static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+	uint32_t packed;
+	asm("cvt.rn.bf16x2.f32 %0, %2, %1;\n" : "=r"(packed) : "f"(low), "f"(high));
+	return(packed);
+#else
 	return((uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u));
+#endif
 }
 
 static __device__ __forceinline__ void LmUnpackUint4Bf16(uint4 packed, uint16_t values[8])

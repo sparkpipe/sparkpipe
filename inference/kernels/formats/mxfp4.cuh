@@ -41,7 +41,7 @@ struct LmMxfp4
 		const uint32_t byte = span != 0u
 			? LmSwizzledOffset(row,k >> 1u,row_pitch_bytes,span)
 			: (row * row_pitch_bytes) + (k >> 1u);
-		float2 pair = LmNvfp4Pair(tile[byte]);
+		const float2 pair = LmE2m1PairToFloatPure(tile[byte]);
 		return(LmPackBf16Pair(pair.x * scale,pair.y * scale));
 	}
 };

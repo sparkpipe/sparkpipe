@@ -27,7 +27,8 @@ struct LmFp8
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
 		const uint8_t *base = tile + LmSwizzledOffset(row,k,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes));
-		return(LmPackBf16Pair(LmE4m3ToFloat(base[0]) * scale,
-			LmE4m3ToFloat(base[1]) * scale));
+		const uint16_t packed = ((k & 1u) == 0u) ? *(const uint16_t *)base : ((uint16_t)base[0] | ((uint16_t)base[1] << 8u));
+		const float2 pair = LmE4m3PairToFloat2Pure(packed);
+		return(LmPackBf16Pair(pair.x * scale,pair.y * scale));
 	}
 };
