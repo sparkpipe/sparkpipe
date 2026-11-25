@@ -23,6 +23,7 @@
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/scale.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "inference/kernels/stream_gemm.cuh"
 #include "inference/kernels/topk_group.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
@@ -78,11 +79,7 @@ struct MimoState : CudaStagePackState
 	uint16_t *partial;
 	uint16_t *attn_local;
 	uint16_t *attn_gathered;
-	uint16_t *attn_full;
 	uint16_t *query;
-	uint16_t *key;
-	uint16_t *value;
-	uint16_t *slot;
 	float *send;
 	float *received;
 	uint16_t *merged;
@@ -107,16 +104,16 @@ struct MimoState : CudaStagePackState
 	LmKvShardView full_views[G::kFullLayers];
 };
 
-static __device__ __forceinline__ uint4 MimoLoadRankMajor8(const uint4 *__restrict__ gathered4, uint32_t rows, uint32_t row, uint32_t local_v,
-	uint32_t logical_v)
+template<uint32_t LOCAL_V>
+static __device__ __forceinline__ uint4 MimoLoadRankMajor8Const(const uint4 *__restrict__ gathered4, uint32_t rows, uint32_t row, uint32_t logical_v)
 {
-	const uint32_t rank = logical_v / local_v;
-	const uint32_t elem = logical_v % local_v;
-	return gathered4[(((uint64_t)rank * rows) + row) * local_v + elem];
+	const uint32_t rank = logical_v / LOCAL_V;
+	const uint32_t elem = logical_v % LOCAL_V;
+	return __ldg(gathered4 + (((uint64_t)rank * rows) + row) * LOCAL_V + elem);
 }
 
 template<uint32_t THREADS, uint32_t WIDTH, bool HAS_ADD>
-__global__ __launch_bounds__(THREADS, 2)
+__global__ __launch_bounds__(THREADS, 4)
 static void MimoAddRmsNormKernel(uint16_t *__restrict__ hidden_bf16, const uint16_t *__restrict__ partial_bf16,
 	const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, float epsilon)
 {
@@ -190,11 +187,13 @@ template<class G, bool FULL>
 __global__ __launch_bounds__(MM_THREADS, 2)
 static void MimoAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, const uint32_t *__restrict__ positions,
 	const uint32_t *__restrict__ store_positions, const uint32_t *__restrict__ sequence_of_row, const float *__restrict__ inv_freq,
-	LmKvShardView kv_view, uint16_t *__restrict__ query_out, uint32_t rows, uint32_t local_rows)
+	LmKvShardView kv_view, uint16_t *__restrict__ query_out, uint32_t rows)
 {
 	using S = MimoShape<G>;
 	using Kv = typename std::conditional<FULL, typename S::FullKv, typename S::SlidingKv>::type;
 	constexpr uint32_t KVH = FULL ? G::kFullKvHeads : G::kSlidingKvHeads;
+	constexpr uint32_t FUSED = FULL ? S::kFullFused : S::kSlidingFused;
+	constexpr uint32_t LOCAL_V = FUSED / (G::kTpDegree * 8u);
 	constexpr uint32_t HD_V = G::kHeadDim >> 3u;
 	constexpr uint32_t VD_V = G::kValueDim >> 3u;
 	constexpr uint32_t ROPE_V = G::kRopeDim >> 3u;
@@ -206,41 +205,62 @@ static void MimoAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, const
 	static_assert(HD_V <= 32u && VD_V <= 32u && (G::kHeadDim & 7u) == 0u && (G::kValueDim & 7u) == 0u && (G::kRopeDim & 7u) == 0u,
 		"one warp covers a full query, key or value head in 16-byte vectors");
 	__shared__ __align__(16) uint16_t rope_smem[WARPS][G::kRopeDim];
+	__shared__ float s_sin[HALF], s_cos[HALF];
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t task = blockIdx.x * WARPS + warp, row = blockIdx.y;
+	const uint32_t row = blockIdx.y;
 	LmDependentWait();
-	if ( task < TASKS && row < rows )
+	if ( row < rows )
 	{
-		const uint4 *gathered4 = (const uint4 *)gathered;
-		const uint32_t local_v = local_rows >> 3u;
-		if ( task < G::kHeads )
+		const float pos = (float)positions[row];
+		if ( threadIdx.x < HALF )
 		{
-			const uint32_t h = task;
-			uint4 v = make_uint4(0u, 0u, 0u, 0u);
-			if ( lane < HD_V )
-			{
-				v = MimoLoadRankMajor8(gathered4, rows, row, local_v, h * HD_V + lane);
-				if ( lane < ROPE_V )
-					*(uint4 *)(rope_smem[warp] + (lane << 3u)) = v;
-			}
-			__syncwarp();
-			const float pos = (float)positions[row];
-			for ( uint32_t pair = lane; pair < HALF; pair += 32u )
-				LmRopeRotate<LM_ROPE_HALF_SPLIT, LM_ROPE_ROUNDED_TERMS>(rope_smem[warp], 0u, pair, HALF, pos * inv_freq[pair], 1.0f);
-			__syncwarp();
-			if ( lane < HD_V )
-			{
-				if ( lane < ROPE_V )
-					v = *(const uint4 *)(rope_smem[warp] + (lane << 3u));
-				((uint4 *)query_out)[((uint64_t)row * G::kHeads + h) * HD_V + lane] = v;
-			}
+			const float angle = pos * __ldg(inv_freq + threadIdx.x);
+			s_sin[threadIdx.x] = SparkMathRopeSin(angle, 1.0f);
+			s_cos[threadIdx.x] = SparkMathRopeCos(angle, 1.0f);
 		}
-		else
+		__syncthreads();
+		const uint4 *gathered4 = (const uint4 *)gathered;
+		const uint32_t store_pos = store_positions[row];
+		const bool owns = SparkKvShardOwns(kv_view.shard, store_pos) != 0u;
+		uint16_t *slot = 0;
+		bool slot_resolved = false;
+		const uint32_t step = gridDim.x * WARPS;
+		for ( uint32_t task = blockIdx.x * WARPS + warp; task < TASKS; task += step )
 		{
-			const uint32_t store_pos = store_positions[row];
-			if ( SparkKvShardOwns(kv_view.shard, store_pos) != 0u )
+			if ( task < G::kHeads )
 			{
-				uint16_t *slot = (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, sequence_of_row[row], store_pos, row, LM_KV_ACCESS_WRITE);
+				const uint32_t h = task;
+				uint4 v = make_uint4(0u, 0u, 0u, 0u);
+				if ( lane < HD_V )
+				{
+					v = MimoLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, h * HD_V + lane);
+					if ( lane < ROPE_V )
+						*(uint4 *)(rope_smem[warp] + (lane << 3u)) = v;
+				}
+				__syncwarp();
+				for ( uint32_t pair = lane; pair < HALF; pair += 32u )
+				{
+					const float sv = s_sin[pair], cv = s_cos[pair];
+					const float x0 = LmBf16ToFloat(rope_smem[warp][pair]);
+					const float x1 = LmBf16ToFloat(rope_smem[warp][pair + HALF]);
+					rope_smem[warp][pair] = LmFloatToBf16(SparkMathRopeRoundedTerm(x0, -x1, cv, sv));
+					rope_smem[warp][pair + HALF] = LmFloatToBf16(SparkMathRopeRoundedTerm(x1, x0, cv, sv));
+				}
+				__syncwarp();
+				if ( lane < HD_V )
+				{
+					if ( lane < ROPE_V )
+						v = *(const uint4 *)(rope_smem[warp] + (lane << 3u));
+					((uint4 *)query_out)[((uint64_t)row * G::kHeads + h) * HD_V + lane] = v;
+				}
+			}
+			else if ( owns )
+			{
+				if ( !slot_resolved )
+				{
+					slot = (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, sequence_of_row[row], store_pos, row, LM_KV_ACCESS_WRITE);
+					slot_resolved = true;
+				}
 				if ( slot != 0 )
 				{
 					if ( task < G::kHeads + KVH )
@@ -249,14 +269,19 @@ static void MimoAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, const
 						uint4 v = make_uint4(0u, 0u, 0u, 0u);
 						if ( lane < HD_V )
 						{
-							v = MimoLoadRankMajor8(gathered4, rows, row, local_v, Q_V + kh * HD_V + lane);
+							v = MimoLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, Q_V + kh * HD_V + lane);
 							if ( lane < ROPE_V )
 								*(uint4 *)(rope_smem[warp] + (lane << 3u)) = v;
 						}
 						__syncwarp();
-						const float pos = (float)positions[row];
 						for ( uint32_t pair = lane; pair < HALF; pair += 32u )
-							LmRopeRotate<LM_ROPE_HALF_SPLIT, LM_ROPE_ROUNDED_TERMS>(rope_smem[warp], 0u, pair, HALF, pos * inv_freq[pair], 1.0f);
+						{
+							const float sv = s_sin[pair], cv = s_cos[pair];
+							const float x0 = LmBf16ToFloat(rope_smem[warp][pair]);
+							const float x1 = LmBf16ToFloat(rope_smem[warp][pair + HALF]);
+							rope_smem[warp][pair] = LmFloatToBf16(SparkMathRopeRoundedTerm(x0, -x1, cv, sv));
+							rope_smem[warp][pair + HALF] = LmFloatToBf16(SparkMathRopeRoundedTerm(x1, x0, cv, sv));
+						}
 						__syncwarp();
 						if ( lane < HD_V )
 						{
@@ -270,7 +295,7 @@ static void MimoAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, const
 						const uint32_t vh = task - G::kHeads - KVH;
 						if ( lane < VD_V )
 						{
-							const uint4 raw = MimoLoadRankMajor8(gathered4, rows, row, local_v, Q_V + K_V + vh * VD_V + lane);
+							const uint4 raw = MimoLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, Q_V + K_V + vh * VD_V + lane);
 							float vf[8];
 							LmLoadBf16x8AsFloat(raw, vf);
 							#pragma unroll
@@ -282,6 +307,57 @@ static void MimoAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, const
 				}
 			}
 		}
+	}
+	LmDependentRelease();
+}
+
+template<class G>
+__global__ __launch_bounds__((G::kHeads / G::kTpDegree) * 32u, 4)
+static void MimoGqaShardMergeKernel(const float *__restrict__ received, uint64_t source_stride, uint32_t rank, uint16_t *__restrict__ output_bf16,
+	const float *__restrict__ sinks)
+{
+	constexpr uint32_t SOURCES = G::kTpDegree;
+	constexpr uint32_t RANK_HEADS = G::kHeads / SOURCES;
+	constexpr uint32_t VD = G::kValueDim;
+	constexpr uint32_t WIDTH = RANK_HEADS * VD;
+	constexpr uint32_t RECORD = WIDTH + 2u * (RANK_HEADS + 1u);
+	static_assert(VD == 128u, "one warp covers one 128-wide head with 4 floats per lane");
+	__shared__ float scales[RANK_HEADS][SOURCES];
+	__shared__ float denom_shared[RANK_HEADS];
+	const uint32_t row = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t origin = rank * RANK_HEADS;
+	const float *row_base = received + (uint64_t)row * RECORD;
+	uint16_t *out_row = output_bf16 + (uint64_t)row * WIDTH;
+	LmDependentWait();
+	{
+		const float sink = sinks != 0 ? __ldg(sinks + origin + warp) : -INFINITY;
+		float gm = -INFINITY;
+		float den = LmWarpMergeScales(row_base + WIDTH + 2u * warp, source_stride, SOURCES, scales[warp], &gm, sink);
+		if ( lane == 0u )
+		{
+			if ( sinks != 0 )
+				den += __expf(sink - gm);
+			denom_shared[warp] = fmaxf(den, 1.0e-20f);
+		}
+	}
+	__syncthreads();
+	{
+		const uint32_t v2 = (warp * 64u) + lane * 2u;
+		const float d = denom_shared[warp];
+		float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
+		#pragma unroll 4
+		for ( uint32_t s = 0u; s < SOURCES; ++s )
+		{
+			const float w = scales[warp][s];
+			const float2 *src2 = (const float2 *)(row_base + (uint64_t)s * source_stride);
+			const float2 x0 = __ldg(src2 + v2);
+			const float2 x1 = __ldg(src2 + v2 + 1u);
+			m0 = fmaf(x0.x, w, m0);
+			m1 = fmaf(x0.y, w, m1);
+			m2 = fmaf(x1.x, w, m2);
+			m3 = fmaf(x1.y, w, m3);
+		}
+		((uint2 *)out_row)[threadIdx.x] = make_uint2(LmPackBf16Pair(m0 / d, m1 / d), LmPackBf16Pair(m2 / d, m3 / d));
 	}
 	LmDependentRelease();
 }
@@ -419,6 +495,22 @@ static void MimoSigmoidTopkLocalKernel(const float *__restrict__ logits, const f
 	LmDependentRelease();
 }
 
+template<uint32_t THREADS, uint32_t EXPERTS>
+__global__ __launch_bounds__(THREADS, 1)
+static void MimoRouteBuildPackedKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k,
+	uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
+	uint32_t *__restrict__ packed_expert, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up,
+	uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
+{
+	LmDependentWait();
+	LmRouteBuildBlock<THREADS, EXPERTS>(route_expert, routes, top_k, group_row_offset, route_packed_row, route_source_token, tile_m,
+		neuron_tiles_up, tile_prefix_up, neuron_tiles_down, tile_prefix_down);
+	__syncthreads();
+	for ( uint32_t route = threadIdx.x; route < routes; route += THREADS )
+		packed_expert[route_packed_row[route]] = route_expert[route];
+	LmDependentRelease();
+}
+
 __global__ __launch_bounds__(MM_THREADS, 2)
 static void MimoMoeSiluPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up,
 	const uint32_t *__restrict__ group_row_offset, uint32_t local_experts, uint16_t *__restrict__ output, uint32_t width)
@@ -435,9 +527,9 @@ static void MimoMoeSiluPackedKernel(const uint16_t *__restrict__ gate, const uin
 
 template<class G>
 __global__ __launch_bounds__(MM_THREADS, 2)
-static void MimoMoeB1W1W3SiluKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ s1, const uint8_t *__restrict__ w3,
+static void MimoMoeSmallW1W3SiluKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ s1, const uint8_t *__restrict__ w3,
 	const uint8_t *__restrict__ s3, const uint16_t *__restrict__ activation, const uint32_t *__restrict__ packed_expert,
-	const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output)
+	const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output, uint32_t rows)
 {
 	constexpr uint32_t CHUNKS = G::kHidden / 32u;
 	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
@@ -448,11 +540,14 @@ static void MimoMoeB1W1W3SiluKernel(const uint8_t *__restrict__ w1, const uint8_
 	if ( pr < __ldg(group_row_offset + G::kLocalExperts) )
 	{
 		const uint32_t exp = __ldg(packed_expert + pr);
+		const uint32_t src_row = rows > 1u ? __ldg(route_source_token + pr) : 0u;
+		const uint16_t *act_row = activation + (uint64_t)src_row * G::kHidden;
 		const uint32_t group = threadIdx.x / LANES, sub = threadIdx.x & (LANES - 1u);
 		const uint32_t col0 = (blockIdx.x * GROUPS + group) * 2u;
 		if ( col0 < N )
 		{
 			const bool has1 = col0 + 1u < N;
+			const bool reuse = rows > 1u;
 			const uint64_t row_base = (uint64_t)exp * N + col0;
 			const uint4 *w1_0 = (const uint4 *)w1 + row_base * CHUNKS;
 			const uint4 *w3_0 = (const uint4 *)w3 + row_base * CHUNKS;
@@ -465,11 +560,11 @@ static void MimoMoeB1W1W3SiluKernel(const uint8_t *__restrict__ w1, const uint8_
 			float g0 = 0.0f, u0 = 0.0f, g1 = 0.0f, u1 = 0.0f;
 			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 			{
-				const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(activation + c * 32u);
-				const uint4 vw1_0 = __ldcs(w1_0 + c);
-				const uint4 vw3_0 = __ldcs(w3_0 + c);
-				const uint4 vw1_1 = __ldcs(w1_1 + c);
-				const uint4 vw3_1 = __ldcs(w3_1 + c);
+				const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(act_row + c * 32u);
+				const uint4 vw1_0 = reuse ? __ldg(w1_0 + c) : __ldcs(w1_0 + c);
+				const uint4 vw3_0 = reuse ? __ldg(w3_0 + c) : __ldcs(w3_0 + c);
+				const uint4 vw1_1 = reuse ? __ldg(w1_1 + c) : __ldcs(w1_1 + c);
+				const uint4 vw3_1 = reuse ? __ldg(w3_1 + c) : __ldcs(w3_1 + c);
 				const uint8_t rs1_0 = __ldg(sc1_0 + c);
 				const uint8_t rs3_0 = __ldg(sc3_0 + c);
 				const uint8_t rs1_1 = __ldg(sc1_1 + c);
@@ -500,7 +595,7 @@ static void MimoMoeB1W1W3SiluKernel(const uint8_t *__restrict__ w1, const uint8_
 
 template<class G>
 __global__ __launch_bounds__(MM_THREADS, 2)
-static void MimoMoeB1W2FinalizeKernel(const uint8_t *__restrict__ w2, const uint8_t *__restrict__ s2, const uint16_t *__restrict__ expert_act,
+static void MimoMoeSmallW2FinalizeKernel(const uint8_t *__restrict__ w2, const uint8_t *__restrict__ s2, const uint16_t *__restrict__ expert_act,
 	const uint32_t *__restrict__ route_packed_row, const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight,
 	uint16_t *__restrict__ output)
 {
@@ -511,79 +606,95 @@ static void MimoMoeB1W2FinalizeKernel(const uint8_t *__restrict__ w2, const uint
 	constexpr uint32_t N = G::kHidden;
 	__shared__ uint32_t s_exp[G::kTopK], s_pr[G::kTopK], s_count;
 	__shared__ float s_wt[G::kTopK];
+	const uint32_t row = blockIdx.y;
+	uint16_t *out_row = output + (uint64_t)row * N;
 	LmDependentWait();
 	if ( threadIdx.x == 0u )
 	{
+		const uint32_t rbase = row * G::kTopK;
 		uint32_t cnt = 0u;
 		for ( uint32_t k = 0u; k < G::kTopK; ++k )
 		{
-			const uint32_t e = route_expert[k];
+			const uint32_t e = route_expert[rbase + k];
 			if ( e < G::kLocalExperts )
 			{
 				s_exp[cnt] = e;
-				s_pr[cnt] = route_packed_row[k];
-				s_wt[cnt] = route_weight[k];
+				s_pr[cnt] = route_packed_row[rbase + k];
+				s_wt[cnt] = route_weight[rbase + k];
 				cnt++;
 			}
 		}
 		s_count = cnt;
 	}
 	__syncthreads();
-	const uint32_t col0 = (blockIdx.x * GROUPS + (threadIdx.x / LANES)) * 2u;
+	const uint32_t col0 = (blockIdx.x * GROUPS + (threadIdx.x / LANES)) * 4u;
 	const uint32_t sub = threadIdx.x & (LANES - 1u);
 	if ( col0 < N )
 	{
 		const uint32_t count = s_count;
-		const bool has1 = col0 + 1u < N;
+		const bool has1 = col0 + 1u < N, has2 = col0 + 2u < N, has3 = col0 + 3u < N;
+		const bool reuse = gridDim.y > 1u;
 		if ( count == 0u )
 		{
 			if ( sub == 0u )
 			{
-				output[col0] = 0u;
-				if ( has1 )
-					output[col0 + 1u] = 0u;
+				out_row[col0] = 0u;
+				if ( has1 ) out_row[col0 + 1u] = 0u;
+				if ( has2 ) out_row[col0 + 2u] = 0u;
+				if ( has3 ) out_row[col0 + 3u] = 0u;
 			}
 		}
 		else
 		{
-			float total0 = 0.0f, total1 = 0.0f;
+			float total0 = 0.0f, total1 = 0.0f, total2 = 0.0f, total3 = 0.0f;
 			for ( uint32_t k = 0u; k < count; ++k )
 			{
 				const uint16_t *a_row = expert_act + (uint64_t)s_pr[k] * K;
 				const uint64_t row_base = (uint64_t)s_exp[k] * N + col0;
 				const uint4 *w0 = (const uint4 *)w2 + row_base * CHUNKS;
 				const uint4 *w1 = has1 ? w0 + CHUNKS : w0;
+				const uint4 *w2p = has2 ? w0 + 2u * CHUNKS : w0;
+				const uint4 *w3p = has3 ? w0 + 3u * CHUNKS : w0;
 				const uint8_t *sc0 = s2 + row_base * CHUNKS;
 				const uint8_t *sc1 = has1 ? sc0 + CHUNKS : sc0;
-				float acc0 = 0.0f, acc1 = 0.0f;
+				const uint8_t *sc2 = has2 ? sc0 + 2u * CHUNKS : sc0;
+				const uint8_t *sc3 = has3 ? sc0 + 3u * CHUNKS : sc0;
+				float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(a_row + c * 32u);
-					const uint4 vw0 = __ldcs(w0 + c);
-					const uint4 vw1 = __ldcs(w1 + c);
-					const uint8_t rs0 = __ldg(sc0 + c);
-					const uint8_t rs1 = __ldg(sc1 + c);
-					acc0 = fmaf(LmUe8m0ToFloat(rs0), LmSkinnyFormat<LmMxfp4>::Chunk(vw0, act), acc0);
-					acc1 = fmaf(LmUe8m0ToFloat(rs1), LmSkinnyFormat<LmMxfp4>::Chunk(vw1, act), acc1);
+					const uint4 vw0 = reuse ? __ldg(w0 + c) : __ldcs(w0 + c);
+					const uint4 vw1 = reuse ? __ldg(w1 + c) : __ldcs(w1 + c);
+					acc0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0, act), acc0);
+					acc1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1, act), acc1);
+					const uint4 vw2 = reuse ? __ldg(w2p + c) : __ldcs(w2p + c);
+					const uint4 vw3 = reuse ? __ldg(w3p + c) : __ldcs(w3p + c);
+					acc2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2, act), acc2);
+					acc3 = fmaf(LmUe8m0ToFloat(__ldg(sc3 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3, act), acc3);
 				}
 				#pragma unroll
 				for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
 				{
 					acc0 += __shfl_down_sync(0xffffffffu, acc0, offset);
 					acc1 += __shfl_down_sync(0xffffffffu, acc1, offset);
+					acc2 += __shfl_down_sync(0xffffffffu, acc2, offset);
+					acc3 += __shfl_down_sync(0xffffffffu, acc3, offset);
 				}
 				if ( sub == 0u )
 				{
 					const float wt = s_wt[k];
 					total0 = fmaf(SparkMathRoundBf16(acc0), wt, total0);
 					total1 = fmaf(SparkMathRoundBf16(acc1), wt, total1);
+					total2 = fmaf(SparkMathRoundBf16(acc2), wt, total2);
+					total3 = fmaf(SparkMathRoundBf16(acc3), wt, total3);
 				}
 			}
 			if ( sub == 0u )
 			{
-				output[col0] = LmFloatToBf16(total0);
-				if ( has1 )
-					output[col0 + 1u] = LmFloatToBf16(total1);
+				out_row[col0] = LmFloatToBf16(total0);
+				if ( has1 ) out_row[col0 + 1u] = LmFloatToBf16(total1);
+				if ( has2 ) out_row[col0 + 2u] = LmFloatToBf16(total2);
+				if ( has3 ) out_row[col0 + 3u] = LmFloatToBf16(total3);
 			}
 		}
 	}
@@ -601,20 +712,37 @@ static __device__ __forceinline__ uint32_t MimoE8m0ToBf16x2(uint8_t sc)
 	return 0u;
 }
 
-static __device__ __forceinline__ uint32_t MimoE2m1WordByteToBf16(uint32_t word, uint32_t byte, uint8_t sc, uint32_t scale_bf16x2)
+static __device__ __forceinline__ uint32_t MimoE2m1ByteFast(uint32_t shifted, uint32_t scale_bf16x2)
 {
 	uint32_t widened, bits, out;
 	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
-		: "=r"(widened) : "r"(word >> (8u * byte)));
+		: "=r"(widened) : "r"(shifted));
 	bits = ((widened >> 3u) & 0x0fff0fffu) | (widened & 0x80008000u);
+	asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
+	return out;
+}
+
+static __device__ __forceinline__ void MimoE2m1Word4(uint32_t word, uint8_t sc, uint32_t scale_bf16x2, uint32_t lo[2], uint32_t hi[2])
+{
 	if ( scale_bf16x2 != 0u )
 	{
-		asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
-		return out;
+		lo[0] = MimoE2m1ByteFast(word, scale_bf16x2);
+		lo[1] = MimoE2m1ByteFast(word >> 8u, scale_bf16x2);
+		hi[0] = MimoE2m1ByteFast(word >> 16u, scale_bf16x2);
+		hi[1] = MimoE2m1ByteFast(word >> 24u, scale_bf16x2);
 	}
-	const float scale = LmUe8m0ToFloat(sc);
-	const float2 pair = LmSkinnyE2m1Pair(word, byte);
-	return LmPackBf16Pair(pair.x * scale, pair.y * scale);
+	else
+	{
+		const float scale = LmUe8m0ToFloat(sc);
+		const float2 p0 = LmSkinnyE2m1Pair(word, 0u);
+		const float2 p1 = LmSkinnyE2m1Pair(word, 1u);
+		const float2 p2 = LmSkinnyE2m1Pair(word, 2u);
+		const float2 p3 = LmSkinnyE2m1Pair(word, 3u);
+		lo[0] = LmPackBf16Pair(p0.x * scale, p0.y * scale);
+		lo[1] = LmPackBf16Pair(p1.x * scale, p1.y * scale);
+		hi[0] = LmPackBf16Pair(p2.x * scale, p2.y * scale);
+		hi[1] = LmPackBf16Pair(p3.x * scale, p3.y * scale);
+	}
 }
 
 static __device__ __forceinline__ void MimoCpAsync16(void *dst, const void *src, uint32_t bytes)
@@ -623,7 +751,20 @@ static __device__ __forceinline__ void MimoCpAsync16(void *dst, const void *src,
 	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
 }
 
-template<uint32_t MAX_M_TILES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP, uint32_t SCALE_TILES = 4u>
+template<uint32_t MAX_M_TILES, uint32_t STAGES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
+static __host__ __device__ constexpr uint32_t MimoMxfp4SharedBytes(uint32_t groups)
+{
+	constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
+	constexpr uint32_t TILE_K = 128u;
+	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
+	constexpr uint32_t W_ROWS_TOTAL = (FUSED_GATE_UP ? 2u : 1u) * WARPS * N_PER_WARP;
+	constexpr uint32_t A_BYTES = STAGES * TILE_M * (TILE_K + 8u) * 2u;
+	constexpr uint32_t B_BYTES = STAGES * W_ROWS_TOTAL * (TILE_K / 2u);
+	constexpr uint32_t SC_BYTES = 2u * W_ROWS_TOTAL * 16u;
+	return A_BYTES + B_BYTES + SC_BYTES + (groups + 1u) * (uint32_t)sizeof(uint32_t);
+}
+
+template<uint32_t MAX_M_TILES, uint32_t STAGES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
 __global__ __launch_bounds__(WARPS * 32u, MAX_M_TILES <= 2u ? 2 : 1)
 static void MimoMxfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ s1, const uint8_t *__restrict__ w3,
 	const uint8_t *__restrict__ s3, const uint16_t *__restrict__ activation, uint16_t *__restrict__ output,
@@ -633,211 +774,203 @@ static void MimoMxfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t
 	constexpr uint32_t THREADS = WARPS * 32u;
 	constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
 	constexpr uint32_t TILE_K = 128u;
-	constexpr uint32_t STAGES = 2u;
 	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
 	constexpr uint32_t TILE_N = WARPS * N_PER_WARP;
 	constexpr uint32_t W_MATS = FUSED_GATE_UP ? 2u : 1u;
 	constexpr uint32_t W_ROWS_TOTAL = W_MATS * TILE_N;
 	constexpr uint32_t A_PITCH = TILE_K + 8u;
 	constexpr uint32_t B_ROW_BYTES = TILE_K / 2u;
-	constexpr uint32_t SC_BYTES = SCALE_TILES * 4u;
-	constexpr uint32_t SC_SHIFT = SCALE_TILES == 4u ? 2u : 1u;
-	__shared__ __align__(16) uint16_t s_a[STAGES][TILE_M][A_PITCH];
-	__shared__ __align__(16) uint8_t s_b[STAGES][W_ROWS_TOTAL][B_ROW_BYTES];
-	__shared__ __align__(16) uint8_t s_sc[2][W_ROWS_TOTAL][SC_BYTES];
+	constexpr uint32_t A_STAGE_BYTES = TILE_M * A_PITCH * 2u;
+	constexpr uint32_t B_STAGE_BYTES = W_ROWS_TOTAL * B_ROW_BYTES;
+	extern __shared__ __align__(128) uint8_t mimo_mx4_smem[];
+	uint16_t (*s_a)[TILE_M][A_PITCH] = (uint16_t (*)[TILE_M][A_PITCH])mimo_mx4_smem;
+	uint8_t (*s_b)[W_ROWS_TOTAL][B_ROW_BYTES] = (uint8_t (*)[W_ROWS_TOTAL][B_ROW_BYTES])(mimo_mx4_smem + STAGES * A_STAGE_BYTES);
+	uint8_t (*s_sc)[W_ROWS_TOTAL][16u] = (uint8_t (*)[W_ROWS_TOTAL][16u])(mimo_mx4_smem + STAGES * A_STAGE_BYTES + STAGES * B_STAGE_BYTES);
+	uint32_t *prefix = (uint32_t *)(mimo_mx4_smem + STAGES * A_STAGE_BYTES + STAGES * B_STAGE_BYTES + 2u * W_ROWS_TOTAL * 16u);
 	const uint32_t n_blocks = (output_dim + TILE_N - 1u) / TILE_N;
-	const uint32_t group = blockIdx.x / n_blocks;
-	const uint32_t n_block = blockIdx.x % n_blocks;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
+	const uint32_t k_tiles = input_dim / TILE_K;
+	const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u);
+	const uint64_t scale_pitch = (uint64_t)(input_dim >> 5u);
+	const uint64_t scale_group_stride = (uint64_t)output_dim * scale_pitch;
+	const uint32_t b_row0 = FUSED_GATE_UP ? (warp * 8u + g) : (warp * 16u + g);
+	const uint32_t b_row1 = FUSED_GATE_UP ? (TILE_N + warp * 8u + g) : (warp * 16u + 8u + g);
+	constexpr uint32_t A_VEC_THREADS = TILE_K / 8u;
+	constexpr uint32_t A_ROW_STEP = THREADS / A_VEC_THREADS;
+	constexpr uint32_t A_COPIES = (TILE_M + A_ROW_STEP - 1u) / A_ROW_STEP;
+	const uint32_t a_vec = threadIdx.x % A_VEC_THREADS, a_row0 = threadIdx.x / A_VEC_THREADS;
+	LmStreamGemmArguments targs;
+	targs.group_row_offset = group_row_offset;
+	targs.groups = groups;
+	targs.rows = 0u;
 	LmDependentWait();
-	if ( group < groups )
+	LmStreamTilePrefix(targs, prefix, groups, TILE_M, n_blocks);
+	const uint32_t total_tiles = prefix[groups];
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
 	{
-		const uint32_t row_begin = group_row_offset[group];
-		const uint32_t row_end = group_row_offset[group + 1u];
-		if ( row_begin < row_end )
+		const LmStreamTile work = LmStreamTileAt(targs, prefix, groups, TILE_M, TILE_N, n_blocks, tile);
+		const uint32_t group = work.group, first = work.row_base, row_end = work.row_limit, n_base = work.neuron_base;
+		const uint32_t count = row_end - first < TILE_M ? row_end - first : TILE_M;
+		const uint32_t m_tiles_live = (count + 15u) >> 4u;
+		const uint16_t *a_ptrs[A_COPIES];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < A_COPIES; ++i )
 		{
-			const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
-			const uint32_t n_base = n_block * TILE_N, k_tiles = input_dim / TILE_K;
-			const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u);
-			const uint64_t scale_pitch = (uint64_t)(input_dim >> 5u);
-			const uint64_t scale_group_stride = (uint64_t)output_dim * scale_pitch;
-			const uint32_t b_row0 = FUSED_GATE_UP ? (warp * 8u + g) : (warp * 16u + g);
-			const uint32_t b_row1 = FUSED_GATE_UP ? (TILE_N + warp * 8u + g) : (warp * 16u + 8u + g);
-			for ( uint32_t first = row_begin; first < row_end; first += TILE_M )
+			const uint32_t lr = a_row0 + i * A_ROW_STEP;
+			if ( lr < count )
 			{
-				const uint32_t count = row_end - first < TILE_M ? row_end - first : TILE_M;
-				const uint32_t m_tiles_live = (count + 15u) >> 4u;
-				constexpr uint32_t A_VEC_THREADS = TILE_K / 8u;
-				constexpr uint32_t A_ROW_STEP = THREADS / A_VEC_THREADS;
-				constexpr uint32_t A_COPIES = (TILE_M + A_ROW_STEP - 1u) / A_ROW_STEP;
-				const uint32_t a_vec = threadIdx.x % A_VEC_THREADS, a_row0 = threadIdx.x / A_VEC_THREADS;
-				const uint16_t *a_ptrs[A_COPIES];
+				const uint32_t pr = first + lr;
+				a_ptrs[i] = activation + (uint64_t)(ACTIVATION_PACKED ? pr : route_source_token[pr]) * input_dim + (uint64_t)a_vec * 8u;
+			}
+			else
+				a_ptrs[i] = 0;
+		}
+		auto stage_tile = [&](uint32_t st, uint32_t kt) {
+			#pragma unroll
+			for ( uint32_t i = 0u; i < A_COPIES; ++i )
+			{
+				const uint32_t lr = a_row0 + i * A_ROW_STEP;
+				if ( lr < TILE_M && a_ptrs[i] != 0 )
+					MimoCpAsync16(&s_a[st][lr][a_vec * 8u], a_ptrs[i] + (uint64_t)kt * TILE_K, 16u);
+			}
+			constexpr uint32_t B_VECS_PER_ROW = B_ROW_BYTES / 16u;
+			constexpr uint32_t B_TOTAL_VECS = W_ROWS_TOTAL * B_VECS_PER_ROW;
+			#pragma unroll
+			for ( uint32_t idx = threadIdx.x; idx < B_TOTAL_VECS; idx += THREADS )
+			{
+				const uint32_t wr = idx / B_VECS_PER_ROW, bv = idx % B_VECS_PER_ROW;
+				const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
+				const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
+				const bool ok = neuron < output_dim;
+				const uint8_t *wbase = (mat == 0u ? w1 : w3);
+				const uint8_t *src = ok ? wbase + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)kt * B_ROW_BYTES + (uint64_t)bv * 16u : wbase;
+				MimoCpAsync16(&s_b[st][wr][bv * 16u], src, ok ? 16u : 0u);
+			}
+			if ( (kt & 3u) == 0u )
+			{
+				const uint32_t sc_off = kt * 4u, avail = sc_off < scale_pitch ? (uint32_t)(scale_pitch - sc_off) : 0u;
+				const uint32_t sb_slot = (kt >> 2u) & 1u;
 				#pragma unroll
-				for ( uint32_t i = 0u; i < A_COPIES; ++i )
+				for ( uint32_t wr = threadIdx.x; wr < W_ROWS_TOTAL; wr += THREADS )
 				{
-					const uint32_t lr = a_row0 + i * A_ROW_STEP;
-					if ( lr < count )
-					{
-						const uint32_t pr = first + lr;
-						a_ptrs[i] = activation + (uint64_t)(ACTIVATION_PACKED ? pr : route_source_token[pr]) * input_dim + (uint64_t)a_vec * 8u;
-					}
-					else
-						a_ptrs[i] = 0;
-				}
-				auto stage_tile = [&](uint32_t st, uint32_t kt) {
-					#pragma unroll
-					for ( uint32_t i = 0u; i < A_COPIES; ++i )
-					{
-						const uint32_t lr = a_row0 + i * A_ROW_STEP;
-						if ( lr < TILE_M && a_ptrs[i] != 0 )
-							MimoCpAsync16(&s_a[st][lr][a_vec * 8u], a_ptrs[i] + (uint64_t)kt * TILE_K, 16u);
-					}
-					constexpr uint32_t B_VECS_PER_ROW = B_ROW_BYTES / 16u;
-					constexpr uint32_t B_TOTAL_VECS = W_ROWS_TOTAL * B_VECS_PER_ROW;
-					#pragma unroll
-					for ( uint32_t idx = threadIdx.x; idx < B_TOTAL_VECS; idx += THREADS )
-					{
-						const uint32_t wr = idx / B_VECS_PER_ROW, bv = idx % B_VECS_PER_ROW;
-						const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-						const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-						const bool ok = neuron < output_dim;
-						const uint8_t *wbase = (mat == 0u ? w1 : w3);
-						const uint8_t *src = ok ? wbase + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)kt * B_ROW_BYTES + (uint64_t)bv * 16u : wbase;
-						MimoCpAsync16(&s_b[st][wr][bv * 16u], src, ok ? 16u : 0u);
-					}
-					if ( (kt & (SCALE_TILES - 1u)) == 0u )
-					{
-						const uint32_t sc_off = kt * 4u, avail = sc_off < scale_pitch ? (uint32_t)(scale_pitch - sc_off) : 0u;
-						const uint32_t sb_slot = (kt >> SC_SHIFT) & 1u;
-						if constexpr ( SC_BYTES == 16u )
-						{
-							#pragma unroll
-							for ( uint32_t wr = threadIdx.x; wr < W_ROWS_TOTAL; wr += THREADS )
-							{
-								const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-								const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-								const uint32_t bytes = (neuron < output_dim && avail != 0u) ? (avail >= 16u ? 16u : avail) : 0u;
-								const uint8_t *sbase = (mat == 0u ? s1 : s3);
-								const uint8_t *src = bytes != 0u ? sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off : sbase;
-								MimoCpAsync16(&s_sc[sb_slot][wr][0], src, bytes);
-							}
-						}
-						else
-						{
-							#pragma unroll
-							for ( uint32_t wr = threadIdx.x; wr < W_ROWS_TOTAL; wr += THREADS )
-							{
-								const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-								const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-								const uint8_t *sbase = (mat == 0u ? s1 : s3);
-								if ( neuron < output_dim && avail >= 8u )
-									*(uint64_t *)&s_sc[sb_slot][wr][0] = __ldg((const uint64_t *)(sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off));
-							}
-						}
-					}
-					asm volatile("cp.async.commit_group;\n" ::: "memory");
-				};
-				stage_tile(0u, 0u);
-				float acc0[MAX_M_TILES][4], acc1[MAX_M_TILES][4];
-				#pragma unroll
-				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-					acc0[m][0] = acc0[m][1] = acc0[m][2] = acc0[m][3] = acc1[m][0] = acc1[m][1] = acc1[m][2] = acc1[m][3] = 0.0f;
-				for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-				{
-					const uint32_t cur = kt & 1u;
-					if ( kt + 1u < k_tiles )
-						stage_tile(cur ^ 1u, kt + 1u);
-					if ( kt + 1u < k_tiles )
-						asm volatile("cp.async.wait_group 1;\n" ::: "memory");
-					else
-						asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-					__syncthreads();
-					const uint32_t sb_slot = (kt >> SC_SHIFT) & 1u, sb_sub = (kt & (SCALE_TILES - 1u)) * 4u;
-					const uint32_t sc0_all = *(const uint32_t *)&s_sc[sb_slot][b_row0][sb_sub];
-					const uint32_t sc1_all = *(const uint32_t *)&s_sc[sb_slot][b_row1][sb_sub];
-					#pragma unroll
-					for ( uint32_t sg = 0u; sg < 4u; ++sg )
-					{
-						const uint8_t raw0 = (uint8_t)(sc0_all >> (sg * 8u));
-						const uint8_t raw1 = (uint8_t)(sc1_all >> (sg * 8u));
-						const uint32_t s0_2 = MimoE8m0ToBf16x2(raw0);
-						const uint32_t s1_2 = MimoE8m0ToBf16x2(raw1);
-						const uint32_t w0 = *(const uint32_t *)&s_b[cur][b_row0][sg * 16u + c * 4u];
-						const uint32_t w1_w = *(const uint32_t *)&s_b[cur][b_row1][sg * 16u + c * 4u];
-						const uint32_t b0_lo[2] = {
-							MimoE2m1WordByteToBf16(w0, 0u, raw0, s0_2),
-							MimoE2m1WordByteToBf16(w0, 1u, raw0, s0_2)
-						};
-						const uint32_t b0_hi[2] = {
-							MimoE2m1WordByteToBf16(w0, 2u, raw0, s0_2),
-							MimoE2m1WordByteToBf16(w0, 3u, raw0, s0_2)
-						};
-						const uint32_t b1_lo[2] = {
-							MimoE2m1WordByteToBf16(w1_w, 0u, raw1, s1_2),
-							MimoE2m1WordByteToBf16(w1_w, 1u, raw1, s1_2)
-						};
-						const uint32_t b1_hi[2] = {
-							MimoE2m1WordByteToBf16(w1_w, 2u, raw1, s1_2),
-							MimoE2m1WordByteToBf16(w1_w, 3u, raw1, s1_2)
-						};
-						const uint32_t k_off = sg * 32u + c * 8u;
-						#pragma unroll
-						for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-						{
-							if ( m < m_tiles_live )
-							{
-								const uint4 low = *(const uint4 *)&s_a[cur][m * 16u + g][k_off];
-								const uint4 high = *(const uint4 *)&s_a[cur][m * 16u + g + 8u][k_off];
-								const uint32_t a0[4] = { low.x, high.x, low.y, high.y };
-								const uint32_t a1[4] = { low.z, high.z, low.w, high.w };
-								LmMmaBf16(acc0[m], a0, b0_lo);
-								LmMmaBf16(acc0[m], a1, b0_hi);
-								LmMmaBf16(acc1[m], a0, b1_lo);
-								LmMmaBf16(acc1[m], a1, b1_hi);
-							}
-						}
-					}
-					__syncthreads();
-				}
-				if constexpr ( FUSED_GATE_UP )
-				{
-					const uint32_t col = n_base + warp * 8u + c * 2u;
-					if ( col < output_dim )
-						#pragma unroll
-						for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-							if ( m < m_tiles_live )
-								#pragma unroll
-								for ( uint32_t h = 0u; h < 2u; ++h )
-								{
-									const uint32_t pr = first + m * 16u + g + h * 8u;
-									if ( pr < row_end )
-									{
-										const float v0 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u]))) * SparkMathRoundBf16(acc1[m][h * 2u]);
-										const float v1 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u + 1u]))) * SparkMathRoundBf16(acc1[m][h * 2u + 1u]);
-										*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
-									}
-								}
-				}
-				else
-				{
-					const uint32_t col0 = n_base + warp * 16u + c * 2u, col1 = col0 + 8u;
-					#pragma unroll
-					for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-						if ( m < m_tiles_live )
-							#pragma unroll
-							for ( uint32_t h = 0u; h < 2u; ++h )
-							{
-								const uint32_t pr = first + m * 16u + g + h * 8u;
-								if ( pr < row_end )
-								{
-									if ( col0 < output_dim )
-										*(uint32_t *)(output + (uint64_t)pr * output_dim + col0) = LmPackBf16Pair(acc0[m][h * 2u], acc0[m][h * 2u + 1u]);
-									if ( col1 < output_dim )
-										*(uint32_t *)(output + (uint64_t)pr * output_dim + col1) = LmPackBf16Pair(acc1[m][h * 2u], acc1[m][h * 2u + 1u]);
-								}
-							}
+					const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
+					const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
+					const uint32_t bytes = (neuron < output_dim && avail != 0u) ? (avail >= 16u ? 16u : avail) : 0u;
+					const uint8_t *sbase = (mat == 0u ? s1 : s3);
+					const uint8_t *src = bytes != 0u ? sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off : sbase;
+					MimoCpAsync16(&s_sc[sb_slot][wr][0], src, bytes);
 				}
 			}
+			asm volatile("cp.async.commit_group;\n" ::: "memory");
+		};
+		float acc0[MAX_M_TILES][4], acc1[MAX_M_TILES][4];
+		#pragma unroll
+		for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+			acc0[m][0] = acc0[m][1] = acc0[m][2] = acc0[m][3] = acc1[m][0] = acc1[m][1] = acc1[m][2] = acc1[m][3] = 0.0f;
+		uint32_t kp = 0u, sp = 0u, sc = 0u;
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < k_tiles )
+			{
+				stage_tile(sp, kp);
+				kp++;
+				sp = (sp + 1u == STAGES) ? 0u : (sp + 1u);
+			}
 		}
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+		{
+			if constexpr ( STAGES == 3u )
+			{
+				if ( kt + 1u < k_tiles )
+					asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+				else
+					asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+			}
+			else
+				asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+			__syncthreads();
+			if ( kp < k_tiles )
+			{
+				stage_tile(sp, kp);
+				kp++;
+				sp = (sp + 1u == STAGES) ? 0u : (sp + 1u);
+			}
+			const uint32_t sb_slot = (kt >> 2u) & 1u, sb_sub = (kt & 3u) * 4u;
+			const uint32_t sc0_all = *(const uint32_t *)&s_sc[sb_slot][b_row0][sb_sub];
+			const uint32_t sc1_all = *(const uint32_t *)&s_sc[sb_slot][b_row1][sb_sub];
+			#pragma unroll
+			for ( uint32_t sg = 0u; sg < 4u; ++sg )
+			{
+				const uint8_t raw0 = (uint8_t)(sc0_all >> (sg * 8u));
+				const uint8_t raw1 = (uint8_t)(sc1_all >> (sg * 8u));
+				const uint32_t s0_2 = MimoE8m0ToBf16x2(raw0);
+				const uint32_t s1_2 = MimoE8m0ToBf16x2(raw1);
+				const uint32_t w0 = *(const uint32_t *)&s_b[sc][b_row0][sg * 16u + c * 4u];
+				const uint32_t w1_w = *(const uint32_t *)&s_b[sc][b_row1][sg * 16u + c * 4u];
+				uint32_t b0_lo[2], b0_hi[2], b1_lo[2], b1_hi[2];
+				MimoE2m1Word4(w0, raw0, s0_2, b0_lo, b0_hi);
+				MimoE2m1Word4(w1_w, raw1, s1_2, b1_lo, b1_hi);
+				const uint32_t k_off = sg * 32u + c * 8u;
+				#pragma unroll
+				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+				{
+					if ( m < m_tiles_live )
+					{
+						const uint4 low = *(const uint4 *)&s_a[sc][m * 16u + g][k_off];
+						const uint4 high = *(const uint4 *)&s_a[sc][m * 16u + g + 8u][k_off];
+						const uint32_t a0[4] = { low.x, high.x, low.y, high.y };
+						const uint32_t a1[4] = { low.z, high.z, low.w, high.w };
+						LmMmaBf16(acc0[m], a0, b0_lo);
+						LmMmaBf16(acc0[m], a1, b0_hi);
+						LmMmaBf16(acc1[m], a0, b1_lo);
+						LmMmaBf16(acc1[m], a1, b1_hi);
+					}
+				}
+			}
+			sc = (sc + 1u == STAGES) ? 0u : (sc + 1u);
+		}
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		if constexpr ( FUSED_GATE_UP )
+		{
+			const uint32_t col = n_base + warp * 8u + c * 2u;
+			if ( col < output_dim )
+				#pragma unroll
+				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+					if ( m < m_tiles_live )
+						#pragma unroll
+						for ( uint32_t h = 0u; h < 2u; ++h )
+						{
+							const uint32_t pr = first + m * 16u + g + h * 8u;
+							if ( pr < row_end )
+							{
+								const float v0 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u]))) * SparkMathRoundBf16(acc1[m][h * 2u]);
+								const float v1 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u + 1u]))) * SparkMathRoundBf16(acc1[m][h * 2u + 1u]);
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
+							}
+						}
+		}
+		else
+		{
+			const uint32_t col0 = n_base + warp * 16u + c * 2u, col1 = col0 + 8u;
+			#pragma unroll
+			for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+				if ( m < m_tiles_live )
+					#pragma unroll
+					for ( uint32_t h = 0u; h < 2u; ++h )
+					{
+						const uint32_t pr = first + m * 16u + g + h * 8u;
+						if ( pr < row_end )
+						{
+							if ( col0 < output_dim )
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col0) = LmPackBf16Pair(acc0[m][h * 2u], acc0[m][h * 2u + 1u]);
+							if ( col1 < output_dim )
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col1) = LmPackBf16Pair(acc1[m][h * 2u], acc1[m][h * 2u + 1u]);
+						}
+					}
+		}
+		if ( tile + gridDim.x < total_tiles )
+			__syncthreads();
 	}
 	LmDependentRelease();
 }
@@ -929,9 +1062,10 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		(void)LM_LAUNCH_DEPENDENT((MimoAttnPrepStoreKernel<G, FULL>), dim3((TASKS + WARPS - 1u) / WARPS, rows), MM_THREADS, 0, stream,
+		const uint32_t prep_blocks = rows >= 128u ? 2u : (TASKS + WARPS - 1u) / WARPS;
+		(void)LM_LAUNCH_DEPENDENT((MimoAttnPrepStoreKernel<G, FULL>), dim3(prep_blocks, rows), MM_THREADS, 0, stream,
 			state->attn_gathered, step->positions, step->tree != 0u ? step->slots : step->positions, step->sequence_of_row,
-			FULL ? state->full_inv_freq : state->sliding_inv_freq, *view, state->query, rows, local_rows);
+			FULL ? state->full_inv_freq : state->sliding_inv_freq, *view, state->query, rows);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<Kv,LmKvShardView,KVH,G::kHeadDim,G::kValueDim>(*view, state->query, G::kHeads, step->sequence_of_row,
@@ -942,11 +1076,53 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)units, 0u, state->send, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( LmGqaShardMergeLaunch<G::kValueDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream,
-				FULL ? (const float *)0 : layer->sinks) != SPARK_GPU_SUCCESS ||
-			Bf16(layer->out, state->merged, state->partial, (float *)0, rows, S::kRankWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
+		if constexpr ( G::kTpDegree > 1u && (G::kHeads % G::kTpDegree) == 0u && G::kHeads / G::kTpDegree <= 8u && G::kValueDim == 128u )
+		{
+			(void)LM_LAUNCH_DEPENDENT((MimoGqaShardMergeKernel<G>), rows, (G::kHeads / G::kTpDegree) * 32u, 0, stream, state->received, stride,
+				state->tp_rank, state->merged, FULL ? (const float *)0 : layer->sinks);
+			if ( CudaStageLaunched() != SPARK_STATUS_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( LmGqaShardMergeLaunch<G::kValueDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream,
+				FULL ? (const float *)0 : layer->sinks) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( Bf16(layer->out, state->merged, state->partial, (float *)0, rows, S::kRankWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
+	}
+
+	template<uint32_t MAX_M_TILES, uint32_t STAGES, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
+	static int32_t Mxfp4Launch(const uint8_t *w1, const uint8_t *s1, const uint8_t *w3, const uint8_t *s3, const uint16_t *activation, uint16_t *output,
+		const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t routes, uint32_t input_dim, uint32_t output_dim,
+		uint32_t multiprocessors, SparkGpuStream stream)
+	{
+		static std::atomic<uint64_t> granted(0u);
+		static std::atomic<int32_t> resident(0);
+		constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
+		constexpr uint32_t TILE_N = FUSED_GATE_UP ? 64u : 128u;
+		constexpr uint32_t shared = MimoMxfp4SharedBytes<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>(G::kLocalExperts);
+		int device = 0, per_sm = 1;
+		if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_STREAM_MAX_DEVICES )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
+		{
+			if ( SparkGpuFuncSetAttribute((const void *)MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>,
+					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+			if ( SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm,
+					MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>, 256u, (int)shared) != SPARK_GPU_SUCCESS || per_sm < 1 )
+				per_sm = 1;
+			resident.store(per_sm);
+			granted.fetch_or(UINT64_C(1) << (uint32_t)device);
+		}
+		const uint64_t n_tiles = (output_dim + TILE_N - 1u) / TILE_N;
+		const uint64_t tile_bound = ((uint64_t)routes / TILE_M + G::kLocalExperts) * n_tiles;
+		uint64_t blocks = (uint64_t)multiprocessors * (uint64_t)resident.load();
+		if ( tile_bound < blocks )
+			blocks = tile_bound;
+		(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>), (uint32_t)blocks, 256u, shared, stream,
+			w1, s1, w3, s3, activation, output, group_row_offset, route_source_token, G::kLocalExperts, input_dim, output_dim);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
 	static SparkStatus Dense(State *state, const Frame &frame, const MimoLayer &entry)
@@ -986,28 +1162,31 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		else
 		{
 			constexpr uint32_t WARPS = MM_THREADS / LM_WARP_LANES;
+			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
+			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			(void)LM_LAUNCH_DEPENDENT((MimoSigmoidTopkLocalKernel<G>), (rows + WARPS - 1u) / WARPS, MM_THREADS, 0, stream, state->router_logits,
 				layer->router_bias, rows, state->expert_first, step->route_fault, state->route_expert, state->route_weight);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-				LmRouteBuild<MM_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
-					state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
-					state->tile_prefix_down, stream) != LM_LAUNCH_OK )
+			(void)LM_LAUNCH_DEPENDENT((MimoRouteBuildPackedKernel<MM_THREADS, G::kLocalExperts + 1u>), 1u, MM_THREADS, 0, stream,
+				state->route_expert, routes, G::kTopK, state->group_row_offset, state->route_packed_row, state->route_source_token,
+				state->route_global, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
+			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
-		if ( rows == 1u )
+		if ( rows <= 8u )
 		{
 			constexpr uint32_t UP_CHUNKS = G::kHidden / 32u;
 			constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
 			constexpr uint32_t UP_COLS = (MM_THREADS / UP_LANES) * 2u;
 			const uint32_t up_blocks = (G::kMoeInter + UP_COLS - 1u) / UP_COLS;
-			(void)LM_LAUNCH_DEPENDENT((MimoMoeB1W1W3SiluKernel<G>), dim3(up_blocks, routes), MM_THREADS, 0, stream,
+			(void)LM_LAUNCH_DEPENDENT((MimoMoeSmallW1W3SiluKernel<G>), dim3(up_blocks, routes), MM_THREADS, 0, stream,
 				layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight, (const uint8_t *)layer->moe_w3.scale,
-				normed, state->route_global, state->group_row_offset, state->expert_act);
+				normed, state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rows);
 			constexpr uint32_t DN_CHUNKS = G::kMoeInter / 32u;
 			constexpr uint32_t DN_LANES = DN_CHUNKS >= 32u ? 32u : (DN_CHUNKS >= 16u ? 16u : 8u);
-			constexpr uint32_t DN_COLS = (MM_THREADS / DN_LANES) * 2u;
+			constexpr uint32_t DN_COLS = (MM_THREADS / DN_LANES) * 4u;
 			const uint32_t dn_blocks = (G::kHidden + DN_COLS - 1u) / DN_COLS;
-			(void)LM_LAUNCH_DEPENDENT((MimoMoeB1W2FinalizeKernel<G>), dn_blocks, MM_THREADS, 0, stream,
+			(void)LM_LAUNCH_DEPENDENT((MimoMoeSmallW2FinalizeKernel<G>), dim3(dn_blocks, rows), MM_THREADS, 0, stream,
 				layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale, state->expert_act, state->route_packed_row, state->route_expert,
 				state->route_weight, partial_out);
 			return CudaStageLaunched();
@@ -1016,26 +1195,28 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		{
 			if ( exact == 0u && rows >= 32u )
 			{
-				const uint32_t up_blocks = G::kLocalExperts * ((G::kMoeInter + 63u) / 64u);
-				const uint32_t dn_blocks = G::kLocalExperts * ((G::kHidden + 127u) / 128u);
-				if ( rows >= 512u )
+				const uint32_t mean_rows = (routes + G::kLocalExperts - 1u) / G::kLocalExperts;
+				int32_t st_up, st_dn;
+				if ( mean_rows > 32u )
 				{
-					(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<2u, 8u, false, true, 4u>), up_blocks, 256u, 0, stream,
-						layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight, (const uint8_t *)layer->moe_w3.scale,
-						normed, state->expert_act, state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<2u, 8u, true, false, 4u>), dn_blocks, 256u, 0, stream,
-						layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale, (const uint8_t *)0, (const uint8_t *)0,
-						state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
+					st_up = Mxfp4Launch<4u, 3u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
+						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
+					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<4u, 3u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
+						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
 				}
 				else
 				{
-					(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<1u, 8u, false, true, 4u>), up_blocks, 256u, 0, stream,
-						layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight, (const uint8_t *)layer->moe_w3.scale,
-						normed, state->expert_act, state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<1u, 8u, true, false, 4u>), dn_blocks, 256u, 0, stream,
-						layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale, (const uint8_t *)0, (const uint8_t *)0,
-						state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
+					st_up = Mxfp4Launch<2u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
+						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
+					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<2u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
+						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
 				}
+				if ( st_dn != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				LM_LAUNCH((LmMoeLocalWeightedFinalizeKernel), dim3(LmVecBlocks<MM_THREADS>(G::kHidden), rows), MM_THREADS, 0, stream, state->expert_out,
 					state->route_packed_row, state->route_expert, state->route_weight, (const uint16_t *)0, partial_out, G::kTopK, G::kLocalExperts, G::kHidden);
 				return CudaStageLaunched();
@@ -1134,11 +1315,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			{ (void **)&state->partial, width },
 			{ (void **)&state->attn_local, rows * (S::kMaxFused / state->tp_degree) * sizeof(uint16_t) },
 			{ (void **)&state->attn_gathered, rows * S::kMaxFused * sizeof(uint16_t) },
-			{ (void **)&state->attn_full, rows * S::kMaxFused * sizeof(uint16_t) },
 			{ (void **)&state->query, rows * S::kQuery * sizeof(uint16_t) },
-			{ (void **)&state->key, rows * S::kMaxKey * sizeof(uint16_t) },
-			{ (void **)&state->value, rows * S::kMaxValue * sizeof(uint16_t) },
-			{ (void **)&state->slot, rows * (S::kMaxKey + S::kMaxValue) * sizeof(uint16_t) },
 			{ (void **)&state->send, (uint64_t)state->tp_degree * state->record_stride * sizeof(float) },
 			{ (void **)&state->received, (uint64_t)state->tp_degree * state->record_stride * sizeof(float) },
 			{ (void **)&state->merged, rows * S::kRankWidth * sizeof(uint16_t) },
