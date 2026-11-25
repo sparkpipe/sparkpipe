@@ -4446,44 +4446,194 @@ static uint32_t SparkModelBatchPrefetchBatchDrafts(
 	return(1u);
 }
 
-static uint32_t SparkModelBatchPlanBatchDrafts(
-	SparkModelBatchEngine *engine,
-	uint32_t lane_count)
+typedef struct SparkModelBatchDraftPlanState
 {
-	uint8_t lane_kind[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint8_t lane_model[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_cap[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_model_rows[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_position[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_source_end[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_distance[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_match[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_class[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t alloc[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t best_alloc[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint8_t lane_kind[SPARK_MODEL_BATCH_VERIFY_LANES], lane_model[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_cap[SPARK_MODEL_BATCH_VERIFY_LANES], lane_model_rows[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_position[SPARK_MODEL_BATCH_VERIFY_LANES], lane_source_end[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_distance[SPARK_MODEL_BATCH_VERIFY_LANES], lane_match[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_class[SPARK_MODEL_BATCH_VERIFY_LANES], alloc[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t best_alloc[SPARK_MODEL_BATCH_VERIFY_LANES], fetched_model;
 	uint32_t model_tokens[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	float model_path[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	float model_survival[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	float lane_hazard[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_SPECULATION_FRAME_DEPTH_BUCKETS];
-	float lane_cost_cap[SPARK_MODEL_BATCH_VERIFY_LANES];
-	float next_survival[SPARK_MODEL_BATCH_VERIFY_LANES];
-	float lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES];
-	float best_lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane,rows_left,draft_limit,stride = 1u,context = 0u,allow_model_drafts = 0u,fetched_model = 0u;
-	uint32_t step,best_total = 0u,used_model = 0u,best_used_model = 0u,bucket;
-	float expected,frame_ns,step_ns,per_ask_ns,wave_wait_ns = 0.0f,cost_cap_ns = 0.0f,best_rate = 0.0f;
+	float lane_cost_cap[SPARK_MODEL_BATCH_VERIFY_LANES], next_survival[SPARK_MODEL_BATCH_VERIFY_LANES];
+	float lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES], best_lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES];
+	float wave_wait_ns;
+} SparkModelBatchDraftPlanState;
+
+static void SparkModelBatchPrepLookupLane(SparkModelBatchEngine *engine, SparkModelBatchDraftPlanState *st,
+	uint32_t lane, SparkModelBatchRequestState *request, const uint32_t *tokens_ptr,
+	const SparkSpeculationLookupMatch *match, uint32_t position, uint32_t sampled, uint32_t limit)
+{
+	const uint32_t distance = position - match->source_end;
+	const uint32_t frame_class = SparkSpeculationFrameClass(match->match_length,sampled);
+	const SparkSpeculationHazard *engine_hazard = &engine->frame_model.classes[frame_class];
+	const SparkSpeculationHazard *request_hazard = &request->draft_hazards[frame_class];
+	uint32_t index,cap,bucket;
+	if ( distance == 0u )
+		return;
+	for (index=0u; index<limit; index++)
+		if ( SparkModelBatchTokenIsStop(engine,request,tokens_ptr[match->source_end + 1u + (index % distance)]) != 0u )
+		{
+			limit = index;
+			break;
+		}
+	if ( request->draft_proven != 0u )
+		cap = SPARK_SPECULATION_FRAME_GROWTH * request->draft_proven;
+	else
+		cap = engine_hazard->frames != 0u ? (2u * match->match_length > 16u ? 2u * match->match_length : 16u) :
+			(match->match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH ? 16u : 4u);
+	if ( cap < limit )
+		limit = cap;
+	if ( limit == 0u )
+		return;
+	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
+		st->lane_hazard[lane][bucket] = SparkSpeculationHazardAt(engine_hazard,request_hazard,bucket);
+	st->lane_kind[lane] = 1u; st->lane_cap[lane] = limit;
+	st->lane_source_end[lane] = match->source_end; st->lane_distance[lane] = distance;
+	st->lane_match[lane] = match->match_length; st->lane_class[lane] = frame_class;
+	st->next_survival[lane] = 1.0f - st->lane_hazard[lane][0];
+}
+
+static void SparkModelBatchPrepModelLane(SparkModelBatchEngine *engine, SparkModelBatchDraftPlanState *st,
+	uint32_t lane, uint32_t slot, SparkModelBatchRequestState *request, const uint32_t *tokens_ptr,
+	uint32_t position, uint32_t sampled, uint32_t limit)
+{
+	const SparkModelBatchDraftAnswer *answer = SparkModelBatchFindDraftAnswer(engine,request,slot,position);
+	const uint32_t depth = engine->draft_depth < limit ? engine->draft_depth : limit;
+	uint32_t node = 0u,model_count = 0u,index,bucket;
+	float path = 1.0f,reach = 1.0f;
+	SparkSpeculationLookupMatch match;
+	if ( answer == 0 || answer->usable == 0u || depth == 0u )
+		return;
+	st->lane_model[lane] = 1u;
+	st->fetched_model++;
+	request->trace_draft_wait_ns = answer->wait_ns;
+	if ( answer->wait_ns > st->wave_wait_ns )
+		st->wave_wait_ns = answer->wait_ns;
+	for (index=1u; index<=depth; index++)
+	{
+		uint32_t child;
+		for (child=node + 1u; child<answer->node_count && (answer->nodes[child].parent_index != node || answer->nodes[child].depth != index); child++)
+			;
+		if ( child >= answer->node_count || !(answer->nodes[child].score >= engine->draft_min_confidence) ||
+			SparkModelBatchTokenIsStop(engine,request,answer->nodes[child].token_id) != 0u )
+			break;
+		node = child;
+		path *= answer->nodes[child].score < 1.0f ? answer->nodes[child].score : 1.0f;
+		reach = SparkSpeculationFrameReach(reach,path,engine->model_depth_observed[index - 1u],engine->model_depth_predicted[index - 1u],SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR);
+		st->model_tokens[lane][model_count] = answer->nodes[child].token_id;
+		st->model_path[lane][model_count] = path;
+		st->model_survival[lane][model_count] = reach;
+		model_count++;
+	}
+	if ( model_count == 0u )
+		return;
+	st->lane_kind[lane] = 2u;
+	st->lane_model_rows[lane] = model_count;
+	st->lane_cap[lane] = model_count;
+	st->lane_class[lane] = SparkSpeculationFrameModelClass(sampled);
+	st->next_survival[lane] = st->model_survival[lane][0];
+	if ( model_count < limit &&
+		SparkSpeculationLookupIndexFindTail(&request->lookup,tokens_ptr,st->model_tokens[lane],model_count,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,
+			SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK && match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_EXT_MIN_LOOKUP_MATCH )
+	{
+		const uint32_t ext_distance = position + model_count - match.source_end;
+		uint32_t ext_limit = limit - model_count;
+		if ( ext_distance != 0u )
+		{
+			const uint32_t ext_class = SparkSpeculationFrameClass(match.match_length,sampled);
+			for (index=0u; index<ext_limit; index++)
+			{
+				const uint32_t src = match.source_end + 1u + (index % ext_distance);
+				const uint32_t tok = src <= position ? tokens_ptr[src] : st->model_tokens[lane][src - (position + 1u)];
+				if ( SparkModelBatchTokenIsStop(engine,request,tok) != 0u )
+				{
+					ext_limit = index;
+					break;
+				}
+			}
+			if ( ext_limit != 0u )
+			{
+				for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
+					st->lane_hazard[lane][bucket] = SparkSpeculationHazardAt(&engine->frame_model.classes[ext_class],&request->draft_hazards[ext_class],bucket);
+				st->lane_source_end[lane] = match.source_end;
+				st->lane_distance[lane] = ext_distance;
+				st->lane_match[lane] = match.match_length;
+				st->lane_cap[lane] = model_count + ext_limit;
+			}
+		}
+	}
+}
+
+static uint32_t SparkModelBatchCommitBatchDrafts(SparkModelBatchEngine *engine,
+	const SparkModelBatchDraftPlanState *st, uint32_t lane_count, uint32_t best_used_model, float frame_ns)
+{
+	uint32_t lane,stride = 1u;
+	for (lane=0u; lane<lane_count; lane++)
+	{
+		const uint32_t count = st->best_alloc[lane];
+		const uint32_t slot = engine->scratch_request_slots[lane];
+		SparkModelBatchRequestState *request = &engine->requests[slot];
+		const uint32_t *tokens_ptr = SparkModelBatchRequestTokens(engine,slot);
+		uint32_t index;
+		engine->scratch_prefill_counts[lane] = count;
+		if ( count == 0u )
+		{
+			if ( best_used_model == 0u && st->lane_model[lane] != 0u && st->wave_wait_ns > 0.0f )
+				SparkModelBatchModelBatchBackoff(engine,request);
+			continue;
+		}
+		if ( st->lane_kind[lane] == 1u )
+		{
+			for (index=0u; index<count; index++)
+				request->draft_tokens[index] = tokens_ptr[st->lane_source_end[lane] + 1u + (index % st->lane_distance[lane])];
+			request->draft_count = count; request->model_draft_rows = 0u;
+			request->draft_class = st->lane_class[lane]; request->draft_source_end = st->lane_source_end[lane];
+			request->draft_match = st->lane_match[lane]; request->draft_expected = 1.0f + st->best_lane_expected[lane];
+			request->draft_frame_ns = frame_ns;
+		}
+		else
+		{
+			const uint32_t m = count < st->lane_model_rows[lane] ? count : st->lane_model_rows[lane];
+			for (index=0u; index<m; index++)
+			{
+				request->draft_tokens[index] = st->model_tokens[lane][index];
+				request->draft_path[index] = st->model_path[lane][index];
+			}
+			for (index=m; index<count; index++)
+			{
+				const uint32_t src = st->lane_source_end[lane] + 1u + ((index - m) % st->lane_distance[lane]);
+				request->draft_tokens[index] = src <= st->lane_position[lane] ? tokens_ptr[src] : st->model_tokens[lane][src - (st->lane_position[lane] + 1u)];
+			}
+			request->draft_count = count; request->model_draft_rows = m;
+			request->draft_class = st->lane_class[lane]; request->draft_source_end = st->lane_position[lane];
+			request->draft_match = count > m ? st->lane_match[lane] : 0u;
+			request->draft_expected = 1.0f + st->best_lane_expected[lane];
+			request->draft_frame_ns = frame_ns; request->batch_model_backoff_tokens = 0u;
+			if ( st->wave_wait_ns > 0.0f )
+				request->model_wait_ns = st->wave_wait_ns;
+		}
+		if ( count + 1u > stride )
+			stride = count + 1u;
+	}
+	engine->batch_verify_frames++;
+	return(stride);
+}
+
+static uint32_t SparkModelBatchPlanBatchDrafts(
+	SparkModelBatchEngine *engine,
+	uint32_t lane_count)
+{
+	SparkModelBatchDraftPlanState st;
+	uint32_t lane,rows_left,draft_limit,context = 0u,allow_model_drafts = 0u;
+	uint32_t step,best_total = 0u,used_model = 0u,best_used_model = 0u;
+	float expected,frame_ns,step_ns,per_ask_ns,cost_cap_ns = 0.0f,best_rate = 0.0f;
 	if ( SparkModelBatchPlanLimits(engine,lane_count,&rows_left,&draft_limit) == 0u )
-		return(stride);
-	memset(lane_kind,0,sizeof(lane_kind));
-	memset(lane_model,0,sizeof(lane_model));
-	memset(lane_cap,0,sizeof(lane_cap));
-	memset(lane_model_rows,0,sizeof(lane_model_rows));
-	memset(lane_cost_cap,0,sizeof(lane_cost_cap));
-	memset(next_survival,0,sizeof(next_survival));
-	memset(lane_expected,0,sizeof(lane_expected));
-	memset(best_lane_expected,0,sizeof(best_lane_expected));
-	memset(alloc,0,sizeof(alloc));
-	memset(best_alloc,0,sizeof(best_alloc));
+		return(1u);
+	memset(&st,0,sizeof(st));
 	for (lane=0u; lane<lane_count; lane++)
 	{
 		const SparkModelBatchRequestState *request = &engine->requests[engine->scratch_request_slots[lane]];
@@ -4506,7 +4656,7 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 		const uint32_t *tokens_ptr = SparkModelBatchRequestTokens(engine,slot);
 		const uint32_t sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
 		SparkSpeculationLookupMatch match;
-		uint32_t position = 0u,limit,index;
+		uint32_t position = 0u,limit;
 		request->draft_count = 0u;
 		request->draft_tree = 0u;
 		request->model_draft_rows = 0u;
@@ -4516,115 +4666,18 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 			continue;
 		if ( limit > SPARK_SPECULATION_FRAME_MAX_DRAFTS )
 			limit = SPARK_SPECULATION_FRAME_MAX_DRAFTS;
-		lane_position[lane] = position;
+		st.lane_position[lane] = position;
 		if ( request->priority < engine->served_priority )
 		{
 			const float chain = 8.0f * SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u > context ? position + 1u : context);
 			if ( chain != 0.0f && (cost_cap_ns == 0.0f || chain < cost_cap_ns) )
-				lane_cost_cap[lane] = chain;
+				st.lane_cost_cap[lane] = chain;
 		}
 		if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens_ptr,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK &&
 			(engine->draft_bridge == 0 || match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
-		{
-			const uint32_t distance = position - match.source_end;
-			const uint32_t frame_class = SparkSpeculationFrameClass(match.match_length,sampled);
-			const SparkSpeculationHazard *engine_hazard = &engine->frame_model.classes[frame_class];
-			const SparkSpeculationHazard *request_hazard = &request->draft_hazards[frame_class];
-			uint32_t cap;
-			if ( distance == 0u )
-				continue;
-			for (index=0u; index<limit; index++)
-				if ( SparkModelBatchTokenIsStop(engine,request,tokens_ptr[match.source_end + 1u + (index % distance)]) != 0u )
-				{
-					limit = index;
-					break;
-				}
-			if ( request->draft_proven != 0u )
-				cap = SPARK_SPECULATION_FRAME_GROWTH * request->draft_proven;
-			else
-				cap = engine_hazard->frames != 0u ? (2u * match.match_length > 16u ? 2u * match.match_length : 16u) :
-					(match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH ? 16u : 4u);
-			if ( cap < limit )
-				limit = cap;
-			if ( limit == 0u )
-				continue;
-			for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
-				lane_hazard[lane][bucket] = SparkSpeculationHazardAt(engine_hazard,request_hazard,bucket);
-			lane_kind[lane] = 1u;
-			lane_cap[lane] = limit;
-			lane_source_end[lane] = match.source_end;
-			lane_distance[lane] = distance;
-			lane_match[lane] = match.match_length;
-			lane_class[lane] = frame_class;
-			next_survival[lane] = 1.0f - lane_hazard[lane][0];
-		}
+			SparkModelBatchPrepLookupLane(engine,&st,lane,request,tokens_ptr,&match,position,sampled,limit);
 		else if ( engine->draft_bridge != 0 && allow_model_drafts != 0u && lane_count <= SPARK_MODEL_BATCH_MODEL_DRAFT_LANES )
-		{
-			const SparkModelBatchDraftAnswer *answer = SparkModelBatchFindDraftAnswer(engine,request,slot,position);
-			const uint32_t depth = engine->draft_depth < limit ? engine->draft_depth : limit;
-			uint32_t node = 0u,model_count = 0u;
-			float path = 1.0f,reach = 1.0f;
-			if ( answer == 0 || answer->usable == 0u || depth == 0u )
-				continue;
-			lane_model[lane] = 1u;
-			fetched_model++;
-			request->trace_draft_wait_ns = answer->wait_ns;
-			if ( answer->wait_ns > wave_wait_ns )
-				wave_wait_ns = answer->wait_ns;
-			for (index=1u; index<=depth; index++)
-			{
-				uint32_t child;
-				for (child=node + 1u; child<answer->node_count && (answer->nodes[child].parent_index != node || answer->nodes[child].depth != index); child++)
-					;
-				if ( child >= answer->node_count || !(answer->nodes[child].score >= engine->draft_min_confidence) ||
-					SparkModelBatchTokenIsStop(engine,request,answer->nodes[child].token_id) != 0u )
-					break;
-				node = child;
-				path *= answer->nodes[child].score < 1.0f ? answer->nodes[child].score : 1.0f;
-				reach = SparkSpeculationFrameReach(reach,path,engine->model_depth_observed[index - 1u],engine->model_depth_predicted[index - 1u],SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR);
-				model_tokens[lane][model_count] = answer->nodes[child].token_id;
-				model_path[lane][model_count] = path;
-				model_survival[lane][model_count] = reach;
-				model_count++;
-			}
-			if ( model_count == 0u )
-				continue;
-			lane_kind[lane] = 2u;
-			lane_model_rows[lane] = model_count;
-			lane_cap[lane] = model_count;
-			lane_class[lane] = SparkSpeculationFrameModelClass(sampled);
-			next_survival[lane] = model_survival[lane][0];
-			if ( model_count < limit &&
-				SparkSpeculationLookupIndexFindTail(&request->lookup,tokens_ptr,model_tokens[lane],model_count,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,
-					SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK && match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_EXT_MIN_LOOKUP_MATCH )
-			{
-				const uint32_t ext_distance = position + model_count - match.source_end;
-				uint32_t ext_limit = limit - model_count;
-				if ( ext_distance != 0u )
-				{
-					const uint32_t ext_class = SparkSpeculationFrameClass(match.match_length,sampled);
-					for (index=0u; index<ext_limit; index++)
-					{
-						const uint32_t src = match.source_end + 1u + (index % ext_distance);
-						const uint32_t tok = src <= position ? tokens_ptr[src] : model_tokens[lane][src - (position + 1u)];
-						if ( SparkModelBatchTokenIsStop(engine,request,tok) != 0u )
-						{
-							ext_limit = index;
-							break;
-						}
-					}
-					if ( ext_limit != 0u )
-					{
-						for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
-							lane_hazard[lane][bucket] = SparkSpeculationHazardAt(&engine->frame_model.classes[ext_class],&request->draft_hazards[ext_class],bucket);
-						lane_source_end[lane] = match.source_end;
-						lane_distance[lane] = ext_distance;
-						lane_match[lane] = match.match_length;
-						lane_cap[lane] = model_count + ext_limit;
-					}
-				}
-			}
-		}
+			SparkModelBatchPrepModelLane(engine,&st,lane,slot,request,tokens_ptr,position,sampled,limit);
 	}
 	per_ask_ns = engine->model_draft_rounds != 0u ? (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds : 0.0f;
 	expected = (float)lane_count;
@@ -4637,112 +4690,58 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 			break;
 		for (lane=0u; lane<lane_count; lane++)
 		{
-			if ( alloc[lane] >= lane_cap[lane] || !(next_survival[lane] > 0.0f) )
+			if ( st.alloc[lane] >= st.lane_cap[lane] || !(st.next_survival[lane] > 0.0f) )
 				continue;
-			if ( lane_cost_cap[lane] != 0.0f && raw_cost > lane_cost_cap[lane] )
+			if ( st.lane_cost_cap[lane] != 0.0f && raw_cost > st.lane_cost_cap[lane] )
 				continue;
-			if ( next_survival[lane] > best_s || (next_survival[lane] == best_s && best_lane < lane_count && alloc[lane] < alloc[best_lane]) )
+			if ( st.next_survival[lane] > best_s || (st.next_survival[lane] == best_s && best_lane < lane_count && st.alloc[lane] < st.alloc[best_lane]) )
 			{
-				best_s = next_survival[lane];
+				best_s = st.next_survival[lane];
 				best_lane = lane;
 			}
 		}
 		if ( best_lane >= lane_count )
 			break;
-		alloc[best_lane]++;
+		st.alloc[best_lane]++;
 		expected += best_s;
-		lane_expected[best_lane] += best_s;
-		if ( lane_kind[best_lane] == 2u && alloc[best_lane] == 1u )
+		st.lane_expected[best_lane] += best_s;
+		if ( st.lane_kind[best_lane] == 2u && st.alloc[best_lane] == 1u )
 			used_model++;
-		if ( alloc[best_lane] >= lane_cap[best_lane] )
-			next_survival[best_lane] = 0.0f;
-		else if ( lane_kind[best_lane] == 1u )
-			next_survival[best_lane] *= 1.0f - lane_hazard[best_lane][SparkSpeculationFrameDepthBucket(alloc[best_lane] + 1u)];
-		else if ( alloc[best_lane] < lane_model_rows[best_lane] )
-			next_survival[best_lane] = model_survival[best_lane][alloc[best_lane]];
+		if ( st.alloc[best_lane] >= st.lane_cap[best_lane] )
+			st.next_survival[best_lane] = 0.0f;
+		else if ( st.lane_kind[best_lane] == 1u )
+			st.next_survival[best_lane] *= 1.0f - st.lane_hazard[best_lane][SparkSpeculationFrameDepthBucket(st.alloc[best_lane] + 1u)];
+		else if ( st.alloc[best_lane] < st.lane_model_rows[best_lane] )
+			st.next_survival[best_lane] = st.model_survival[best_lane][st.alloc[best_lane]];
 		else
 		{
-			const uint32_t ext_index = alloc[best_lane] - lane_model_rows[best_lane] + 1u;
-			next_survival[best_lane] *= 1.0f - lane_hazard[best_lane][SparkSpeculationFrameDepthBucket(ext_index)];
+			const uint32_t ext_index = st.alloc[best_lane] - st.lane_model_rows[best_lane] + 1u;
+			st.next_survival[best_lane] *= 1.0f - st.lane_hazard[best_lane][SparkSpeculationFrameDepthBucket(ext_index)];
 		}
 		cost = raw_cost < step_ns ? step_ns : raw_cost;
-		wait_ns = used_model != 0u ? (wave_wait_ns > 0.0f ? wave_wait_ns : (float)used_model * per_ask_ns) : 0.0f;
+		wait_ns = used_model != 0u ? (st.wave_wait_ns > 0.0f ? st.wave_wait_ns : (float)used_model * per_ask_ns) : 0.0f;
 		rate = expected / (cost + wait_ns);
 		if ( rate > best_rate )
 		{
 			best_rate = rate;
 			best_total = step;
 			best_used_model = used_model;
-			memcpy(best_alloc,alloc,sizeof(best_alloc));
-			memcpy(best_lane_expected,lane_expected,sizeof(best_lane_expected));
+			memcpy(st.best_alloc,st.alloc,sizeof(st.best_alloc));
+			memcpy(st.best_lane_expected,st.lane_expected,sizeof(st.best_lane_expected));
 		}
 	}
 	if ( best_total == 0u || best_rate * step_ns < SPARK_SPECULATION_FRAME_MARGIN * (float)lane_count )
 	{
-		if ( fetched_model != 0u )
+		if ( st.fetched_model != 0u )
 			for (lane=0u; lane<lane_count; lane++)
-				if ( lane_model[lane] != 0u )
+				if ( st.lane_model[lane] != 0u )
 					SparkModelBatchModelBatchBackoff(engine,&engine->requests[engine->scratch_request_slots[lane]]);
 		if ( best_total != 0u )
 			engine->batch_draft_declined++;
 		return(1u);
 	}
 	frame_ns = SparkSpeculationFrameBatchCost(&engine->frame_model,lane_count,lane_count + best_total,context);
-	for (lane=0u; lane<lane_count; lane++)
-	{
-		const uint32_t count = best_alloc[lane];
-		const uint32_t slot = engine->scratch_request_slots[lane];
-		SparkModelBatchRequestState *request = &engine->requests[slot];
-		const uint32_t *tokens_ptr = SparkModelBatchRequestTokens(engine,slot);
-		uint32_t index;
-		engine->scratch_prefill_counts[lane] = count;
-		if ( count == 0u )
-		{
-			if ( best_used_model == 0u && lane_model[lane] != 0u && wave_wait_ns > 0.0f )
-				SparkModelBatchModelBatchBackoff(engine,request);
-			continue;
-		}
-		if ( lane_kind[lane] == 1u )
-		{
-			for (index=0u; index<count; index++)
-				request->draft_tokens[index] = tokens_ptr[lane_source_end[lane] + 1u + (index % lane_distance[lane])];
-			request->draft_count = count;
-			request->model_draft_rows = 0u;
-			request->draft_class = lane_class[lane];
-			request->draft_source_end = lane_source_end[lane];
-			request->draft_match = lane_match[lane];
-			request->draft_expected = 1.0f + best_lane_expected[lane];
-			request->draft_frame_ns = frame_ns;
-		}
-		else
-		{
-			const uint32_t m = count < lane_model_rows[lane] ? count : lane_model_rows[lane];
-			for (index=0u; index<m; index++)
-			{
-				request->draft_tokens[index] = model_tokens[lane][index];
-				request->draft_path[index] = model_path[lane][index];
-			}
-			for (index=m; index<count; index++)
-			{
-				const uint32_t src = lane_source_end[lane] + 1u + ((index - m) % lane_distance[lane]);
-				request->draft_tokens[index] = src <= lane_position[lane] ? tokens_ptr[src] : model_tokens[lane][src - (lane_position[lane] + 1u)];
-			}
-			request->draft_count = count;
-			request->model_draft_rows = m;
-			request->draft_class = lane_class[lane];
-			request->draft_source_end = lane_position[lane];
-			request->draft_match = count > m ? lane_match[lane] : 0u;
-			request->draft_expected = 1.0f + best_lane_expected[lane];
-			request->draft_frame_ns = frame_ns;
-			request->batch_model_backoff_tokens = 0u;
-			if ( wave_wait_ns > 0.0f )
-				request->model_wait_ns = wave_wait_ns;
-		}
-		if ( count + 1u > stride )
-			stride = count + 1u;
-	}
-	engine->batch_verify_frames++;
-	return(stride);
+	return(SparkModelBatchCommitBatchDrafts(engine,&st,lane_count,best_used_model,frame_ns));
 }
 
 static uint32_t SparkModelBatchPlanDrafts(

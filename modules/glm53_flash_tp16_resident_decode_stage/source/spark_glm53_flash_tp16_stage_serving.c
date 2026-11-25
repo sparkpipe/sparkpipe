@@ -17,8 +17,8 @@
 #error "GLM53_FLASH_MODEL_ID and GLM53_FLASH_MODEL_REVISION must name the checkpoint this build's packs come from"
 #endif
 
-#ifndef GLM53_FLASH_PROGRAM
-#define GLM53_FLASH_PROGRAM "glm53_flash"
+#if !defined(GLM53_FLASH_PROGRAM)
+#error "GLM53_FLASH_PROGRAM must be defined by the Makefile"
 #endif
 
 #define SPARK_GLM53_FLASH_TP16_ADAPTER_ID GLM53_FLASH_ADAPTER_ID

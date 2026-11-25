@@ -157,16 +157,16 @@ int main(int count,char **arguments)
     bench_status(SparkWeightdClientConnect(socket_path,&owner,0),"connect");
     bench_status(SparkWeightdClientLaneAcquire(owner,lane,&topology,&acquired,BENCH_WAIT_NS),"lane-acquire");
     bench_require(acquired == lane,"exact-lane");
-    bench_require(SparkGpuMalloc((void **)&local,local_elements * 2u) == SPARK_GPU_SUCCESS &&
-        SparkGpuMalloc((void **)&output,output_elements * 2u + 256u) == SPARK_GPU_SUCCESS &&
+    bench_require(SparkGpuMalloc((void **)&local,local_elements * sizeof(*local)) == SPARK_GPU_SUCCESS &&
+        SparkGpuMalloc((void **)&output,(output_elements + 128u) * sizeof(*output)) == SPARK_GPU_SUCCESS &&
         SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) == SPARK_GPU_SUCCESS,"device-allocation");
     bench_require(work_words == 0u || (SparkGpuMalloc((void **)&work,(size_t)rounds * work_words * sizeof(*work)) == SPARK_GPU_SUCCESS && SparkGpuMalloc((void **)&sink,sizeof(*sink)) == SPARK_GPU_SUCCESS &&
         SparkGpuMemset(work,1,(size_t)rounds * work_words * sizeof(*work)) == SPARK_GPU_SUCCESS && SparkGpuMemset(sink,0,sizeof(*sink)) == SPARK_GPU_SUCCESS),"work-allocation");
     {
-        uint16_t *host = (uint16_t *)malloc(local_elements * 2u);
+        uint16_t *host = (uint16_t *)malloc(local_elements * sizeof(*host));
         for (size_t i = 0u; i < local_elements; i++)
             host[i] = bench_bf16(bench_value(rank,(uint32_t)i));
-        bench_require(SparkGpuMemcpy(local,host,local_elements * 2u,SPARK_GPU_COPY_HOST_TO_DEVICE) == SPARK_GPU_SUCCESS,"input");
+        bench_require(SparkGpuMemcpy(local,host,local_elements * sizeof(*host),SPARK_GPU_COPY_HOST_TO_DEVICE) == SPARK_GPU_SUCCESS,"input");
         free(host);
     }
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -256,10 +256,10 @@ int main(int count,char **arguments)
     }
     bench_status(SparkTpDeviceCollectiveHardwareStats(&collective,&after),"stats-after");
     {
-        uint16_t *host = (uint16_t *)malloc(output_elements * 2u);
+        uint16_t *host = (uint16_t *)malloc(output_elements * sizeof(*host));
         uint64_t digest = UINT64_C(1469598103934665603);
         uint32_t bad = 0u;
-        bench_require(SparkGpuMemcpy(host,output + 64u,output_elements * 2u,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,"readback");
+        bench_require(SparkGpuMemcpy(host,output + 64u,output_elements * sizeof(*host),SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,"readback");
         for (size_t i = 0u; i < output_elements; i++)
         {
             float expected = 0.0f;
