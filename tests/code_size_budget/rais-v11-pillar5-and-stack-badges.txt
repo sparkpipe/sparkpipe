@@ -1,0 +1,2 @@
++286
+RAIS v1.1 Pillar 5 (Operational & Systems Physics: 5a NVMe cold-boot floor, 5b usable KV memory floor, 5c live B=1 vs B=8 lane-0 batch-size bit-invariance), display-only stack badges, and receipt path sanitization across tools/rais_score.py, tools/rais_bench.py, and tools/rais_history.py.

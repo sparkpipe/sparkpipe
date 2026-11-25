@@ -584,14 +584,20 @@ def run_concurrent_batch(
     endpoint: str = "completions",
     stream_prefix: bool = False,
     encoder: PromptEncoder | None = None,
+    lane0_prompt_field: dict[str, Any] | None = None,
+    extra_prompt_bases: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
     results: list[dict[str, Any] | None] = [None] * batch_size
-    prompt_fields = [
-        encoder.batch_prompt_field(prompt_base, i, stream_prefix=stream_prefix)
-        if encoder is not None
-        else {"prompt": format_batch_prompt(str(prompt_base), i, stream_prefix=stream_prefix)}
-        for i in range(batch_size)
-    ]
+    prompt_fields: list[dict[str, Any]] = []
+    for i in range(batch_size):
+        if i == 0 and lane0_prompt_field is not None:
+            prompt_fields.append(dict(lane0_prompt_field))
+        else:
+            src_base = extra_prompt_bases[(i - 1) % len(extra_prompt_bases)] if (extra_prompt_bases and i > 0) else prompt_base
+            if encoder is not None:
+                prompt_fields.append(encoder.batch_prompt_field(src_base, i, stream_prefix=stream_prefix))
+            else:
+                prompt_fields.append({"prompt": format_batch_prompt(str(src_base), i, stream_prefix=stream_prefix)})
 
     def worker(idx: int) -> None:
         body: dict[str, Any] = {
@@ -645,7 +651,7 @@ def run_concurrent_batch(
         agg_tok_s = total_tok / max(0.001, wall_s)
 
     total_output_tokens = sum(int((r.get("usage") or {}).get("completion_tokens") or len(r["token_times"])) for r in decoding)
-    return {
+    payload: dict[str, Any] = {
         "batch": batch_size,
         "unsupported": False,
         "failed": False,
@@ -655,6 +661,9 @@ def run_concurrent_batch(
         "aggregate_tok_s": round(agg_tok_s, 2),
         "per_stream_tok_s": round(agg_tok_s / batch_size, 2),
     }
+    if lane0_prompt_field is not None and results[0] is not None:
+        payload["lane0_summary"] = summarize_stream(results[0])
+    return payload
 
 
 def tier_plan(tier: str, model_spec: rais_score.ModelSpec, max_batch: int) -> dict[str, Any]:
@@ -738,8 +747,10 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "plan": plan,
         }
 
+    swap_elapsed_s: float | None = None
     if args.swap_url:
-        swap_model(args.swap_url, model_name, args.swap_token, args.timeout)
+        swap_res = swap_model(args.swap_url, model_name, args.swap_token, args.timeout)
+        swap_elapsed_s = swap_res.get("elapsed_s")
 
     def do_stream(body: dict[str, Any]) -> dict[str, Any]:
         nonlocal active_endpoint, endpoint_fallback
@@ -750,7 +761,15 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             raw = stream_completion(args.base_url, body, api_key=args.api_key, timeout=args.timeout, endpoint=active_endpoint)
         return raw
 
-    def do_batch(batch_size: int, max_tokens: int, prompt_base: Any, spec_body: dict[str, Any], stream_prefix: bool = False) -> dict[str, Any]:
+    def do_batch(
+        batch_size: int,
+        max_tokens: int,
+        prompt_base: Any,
+        spec_body: dict[str, Any],
+        stream_prefix: bool = False,
+        lane0_prompt_field: dict[str, Any] | None = None,
+        extra_prompt_bases: tuple[Any, ...] = (),
+    ) -> dict[str, Any]:
         nonlocal active_endpoint, endpoint_fallback
         res = run_concurrent_batch(
             args.base_url,
@@ -764,6 +783,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             endpoint=active_endpoint,
             stream_prefix=stream_prefix,
             encoder=encoder,
+            lane0_prompt_field=lane0_prompt_field,
+            extra_prompt_bases=extra_prompt_bases,
         )
         if not encoder.is_token_mode() and endpoint_mode == "auto" and active_endpoint == "completions" and res.get("immediate_eos"):
             active_endpoint = "chat"
@@ -780,6 +801,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 endpoint=active_endpoint,
                 stream_prefix=stream_prefix,
                 encoder=encoder,
+                lane0_prompt_field=lane0_prompt_field,
+                extra_prompt_bases=extra_prompt_bases,
             )
         return res
 
@@ -939,11 +962,26 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     spec_metrics["verify_v_b1"] = round(alpha_mean / speedup, 4)
 
     batch_results: dict[str, Any] = {}
+    batch_invariant_exact: bool | None = None
     for b in (4, 8, 16, 32, 64):
         if b > args.max_batch:
             batch_results[str(b)] = {"unsupported": True, "aggregate_tok_s": 0.0}
             continue
-        res_b = do_batch(b, plan["batch_tokens"], PROSE_PROMPT, nospec_opt)
+        if b == 8 and nospec_prose_res is not None:
+            b8_max_tokens = max(plan["batch_tokens"], plan["b1_short_tokens"])
+            res_b = do_batch(
+                b,
+                b8_max_tokens,
+                PROSE_PROMPT,
+                nospec_opt,
+                lane0_prompt_field=prose_field,
+                extra_prompt_bases=(CODE_PROMPT, EDIT_PROMPT, PROSE_PROMPT),
+            )
+            lane0_res = res_b.pop("lane0_summary", None)
+            if lane0_res is not None and lane0_res.get("error") is None:
+                batch_invariant_exact = outputs_match(nospec_prose_res, lane0_res)
+        else:
+            res_b = do_batch(b, plan["batch_tokens"], PROSE_PROMPT, nospec_opt)
         if res_b.get("failed"):
             errors_count += len(res_b.get("errors") or [1])
         batch_results[str(b)] = res_b
@@ -1078,6 +1116,13 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         elif not b8_long_res.get("unsupported"):
             b8_long_tok_s = b8_long_res.get("aggregate_tok_s")
 
+    cold_boot_s = getattr(args, "cold_boot_s", None)
+    if cold_boot_s is None:
+        cold_boot_s = swap_elapsed_s
+    usable_kv_gib = getattr(args, "usable_kv_gib", None)
+    stack_badge_raw = getattr(args, "stack_badge", None)
+    stack_badge = stack_badge_raw.strip() if isinstance(stack_badge_raw, str) and stack_badge_raw.strip() else None
+
     metrics_payload: dict[str, Any] = {
         "b1_short_tok_s": b1_short_tok_s,
         "b1_short_ctx": 256,
@@ -1101,6 +1146,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "warm_100k_prefix_tokens": warm_100k_prefix,
         "warm_100k_new_tokens": plan["warm_new_tokens"],
         "warm_100k_ttft_ms": warm_100k_ttft_ms,
+        "cold_boot_s": round(float(cold_boot_s), 3) if cold_boot_s is not None else None,
+        "usable_kv_gib_per_rank": round(float(usable_kv_gib), 3) if usable_kv_gib is not None else None,
+        "batch_invariant_exact": batch_invariant_exact,
     }
 
     record: dict[str, Any] = {
@@ -1121,18 +1169,23 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "errors": errors_count,
         },
     }
+    if stack_badge is not None:
+        record["stack_badge"] = stack_badge
     if endpoint_fallback is not None:
         record["endpoint_fallback"] = endpoint_fallback
     return record
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rais_bench", description="RAIS v1.0 OpenAI-compatible HTTP benchmark runner.")
+    parser = argparse.ArgumentParser(prog="rais_bench", description="RAIS v1.1 OpenAI-compatible HTTP benchmark runner.")
     parser.add_argument("--base-url", required=True, help="OpenAI-compatible base URL, e.g. http://127.0.0.1:8000")
     parser.add_argument("--model", required=True, help="Served model name (any of the 21 lanes or aliases).")
     parser.add_argument("--tier", default="fast", choices=("fast", "full"), help="Execution tier: fast (3-4m) or full (15-25m).")
     parser.add_argument("--hardware", default="16x-gb10-1x100g", choices=sorted(rais_score.HARDWARE_PROFILES))
     parser.add_argument("--engine", default="sparkpipe", help="Engine label recorded in JSONL output.")
+    parser.add_argument("--stack-badge", default=None, help="Optional display-only stack badge metadata (e.g. 'Zero-NVIDIA NVRM + SKL').")
+    parser.add_argument("--cold-boot-s", type=float, default=None, help="Optional measured cold boot or model swap time in seconds (Pillar 5a).")
+    parser.add_argument("--usable-kv-gib", type=float, default=None, help="Optional measured usable KV cache memory per rank in GiB (Pillar 5b).")
     parser.add_argument("--spec-toggle", default="speculation", help="JSON field name toggling speculation, or 'none'.")
     parser.add_argument("--b8-spec", action=argparse.BooleanOptionalAction, default=None, help="Enable or disable the B=8 batched speculation probe.")
     parser.add_argument("--endpoint", default="completions", choices=("completions", "chat", "auto"), help="Endpoint mode: completions, chat, or auto (fallback on immediate token-0 EOS).")

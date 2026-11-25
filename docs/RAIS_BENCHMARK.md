@@ -1,13 +1,13 @@
-# RAIS v1.0 — Roofline-Anchored Inference Score
+# RAIS v1.1 — Roofline-Anchored Inference Score
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Reference scorer:** [`tools/rais_score.py`](../tools/rais_score.py)  
 **Reference runner:** [`tools/rais_bench.py`](../tools/rais_bench.py)  
 **Fleet lane authority:** [`deployment/lanes.json`](../deployment/lanes.json)
 
-RAIS (Roofline-Anchored Inference Score) is an engine-agnostic, hardware-comparable inference benchmark specification. Rather than reporting raw tokens per second — which cannot be compared across model sizes, quantization formats, or hardware clusters — RAIS anchors every workload to the exact physical lower bound ($T_{\text{floor}}$) imposed by compute, memory bandwidth, and network collectives on the target hardware, and pairs roofline efficiency with speculation quality and hard binary correctness gates.
+RAIS (Roofline-Anchored Inference Score) is an engine-agnostic, hardware-comparable inference benchmark specification. Rather than reporting raw tokens per second — which cannot be compared across model sizes, quantization formats, or hardware clusters — RAIS anchors every workload to the exact physical lower bound ($T_{\text{floor}}$) imposed by compute, memory bandwidth, network collectives, storage bandwidth, and usable memory capacity on the target hardware, and pairs roofline efficiency with speculation quality, operational systems physics, and hard binary correctness gates.
 
-An engine running any checkpoint on any supported hardware profile receives a standalone score in $[0, 100]$, enabling direct apples-to-apples comparisons (`SparkPipe X` vs `vLLM / SGLang / TensorRT-LLM / spark-ds41f Y` on identical hardware) and deterministic ROI ranking for optimization work.
+An engine running any checkpoint on any supported hardware profile receives a standalone score in $[0, 100]$, enabling direct apples-to-apples comparisons (`SparkPipe X` vs `vLLM / SGLang / TensorRT-LLM / spark-ds41f Y` on identical hardware) and deterministic ROI ranking for optimization work. Optional **Stack Badges** (e.g. `Zero-NVIDIA NVRM + SKL`, `CUDA 13.0`, `Apple Metal 4.0`, `vLLM + TileLang`) record runtime provenance as display-only metadata with zero impact on the numeric score.
 
 ---
 
@@ -71,49 +71,54 @@ Because $T_{\text{floor},k}$ is a pure function of `(model geometry, hardware pr
 
 ## 2. Reference Hardware Profiles
 
-| Profile ID | Ranks ($N$) | Mem BW / Rank | Aggregate Mem BW | BF16 / FP8 / FP4 TFLOPS / Rank | Net BW / Rank | Hop Latency ($\tau_{\text{hop}}$) | VRAM / Rank |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `16x-gb10-1x100g` | 16 | 273 GB/s | 4,368 GB/s | 90 / 210 / 420 | 12.5 GB/s | 16 us | 128 GB |
-| `16x-gb10-2x100g` | 16 | 273 GB/s | 4,368 GB/s | 90 / 210 / 420 | 25.0 GB/s | 16 us | 128 GB |
-| `4x-gb10-1x100g` | 4 | 273 GB/s | 1,092 GB/s | 90 / 210 / 420 | 12.5 GB/s | 12 us | 128 GB |
-| `1x-gb10` | 1 | 273 GB/s | 273 GB/s | 90 / 210 / 420 | 0.0 GB/s | 0 us | 128 GB |
-| `1x-m5-ultra` | 1 | 1,144 GB/s | 1,144 GB/s | 95 / 190 / 190 | 0.0 GB/s | 0 us | 256 GB |
-| `8x-h200-nvlink` | 8 | 4,800 GB/s | 38,400 GB/s | 989 / 1,979 / 1,979 | 450.0 GB/s | 2 us | 141 GB |
+| Profile ID | Ranks ($N$) | Mem BW / Rank | Aggregate Mem BW | BF16 / FP8 / FP4 TFLOPS / Rank | Net BW / Rank | Hop Latency ($\tau_{\text{hop}}$) | NVMe BW / Rank | RAM / OS Reserve (GiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `16x-gb10-1x100g` | 16 | 273 GB/s | 4,368 GB/s | 90 / 210 / 420 | 12.5 GB/s | 16 us | 5.0 GB/s | 128 / 12 GiB |
+| `16x-gb10-2x100g` | 16 | 273 GB/s | 4,368 GB/s | 90 / 210 / 420 | 25.0 GB/s | 16 us | 5.0 GB/s | 128 / 12 GiB |
+| `4x-gb10-1x100g` | 4 | 273 GB/s | 1,092 GB/s | 90 / 210 / 420 | 12.5 GB/s | 12 us | 5.0 GB/s | 128 / 12 GiB |
+| `4x-gb10-2x100g` | 4 | 273 GB/s | 1,092 GB/s | 90 / 210 / 420 | 25.0 GB/s | 12 us | 5.0 GB/s | 128 / 12 GiB |
+| `1x-gb10` | 1 | 273 GB/s | 273 GB/s | 90 / 210 / 420 | 0.0 GB/s | 0 us | 5.0 GB/s | 128 / 12 GiB |
+| `1x-m5-ultra` | 1 | 1,144 GB/s | 1,144 GB/s | 95 / 190 / 190 | 0.0 GB/s | 0 us | 7.0 GB/s | 256 / 32 GiB |
+| `8x-h200-nvlink` | 8 | 4,800 GB/s | 38,400 GB/s | 989 / 1,979 / 1,979 | 450.0 GB/s | 2 us | 7.0 GB/s | 141 / 4 GiB |
 
 ---
 
-## 3. Four Pillars and Twelve Orthogonal Sub-Metrics
+## 3. Five Pillars and Fifteen Orthogonal Sub-Metrics
 
-RAIS distributes 100% of its weight equally across four 25% pillars, decomposed into 12 orthogonal sub-metrics (3 per pillar):
+RAIS v1.1 distributes 90% of its weight equally across four 22.5% core runtime pillars (`P1–P4`) and 10% to **Pillar 5 — Operational & Systems Physics** (`P5`), decomposed into 15 orthogonal sub-metrics (3 per pillar):
 
 | Pillar (Weight) | ID | Sub-Metric | Weight | Workload & Scoring Rule |
 | --- | --- | --- | ---: | --- |
-| **P1 Single-Stream Decode (25%)** | `1a` | Short-ctx B1 (`C=256`) | **12%** | Plain decode (`spec=OFF`), $B=1, C=256$. $S_{1a} = 100 \cdot T_{\text{floor}} / T_{\text{actual}}$. |
-| | `1b` | Long-ctx B1 (`C=64K–128K`) | **9%** | Plain decode (`spec=OFF`), $B=1$ at 64K–128K (capped to served context). $S_{1b} = 100 \cdot T_{\text{floor}} / T_{\text{actual}}$. |
-| | `1c` | Tail Jitter (`p50/p99` ITL) | **4%** | Inter-token latency stability on B1 stream: $S_{1c} = 100 \cdot \min(1, \text{ITL}_{p50} / \text{ITL}_{p99})$. |
-| **P2 Speculation (25%)** | `2a` | Acceptance Quality ($\alpha$) | **12%** | Mean committed tokens/round $\alpha = \mathbb{E}[A] + 1$ across `prose`, `code`, `edit`, normalized against $\alpha_{\text{ref}} = 4.0$: $S_{2a} = 100 \cdot \min\!\left(1, \frac{\max(0, \alpha - 1)}{\alpha_{\text{ref}} - 1}\right)$. |
-| | `2b-i` | B1 Verify & Draft Efficiency ($1/V$) | **8%** | Verify overhead factor $V_{B1} = \frac{\alpha}{\text{TPS}_{\text{spec}} / \text{TPS}_{\text{nospec}}}$ at $K \in [4, 16]$. $S_{2b\text{-}i} = 100 \cdot \min(1, 1/V_{B1})$ when B1 spec is active, else $0$. |
-| | `2b-ii` | B8 Batched Verify Efficiency ($1/V$) | **5%** | Batched speculative verify at $B=8$: $S_{2b\text{-}ii} = 100 \cdot \min(1, 1/V_{B8})$ when B8 spec is active, else $0$. Combined `2b` = **13%**. |
-| **P3 Batch & Concurrency Scaling (25%)** | `3a` | Interactive Batch (`B=4, 8, 16`) | **10%** | Equal average over $B \in \{4, 8, 16\}$ against $T_{\text{floor}}(B, C=256)$ with per-stream SLA $\ge 0.25 \cdot \text{TPS}_{B1}$. Violations scale score by $\text{TPS}_{\text{stream}} / (0.25 \cdot \text{TPS}_{B1})$. |
-| | `3b` | High-Concurrency Saturation (`B=32, 64`) | **9%** | Equal average over $B \in \{32, 64\}$ against $T_{\text{floor}}(B, C=256)$. Unsupported or capacity-capped $B$ is **scored flat** at the highest working smaller $B$'s aggregate tok/s against $B$'s roofline. |
-| | `3c` | Long-Context Batch (`B=8 @ 32K–64K`) | **6%** | Concurrent $B=8$ decode at 32K–64K context (capped to served context) against $T_{\text{floor}}(8, C)$. |
-| **P4 Prefill & Multi-Turn Agent Loops (25%)** | `4a` | Interactive Cold Prefill (`8K`) | **8%** | Cold uncached 8,192-token prompt TTFT against $T_{\text{floor,prefill}}(8192)$. |
-| | `4b` | Long Cold Prefill (`32K / 128K+`) | **9%** | Cold uncached 32K (40%) + 128K (60%, capped to served context) prefill against $T_{\text{floor,prefill}}(L)$. |
-| | `4c` | Multi-Turn Prefix & State Reuse TTFT | **8%** | Warm follow-up turn `8K + 128` (40%) and `100K + 128` (60%) scored against delta prefill floor $T_{\text{floor,warm}}(C_{\text{prefix}}, 128)$. Cold recomputation collapses score near 0. |
+| **P1 Single-Stream Decode (22.5%)** | `1a` | Short-ctx B1 (`C=256`) | **10.8%** | Plain decode (`spec=OFF`), $B=1, C=256$. $S_{1a} = 100 \cdot T_{\text{floor}} / T_{\text{actual}}$. |
+| | `1b` | Long-ctx B1 (`C=64K–128K`) | **8.1%** | Plain decode (`spec=OFF`), $B=1$ at 64K–128K (capped to served context). $S_{1b} = 100 \cdot T_{\text{floor}} / T_{\text{actual}}$. |
+| | `1c` | Tail Jitter (`p50/p99` ITL) | **3.6%** | Inter-token latency stability on B1 stream: $S_{1c} = 100 \cdot \min(1, \text{ITL}_{p50} / \text{ITL}_{p99})$. |
+| **P2 Speculation (22.5%)** | `2a` | Acceptance Quality ($\alpha$) | **10.8%** | Mean committed tokens/round $\alpha = \mathbb{E}[A] + 1$ across `prose`, `code`, `edit`, normalized against $\alpha_{\text{ref}} = 4.0$: $S_{2a} = 100 \cdot \min\!\left(1, \frac{\max(0, \alpha - 1)}{\alpha_{\text{ref}} - 1}\right)$. |
+| | `2b-i` | B1 Verify & Draft Efficiency ($1/V$) | **7.2%** | Verify overhead factor $V_{B1} = \frac{\alpha}{\text{TPS}_{\text{spec}} / \text{TPS}_{\text{nospec}}}$ at $K \in [4, 16]$. $S_{2b\text{-}i} = 100 \cdot \min(1, 1/V_{B1})$ when B1 spec is active, else $0$. |
+| | `2b-ii` | B8 Batched Verify Efficiency ($1/V$) | **4.5%** | Batched speculative verify at $B=8$: $S_{2b\text{-}ii} = 100 \cdot \min(1, 1/V_{B8})$ when B8 spec is active, else $0$. Combined `2b` = **11.7%**. |
+| **P3 Batch & Concurrency Scaling (22.5%)** | `3a` | Interactive Batch (`B=4, 8, 16`) | **9.0%** | Equal average over $B \in \{4, 8, 16\}$ against $T_{\text{floor}}(B, C=256)$ with per-stream SLA $\ge 0.25 \cdot \text{TPS}_{B1}$. Violations scale score by $\text{TPS}_{\text{stream}} / (0.25 \cdot \text{TPS}_{B1})$. |
+| | `3b` | High-Concurrency Saturation (`B=32, 64`) | **8.1%** | Equal average over $B \in \{32, 64\}$ against $T_{\text{floor}}(B, C=256)$. Unsupported or capacity-capped $B$ is **scored flat** at the highest working smaller $B$'s aggregate tok/s against $B$'s roofline. |
+| | `3c` | Long-Context Batch (`B=8 @ 32K–64K`) | **5.4%** | Concurrent $B=8$ decode at 32K–64K context (capped to served context) against $T_{\text{floor}}(8, C)$. |
+| **P4 Prefill & Multi-Turn Agent Loops (22.5%)** | `4a` | Interactive Cold Prefill (`8K`) | **7.2%** | Cold uncached 8,192-token prompt TTFT against $T_{\text{floor,prefill}}(8192)$. |
+| | `4b` | Long Cold Prefill (`32K / 128K+`) | **8.1%** | Cold uncached 32K (40%) + 128K (60%, capped to served context) prefill against $T_{\text{floor,prefill}}(L)$. |
+| | `4c` | Multi-Turn Prefix & State Reuse TTFT | **7.2%** | Warm follow-up turn `8K + 128` (40%) and `100K + 128` (60%) scored against delta prefill floor $T_{\text{floor,warm}}(C_{\text{prefix}}, 128)$. Cold recomputation collapses score near 0. |
+| **P5 Operational & Systems Physics (10.0%)** | `5a` | Cold Boot / Model Swap Efficiency | **5.0%** | Anchored to NVMe sequential read floor $T_{\text{boot}}^{\text{floor}} = \max\!\left(1.0,\; \frac{W_{\text{total}}/N}{BW_{\text{NVMe}} \times 10^9}\right)$. $S_{5a} = \min(100, 100 \cdot T_{\text{boot}}^{\text{floor}} / T_{\text{cold\_boot}})$, reading `cold_boot_s` or `swap_s`. Unmeasured = `0.0`. |
+| | `5b` | Usable KV Memory Efficiency | **3.0%** | Anchored to free RAM floor $M_{\text{free\_floor}} = \max(1.0,\; M_{\text{ram/rank}} - M_{\text{weights/rank}} - M_{\text{os\_reserve/rank}})$. $S_{5b} = \min(100, 100 \cdot M_{\text{usable\_kv/rank}} / M_{\text{free\_floor}})$, reading `usable_kv_gib_per_rank` or `kv_cache_bytes_per_rank / 1024^3`. Unmeasured = `0.0`. |
+| | `5c` | Batch-Size Bit-Invariance | **2.0%** | Deterministic `B=1` short prompt (`temperature=0`, `spec=OFF`) run as lane 0 of a mixed `B=8` concurrent batch (lanes 1..7 distinct prompts). `100.0` if `batch_invariant_exact == true`, else `0.0`. Separate from `INVALID` gates. |
 
-**Weight sum check:** $(12 + 9 + 4) + (12 + 8 + 5) + (10 + 9 + 6) + (8 + 9 + 8) = 25 + 25 + 25 + 25 = 100\%$.
+**Weight sum check:** $(10.8 + 8.1 + 3.6) + (10.8 + 7.2 + 4.5) + (9.0 + 8.1 + 5.4) + (7.2 + 8.1 + 7.2) + (5.0 + 3.0 + 2.0) = 22.5 \times 4 + 10.0 = 100.0\%$.
 
-### 3.1 Composite Metrics and ROI Planning
+### 3.1 Composite Metrics, Stack Badges, and ROI Planning
 
-- **Standalone RAIS Model Score:** $\text{RAIS}_m = \sum_{k=1}^{12} w_k S_{m,k} \in [0, 100]$.
-- **Base Roofline Score ($R$):** Pure non-speculative engine efficiency across P1, P3, and P4:
+- **Standalone RAIS Model Score:** $\text{RAIS}_m = \sum_{k=1}^{15} w_k S_{m,k} \in [0, 100]$.
+- **Base Roofline Score ($R$):** Pure non-speculative kernel efficiency across P1, P3, and P4 (unchanged from v1.0 for transparent cross-version kernel comparisons):
   $$R_m = \frac{P_{1,m} + P_{3,m} + P_{4,m}}{3} \in [0, 100]$$
 - **Speculation Summary:** Reports $(\alpha,\; 1/V_{B1},\; 1/V_{B8},\; P_2)$ separately so drafter quality ($\alpha$) and kernel/overlap cost ($V$) remain directly attributable.
+- **Stack Badges (Display Metadata Only):** Optional `stack_badge` string (e.g. `Zero-NVIDIA NVRM + SKL`, `CUDA 13.0`, `Apple Metal 4.0`, `vLLM + TileLang`) carried on receipts and rendered in CLI and scorecard UI with **zero impact** on any numeric score.
 - **Fleet Aggregate RAIS:** Weighted across the 19 fleet models with Tier 1/2/3 weights $W_m$ ($\sum_{m=1}^{19} W_m = 1.0$):
   $$\text{RAIS}_{\text{fleet,covered}} = \frac{\sum_{m \in \mathcal{M}} W_m \cdot \text{RAIS}_m}{\sum_{m \in \mathcal{M}} W_m}, \qquad \text{RAIS}_{\text{fleet,strict}} = \sum_{m \in \mathcal{M}} W_m \cdot \text{RAIS}_m$$
 - **ROI Priority Table:** Ranks every `(model, sub-metric)` by remaining headroom:
   $$\Delta\text{RAIS}_{m,k}^{\max} = w_k (100 - S_{m,k}), \qquad \Delta\text{RAIS}_{\text{fleet},m,k}^{\max} = W_m \cdot w_k (100 - S_{m,k})$$
-  paired with its binding hardware bottleneck (`memory`, `network`, `compute`, `speculation`, `jitter`, or `capacity_cap`).
+  paired with its binding hardware bottleneck (`memory`, `network`, `compute`, `speculation`, `jitter`, `capacity_cap`, `storage`, `memory_footprint`, or `determinism`).
 
 ---
 
@@ -136,7 +141,7 @@ Performance without numerical and serving fidelity is invalid. Every RAIS run re
 
 ## 5. Compatible Execution Tiers
 
-Both tiers emit the exact same RAIS v1.0 JSONL schema and are scored identically by `tools/rais_score.py`:
+Both tiers emit the exact same RAIS v1.1 JSONL schema (backwards compatible with v1.0 receipts; unmeasured P5 sub-metrics score `0.0`) and are scored identically by `tools/rais_score.py`:
 
 | Parameter | Fast Hill-Climb Tier (`--tier fast`) | Full Certification Tier (`--tier full`) |
 | --- | --- | --- |
@@ -145,11 +150,12 @@ Both tiers emit the exact same RAIS v1.0 JSONL schema and are scored identically
 | `1a` / `1c` B1 short | `O=128`, 2 repeats | `O=256`, 3 repeats |
 | `1b` B1 long | `C=32K` (capped), `O=64` | `C=64K–128K` (capped), `O=128` |
 | `2a` / `2b-i` B1 spec | `prose` + `code` + `edit`, `O=128` | `prose` + `code` + `edit`, `O=256` |
-| `2b-ii` B8 spec | Skipped (or imported) | Measured at `B=8`, `O=256` |
+| `2b-ii` B8 spec | Measured at `B=8`, `O=96` (toggleable) | Measured at `B=8`, `O=256` |
 | `3a` / `3b` Batch sweep | `B=4, 8, 16, 32, 64`, `O=96` | `B=4, 8, 16, 32, 64`, `O=256` |
 | `3c` Long-ctx batch | `B=8 @ 32K`, `O=64` | `B=8 @ 64K` (capped), `O=128` |
 | `4a` / `4b` Cold prefill | `8K` + `32K` | `8K` + `32K` + `128K` (capped) |
 | `4c` Warm multi-turn + GX | `8K + 128` + Gate GX (`O=32`) | `8K + 128` + `100K + 128` + Gate GX (`O=64`) |
+| `5a` / `5b` / `5c` Systems Physics | `--cold-boot-s` (or `--swap-url`), `--usable-kv-gib`, live `B=1 vs B=8` lane-0 invariance | Same (`O=256` lane-0 invariance) |
 
 ---
 
@@ -196,6 +202,9 @@ python3 tools/rais_bench.py \
   --tier fast \
   --hardware 16x-gb10-1x100g \
   --engine sparkpipe \
+  --stack-badge "CUDA 13.0" \
+  --cold-boot-s 8.4 \
+  --usable-kv-gib 72.0 \
   --spec-toggle speculation \
   --output rais_results.jsonl \
   --score
@@ -210,6 +219,7 @@ python3 tools/rais_bench.py \
   --swap-token "$SWAP_TOKEN" \
   --model kimi-k3.1-pro \
   --tier full \
+  --stack-badge "Zero-NVIDIA NVRM + SKL" \
   --output fleet_cert.jsonl
 ```
 
@@ -218,8 +228,8 @@ python3 tools/rais_bench.py \
 ```sh
 python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g --format markdown
 python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g --format json
-python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g --format html-data
-python3 tools/rais_score.py compare baseline.jsonl after.jsonl --hardware 16x-gb10-1x100g --label-a SparkPipe --label-b vLLM
+python3 tools/rais_score.py score rais_results.jsonl --hardware 16x-gb10-1x100g --stack-badge "Zero-NVIDIA NVRM + SKL" --format html-data
+python3 tools/rais_score.py compare baseline.jsonl after.jsonl --hardware 16x-gb10-1x100g --label-a SparkPipe --label-b vLLM --stack-badge-a "Zero-NVIDIA NVRM + SKL" --stack-badge-b "vLLM + TileLang"
 python3 tools/rais_score.py reconstitute overlap.jsonl --hardware 16x-gb10-1x100g --new-weights basket_v2.json --output basket_v2_divisor.json
 python3 tools/rais_score.py import-hillclimb qualification/batch-sweep-20261018/glm-5.3-flash.jsonl --score
 ```
@@ -238,10 +248,11 @@ At reconstitution snapshot $t_k$, an overlap receipt runs all models in $B_{k-1}
 
 ```json
 {
-  "rais_version": "1.0",
-  "utc": "2026-11-24T12:00:00Z",
+  "rais_version": "1.1",
+  "utc": "2026-11-25T12:00:00Z",
   "model": "glm-5.3-flash",
   "engine": "sparkpipe",
+  "stack_badge": "Zero-NVIDIA NVRM + SKL",
   "tier": "fast",
   "hardware": "16x-gb10-1x100g",
   "metrics": {
@@ -275,7 +286,10 @@ At reconstitution snapshot $t_k$, an overlap receipt runs all models in $B_{k-1}
     "prefill_32k_tok_s": 1353.0,
     "warm_8k_prefix_tokens": 8192,
     "warm_8k_new_tokens": 128,
-    "warm_8k_ttft_ms": 210.0
+    "warm_8k_ttft_ms": 210.0,
+    "cold_boot_s": 8.4,
+    "usable_kv_gib_per_rank": 72.0,
+    "batch_invariant_exact": true
   },
   "gates": {
     "prose_exact": true,
