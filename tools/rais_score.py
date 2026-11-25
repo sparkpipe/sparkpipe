@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 RAIS_VERSION = "1.0"
+DEFAULT_BASKET_ID = "v1.0-initial"
+DEFAULT_DIVISOR = 1.0
 ALPHA_REF = 4.0
 SLA_MIN_RATIO = 0.25
 
@@ -149,6 +151,18 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         fp8_tflops_per_rank=210.0,
         fp4_tflops_per_rank=420.0,
         net_bw_gb_s_per_rank=12.5,
+        net_hop_us=12.0,
+        vram_gb_per_rank=128.0,
+    ),
+    "4x-gb10-2x100g": HardwareProfile(
+        name="4x-gb10-2x100g",
+        description="4x NVIDIA DGX Spark (GB10, 128 GB, 273 GB/s) over dual 100GbE RoCE",
+        ranks=4,
+        mem_bw_gb_s_per_rank=273.0,
+        bf16_tflops_per_rank=90.0,
+        fp8_tflops_per_rank=210.0,
+        fp4_tflops_per_rank=420.0,
+        net_bw_gb_s_per_rank=25.0,
         net_hop_us=12.0,
         vram_gb_per_rank=128.0,
     ),
@@ -1352,7 +1366,45 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     }
 
 
-def score_fleet(records: list[dict[str, Any]], hardware_name: str) -> dict[str, Any]:
+def default_fleet_weights() -> dict[str, float]:
+    return {name: spec.fleet_weight for name, spec in MODEL_SPECS.items() if spec.fleet_weight > 0.0}
+
+
+def load_weights_file(path: Path) -> tuple[dict[str, float], str, float | None]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and "weights" in raw:
+        weights_raw = raw["weights"]
+        basket_id = str(raw.get("basket_id") or path.stem)
+        divisor = float(raw["divisor"]) if raw.get("divisor") is not None else None
+    elif isinstance(raw, dict):
+        weights_raw = raw
+        basket_id = path.stem
+        divisor = None
+    else:
+        raise ValueError(f"invalid weights file: {path}")
+    weights: dict[str, float] = {}
+    for k, v in weights_raw.items():
+        canon = resolve_model_name(str(k))
+        fv = float(v)
+        if fv < 0.0:
+            raise ValueError(f"negative weight for {canon}: {fv}")
+        if fv > 0.0:
+            weights[canon] = fv
+    total = sum(weights.values())
+    if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-4):
+        raise ValueError(f"basket weights must sum to 1.0 (got {total:.6f})")
+    return weights, basket_id, divisor
+
+
+def score_fleet(
+    records: list[dict[str, Any]],
+    hardware_name: str,
+    weights_override: dict[str, float] | None = None,
+    divisor: float = DEFAULT_DIVISOR,
+    basket_id: str = DEFAULT_BASKET_ID,
+) -> dict[str, Any]:
+    if divisor <= 0.0:
+        raise ValueError(f"index divisor must be positive (got {divisor})")
     hw = resolve_hardware(hardware_name)
     per_model = [score_model(rec, hw.name) for rec in records]
     by_canonical: dict[str, dict[str, Any]] = {}
@@ -1361,6 +1413,7 @@ def score_fleet(records: list[dict[str, Any]], hardware_name: str) -> dict[str, 
         if canon not in by_canonical or item["model"] == canon:
             by_canonical[canon] = item
 
+    weights = weights_override if weights_override is not None else default_fleet_weights()
     covered_weight = 0.0
     weighted_sum = 0.0
     strict_sum = 0.0
@@ -1368,7 +1421,7 @@ def score_fleet(records: list[dict[str, Any]], hardware_name: str) -> dict[str, 
     fleet_roi: list[dict[str, Any]] = []
 
     for canon, item in by_canonical.items():
-        w = MODEL_SPECS[canon].fleet_weight
+        w = float(weights.get(canon, 0.0))
         if w <= 0.0:
             continue
         covered_weight += w
@@ -1391,20 +1444,103 @@ def score_fleet(records: list[dict[str, Any]], hardware_name: str) -> dict[str, 
             })
 
     fleet_roi.sort(key=lambda entry: entry["fleet_headroom_pts"], reverse=True)
-    fleet_rais_covered = round(weighted_sum / covered_weight, 2) if covered_weight > 0.0 else 0.0
+    raw_covered_exact = (weighted_sum / covered_weight) if covered_weight > 0.0 else 0.0
+    fleet_rais_covered = round(raw_covered_exact, 2)
     fleet_rais_strict = round(strict_sum, 2)
+    fleet_rais_raw_index = round(raw_covered_exact / divisor, 2)
 
     return {
         "rais_version": RAIS_VERSION,
+        "basket_id": basket_id,
+        "index_divisor": round(divisor, 8),
         "hardware": asdict(hw),
         "model_count": len(per_model),
         "fleet_coverage_pct": round(covered_weight * 100.0, 2),
         "fleet_status": "INVALID" if any_invalid else ("VALID" if all(m["status"] == "VALID" for m in per_model) and per_model else "UNVERIFIED"),
         "fleet_rais_covered": None if any_invalid else fleet_rais_covered,
         "fleet_rais_strict": None if any_invalid else fleet_rais_strict,
+        "fleet_rais_index": None if any_invalid else fleet_rais_raw_index,
         "fleet_rais_raw_covered": fleet_rais_covered,
+        "fleet_rais_raw_index": fleet_rais_raw_index,
         "models": per_model,
         "fleet_roi_top": fleet_roi[:20],
+    }
+
+
+def reconstitute_basket(
+    overlap_records: list[dict[str, Any]],
+    hardware_name: str,
+    new_weights: dict[str, float],
+    prev_weights: dict[str, float] | None = None,
+    prev_divisor: float = DEFAULT_DIVISOR,
+    prev_basket_id: str = DEFAULT_BASKET_ID,
+    new_basket_id: str = "reconstituted",
+    allow_unverified: bool = False,
+) -> dict[str, Any]:
+    if prev_divisor <= 0.0:
+        raise ValueError(f"prev_divisor must be positive (got {prev_divisor})")
+    old_w = prev_weights if prev_weights is not None else default_fleet_weights()
+    for label, wmap in (("prev_weights", old_w), ("new_weights", new_weights)):
+        total = sum(wmap.values())
+        if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=1e-4):
+            raise ValueError(f"{label} must sum to 1.0 (got {total:.6f})")
+
+    hw = resolve_hardware(hardware_name)
+    scored = [score_model(rec, hw.name) for rec in overlap_records]
+    by_canon: dict[str, dict[str, Any]] = {}
+    for item in scored:
+        canon = item["canonical_model"]
+        if canon not in by_canon or item["model"] == canon:
+            by_canon[canon] = item
+
+    required = sorted({k for k, v in old_w.items() if v > 0.0} | {k for k, v in new_weights.items() if v > 0.0})
+    missing = [m for m in required if m not in by_canon]
+    if missing:
+        raise ValueError(f"overlap receipt missing required basket models: {', '.join(missing)}")
+
+    invalid = [m for m in required if by_canon[m]["status"] == "INVALID"]
+    if invalid:
+        raise ValueError(f"cannot reconstitute across INVALID models: {', '.join(invalid)}")
+    if not allow_unverified:
+        unverified = [m for m in required if by_canon[m]["status"] != "VALID"]
+        if unverified:
+            raise ValueError(f"overlap receipt contains unverified models: {', '.join(unverified)}")
+
+    old_mean = sum(old_w[m] * by_canon[m]["raw_rais"] for m in old_w if old_w[m] > 0.0)
+    new_mean = sum(new_weights[m] * by_canon[m]["raw_rais"] for m in new_weights if new_weights[m] > 0.0)
+    if old_mean <= 0.0 or new_mean <= 0.0:
+        raise ValueError(f"overlap basket means must be positive (old={old_mean:.4f}, new={new_mean:.4f})")
+
+    new_divisor = prev_divisor * (new_mean / old_mean)
+    index_before = old_mean / prev_divisor
+    index_after = new_mean / new_divisor
+
+    old_set = {k for k, v in old_w.items() if v > 0.0}
+    new_set = {k for k, v in new_weights.items() if v > 0.0}
+    retired = sorted(old_set - new_set)
+    added = sorted(new_set - old_set)
+    reweighted = {
+        m: {"old": round(old_w[m], 6), "new": round(new_weights[m], 6)}
+        for m in sorted(old_set & new_set)
+        if not math.isclose(old_w[m], new_weights[m], abs_tol=1e-9)
+    }
+
+    return {
+        "rais_version": RAIS_VERSION,
+        "hardware": hw.name,
+        "prev_basket_id": prev_basket_id,
+        "new_basket_id": new_basket_id,
+        "prev_divisor": round(prev_divisor, 8),
+        "new_divisor": round(new_divisor, 8),
+        "raw_mean_before": round(old_mean, 4),
+        "raw_mean_after": round(new_mean, 4),
+        "index_before": round(index_before, 4),
+        "index_after": round(index_after, 4),
+        "continuity_gap": round(abs(index_after - index_before), 8),
+        "retired_models": retired,
+        "added_models": added,
+        "reweighted_models": reweighted,
+        "weights": {k: round(v, 6) for k, v in sorted(new_weights.items()) if v > 0.0},
     }
 
 
@@ -1600,8 +1736,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"# RAIS v{report['rais_version']} Scorecard — `{hw['name']}`",
         "",
         f"- **Hardware:** {hw['description']} (`{hw['ranks']}x`, {hw['mem_bw_gb_s_per_rank']:.0f} GB/s/rank, {hw['fp8_tflops_per_rank']:.0f} FP8 / {hw['bf16_tflops_per_rank']:.0f} BF16 TFLOPS/rank, {hw['net_bw_gb_s_per_rank']:.1f} GB/s/rank net @ {hw['net_hop_us']:.0f} us)",
-        f"- **Fleet Status:** `{report['fleet_status']}` | **Coverage:** {report['fleet_coverage_pct']:.1f}% ({report['model_count']} models)",
-        f"- **Fleet Aggregate RAIS (covered):** `{report['fleet_rais_covered'] if report['fleet_rais_covered'] is not None else 'INVALID'}` (raw: {report['fleet_rais_raw_covered']:.2f}) | **Strict Fleet RAIS:** `{report['fleet_rais_strict'] if report['fleet_rais_strict'] is not None else 'INVALID'}`",
+        f"- **Fleet Status:** `{report['fleet_status']}` | **Basket:** `{report['basket_id']}` (divisor `{report['index_divisor']:.6f}`) | **Coverage:** {report['fleet_coverage_pct']:.1f}% ({report['model_count']} models)",
+        f"- **Fleet Aggregate RAIS (covered):** `{report['fleet_rais_covered'] if report['fleet_rais_covered'] is not None else 'INVALID'}` (raw: {report['fleet_rais_raw_covered']:.2f}) | **RAIS Index:** `{report['fleet_rais_index'] if report['fleet_rais_index'] is not None else 'INVALID'}` | **Strict Fleet RAIS:** `{report['fleet_rais_strict'] if report['fleet_rais_strict'] is not None else 'INVALID'}`",
         "",
         "## Model Summary",
         "",
@@ -1681,16 +1817,38 @@ def render_compare_markdown(cmp_report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_reconstitute_markdown(rec: dict[str, Any]) -> str:
+    lines = [
+        f"# RAIS v{rec['rais_version']} Index Reconstitution — `{rec['prev_basket_id']}` → `{rec['new_basket_id']}`",
+        "",
+        f"- **Hardware:** `{rec['hardware']}`",
+        f"- **Divisor:** `{rec['prev_divisor']:.8f}` → **`{rec['new_divisor']:.8f}`**",
+        f"- **Raw Basket Mean:** `{rec['raw_mean_before']:.2f}` → `{rec['raw_mean_after']:.2f}`",
+        f"- **Continuous RAIS Index:** `{rec['index_before']:.2f}` → **`{rec['index_after']:.2f}`** (gap `{rec['continuity_gap']:.8f}`)",
+        f"- **Retired:** {', '.join(f'`{m}`' for m in rec['retired_models']) or 'none'}",
+        f"- **Added:** {', '.join(f'`{m}`' for m in rec['added_models']) or 'none'}",
+    ]
+    if rec["reweighted_models"]:
+        lines.extend(["", "| Reweighted Model | Old Wt | New Wt |", "| --- | ---: | ---: |"])
+        for model_name, pair in rec["reweighted_models"].items():
+            lines.append(f"| `{model_name}` | {pair['old'] * 100:.2f}% | {pair['new'] * 100:.2f}% |")
+    return "\n".join(lines)
+
+
 def render_html_data(report: dict[str, Any]) -> str:
     payload = {
         "rais_version": report["rais_version"],
+        "basket_id": report["basket_id"],
+        "index_divisor": report["index_divisor"],
         "hardware": report["hardware"],
         "fleet": {
             "status": report["fleet_status"],
             "coverage_pct": report["fleet_coverage_pct"],
             "rais_covered": report["fleet_rais_covered"],
             "rais_strict": report["fleet_rais_strict"],
+            "rais_index": report["fleet_rais_index"],
             "rais_raw_covered": report["fleet_rais_raw_covered"],
+            "rais_raw_index": report["fleet_rais_raw_index"],
         },
         "models": [
             {
@@ -1727,6 +1885,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_score = sub.add_parser("score", help="Score a RAIS JSONL file against a hardware profile.")
     p_score.add_argument("results", help="Path to RAIS results JSONL.")
     p_score.add_argument("--hardware", default="16x-gb10-1x100g", choices=sorted(HARDWARE_PROFILES))
+    p_score.add_argument("--weights", help="Optional basket weights JSON file.")
+    p_score.add_argument("--divisor", type=float, default=None, help="Optional S&P/DJIA continuity divisor.")
+    p_score.add_argument("--basket-id", default=None, help="Optional basket identifier.")
     p_score.add_argument("--format", default="markdown", choices=("markdown", "json", "html-data"))
     p_score.add_argument("--output", help="Optional output file path.")
 
@@ -1734,10 +1895,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("engine_a", help="Baseline / Engine A RAIS JSONL.")
     p_cmp.add_argument("engine_b", help="Candidate / Engine B RAIS JSONL.")
     p_cmp.add_argument("--hardware", default="16x-gb10-1x100g", choices=sorted(HARDWARE_PROFILES))
+    p_cmp.add_argument("--weights", help="Optional basket weights JSON file.")
+    p_cmp.add_argument("--divisor", type=float, default=None, help="Optional S&P/DJIA continuity divisor.")
     p_cmp.add_argument("--label-a", default="EngineA")
     p_cmp.add_argument("--label-b", default="EngineB")
     p_cmp.add_argument("--format", default="markdown", choices=("markdown", "json", "html-data"))
     p_cmp.add_argument("--output", help="Optional output file path.")
+
+    p_rec = sub.add_parser("reconstitute", help="Compute S&P/DJIA continuity divisor for a basket reconstitution.")
+    p_rec.add_argument("overlap", help="Path to overlap RAIS JSONL containing both old and new basket models.")
+    p_rec.add_argument("--hardware", default="16x-gb10-1x100g", choices=sorted(HARDWARE_PROFILES))
+    p_rec.add_argument("--new-weights", required=True, help="JSON file mapping new basket canonical models to weights summing to 1.0.")
+    p_rec.add_argument("--prev-weights", help="Optional JSON file for previous basket weights (defaults to built-in catalog).")
+    p_rec.add_argument("--prev-divisor", type=float, default=None, help="Previous continuity divisor (defaults to 1.0 or prev-weights divisor).")
+    p_rec.add_argument("--basket-id", default=None, help="Identifier for the reconstituted basket.")
+    p_rec.add_argument("--allow-unverified", action="store_true", help="Allow UNVERIFIED overlap records (still refuses INVALID).")
+    p_rec.add_argument("--format", default="json", choices=("json", "markdown"))
+    p_rec.add_argument("--output", help="Optional output file path.")
 
     p_imp = sub.add_parser("import-hillclimb", help="Convert legacy hillclimb or api_serving_perf JSONL to RAIS JSONL.")
     p_imp.add_argument("hillclimb", help="Path to hillclimb/baseline/after JSONL.")
@@ -1800,7 +1974,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "score":
         records = load_jsonl(Path(args.results))
-        report = score_fleet(records, args.hardware)
+        weights_override = None
+        basket_id = args.basket_id or DEFAULT_BASKET_ID
+        divisor = DEFAULT_DIVISOR if args.divisor is None else args.divisor
+        if args.weights:
+            weights_override, file_basket, file_div = load_weights_file(Path(args.weights))
+            if args.basket_id is None:
+                basket_id = file_basket
+            if args.divisor is None and file_div is not None:
+                divisor = file_div
+        report = score_fleet(records, args.hardware, weights_override=weights_override, divisor=divisor, basket_id=basket_id)
         if args.format == "json":
             emit_output(json.dumps(report, indent=2), args.output)
         elif args.format == "html-data":
@@ -1810,13 +1993,46 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "compare":
-        rep_a = score_fleet(load_jsonl(Path(args.engine_a)), args.hardware)
-        rep_b = score_fleet(load_jsonl(Path(args.engine_b)), args.hardware)
+        weights_override = None
+        basket_id = DEFAULT_BASKET_ID
+        divisor = DEFAULT_DIVISOR if args.divisor is None else args.divisor
+        if args.weights:
+            weights_override, basket_id, file_div = load_weights_file(Path(args.weights))
+            if args.divisor is None and file_div is not None:
+                divisor = file_div
+        rep_a = score_fleet(load_jsonl(Path(args.engine_a)), args.hardware, weights_override=weights_override, divisor=divisor, basket_id=basket_id)
+        rep_b = score_fleet(load_jsonl(Path(args.engine_b)), args.hardware, weights_override=weights_override, divisor=divisor, basket_id=basket_id)
         cmp_rep = compare_reports(rep_a, rep_b, args.label_a, args.label_b)
         if args.format in ("json", "html-data"):
             emit_output(json.dumps(cmp_rep, indent=2), args.output)
         else:
             emit_output(render_compare_markdown(cmp_rep), args.output)
+        return 0
+
+    if args.command == "reconstitute":
+        overlap = load_jsonl(Path(args.overlap))
+        new_w, new_basket, _ = load_weights_file(Path(args.new_weights))
+        prev_w = None
+        prev_basket = DEFAULT_BASKET_ID
+        prev_div = DEFAULT_DIVISOR if args.prev_divisor is None else args.prev_divisor
+        if args.prev_weights:
+            prev_w, prev_basket, file_div = load_weights_file(Path(args.prev_weights))
+            if args.prev_divisor is None and file_div is not None:
+                prev_div = file_div
+        rec = reconstitute_basket(
+            overlap,
+            args.hardware,
+            new_weights=new_w,
+            prev_weights=prev_w,
+            prev_divisor=prev_div,
+            prev_basket_id=prev_basket,
+            new_basket_id=args.basket_id or new_basket,
+            allow_unverified=args.allow_unverified,
+        )
+        if args.format == "markdown":
+            emit_output(render_reconstitute_markdown(rec), args.output)
+        else:
+            emit_output(json.dumps(rec, indent=2), args.output)
         return 0
 
     if args.command == "import-hillclimb":

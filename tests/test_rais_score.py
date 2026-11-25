@@ -91,6 +91,7 @@ class TestRaisWeightsAndCatalog(unittest.TestCase):
             "16x-gb10-1x100g",
             "16x-gb10-2x100g",
             "4x-gb10-1x100g",
+            "4x-gb10-2x100g",
             "1x-gb10",
             "1x-m5-ultra",
             "8x-h200-nvlink",
@@ -480,6 +481,115 @@ class TestRaisBenchCli(unittest.TestCase):
         self.assertAlmostEqual(rais_bench.compute_effective_alpha(96, 672, 768), 8.0, places=4)
         self.assertAlmostEqual(rais_bench.compute_effective_alpha(0, 0, 768), 1.0, places=4)
         self.assertAlmostEqual(rais_bench.compute_effective_alpha(16, 48, 0), 4.0, places=4)
+
+
+class TestRaisDivisorReconstitution(unittest.TestCase):
+    def test_reconstitution_preserves_index_continuity_and_chains(self) -> None:
+        old_weights = {
+            "kimi-k3": 0.4,
+            "kimi-k3.1-pro": 0.6,
+        }
+        new_weights = {
+            "kimi-k3.1-pro": 0.7,
+            "deepseek-v4.1-flash": 0.3,
+        }
+        overlap = [
+            sample_valid_record("kimi-k3", scale=1.3),
+            sample_valid_record("kimi-k3.1-pro", scale=0.8),
+            sample_valid_record("deepseek-v4.1-flash", scale=1.0),
+        ]
+        rec1 = rais_score.reconstitute_basket(
+            overlap,
+            "16x-gb10-1x100g",
+            new_weights=new_weights,
+            prev_weights=old_weights,
+            prev_divisor=1.0,
+            prev_basket_id="b0",
+            new_basket_id="b1",
+        )
+        self.assertEqual(rec1["retired_models"], ["kimi-k3"])
+        self.assertEqual(rec1["added_models"], ["deepseek-v4.1-flash"])
+        self.assertIn("kimi-k3.1-pro", rec1["reweighted_models"])
+        self.assertLess(rec1["continuity_gap"], 1e-6)
+        self.assertAlmostEqual(rec1["index_before"], rec1["index_after"], places=4)
+
+        rep_old = rais_score.score_fleet(overlap, "16x-gb10-1x100g", weights_override=old_weights, divisor=1.0, basket_id="b0")
+        rep_new = rais_score.score_fleet(overlap, "16x-gb10-1x100g", weights_override=new_weights, divisor=rec1["new_divisor"], basket_id="b1")
+        self.assertAlmostEqual(rep_old["fleet_rais_index"], rep_new["fleet_rais_index"], places=2)
+
+        improved = [
+            sample_valid_record("kimi-k3.1-pro", scale=1.0),
+            sample_valid_record("deepseek-v4.1-flash", scale=1.2),
+        ]
+        rep_improved = rais_score.score_fleet(improved, "16x-gb10-1x100g", weights_override=new_weights, divisor=rec1["new_divisor"], basket_id="b1")
+        self.assertGreater(rep_improved["fleet_rais_index"], rep_new["fleet_rais_index"])
+
+        b2_weights = {
+            "kimi-k3.1-pro": 0.5,
+            "deepseek-v4.1-flash": 0.25,
+            "glm-5.3": 0.25,
+        }
+        overlap2 = improved + [sample_valid_record("glm-5.3", scale=0.7)]
+        rec2 = rais_score.reconstitute_basket(
+            overlap2,
+            "16x-gb10-1x100g",
+            new_weights=b2_weights,
+            prev_weights=new_weights,
+            prev_divisor=rec1["new_divisor"],
+            prev_basket_id="b1",
+            new_basket_id="b2",
+        )
+        self.assertAlmostEqual(rec2["index_before"], rec2["index_after"], places=4)
+        self.assertAlmostEqual(rec2["index_before"], rep_improved["fleet_rais_index"], places=1)
+
+    def test_reconstitution_rejects_bad_weights_or_invalid_overlap(self) -> None:
+        overlap = [sample_valid_record("kimi-k3"), sample_valid_record("kimi-k3.1-pro")]
+        with self.assertRaises(ValueError):
+            rais_score.reconstitute_basket(overlap, "16x-gb10-1x100g", new_weights={"kimi-k3.1-pro": 0.5}, prev_weights={"kimi-k3": 1.0})
+        bad = sample_valid_record("kimi-k3.1-pro")
+        bad["gates"]["prose_exact"] = False
+        with self.assertRaises(ValueError):
+            rais_score.reconstitute_basket([sample_valid_record("kimi-k3"), bad], "16x-gb10-1x100g", new_weights={"kimi-k3.1-pro": 1.0}, prev_weights={"kimi-k3": 1.0})
+
+    def test_reconstitute_cli_and_score_with_weights_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            overlap_p = t / "overlap.jsonl"
+            prev_w_p = t / "prev.json"
+            new_w_p = t / "new.json"
+            out_p = t / "reconstituted.json"
+            records = [
+                sample_valid_record("kimi-k3", scale=1.2),
+                sample_valid_record("kimi-k3.1-pro", scale=0.9),
+                sample_valid_record("glm-5.3-flash", scale=1.0),
+            ]
+            overlap_p.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+            prev_w_p.write_text(json.dumps({"basket_id": "b0", "divisor": 1.0, "weights": {"kimi-k3": 0.5, "kimi-k3.1-pro": 0.5}}), encoding="utf-8")
+            new_w_p.write_text(json.dumps({"basket_id": "b1", "weights": {"kimi-k3.1-pro": 0.6, "glm-5.3-flash": 0.4}}), encoding="utf-8")
+            rc = rais_score.main([
+                "reconstitute", str(overlap_p),
+                "--hardware", "16x-gb10-1x100g",
+                "--prev-weights", str(prev_w_p),
+                "--new-weights", str(new_w_p),
+                "--output", str(out_p),
+            ])
+            self.assertEqual(rc, 0)
+            res = json.loads(out_p.read_text(encoding="utf-8"))
+            self.assertEqual(res["new_basket_id"], "b1")
+            self.assertAlmostEqual(res["index_before"], res["index_after"], places=4)
+            score_out = t / "scored.json"
+            rc2 = rais_score.main([
+                "score", str(overlap_p),
+                "--hardware", "16x-gb10-1x100g",
+                "--weights", str(out_p),
+                "--divisor", str(res["new_divisor"]),
+                "--basket-id", res["new_basket_id"],
+                "--format", "json",
+                "--output", str(score_out),
+            ])
+            self.assertEqual(rc2, 0)
+            scored = json.loads(score_out.read_text(encoding="utf-8"))
+            self.assertAlmostEqual(scored["fleet_rais_index"], res["index_after"], places=2)
 
 
 if __name__ == "__main__":
