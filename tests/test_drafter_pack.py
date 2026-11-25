@@ -324,6 +324,57 @@ def test_kexaone2(scratch):
           f"kexaone2dspark: dspark_num_hidden_layers refuses out-of-range layer: {result.stderr}")
 
 
+def test_glm53flash(scratch):
+    checkpoint, target_a, target_b, out = (
+        scratch / "glm53flash", scratch / "glm53flash-target" / "model-00001-of-00120.safetensors",
+        scratch / "glm53flash-target" / "model-00120-of-00120.safetensors", scratch / "glm53flash-out")
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({
+        "architectures": ["DFlash2DraftModel"], "num_hidden_layers": 2, "hidden_size": 8,
+        "dflash_config": {"block_size": 8, "conv_group_size": 4, "conv_kernel_size": 2,
+                          "mask_token_id": 12, "selector_rank": 4, "selector_top_k": 4,
+                          "target_layer_ids": [5, 14, 24, 33, 42]}}))
+    sources = write_safetensors(checkpoint / "model.safetensors", {
+        "fc.weight": ("BF16", [8, 40], None), "hidden_norm.weight": ("BF16", [8], None),
+        "norm.weight": ("BF16", [8], None),
+        "layers.0.attention_conv.base_kernel": ("BF16", [2, 2, 8], None),
+        "layers.0.attention_conv.kernel_projection.weight": ("BF16", [8, 8], None),
+        "layers.0.self_attn.q_proj.weight": ("BF16", [8, 8], None),
+        "layers.1.mlp_conv.base_kernel": ("BF16", [2, 2, 8], None),
+        "layers.1.mlp.down_proj.weight": ("BF16", [8, 16], None),
+        "candidate_selector.hidden_projection.weight": ("BF16", [4, 8], None),
+        "candidate_selector.predecessor_codebook": ("BF16", [32, 4], None),
+        "candidate_selector.successor_codebook": ("BF16", [32, 4], None)})
+    sources.update(write_safetensors(target_a, {
+        "lm_head.weight": ("BF16", [32, 8], None),
+        "model.language_model.embed_tokens.weight": ("BF16", [32, 8], None),
+        "model.language_model.layers.0.input_layernorm.weight": ("BF16", [8], None)}))
+    sources.update(write_safetensors(target_b, {
+        "model.language_model.norm.weight": ("BF16", [8], None),
+        "model.language_model.layers.44.post_attention_layernorm.weight": ("BF16", [8], None),
+        "model.visual.blocks.0.norm1.weight": ("BF16", [8], None)}))
+    result = run("--drafter", "glm53flashdflash2", "--checkpoint", checkpoint, "--target", target_a, "--target", target_b,
+                 "--revision", "dflash2-test", "--out", out)
+    check(result.returncode == 0, f"glm53flashdflash2 packs: {result.stderr}")
+    _, _, manifest, payloads = read_pack(out / "glm53flashdflash2.bf16.tp1.rank0.sp")
+    check(manifest["format"]["drafter"] == "glm53flashdflash2" and
+          set(payloads) == {name for name in sources if not name.startswith("model.") and name != "lm_head.weight"} |
+          {"target.embed", "target.head", "target.norm"}, f"glm53flashdflash2: packed names {sorted(payloads)}")
+    for name, blob in payloads.items():
+        check(blob == sources[manifest["tensors"][name]["source"]], f"glm53flashdflash2: {name} byte for byte")
+    receipt = json.loads((out / "glm53flashdflash2.bf16.tp1.rank0.sp.receipt.json").read_text())
+    check(len(receipt["skipped"]) == 3 and len(receipt["sources"]) == 3,
+          "glm53flashdflash2: skips target layers and vision weights and records all 3 sources")
+    deep = scratch / "glm53flash-deep"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text((checkpoint / "config.json").read_text())
+    write_safetensors(deep / "model.safetensors", {"layers.2.input_layernorm.weight": ("BF16", [8], None)})
+    result = run("--drafter", "glm53flashdflash2", "--checkpoint", deep, "--target", target_a, "--target", target_b,
+                 "--revision", "dflash2-test", "--out", scratch / "o11")
+    check(result.returncode == 1 and "layer 2 is past num_hidden_layers = 2" in result.stderr,
+          f"glm53flashdflash2: layer_count refuses out-of-range layer: {result.stderr}")
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="drafter-pack-") as directory:
         scratch = Path(directory)
@@ -333,6 +384,7 @@ def main():
         test_glm53(scratch)
         test_qwen38max(scratch)
         test_kexaone2(scratch)
+        test_glm53flash(scratch)
     for failure in FAILURES:
         print(f"FAIL {failure}")
     if FAILURES:

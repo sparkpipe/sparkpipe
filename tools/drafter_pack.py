@@ -6,7 +6,8 @@
 
 NAME is one of DRAFTERS: k31dspark (Kimi K3.1 Pro's DSpark), dsv41dspark (the DSpark built into DeepSeek V4.1
 1017's checkpoint), qwen27bdspine (Qwen3.8-27B's DSpine b16), glm53dspark (GLM-5.3's RedHat AI DSpark),
-qwen38maxdspark (Qwen3.8-Max's RadixArk DSpark) and kexaone2dspark (K-EXAONE 2.0's official DSpark). For dsv41dspark the target tensors live in the
+qwen38maxdspark (Qwen3.8-Max's RadixArk DSpark), kexaone2dspark (K-EXAONE 2.0's official DSpark) and
+glm53flashdflash2 (GLM-5.3-Flash's DFlash2). For dsv41dspark the target tensors live in the
 checkpoint's own files, so it takes no --target.
 
 Every tensor of the drafter's files and of the target files is either packed, byte for byte, or left out by a named
@@ -137,6 +138,23 @@ DRAFTERS = {
                    "target.head": "lm_head.weight",
                    "target.norm": "model.norm.weight"},
         "skip": {r"^model\.layers\.\d+\.": "target decoder layers sharing the embedding and norm shards"},
+        "target_from_checkpoint": False,
+    },
+    "glm53flashdflash2": {
+        "arm": "glm53flashdflash2.bf16.tp1",
+        "config": "config.json",
+        "architectures": ["DFlash2DraftModel"],
+        "layer_count": "num_hidden_layers",
+        "layer_pattern": r"^layers\.(\d+)\.",
+        "include": [r"^fc\.weight$", r"^hidden_norm\.weight$", r"^norm\.weight$", r"^layers\.\d+\.",
+                    r"^candidate_selector\.hidden_projection\.weight$",
+                    r"^candidate_selector\.(predecessor|successor)_codebook$"],
+        "dtypes": ["BF16"],
+        "target": {"target.embed": "model.language_model.embed_tokens.weight",
+                   "target.head": "lm_head.weight",
+                   "target.norm": "model.language_model.norm.weight"},
+        "skip": {r"^model\.language_model\.layers\.\d+\.": "target decoder layers sharing the embedding and norm shards",
+                 r"^model\.visual\.": "target vision weights sharing the norm shard"},
         "target_from_checkpoint": False,
     },
 }
