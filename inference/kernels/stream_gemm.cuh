@@ -104,18 +104,31 @@ struct LmStreamWeight<LmFp8>
 	{
 		return(row * ROW_BYTES + LmStreamSwizzle8(row,chunk) * 16u);
 	}
+	static __device__ __forceinline__ void DecodePair(uint32_t r0, uint32_t r1, uint32_t lane, uint32_t b[4])
+	{
+		const uint32_t quad = lane & 3u,src_lo = (lane & ~3u) | (quad >> 1u),src_hi = src_lo | 2u;
+		const uint32_t sel = (quad & 1u) != 0u ? 0x3424u : 0x1404u;
+		b[0] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,r0,src_lo),sel);
+		b[1] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,r0,src_hi),sel);
+		b[2] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,r1,src_lo),sel);
+		b[3] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,r1,src_hi),sel);
+	}
 	template<uint32_t ROW_BYTES>
 	static __device__ __forceinline__ void Fragment(uint32_t stage_s, uint32_t base_row, uint32_t step, uint32_t lane, uint32_t b[4])
 	{
 		const uint32_t row = base_row + (lane & 7u),col = step * 2u + ((lane >> 3u) & 1u);
-		const uint32_t quad = lane & 3u,src_lo = (lane & ~3u) | (quad >> 1u),src_hi = src_lo | 2u;
-		const uint32_t sel = (quad & 1u) != 0u ? 0x3424u : 0x1404u;
 		uint32_t raw[2];
 		LmStreamLdMatrix2(raw,stage_s + Offset<ROW_BYTES>(row,col));
-		b[0] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,raw[0],src_lo),sel);
-		b[1] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,raw[0],src_hi),sel);
-		b[2] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,raw[1],src_lo),sel);
-		b[3] = LmStreamE4m3PairBf16(__shfl_sync(0xffffffffu,raw[1],src_hi),sel);
+		DecodePair(raw[0],raw[1],lane,b);
+	}
+	template<uint32_t ROW_BYTES>
+	static __device__ __forceinline__ void FragmentPair(uint32_t stage_s, uint32_t base_row, uint32_t step, uint32_t lane, uint32_t b0[4], uint32_t b1[4])
+	{
+		const uint32_t row = base_row + (lane & 7u) + (((lane >> 4u) & 1u) * 8u),col = step * 2u + ((lane >> 3u) & 1u);
+		uint32_t raw[4];
+		LmStreamLdMatrix4(raw,stage_s + Offset<ROW_BYTES>(row,col));
+		DecodePair(raw[0],raw[1],lane,b0);
+		DecodePair(raw[2],raw[3],lane,b1);
 	}
 };
 
@@ -520,7 +533,9 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 			for (uint32_t kt = 0u; kt < k_tiles; kt++)
 			{
 				uint32_t stage_a_s,stage_b_s;
-				float scale_tile[Weight::kScaled && !INLINE_BLOCK32 ? SCALE_BLOCKS : 1u][Weight::kScaled && !INLINE_BLOCK32 ? NF : 1u][2];
+				constexpr bool TIGHT_REGS = MF * NF >= 16u && NF >= 4u;
+				constexpr bool DEFER_SCALE = Weight::kScaled && !INLINE_BLOCK32 && SCALE_BLOCKS == 1u && !TIGHT_REGS;
+				float scale_tile[Weight::kScaled && !INLINE_BLOCK32 && !DEFER_SCALE ? SCALE_BLOCKS : 1u][Weight::kScaled && !INLINE_BLOCK32 && !DEFER_SCALE ? NF : 1u][2];
 				uint32_t scale_pack[PACK4_UE8M0 ? SCALE_BLOCKS / 4u : 1u][PACK4_UE8M0 ? NF : 1u][2];
 				if constexpr ( STAGES > 2u )
 				{
@@ -552,7 +567,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 							scale_pack[p][j][1] = column + 1u < args.output_dimension ? LmStreamScalePack4(args.scale,work.group,column + 1u,k_block) : 0u;
 						}
 				}
-				else if constexpr ( Weight::kScaled && !INLINE_BLOCK32 )
+				else if constexpr ( Weight::kScaled && !INLINE_BLOCK32 && !DEFER_SCALE )
 				{
 #pragma unroll
 					for (uint32_t block = 0u; block < SCALE_BLOCKS; block++)
@@ -576,31 +591,74 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 						auto blk_step = [&](uint32_t step)
 						{
 							uint32_t b[NF][4];
-#pragma unroll
-							for (j = 0u; j < NF; j++)
-								Weight::template Fragment<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j]);
-#pragma unroll
-							for (i = 0u; i < MF; i++)
+							if constexpr ( Weight::kScaled && Weight::kElementBytes == 1u && (NF % 2u) == 0u && !TIGHT_REGS )
 							{
-								const uint32_t row = ldm_a_row + i * 16u;
-								uint32_t a_frag[4];
-								LmStreamLdMatrix4(a_frag,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + ldm_a_col) * 16u);
+#pragma unroll
+								for (j = 0u; j < NF; j += 2u)
+									Weight::template FragmentPair<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j],b[j + 1u]);
+							}
+							else
+							{
 #pragma unroll
 								for (j = 0u; j < NF; j++)
+									Weight::template Fragment<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j]);
+							}
+							if constexpr ( !TIGHT_REGS )
+							{
+								uint32_t a_cur[4],a_nxt[4];
+								LmStreamLdMatrix4(a_cur,stage_a_s + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row,step * 4u + ldm_a_col) * 16u);
+#pragma unroll
+								for (i = 0u; i < MF; i++)
 								{
-									uint32_t b_first[2] = { b[j][0], b[j][1] };
-									LmMmaBf16(partial[i][j],a_frag,b_first);
+									const uint32_t row = ldm_a_row + i * 16u;
+									LmStreamLdMatrix4(a_nxt,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + 2u + ldm_a_col) * 16u);
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+									{
+										uint32_t b_first[2] = { b[j][0], b[j][1] };
+										LmMmaBf16(partial[i][j],a_cur,b_first);
+									}
+									if constexpr ( MF > 1u )
+									{
+										if ( i + 1u < MF )
+										{
+											const uint32_t next_row = ldm_a_row + (i + 1u) * 16u;
+											LmStreamLdMatrix4(a_cur,stage_a_s + next_row * A_ROW_BYTES + LmStreamSwizzle8(next_row,step * 4u + ldm_a_col) * 16u);
+										}
+									}
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+									{
+										uint32_t b_second[2] = { b[j][2], b[j][3] };
+										LmMmaBf16(partial[i][j],a_nxt,b_second);
+									}
 								}
-								LmStreamLdMatrix4(a_frag,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + 2u + ldm_a_col) * 16u);
+							}
+							else
+							{
 #pragma unroll
-								for (j = 0u; j < NF; j++)
+								for (i = 0u; i < MF; i++)
 								{
-									uint32_t b_second[2] = { b[j][2], b[j][3] };
-									LmMmaBf16(partial[i][j],a_frag,b_second);
+									const uint32_t row = ldm_a_row + i * 16u;
+									uint32_t a_frag[4];
+									LmStreamLdMatrix4(a_frag,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + ldm_a_col) * 16u);
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+									{
+										uint32_t b_first[2] = { b[j][0], b[j][1] };
+										LmMmaBf16(partial[i][j],a_frag,b_first);
+									}
+									LmStreamLdMatrix4(a_frag,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + 2u + ldm_a_col) * 16u);
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+									{
+										uint32_t b_second[2] = { b[j][2], b[j][3] };
+										LmMmaBf16(partial[i][j],a_frag,b_second);
+									}
 								}
 							}
 						};
-						if constexpr ( MF * NF >= 16u && NF >= 4u )
+						if constexpr ( TIGHT_REGS )
 						{
 #pragma unroll 2
 							for (uint32_t s = 0u; s < BLK_STEPS; s++)
@@ -612,19 +670,43 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 							for (uint32_t s = 0u; s < BLK_STEPS; s++)
 								blk_step(blk * BLK_STEPS + s);
 						}
-#pragma unroll
-						for (i = 0u; i < MF; i++)
+						if constexpr ( DEFER_SCALE )
+						{
+							float sc[NF][2];
 #pragma unroll
 							for (j = 0u; j < NF; j++)
+							{
+								const uint32_t column = work.neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
+								sc[j][0] = column < args.output_dimension ? LmStreamScaleLoad<Format>(args.scale,work.group,column,kt) : 0.0f;
+								sc[j][1] = column + 1u < args.output_dimension ? LmStreamScaleLoad<Format>(args.scale,work.group,column + 1u,kt) : 0.0f;
+							}
 #pragma unroll
-								for (e = 0u; e < 4u; e++)
-								{
-									if constexpr ( Weight::kScaled )
-										total[i][j][e] = fmaf(partial[i][j][e],scale_tile[blk][j][e & 1u],total[i][j][e]);
-									else
-										total[i][j][e] += partial[i][j][e];
-									partial[i][j][e] = 0.0f;
-								}
+							for (i = 0u; i < MF; i++)
+#pragma unroll
+								for (j = 0u; j < NF; j++)
+#pragma unroll
+									for (e = 0u; e < 4u; e++)
+									{
+										total[i][j][e] = fmaf(partial[i][j][e],sc[j][e & 1u],total[i][j][e]);
+										partial[i][j][e] = 0.0f;
+									}
+						}
+						else
+						{
+#pragma unroll
+							for (i = 0u; i < MF; i++)
+#pragma unroll
+								for (j = 0u; j < NF; j++)
+#pragma unroll
+									for (e = 0u; e < 4u; e++)
+									{
+										if constexpr ( Weight::kScaled )
+											total[i][j][e] = fmaf(partial[i][j][e],scale_tile[blk][j][e & 1u],total[i][j][e]);
+										else
+											total[i][j][e] += partial[i][j][e];
+										partial[i][j][e] = 0.0f;
+									}
+						}
 					}
 				}
 				else if constexpr ( PACK4_UE8M0 )
@@ -947,6 +1029,16 @@ static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32
 #define LM_STREAM_WIDE_TILE_64X128 3u
 #define LM_STREAM_WIDE_TILE_32X256 4u
 
+static uint32_t LmStreamGemmWavePrefer64(uint32_t rows, uint32_t output_dimension, uint32_t multiprocessors)
+{
+	const uint64_t narrow = ((uint64_t)output_dimension + 127u) / 128u;
+	const uint64_t b128 = ((uint64_t)rows + 127u) / 128u * narrow;
+	const uint64_t b64 = ((uint64_t)rows + 63u) / 64u * narrow;
+	const uint64_t w128 = (b128 + multiprocessors - 1u) / multiprocessors;
+	const uint64_t w64 = (b64 + multiprocessors - 1u) / multiprocessors;
+	return(w64 * 58u < w128 * 100u ? 1u : 0u);
+}
+
 static uint32_t LmStreamGemmWideTile(const LmStreamGemmArguments *args, uint32_t multiprocessors)
 {
 	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
@@ -958,7 +1050,9 @@ static uint32_t LmStreamGemmWideTile(const LmStreamGemmArguments *args, uint32_t
 		return(mean_rows > 64u && ((uint64_t)args->rows + 127u) / 128u * narrow >= (uint64_t)multiprocessors ? LM_STREAM_WIDE_TILE_128X128 : LM_STREAM_WIDE_TILE_NONE);
 	if ( args->output_dimension <= 768u && mean_rows > 32u && ((uint64_t)args->rows + 63u) / 64u * narrow >= (uint64_t)multiprocessors )
 		return(LM_STREAM_WIDE_TILE_64X128);
-	if ( mean_rows > 64u && ((uint64_t)args->rows + 127u) / 128u * narrow >= (uint64_t)multiprocessors )
+	if ( args->output_dimension > 768u && LmStreamGemmWavePrefer64(args->rows,args->output_dimension,multiprocessors) != 0u )
+		return(LM_STREAM_WIDE_TILE_64X128);
+	if ( args->output_dimension > 768u && mean_rows > 64u )
 		return(LM_STREAM_WIDE_TILE_128X128);
 	if ( mean_rows > 32u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 63u) / 64u * wide >= 2u * (uint64_t)multiprocessors )
 		return(LM_STREAM_WIDE_TILE_64X256);
@@ -990,6 +1084,89 @@ static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_
 }
 
 template<class Format>
+static int32_t LmStreamGemmDenseScaledLaunch(const LmStreamGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
+{
+	const uint64_t n128 = ((uint64_t)args->output_dimension + 127u) / 128u;
+	const uint64_t n64 = ((uint64_t)args->output_dimension + 63u) / 64u;
+	const uint64_t n32 = ((uint64_t)args->output_dimension + 31u) / 32u;
+	const uint64_t lo = (2u * (uint64_t)multiprocessors) / 3u;
+	if ( args->rows > 64u && args->rows <= 128u )
+	{
+		if ( n128 >= lo && n128 <= multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,0u,multiprocessors,stream));
+		if ( 2u * n128 >= lo && 2u * n128 <= multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,0u,multiprocessors,stream));
+		return(LmStreamGemmLaunchTile<Format,64u,64u,128u,64u>(args,0u,multiprocessors,stream));
+	}
+	if ( args->rows > 32u && args->rows <= 64u )
+	{
+		if ( n128 >= lo && n128 <= multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,0u,multiprocessors,stream));
+		if ( n64 >= lo && n64 <= multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,64u,64u,128u,64u>(args,0u,multiprocessors,stream));
+		if ( args->input_dimension % 256u == 0u )
+			return(LmStreamGemmLaunchTile<Format,32u,64u,256u,32u>(args,0u,multiprocessors,stream));
+		return(LmStreamGemmLaunchTile<Format,64u,64u,128u,64u>(args,0u,multiprocessors,stream));
+	}
+	if ( args->rows > 16u && args->rows <= 32u )
+	{
+		if ( args->input_dimension <= 1024u && n32 >= multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,32u,32u,128u,16u>(args,0u,multiprocessors,stream));
+		if ( args->input_dimension % 256u == 0u )
+			return(LmStreamGemmLaunchTile<Format,32u,64u,256u,32u>(args,0u,multiprocessors,stream));
+		return(LmStreamGemmLaunchTile<Format,32u,64u,128u,32u>(args,0u,multiprocessors,stream));
+	}
+	return(LM_LAUNCH_ERR_TILE);
+}
+
+template<class Format>
+static int32_t LmStreamGemmDenseBf16Launch(const LmStreamGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
+{
+	const uint64_t n128 = ((uint64_t)args->output_dimension + 127u) / 128u;
+	const uint64_t lo = (2u * (uint64_t)multiprocessors) / 3u;
+	if ( args->rows >= LM_STREAM_WIDE_ROWS )
+	{
+		const uint64_t wide = ((uint64_t)args->output_dimension + 255u) / 256u;
+		if ( args->output_dimension <= 768u && ((uint64_t)args->rows + 63u) / 64u * n128 >= 2u * (uint64_t)multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,64u,128u,64u,32u>(args,0u,multiprocessors,stream));
+		if ( args->rows >= 1024u && args->output_dimension >= 1024u && args->input_dimension >= 2048u )
+		{
+			const uint64_t tiles_128x256 = ((uint64_t)args->rows + 127u) / 128u * wide;
+			const uint64_t tiles_256x128 = ((uint64_t)args->rows + 255u) / 256u * n128;
+			if ( args->output_dimension % 256u == 0u && args->output_dimension < args->rows &&
+				tiles_128x256 >= 2u * (uint64_t)multiprocessors && tiles_128x256 % multiprocessors == 0u )
+				return(LmStreamGemmLaunchTile<Format,128u,256u,64u,64u>(args,0u,multiprocessors,stream));
+			if ( tiles_256x128 >= 2u * (uint64_t)multiprocessors )
+				return(LmStreamGemmLaunchTile<Format,256u,128u,64u,64u>(args,0u,multiprocessors,stream));
+		}
+		if ( args->output_dimension > 768u )
+		{
+			if ( LmStreamGemmWavePrefer64(args->rows,args->output_dimension,multiprocessors) != 0u )
+				return(LmStreamGemmLaunchTile<Format,64u,128u,64u,32u>(args,0u,multiprocessors,stream));
+			return(LmStreamGemmLaunchTile<Format,128u,128u,64u,32u>(args,0u,multiprocessors,stream));
+		}
+		return(LM_LAUNCH_ERR_TILE);
+	}
+	if ( args->output_dimension < 512u )
+		return(LM_LAUNCH_ERR_TILE);
+	if ( args->rows > 64u && args->rows <= 128u )
+	{
+		if ( 2u * n128 >= lo && 2u * n128 <= multiprocessors )
+			return(LmStreamGemmLaunchTile<Format,64u,128u,64u,32u>(args,0u,multiprocessors,stream));
+		return(LmStreamGemmLaunchTile<Format,64u,64u,64u,32u>(args,0u,multiprocessors,stream));
+	}
+	if ( args->rows > 32u && args->rows <= 64u )
+	{
+		if ( n128 >= lo )
+			return(LmStreamGemmLaunchTile<Format,64u,128u,64u,32u>(args,0u,multiprocessors,stream));
+		return(LmStreamGemmLaunchTile<Format,64u,64u,64u,32u>(args,0u,multiprocessors,stream));
+	}
+	if ( args->rows > 16u && args->rows <= 32u )
+		return(LmStreamGemmLaunchTile<Format,32u,64u,64u,32u>(args,0u,multiprocessors,stream));
+	return(LM_LAUNCH_ERR_TILE);
+}
+
+template<class Format>
 static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	int32_t status = LmStreamGemmValidate<Format>(args,multiprocessors);
@@ -1003,6 +1180,8 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 			const uint32_t tile = LmStreamGemmWideTile(args,multiprocessors);
 			if ( tile != LM_STREAM_WIDE_TILE_NONE )
 				return(LmStreamGemmLaunchWide<Format>(args,tile,multiprocessors,stream));
+			if ( args->group_row_offset == 0 && args->rows > 16u && args->rows <= 128u && args->output_dimension >= 512u )
+				return(LmStreamGemmDenseScaledLaunch<Format>(args,multiprocessors,stream));
 		}
 		const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
 		const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
@@ -1023,27 +1202,12 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 	{
 		if ( args->input_dimension % 64u != 0u )
 			return(LmStreamGemmLaunchShape<Format,128u,64u,true>(args,multiprocessors,stream));
-		if ( args->group_row_offset == 0 && args->rows >= LM_STREAM_WIDE_ROWS )
+		if ( args->group_row_offset == 0 )
 		{
-			const uint64_t narrow = ((uint64_t)args->output_dimension + 127u) / 128u;
-			const uint64_t wide = ((uint64_t)args->output_dimension + 255u) / 256u;
-			if ( args->output_dimension <= 768u && ((uint64_t)args->rows + 63u) / 64u * narrow >= 2u * (uint64_t)multiprocessors )
-				return(LmStreamGemmLaunchTile<Format,64u,128u,64u,32u>(args,0u,multiprocessors,stream));
-			if ( args->rows >= 1024u && args->output_dimension >= 1024u && args->input_dimension >= 2048u )
-			{
-				const uint64_t tiles_128x256 = ((uint64_t)args->rows + 127u) / 128u * wide;
-				const uint64_t tiles_256x128 = ((uint64_t)args->rows + 255u) / 256u * narrow;
-				if ( args->output_dimension % 256u == 0u && args->output_dimension < args->rows &&
-					tiles_128x256 >= 2u * (uint64_t)multiprocessors && tiles_128x256 % multiprocessors == 0u )
-					return(LmStreamGemmLaunchTile<Format,128u,256u,64u,64u>(args,0u,multiprocessors,stream));
-				if ( tiles_256x128 >= 2u * (uint64_t)multiprocessors )
-					return(LmStreamGemmLaunchTile<Format,256u,128u,64u,64u>(args,0u,multiprocessors,stream));
-			}
+			status = LmStreamGemmDenseBf16Launch<Format>(args,multiprocessors,stream);
+			if ( status != LM_LAUNCH_ERR_TILE )
+				return(status);
 		}
-		if ( args->group_row_offset == 0 && args->rows > 32u && args->rows <= 64u &&
-			((uint64_t)args->output_dimension + 127u) / 128u < multiprocessors &&
-			((uint64_t)args->output_dimension + 63u) / 64u >= multiprocessors )
-			return(LmStreamGemmLaunchTile<Format,64u,64u,64u,32u>(args,0u,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,64u>(args,multiprocessors,stream));
 	}
 }
