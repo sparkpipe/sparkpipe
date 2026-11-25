@@ -1,0 +1,2 @@
++736
+Wave-4 shared attention and linear-attention kernel optimizations for GB10 (sm_121a): warp-group V_GROUPS K+V split and 2-stage single-row decode pipeline in gqa_shard.cuh (eliminating 256/256, 512/512 and 192/128 register spills), coalesced striped loads and packed BF16 query / HEADS=8 sparse dispatch in attn_shard.cuh, 3-term Ozaki-2 TF32 Tensor Core chunked recurrence and 4-warp decode state writeback in linear_attn.cuh, and bounded union window scan / division-free cp.async copy in attn_prefill.cuh.
