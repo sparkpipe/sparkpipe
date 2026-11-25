@@ -2835,6 +2835,46 @@ static void TestScenarioDeclaredCachePoint(const SparkModelResidentDeployment *d
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioRecurrentAutoBranchCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t turn1[11],turn2[11],turn3[11],ends[8],stateful[8],count,index,kept_at_8 = 0u;
+	for (index=0u; index<11u; index++)
+		turn1[index] = turn2[index] = turn3[index] = 800u + index;
+	turn2[9] = 900u;
+	turn3[9] = 901u;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,850u,1u,turn1,11u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	count = TestPrefillPublishes(1u,11u,ends,stateful,8u);
+	for (index=0u; index<count; index++)
+		kept_at_8 |= ends[index] == 8u && stateful[index] != 0u ? 1u : 0u;
+	CHECK(kept_at_8 == 0u,"auto branch checkpoint: cold single-turn prompt adds no extra checkpoint before prompt end");
+	TestSubmitPrompt(engine,2u,851u,1u,turn2,11u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 0u,
+		"auto branch checkpoint: first branch before stride recomputes from 0");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	count = TestPrefillPublishes(2u,11u,ends,stateful,8u);
+	for (index=0u; index<count; index++)
+		kept_at_8 |= ends[index] == 8u && stateful[index] != 0u ? 1u : 0u;
+	CHECK(kept_at_8 != 0u,"auto branch checkpoint: first branch automatically checkpoints its block-aligned shared prefix");
+	TestSubmitPrompt(engine,3u,852u,1u,turn3,11u);
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 8u,
+		"auto branch checkpoint: subsequent branch immediately resumes at the auto-checkpointed branch boundary");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u &&
+		state.completed_events[3] == 1u && state.cached_tokens[3] == 8u,
+		"auto branch checkpoint: all three turns complete and turn 3 reports 8 cached tokens");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t expected_spans[4] = {8u,4u,5u,1u},expected_ends[4] = {8u,12u,17u,18u},expected_stateful[4] = {0u,1u,1u,0u};
@@ -3165,6 +3205,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
 	TestScenarioDeclaredCachePoint(&deployment,runtime_root);
+	TestScenarioRecurrentAutoBranchCheckpoint(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedCheckpoint(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedStaleResume(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);

@@ -458,6 +458,7 @@ typedef struct TestApiStack
 	pid_t api_child;
 	uint32_t api_port;
 	const char *api_stderr_path;
+	uint32_t prefix_checkpoint_interval;
 } TestApiStack;
 
 static void TestApiStartResidents(TestApiStack *stack)
@@ -509,7 +510,8 @@ static void TestApiLaunchApi(TestApiStack *stack)
 	if ( stack->api_child == 0 )
 	{
 		char port[16];
-		char *argv[10];
+		char interval[16];
+		char *argv[12];
 		char runtime_root[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
 		int argument = 0;
 		if ( stack->api_stderr_path != 0 )
@@ -523,6 +525,12 @@ static void TestApiLaunchApi(TestApiStack *stack)
 		argv[argument++] = runtime_root;
 		argv[argument++] = "--port";
 		argv[argument++] = port;
+		if ( stack->prefix_checkpoint_interval != 0u )
+		{
+			(void)snprintf(interval,sizeof(interval),"%u",stack->prefix_checkpoint_interval);
+			argv[argument++] = "--prefix-checkpoint-interval";
+			argv[argument++] = interval;
+		}
 		argv[argument] = 0;
 		execv(TEST_MODEL_API_PATH,argv);
 		_exit(127);
@@ -1719,6 +1727,55 @@ static void TestApiRecurrentChatWarmPrefix(void)
 		cold_prompt_tokens,exact_cached,ext_cached);
 }
 
+static void TestApiRecurrentPeriodicCheckpoints(void)
+{
+	TestApiStack stack;
+	char response[65536];
+	const char *turn1 = "{\"prompt_token_ids\":[11,12,13,14,15,16,17,18,19,20,21],\"max_tokens\":2,\"temperature\":0,\"speculation\":false}";
+	const char *turn2 = "{\"prompt_token_ids\":[11,12,13,14,15,16,17,18,19,90,91],\"max_tokens\":2,\"temperature\":0,\"speculation\":false}";
+	char *log_data = 0;
+	const char *measurements;
+	const char *field;
+	struct timespec delay = {0,2000000};
+	unsigned attempt;
+	uint32_t turn2_cached = 0u;
+	TestApiServingAdapter = TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH;
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
+	stack.prefix_checkpoint_interval = 4u;
+	TestApiStartStack(&stack,0);
+	stack.api_stderr_path = "build/test_model_api_text_periodic_ckpt_stderr.log";
+	unlink(stack.api_stderr_path);
+	TestApiStartApi(&stack);
+
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",turn1,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiHttpCall(stack.api_port,"POST","/v1/completions",turn2,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	for (attempt = 0u; attempt < 500u; attempt++)
+	{
+		log_data = TestApiReadFile(stack.api_stderr_path);
+		if (log_data != 0 && TestApiMeasurementCount(log_data) >= 2u)
+			break;
+		free(log_data);
+		log_data = 0;
+		nanosleep(&delay,0);
+	}
+	assert(log_data != 0 && TestApiMeasurementCount(log_data) == 2u);
+	measurements = TestApiLastMeasurements(log_data);
+	field = strstr(measurements,"\"cached_prompt_tokens\":");
+	assert(field != 0);
+	turn2_cached = (uint32_t)strtoul(field + 23,0,10);
+	assert(turn2_cached == 8u);
+	free(log_data);
+
+	TestApiStopStack(&stack);
+	TestApiServingAdapter = TEST_MODEL_SERVING_ADAPTER_PATH;
+	printf("test_model_api_text: recurrent periodic prefix checkpoint OK (interval=4 turn2_cached=%u)\n",
+		turn2_cached);
+}
+
 int main(void)
 {
 	TestApiStack stack;
@@ -1784,6 +1841,7 @@ int main(void)
 		"chat_template stop marker that is not a special token");
 	TestApiChatTemplate = TestApiChatTemplateJson;
 	TestApiRecurrentChatWarmPrefix();
+	TestApiRecurrentPeriodicCheckpoints();
 	printf("test_model_api_text: ALL OK\n");
 	return 0;
 }

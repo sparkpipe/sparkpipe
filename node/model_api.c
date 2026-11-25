@@ -59,6 +59,8 @@
 #define API_PROBE_ABANDONED 4u
 #define API_CACHE_JSON_BYTES 320u
 #define API_USAGE_JSON_BYTES (160u + API_CACHE_JSON_BYTES)
+#define API_WORKSPACE_POOL_SIZE 4u
+#define API_WORKSPACE_POOL_MAX_SYMBOLS (1024u * 1024u)
 
 typedef struct ApiOptions
 {
@@ -72,6 +74,7 @@ typedef struct ApiOptions
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint32_t drafts_disabled;
+	uint32_t explicit_cache_points;
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
 } ApiOptions;
@@ -155,12 +158,16 @@ typedef struct ApiState
 	volatile uint32_t bringup_attempts;
 	const char *volatile bringup_phase;
 	uint64_t bringup_started_ms;
+	uint32_t prefix_checkpoint_interval;
 } ApiState;
 
 static ApiState S;
 
 static SparkTokenizerSidecar Sidecar;
 static int HaveSidecar;
+static pthread_mutex_t ApiWorkspacePoolMutex = PTHREAD_MUTEX_INITIALIZER;
+static SparkTokenizerWorkspace ApiWorkspacePool[API_WORKSPACE_POOL_SIZE];
+static uint32_t ApiWorkspacePoolCount;
 static uint32_t ApiOutputVocabulary;
 static SparkQuantArm QuantArm;
 static int HaveQuantArm;
@@ -909,12 +916,22 @@ static void api_bringup_json(char *buffer, size_t bytes)
 		(unsigned long long)(api_now_ms() - S.bringup_started_ms), HaveSidecar ? "true" : "false");
 }
 
+static void api_quickack(int fd)
+{
+#ifdef TCP_QUICKACK
+	int on = 1;
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &on, sizeof(on));
+#else
+	(void)fd;
+#endif
+}
+
 static int read_http_request(int fd, char *method, size_t method_sz,
 	char *path, size_t path_sz, char **body, char **body_base,
 	uint32_t *body_len)
 {
-	char *buf = (char *)malloc(API_MAX_BODY + 8192u);
-	size_t buf_cap = API_MAX_BODY + 8192u;
+	size_t buf_cap = API_MAX_HEADER + 1u;
+	char *buf = (char *)malloc(buf_cap);
 	size_t total = 0, header_end = 0;
 	uint32_t content_length = 0;
 	ssize_t n;
@@ -943,6 +960,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 			free(buf);
 			return 0;
 		}
+		api_quickack(fd);
 	}
 	if (header_end == 0)
 	{
@@ -1004,7 +1022,7 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		}
 		buf[header_end] = saved;
 	}
-	if (content_length > API_MAX_BODY || header_end + (size_t)content_length > buf_cap - 1u)
+	if (content_length > API_MAX_BODY || header_end + (size_t)content_length > API_MAX_BODY + 8192u - 1u)
 	{
 		free(buf);
 		return 0;
@@ -1017,8 +1035,21 @@ static int read_http_request(int fd, char *method, size_t method_sz,
 		*body_len = 0;
 		return 1;
 	}
+	if (header_end + (size_t)content_length + 1u > buf_cap)
+	{
+		size_t need = header_end + (size_t)content_length + 1u;
+		char *grown = (char *)realloc(buf, need);
+		if (grown == 0)
+		{
+			free(buf);
+			return 0;
+		}
+		buf = grown;
+		buf_cap = need;
+	}
 	while (total < header_end + content_length)
 	{
+		api_quickack(fd);
 		n = recv(fd, buf + total, header_end + content_length - total, 0);
 		if (n <= 0)
 		{
@@ -1129,6 +1160,7 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 		if ( !SparkJsonTokenIsType(doc,member,SPARK_JSON_TOKEN_ARRAY) ||
 			(uint32_t)SparkJsonGetArrayElementCount(doc,member) > SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS )
 			return 0;
+		options->explicit_cache_points = 1u;
 		element = SparkJsonGetArrayElementFirst(doc,member);
 		for (options->cache_point_count=0u; element >= 0; element=SparkJsonGetArrayElementNext(doc,member,element))
 		{
@@ -1593,6 +1625,139 @@ static void api_maybe_set_chat_cache_point(const char *prompt_text, uint32_t pro
 	}
 }
 
+static int api_workspace_acquire(SparkTokenizerWorkspace *workspace, uint32_t min_symbols)
+{
+	int pooled = 0;
+	SparkTokenizerWorkspaceReset(workspace);
+	pthread_mutex_lock(&ApiWorkspacePoolMutex);
+	if (ApiWorkspacePoolCount > 0u)
+	{
+		*workspace = ApiWorkspacePool[--ApiWorkspacePoolCount];
+		pooled = 1;
+	}
+	pthread_mutex_unlock(&ApiWorkspacePoolMutex);
+	if (pooled != 0)
+		return 1;
+	return SparkTokenizerWorkspaceInitialize(workspace, min_symbols) == SPARK_STATUS_OK;
+}
+
+static void api_workspace_release(SparkTokenizerWorkspace *workspace)
+{
+	if (workspace->maximum_symbol_count <= API_WORKSPACE_POOL_MAX_SYMBOLS)
+	{
+		pthread_mutex_lock(&ApiWorkspacePoolMutex);
+		if (ApiWorkspacePoolCount < API_WORKSPACE_POOL_SIZE)
+		{
+			ApiWorkspacePool[ApiWorkspacePoolCount++] = *workspace;
+			pthread_mutex_unlock(&ApiWorkspacePoolMutex);
+			SparkTokenizerWorkspaceReset(workspace);
+			return;
+		}
+		pthread_mutex_unlock(&ApiWorkspacePoolMutex);
+	}
+	SparkTokenizerWorkspaceDestroy(workspace);
+}
+
+static void api_insert_cache_point(ApiOptions *options, uint32_t point)
+{
+	uint32_t index, shift;
+	if (point == 0u || options->cache_point_count >= SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS)
+		return;
+	for (index = 0u; index < options->cache_point_count; index++)
+	{
+		if (options->cache_points[index] == point)
+			return;
+		if (options->cache_points[index] > point)
+			break;
+	}
+	for (shift = options->cache_point_count; shift > index; shift--)
+		options->cache_points[shift] = options->cache_points[shift - 1u];
+	options->cache_points[index] = point;
+	options->cache_point_count++;
+}
+
+static void api_maybe_add_periodic_cache_points(uint32_t prompt_len, ApiOptions *options)
+{
+	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+	uint32_t interval, block, limit, point;
+	if (S.prefix_checkpoint_interval == 0u || options->explicit_cache_points != 0u ||
+		options->cache_point_count >= SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS ||
+		adapter == 0 || adapter->cache_checkpoint_token_count == 0u ||
+		adapter->cache_block_token_count == 0u || prompt_len < 2u)
+		return;
+	block = adapter->cache_block_token_count;
+	interval = (S.prefix_checkpoint_interval / block) * block;
+	if (interval == 0u)
+		interval = block;
+	limit = prompt_len - 1u;
+	point = (limit / interval) * interval;
+	if (point == limit && point >= interval)
+		point -= interval;
+	while (point > 0u && options->cache_point_count < SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS)
+	{
+		if (point % adapter->cache_checkpoint_token_count != 0u)
+			api_insert_cache_point(options, point);
+		if (point <= interval)
+			break;
+		point -= interval;
+	}
+}
+
+static int api_encode_prompt_text(int fd, char *prompt_text, uint32_t prompt_text_bytes,
+	uint32_t chat_request, uint32_t chat_suffix_offset, ApiOptions *options,
+	uint32_t **prompt_out, uint32_t *prompt_len_out)
+{
+	SparkTokenizerWorkspace workspace;
+	SparkTokenizerEncoding encoding;
+	SparkStatus encode_status;
+	uint32_t *prompt;
+	uint32_t prefix_count;
+	if (prompt_text_bytes == 0u)
+	{
+		free(prompt_text);
+		send_response(fd, 400,
+			"{\"error\":{\"message\":\"prompt is empty\","
+			"\"type\":\"invalid_request_error\",\"code\":\"invalid_prompt\"}}");
+		return 0;
+	}
+	prefix_count = chat_request == 0u ? TextPromptPrefixCount : 0u;
+	prompt = malloc(((size_t)prompt_text_bytes + 1u + prefix_count) * sizeof(uint32_t));
+	if (prompt == 0 || !api_workspace_acquire(&workspace, prompt_text_bytes + 1u))
+	{
+		free(prompt_text);
+		free(prompt);
+		send_response(fd, 500, "{\"error\":\"oom\"}");
+		return 0;
+	}
+	SparkTokenizerEncodingReset(&encoding);
+	encoding.token_capacity = prompt_text_bytes + 1u;
+	encoding.token_ids = prompt + prefix_count;
+	encode_status = SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text,
+		prompt_text_bytes, 0u, &workspace, &encoding);
+	if (encode_status == SPARK_STATUS_OK && chat_request != 0u && options->cache_point_count == 0u &&
+		chat_suffix_offset < prompt_text_bytes)
+		api_maybe_set_chat_cache_point(prompt_text, prompt_text_bytes, chat_suffix_offset,
+			prefix_count, &workspace, &encoding, options);
+	api_workspace_release(&workspace);
+	free(prompt_text);
+	if (encode_status != SPARK_STATUS_OK)
+	{
+		char err[160];
+		free(prompt);
+		(void)snprintf(err, sizeof(err),
+			"{\"error\":{\"message\":\"tokenizer sidecar failed to "
+			"encode the prompt (status %u)\","
+			"\"type\":\"invalid_request_error\",\"code\":\"encode_failed\"}}",
+			(unsigned)encode_status);
+		send_response(fd, 400, err);
+		return 0;
+	}
+	memcpy(prompt, TextPromptPrefix, (size_t)prefix_count * sizeof(uint32_t));
+	*prompt_out = prompt;
+	*prompt_len_out = encoding.token_count + prefix_count;
+	return 1;
+}
+
 static void handle_completion(int fd, char *body, uint32_t body_len,
 	int chat_format)
 {
@@ -1749,58 +1914,10 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		send_tokenizer_unavailable(fd);
 		return;
 	}
-	if (prompt_text != 0)
-	{
-		SparkTokenizerWorkspace workspace;
-		SparkTokenizerEncoding encoding;
-		SparkStatus encode_status;
-		if (prompt_text_bytes == 0u)
-		{
-			free(prompt_text);
-			send_response(fd, 400,
-				"{\"error\":{\"message\":\"prompt is empty\","
-				"\"type\":\"invalid_request_error\",\"code\":\"invalid_prompt\"}}");
-			return;
-		}
-		const uint32_t prefix_count = chat_request == 0u ? TextPromptPrefixCount : 0u;
-		SparkTokenizerWorkspaceReset(&workspace);
-		prompt = malloc(((size_t)prompt_text_bytes + 1u + prefix_count) * sizeof(uint32_t));
-		if (prompt == 0 ||
-			SparkTokenizerWorkspaceInitialize(&workspace, prompt_text_bytes + 1u) != SPARK_STATUS_OK)
-		{
-			free(prompt_text);
-			free(prompt);
-			send_response(fd, 500, "{\"error\":\"oom\"}");
-			return;
-		}
-		SparkTokenizerEncodingReset(&encoding);
-		encoding.token_capacity = prompt_text_bytes + 1u;
-		encoding.token_ids = prompt + prefix_count;
-		encode_status = SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text,
-			prompt_text_bytes, 0u, &workspace, &encoding);
-		if (encode_status == SPARK_STATUS_OK && chat_request != 0u && options.cache_point_count == 0u &&
-			chat_suffix_offset < prompt_text_bytes)
-			api_maybe_set_chat_cache_point(prompt_text, prompt_text_bytes, chat_suffix_offset,
-				prefix_count, &workspace, &encoding, &options);
-		SparkTokenizerWorkspaceDestroy(&workspace);
-		free(prompt_text);
-		if (encode_status != SPARK_STATUS_OK)
-		{
-			free(prompt);
-			{
-				char err[160];
-				(void)snprintf(err, sizeof(err),
-					"{\"error\":{\"message\":\"tokenizer sidecar failed to "
-					"encode the prompt (status %u)\","
-					"\"type\":\"invalid_request_error\",\"code\":\"encode_failed\"}}",
-					(unsigned)encode_status);
-				send_response(fd, 400, err);
-			}
-			return;
-		}
-		memcpy(prompt, TextPromptPrefix, (size_t)prefix_count * sizeof(uint32_t));
-		prompt_len = encoding.token_count + prefix_count;
-	}
+	if (prompt_text != 0 && !api_encode_prompt_text(fd, prompt_text, prompt_text_bytes,
+		chat_request, chat_suffix_offset, &options, &prompt, &prompt_len))
+		return;
+	api_maybe_add_periodic_cache_points(prompt_len, &options);
 	if (prompt_len == 0)
 	{
 		free(prompt);
@@ -2010,6 +2127,7 @@ static void *api_connection(void *arg)
 	uint32_t body_len = 0;
 	int on = 1;
 	(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+	api_quickack(fd);
 	{
 		int rr = read_http_request(fd, method, sizeof(method), path, sizeof(path),
 			&body, &body_base, &body_len);
@@ -2215,10 +2333,21 @@ int main(int argc, char **argv)
 			port_s = argv[++i];
 		else if (!strcmp(argv[i], "--quant-arm") && i + 1 < argc)
 			quant_arm_path = argv[++i];
+		else if (!strcmp(argv[i], "--prefix-checkpoint-interval") && i + 1 < argc)
+		{
+			char *end = 0;
+			unsigned long long value = strtoull(argv[++i], &end, 10);
+			if (end == 0 || *end != '\0' || value > API_MAX_PROMPT_TOKENS)
+			{
+				fprintf(stderr, "model_api: invalid --prefix-checkpoint-interval\n");
+				return 1;
+			}
+			S.prefix_checkpoint_interval = (uint32_t)value;
+		}
 	}
 	if (dep_path == 0 || root == 0)
 	{
-		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--peer-runtime-root PATH]... [--port N] [--quant-arm ARM_JSON]\n", argv[0]);
+		fprintf(stderr, "usage: %s --deployment PATH --runtime-root PATH [--peer-runtime-root PATH]... [--port N] [--quant-arm ARM_JSON] [--prefix-checkpoint-interval TOKENS]\n", argv[0]);
 		return 1;
 	}
 	if (quant_arm_path != 0)

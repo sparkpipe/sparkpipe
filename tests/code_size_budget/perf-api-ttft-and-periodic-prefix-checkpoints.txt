@@ -1,0 +1,2 @@
++315
+Eliminate O(N*S) tokenizer sidecar special-token scan via 2-byte bloom prefilter, pool tokenizer workspaces, add TCP_QUICKACK and dynamic HTTP read buffers in model_api, and add auto branch-point plus optional periodic recurrent prefix checkpoints in model_batch_engine and model_api.

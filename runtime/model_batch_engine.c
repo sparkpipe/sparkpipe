@@ -2748,6 +2748,26 @@ static uint32_t SparkModelBatchInflightStateForWork(uint32_t work_kind)
 	return(SPARK_MODEL_BATCH_REQUEST_RELEASE_INFLIGHT);
 }
 
+static void SparkModelBatchInsertCachePoint(
+	SparkModelBatchRequestState *request,
+	uint32_t point)
+{
+	uint32_t index,shift;
+	if ( point == 0u || request->cache_point_count >= SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS )
+		return;
+	for (index=0u; index<request->cache_point_count; index++)
+	{
+		if ( request->cache_points[index] == point )
+			return;
+		if ( request->cache_points[index] > point )
+			break;
+	}
+	for (shift=request->cache_point_count; shift>index; shift--)
+		request->cache_points[shift] = request->cache_points[shift - 1u];
+	request->cache_points[index] = point;
+	request->cache_point_count++;
+}
+
 static void SparkModelBatchRefreshQueuedPrefix(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request)
@@ -2779,6 +2799,12 @@ static void SparkModelBatchRefreshQueuedPrefix(
 		resume = SparkPrefixCacheResumeTokenCount(&engine->prefix_cache,SparkModelBatchRequestTokens(engine,slot),lookup.matched_token_count);
 		if ( resume != lookup.matched_token_count )
 		{
+			uint32_t branch = lookup.matched_token_count / engine->cache_block_token_count * engine->cache_block_token_count;
+			if ( request->stale_prefix_recompute_count == 0u &&
+				lookup.matched_token_count + 1u < request->prompt_token_count &&
+				branch > resume && branch + 1u < request->prompt_token_count &&
+				branch % engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+				SparkModelBatchInsertCachePoint(request,branch);
 			status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
 			memset(&lookup,0,sizeof(lookup));
 			if ( status == SPARK_STATUS_OK && resume != 0u )
@@ -3092,6 +3118,12 @@ static void SparkModelBatchDecideDefer(SparkModelBatchEngine *engine,SparkModelB
 	if ( remaining < engine->streamed_min_tokens )
 		return;
 	end = SparkModelBatchPromptCheckpoint(engine,request) != 0u ? SparkModelBatchPromptCheckpoint(engine,request) - 1u : request->prompt_token_count - 1u;
+	if ( request->cache_point_count != 0u )
+	{
+		uint32_t declared = SparkModelBatchNextCachePoint(request,request->computed_prompt_token_count);
+		if ( declared != 0u && declared - 1u < end )
+			end = declared - 1u;
+	}
 	if ( end <= request->computed_prompt_token_count )
 		return;
 	request->defer_end = end;
