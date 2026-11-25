@@ -1,0 +1,2 @@
++145
+perf/e6-spec-tree-and-batch-budget: separate 3-token from 4-7 token lookup match hazard classes in SparkSpeculationFrameClass, add LZ77 overlapping lookup copy and 4-token neural-draft lookup tail extension, fix tree verify branch confidence floor / calibration / hazard observation / ranked lookup alternates in runtime/model_batch_engine.c, and replace sequential batch draft budgeting with exact survival-ranked greedy batch verify row allocation up to 16 concurrent lanes.
