@@ -92,6 +92,18 @@ enum GemmaBranch : uint32_t
 	GEMMA_EXPERT_BRANCH = 1u
 };
 
+template<class B, class = void>
+struct GemmaHasFusedPostNorm
+{
+	static constexpr bool kValue = false;
+};
+
+template<class B>
+struct GemmaHasFusedPostNorm<B, decltype((void)B::kFusedPostNorm)>
+{
+	static constexpr bool kValue = B::kFusedPostNorm;
+};
+
 template<class G, class B>
 struct GemmaSchedule
 {
@@ -114,7 +126,7 @@ struct GemmaSchedule
 			status = B::EmbedNorm(state, *frame);
 		else if constexpr ( G::kEmbedScale != 1.0f )
 			status = B::EmbedScale(state, *frame, G::kEmbedScale);
-		if constexpr ( G::kPreNorm )
+		if constexpr ( G::kPreNorm || GemmaHasFusedPostNorm<B>::kValue )
 			if ( status == SPARK_STATUS_OK )
 				status = B::RmsNorm(state, *frame, B::LayerOf(state, 0u).input_norm);
 		return status;
@@ -154,16 +166,23 @@ struct GemmaSchedule
 	static SparkStatus PostNormLayer(State *state, const Frame &frame, uint32_t index)
 	{
 		const typename B::Layer &layer = B::LayerOf(state, index);
-		SparkStatus status = B::RmsNorm(state, frame, layer.input_norm);
+		SparkStatus status = SPARK_STATUS_OK;
+		if constexpr ( !GemmaHasFusedPostNorm<B>::kValue )
+			status = B::RmsNorm(state, frame, layer.input_norm);
 		if ( status == SPARK_STATUS_OK )
 			status = Attention(state, frame, index);
 		if ( status == SPARK_STATUS_OK )
 			status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, 1u);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		status = B::NormAdd(state, frame, layer.post_attn_norm);
-		if ( status == SPARK_STATUS_OK )
-			status = B::RmsNorm(state, frame, layer.pre_ff_norm);
+		if constexpr ( GemmaHasFusedPostNorm<B>::kValue )
+			status = B::PostAttnNorm(state, frame, layer);
+		else
+		{
+			status = B::NormAdd(state, frame, layer.post_attn_norm);
+			if ( status == SPARK_STATUS_OK )
+				status = B::RmsNorm(state, frame, layer.pre_ff_norm);
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = B::Mlp(state, frame, layer);
 		if constexpr ( G::kMoe )
@@ -173,7 +192,12 @@ struct GemmaSchedule
 			status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, G::kMoe ? 2u : 1u);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if constexpr ( G::kMoe )
+		if constexpr ( GemmaHasFusedPostNorm<B>::kValue )
+		{
+			const float *next_norm = index + 1u < G::kLayers ? B::LayerOf(state, index + 1u).input_norm : (const float *)0;
+			status = B::PostFfnNorm(state, frame, layer, next_norm);
+		}
+		else if constexpr ( G::kMoe )
 			status = B::BranchNormAdd(state, frame, layer.post_ff_norm_1, layer.post_ff_norm_2, layer.post_ff_norm, layer.layer_scalar);
 		else if constexpr ( G::kLayerScalar )
 			status = B::NormAddScaled(state, frame, layer.post_ff_norm, layer.layer_scalar);
