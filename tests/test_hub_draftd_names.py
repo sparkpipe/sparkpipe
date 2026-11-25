@@ -83,7 +83,16 @@ def script_names():
 SOCKET = "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])"
 
 
-ENGINE_LANES = ("kimi-k3.1-pro", "qwen3.8-27b", "deepseek-v4.1-flash")
+ENGINE_LANES = (
+    "kimi-k3.1-pro",
+    "qwen3.8-27b",
+    "deepseek-v4.1-flash",
+    "glm-5.3",
+    "qwen3.8-max",
+    "glm-5.3-flash",
+    "k-exaone-2.0",
+    "a.x-k2",
+)
 
 
 def record_server():
@@ -174,8 +183,8 @@ def main():
     engine_configs()
     script_names()
     script_engine()
-    print("PASS draftd target names render from the lane record into the drift flags and the unit's draftd flags, and a partial set is refused; "
-          "the K3.1 Pro, Qwen3.8-27B and DeepSeek V4.1 Flash records carry the server switch and share one engine root and unit, "
+    print(f"PASS draftd target names render from the lane record into the drift flags and the unit's draftd flags, and a partial set is refused; "
+          f"all {len(ENGINE_LANES)} engine lane records carry the server switch and share one engine root and unit, "
           "whose config serves each lane on its record's ports and taps, and hub_draftd.sh with DRAFTD_SERVER=engine starts the hub's "
           "weightd and the engine draft server once, activates the lane through the control socket, deactivates it on stop, and refuses an "
           "unknown server or an unstaged engine root")
