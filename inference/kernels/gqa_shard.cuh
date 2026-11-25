@@ -183,16 +183,16 @@ static __host__ __device__ constexpr uint32_t LmGqaShardTiledStages(uint32_t blo
 	return(single_row && block_warps == LM_GQA_SHARD_TILED_WARPS &&
 		2u * LmGqaShardTiledTile<HEAD_DIM>() * (HEAD_DIM + LmGqaShardTiledValuePart<VALUE_DIM>() * GROUP_WARPS) * 2u +
 		(GROUP_WARPS > 1u ? GROUP_WARPS * (LmGqaShardTiledTile<HEAD_DIM>() / 8u) * 512u : 0u) +
-		2u * LmGqaShardTiledTile<HEAD_DIM>() * 8u + 4u * 4u <= LM_PREFILL_ATTN_SHARED_LIMIT ? 2u : 1u);
+		2u * LmGqaShardTiledTile<HEAD_DIM>() * 8u + 6u * 4u <= LM_PREFILL_ATTN_SHARED_LIMIT ? 2u : 1u);
 }
 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM, uint32_t GROUP_WARPS>
-static __host__ __device__ constexpr uint32_t LmGqaShardTiledSharedFor(uint32_t block_warps, bool single_row = false)
+static __host__ __device__ constexpr uint32_t LmGqaShardTiledSharedFor(uint32_t block_warps, bool single_row = false, uint32_t stage_override = 0u)
 {
-	return(LmGqaShardTiledStages<HEAD_DIM,VALUE_DIM,GROUP_WARPS>(block_warps,single_row) *
+	return((stage_override != 0u ? stage_override : LmGqaShardTiledStages<HEAD_DIM,VALUE_DIM,GROUP_WARPS>(block_warps,single_row)) *
 		LmGqaShardTiledTile<HEAD_DIM>() * (HEAD_DIM + LmGqaShardTiledValuePart<VALUE_DIM>() * GROUP_WARPS) * 2u +
 		(GROUP_WARPS > 1u ? (single_row ? GROUP_WARPS : block_warps) * (LmGqaShardTiledTile<HEAD_DIM>() / 8u) * 512u : 0u) +
-		2u * LmGqaShardTiledTile<HEAD_DIM>() * 8u + 4u * 4u);
+		2u * LmGqaShardTiledTile<HEAD_DIM>() * 8u + 6u * 4u);
 }
 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -210,13 +210,13 @@ static __host__ __device__ constexpr bool LmGqaShardTiledFits(void)
 	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 512u && VALUE_DIM % LmGqaShardTiledValuePart<VALUE_DIM>() == 0u);
 }
 
-template<uint32_t HEAD_DIM, uint32_t VALUE_DIM, uint32_t BLOCK_WARPS = LM_GQA_SHARD_TILED_WARPS, bool SINGLE_ROW = false>
+template<uint32_t HEAD_DIM, uint32_t VALUE_DIM, uint32_t BLOCK_WARPS = LM_GQA_SHARD_TILED_WARPS, bool SINGLE_ROW = false, uint32_t STAGE_OVERRIDE = 0u>
 static __host__ __device__ constexpr uint32_t LmGqaShardTiledSharedBytes(void)
 {
-	return(LmGqaShardTiledSharedFor<HEAD_DIM,VALUE_DIM,LmGqaShardTiledValueGroups<HEAD_DIM,VALUE_DIM>()>(BLOCK_WARPS,SINGLE_ROW));
+	return(LmGqaShardTiledSharedFor<HEAD_DIM,VALUE_DIM,LmGqaShardTiledValueGroups<HEAD_DIM,VALUE_DIM>()>(BLOCK_WARPS,SINGLE_ROW,STAGE_OVERRIDE));
 }
 
-template<class Geometry, class Pages, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM, uint32_t BLOCK_WARPS = LM_GQA_SHARD_TILED_WARPS, bool SINGLE_ROW = false>
+template<class Geometry, class Pages, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM, uint32_t BLOCK_WARPS = LM_GQA_SHARD_TILED_WARPS, bool SINGLE_ROW = false, uint32_t STAGE_OVERRIDE = 0u>
 __global__ __launch_bounds__(BLOCK_WARPS * 32u, 1)
 void LmGqaShardTiledKernel(
 	Pages cache,
@@ -238,7 +238,7 @@ void LmGqaShardTiledKernel(
 {
 	constexpr uint32_t TILE = LmGqaShardTiledTile<HEAD_DIM>(), PART = LmGqaShardTiledValuePart<VALUE_DIM>();
 	constexpr uint32_t V_GROUPS = LmGqaShardTiledValueGroups<HEAD_DIM,VALUE_DIM>();
-	constexpr uint32_t STAGES = LmGqaShardTiledStages<HEAD_DIM,VALUE_DIM,V_GROUPS>(BLOCK_WARPS,SINGLE_ROW);
+	constexpr uint32_t STAGES = STAGE_OVERRIDE != 0u ? STAGE_OVERRIDE : LmGqaShardTiledStages<HEAD_DIM,VALUE_DIM,V_GROUPS>(BLOCK_WARPS,SINGLE_ROW);
 	constexpr uint32_t BLOCK_THREADS = BLOCK_WARPS * 32u;
 	constexpr uint32_t Q_TILES = SINGLE_ROW ? 1u : (BLOCK_WARPS / V_GROUPS);
 	constexpr uint32_t BLOCK_QUERIES = Q_TILES * 16u;
@@ -253,7 +253,7 @@ void LmGqaShardTiledKernel(
 	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds a score tile and the accumulators of one value part in registers, and its 16 queries when they are at most 256 wide");
 	static_assert(Geometry::kSlotBytes == KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u,
 		"a slot is [K: kv heads x head_dim][V: kv heads x value_dim] bf16 and nothing else");
-	static_assert(LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM,BLOCK_WARPS,SINGLE_ROW>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the key and value tiles exceed the shared memory an SM has");
+	static_assert(LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM,BLOCK_WARPS,SINGLE_ROW,STAGE_OVERRIDE>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the key and value tiles exceed the shared memory an SM has");
 	extern __shared__ __align__(128) uint8_t lm_gqa_tiled_shared[];
 	uint8_t *keys = lm_gqa_tiled_shared;
 	uint8_t *values = keys + STAGES * TILE * KEY_BYTES;
@@ -274,7 +274,7 @@ void LmGqaShardTiledKernel(
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,degree), slot_count = LmGqaShardHeadSlots(heads,VALUE_DIM,degree);
 	const uint32_t record = width + 2u * slot_count;
 	const uint32_t vec_base = SINGLE_ROW ? (single_head_base + (lane >> 2u)) : (block_first + q_tile * 16u + (lane >> 2u));
-	uint32_t query[QUERY_STEPS][4], limit[2], count[2], begin[2], extra_begin[2], extra_end[2], offset[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
+	uint32_t query[QUERY_STEPS][4], limit[2], count[2], begin[2], extra_begin[2], extra_end[2], offset[2], cursor, run_end, sequence, low, high, branch_cut, branch_shift, trunk_high, branch_low, tile_low, tile_end, tile, index, step, frag, entry, side;
 	float output[VALUE_FRAGS][4], running_max[2] = { -INFINITY, -INFINITY }, running_sum[2] = { 0.0f, 0.0f };
 	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	bool valid[2], member[2];
@@ -317,7 +317,16 @@ void LmGqaShardTiledKernel(
 	auto lookup_at = [&](uint32_t which, uint32_t slot_idx) -> const uint8_t *
 	{
 		const uint32_t local = which * TILE + slot_idx;
-		return(local < high && local >= low ? LmKvShardSlotRequired<Geometry>(cache,sequence,SparkKvShardLocalPosition(cache.shard,local),cursor,LM_KV_ACCESS_READ) : 0);
+		if ( local < low || local >= high )
+			return(0);
+		if constexpr ( SINGLE_ROW )
+		{
+			const uint32_t mapped = local >= branch_cut ? local + branch_shift : local;
+			return(LmKvShardSlotRequired<Geometry>(cache,sequence,SparkKvShardLocalPosition(cache.shard,mapped),cursor,LM_KV_ACCESS_READ));
+		}
+		if ( local >= trunk_high && local < branch_low )
+			return(0);
+		return(LmKvShardSlotRequired<Geometry>(cache,sequence,SparkKvShardLocalPosition(cache.shard,local),cursor,LM_KV_ACCESS_READ));
 	};
 	auto lookup = [&](uint32_t which) -> const uint8_t *
 	{
@@ -382,27 +391,51 @@ void LmGqaShardTiledKernel(
 				eend = SparkKvShardLocalKeys(cache.shard,lim + off);
 				eend = eend < LmKvKeyWindowEnd(cache) ? eend : LmKvKeyWindowEnd(cache);
 			}
-			low = 0xffffffffu;
-			high = 0u;
+			const uint32_t branch_len = ebeg < eend ? eend - ebeg : 0u;
 			if ( beg < cnt )
 			{
 				low = beg;
-				high = cnt;
+				high = cnt + branch_len;
+				branch_cut = cnt;
+				branch_shift = branch_len != 0u ? ebeg - cnt : 0u;
 			}
-			if ( ebeg < eend )
+			else if ( branch_len != 0u )
 			{
-				low = ebeg < low ? ebeg : low;
-				high = eend > high ? eend : high;
+				uint32_t bbase = SparkKvShardLocalKeys(cache.shard,st);
+				bbase = bbase > LmKvKeyWindowBegin(cache) ? bbase : LmKvKeyWindowBegin(cache);
+				if ( bbase <= ebeg )
+				{
+					low = bbase;
+					high = bbase + branch_len;
+					branch_cut = bbase;
+					branch_shift = ebeg - bbase;
+				}
+				else
+				{
+					low = ebeg;
+					high = eend;
+					branch_cut = ebeg;
+					branch_shift = 0u;
+				}
 			}
+			else
+			{
+				low = 0xffffffffu;
+				high = 0u;
+				branch_cut = 0u;
+				branch_shift = 0u;
+			}
+			trunk_high = 0u;
+			branch_low = 0xffffffffu;
 			#pragma unroll
 			for (side = 0u; side < 2u; ++side)
 			{
 				member[side] = valid[side];
 				limit[side] = lim;
-				count[side] = cnt;
-				begin[side] = beg;
-				extra_begin[side] = ebeg;
-				extra_end[side] = eend;
+				count[side] = low < high ? high : 0u;
+				begin[side] = low < high ? low : 0u;
+				extra_begin[side] = 0u;
+				extra_end[side] = 0u;
 				offset[side] = off;
 			}
 		}
@@ -417,6 +450,8 @@ void LmGqaShardTiledKernel(
 				run[1] = run_end;
 				run[2] = 0xffffffffu;
 				run[3] = 0u;
+				run[4] = 0u;
+				run[5] = 0xffffffffu;
 			}
 			__syncthreads();
 			sequence = run[0];
@@ -453,16 +488,22 @@ void LmGqaShardTiledKernel(
 				{
 					atomicMin(&run[2],begin[side]);
 					atomicMax(&run[3],count[side]);
+					atomicMax(&run[4],count[side]);
 				}
 				if ( v_part == 0u && (lane & 3u) == 0u && extra_begin[side] < extra_end[side] )
 				{
 					atomicMin(&run[2],extra_begin[side]);
 					atomicMax(&run[3],extra_end[side]);
+					atomicMin(&run[5],extra_begin[side]);
 				}
 			}
 			__syncthreads();
 			low = run[2];
 			high = run[3];
+			trunk_high = run[4];
+			branch_low = run[5];
+			branch_cut = 0u;
+			branch_shift = 0u;
 		}
 		tile_low = low < high ? low / TILE : 0u;
 		tile_end = low < high ? (high + TILE - 1u) / TILE : 0u;
@@ -499,8 +540,9 @@ void LmGqaShardTiledKernel(
 				else
 					asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 				__syncthreads();
-				if ( threadIdx.x >= 128u && threadIdx.x < 128u + TILE && tile + 2u < tile_end )
-					slots[slot_buf * TILE + (threadIdx.x - 128u)] = lookup_at(tile + 2u,threadIdx.x - 128u);
+				constexpr uint32_t SLOT_BASE = BLOCK_THREADS >= 128u + TILE ? 128u : (SINGLE_ROW && BLOCK_THREADS >= V_GROUPS * 32u + TILE ? V_GROUPS * 32u : 0u);
+				if ( threadIdx.x >= SLOT_BASE && threadIdx.x < SLOT_BASE + TILE && tile + 2u < tile_end )
+					slots[slot_buf * TILE + (threadIdx.x - SLOT_BASE)] = lookup_at(tile + 2u,threadIdx.x - SLOT_BASE);
 			}
 			else
 			{
@@ -592,12 +634,13 @@ void LmGqaShardTiledKernel(
 						for (entry = 0u; entry < 4u; ++entry)
 						{
 							const uint32_t local = tile * TILE + frag * 8u + 2u * (lane & 3u) + (entry & 1u), which = entry >> 1u;
-							const bool branch = local >= extra_begin[which] && local < extra_end[which];
-							bool visible = member[which] && ((local >= begin[which] && local < count[which]) || branch);
+							const bool branch = SINGLE_ROW ? (local >= branch_cut) : (local >= extra_begin[which] && local < extra_end[which]);
+							bool visible = member[which] && ((local >= begin[which] && local < count[which]) || (!SINGLE_ROW && branch));
 							if ( visible && block_mask != 0 )
 							{
 								const uint32_t r = SINGLE_ROW ? single_row_id : ((vec_base + 8u * which) / group);
-								const uint32_t position = SparkKvShardLocalPosition(cache.shard,local) - (branch ? offset[which] : 0u);
+								const uint32_t mapped = SINGLE_ROW && branch ? local + branch_shift : local;
+								const uint32_t position = SparkKvShardLocalPosition(cache.shard,mapped) - (branch ? offset[which] : 0u);
 								visible = position / block_tokens >= limit[which] / block_tokens ||
 									((block_mask[(uint64_t)r * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
 							}
