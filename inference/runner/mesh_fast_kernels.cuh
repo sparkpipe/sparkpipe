@@ -2211,8 +2211,16 @@ static const SparkTpMeshLaunchers SparkTpMeshFastLaunchers =
     reinterpret_cast<SparkTpMeshRoundLoopFunction>(SparkTpLaunchMeshRoundLoop)
 };
 
+static inline int SparkTpMeshFastDisabled(void)
+{
+    const char *val = getenv("SPARK_MESH_FAST_DISABLE");
+    return val != 0 && val[0] != '\0' && strcmp(val,"0") != 0 ? 1 : 0;
+}
+
 static inline void SparkTpMeshFastLaunchersInstall(void)
 {
+    if ( SparkTpMeshFastDisabled() != 0 )
+        return;
     if ( SparkTpDeviceCollectiveRegisterLaunchers != 0 )
         SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshFastLaunchers);
 }

@@ -1819,10 +1819,17 @@ build/test_nvrm_hosted_launch: tests/nvrm/hosted_launch.cu tools/nvrm_kernel_man
 	$(NVRM_HOSTED_MODULE)
 build/test_nvrm_launch_arguments: tests/nvrm/launch_arguments.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
+build/nvrm_launch_single_eval: tests/nvrm/launch_single_eval.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+build/cuda_launch_single_eval: tests/nvrm/launch_single_eval.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 NVRM_FLAVOUR_GOALS += test-nvrm-launch
 .PHONY: test-nvrm-launch
 test-nvrm-launch: build/test_nvrm_launch_arguments
 	./build/test_nvrm_launch_arguments
+.PHONY: test-launch-single-eval
+test-launch-single-eval: nvrm-gpu-present build/nvrm_launch_single_eval build/cuda_launch_single_eval
+	./build/cuda_launch_single_eval && ./build/nvrm_launch_single_eval
 
 build/nvrm_occupancy_ab: tests/nvrm/occupancy_ab.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)

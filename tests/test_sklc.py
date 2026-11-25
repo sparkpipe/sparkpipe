@@ -1,5 +1,6 @@
 import hashlib
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -61,6 +62,18 @@ def verify_arch(arch, expected_sm):
         assert f"cubin {digest} {len(blob)}" in mtxt, f"manifest digest/size mismatch for {arch}"
         for kname in EXPECTED_KERNELS:
             assert f"kernel {kname} " in mtxt, f"missing kernel {kname} in {arch} manifest"
+        if arch == "sm121":
+            for tool, args in (("cuobjdump", ["--dump-sass", str(cubin_path)]), ("nvdisasm", [str(cubin_path)])):
+                exe = shutil.which(tool)
+                if exe is None:
+                    continue
+                dis = subprocess.run([exe, *args], capture_output=True, text=True, check=False)
+                assert dis.returncode == 0, f"{tool} failed on {arch} cubin: {dis.stderr}"
+                for line in dis.stdout.splitlines():
+                    upper = line.upper()
+                    assert not any(tok in upper for tok in ("UNKNOWN", "ILLEGAL", "INVALID", "???")), (
+                        f"{tool} found invalid sm_121 opcode: {line}"
+                    )
 
 
 def verify_long_name_manifest():
@@ -81,8 +94,15 @@ def verify_long_name_manifest():
 
 def verify_codegen_invariants():
     sys.path.insert(0, str(ROOT / "tools" / "sklc"))
+    import isa_sm121 as isa
     from codegen import compile_program
     from frontend import parse_skl
+
+    try:
+        isa.encode_ldc(2, isa.C0_PARAM_BASE, width=128)
+        raise AssertionError("encode_ldc must reject width=128 (LDC.INVALID6 on sm_121a)")
+    except KeyError:
+        pass
 
     for suite in SUITES:
         text = (SKL_DIR / suite).read_text(encoding="utf-8")

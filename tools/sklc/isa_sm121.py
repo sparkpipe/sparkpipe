@@ -115,7 +115,7 @@ def encode_s2ur(urd, sr, wr=0, stall=1, wait=0):
 
 
 def encode_ldc(rd, offset, width=32, wr=0, stall=1, wait=0):
-    sz_bits = {32: 0x0800, 64: 0x0A00, 128: 0x0C00}[width]
+    sz_bits = {32: 0x0800, 64: 0x0A00}[width]
     off_enc = (offset >> 2) & 0xFFFF
     lo = 0x7B82 | ((rd & 0xFF) << 16) | (0xFF << 24) | (off_enc << 40)
     hi = sz_bits | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=7, wait=wait)

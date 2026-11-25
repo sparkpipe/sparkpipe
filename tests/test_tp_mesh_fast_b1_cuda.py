@@ -25,7 +25,7 @@ if REQUIRED_COMPUTE_CAPABILITY not in capabilities:
 if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_tp_mesh_fast_b1_cuda: an sm_121 device is present but nvcc is unavailable")
 
-for target in ("tp_mesh_fast_b1_cuda", "tp_mesh_prefill_collective_cuda", "tp_mesh_mxfp8_wire_cuda"):
+for target in ("tp_mesh_fast_b1_cuda", "tp_mesh_prefill_collective_cuda", "tp_mesh_mxfp8_wire_cuda", "tp_mesh_fast_disable_cuda"):
     binary = ROOT / "build" / target
     binary.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -46,4 +46,12 @@ for target in ("tp_mesh_fast_b1_cuda", "tp_mesh_prefill_collective_cuda", "tp_me
         cwd=ROOT,
         check=True,
     )
-    subprocess.run([str(binary)], check=True, timeout=600)
+    if target == "tp_mesh_fast_disable_cuda":
+        env_off = {k: v for k, v in os.environ.items() if k != "SPARK_MESH_FAST_DISABLE"}
+        subprocess.run([str(binary), "enabled"], env=env_off, check=True, timeout=60)
+        subprocess.run([str(binary), "enabled"], env={**env_off, "SPARK_MESH_FAST_DISABLE": "0"}, check=True, timeout=60)
+        subprocess.run([str(binary), "enabled"], env={**env_off, "SPARK_MESH_FAST_DISABLE": ""}, check=True, timeout=60)
+        subprocess.run([str(binary), "disabled"], env={**env_off, "SPARK_MESH_FAST_DISABLE": "1"}, check=True, timeout=60)
+        subprocess.run([str(binary), "disabled"], env={**env_off, "SPARK_MESH_FAST_DISABLE": "true"}, check=True, timeout=60)
+    else:
+        subprocess.run([str(binary)], check=True, timeout=600)

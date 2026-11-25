@@ -1,0 +1,2 @@
++26
+Audit F4/F8 fixes: SPARK_MESH_FAST_DISABLE kill-switch in inference/runner/mesh_fast_kernels.cuh (+8), single-evaluation launch macro in runtime/device/nvrm/launch_nvrm.h (+11), and CUDA+NVRM single-eval test targets in Makefile (+7).

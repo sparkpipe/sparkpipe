@@ -35,8 +35,13 @@ static inline void LmPackParameter(uint8_t *packed, SparkDeviceParameter *layout
 	memcpy(packed + layout[index - 1u].offset,&value,sizeof(Parameter));
 }
 
-template<bool Dependent, typename Fallback, typename... Parameters>
-static SparkGpuError LmLaunchDispatch(int, Fallback &&, void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream,
+template<typename... Arguments>
+struct LmLaunchArgPack { static constexpr size_t kCount = sizeof...(Arguments); };
+template<typename... Arguments>
+LmLaunchArgPack<Arguments...> LmLaunchCountArgs(Arguments...);
+
+template<bool Dependent, typename... Parameters>
+static SparkGpuError LmLaunchDirect(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream,
 	typename LmParameterOf<Parameters>::Type... arguments)
 {
 	alignas(16) uint8_t packed[LmParameterBytes<Parameters...>() + 1u];
@@ -48,10 +53,16 @@ static SparkGpuError LmLaunchDispatch(int, Fallback &&, void (*kernel)(Parameter
 		: SparkNvrmLaunchPacked((const void *)kernel,shape,shape + 3,shared,stream,packed,layout,(uint32_t)sizeof...(Parameters),offset));
 }
 
-template<bool Dependent, typename Fallback, typename... Parameters, typename... Ignored,
-	typename LmLaunchIf<(sizeof...(Ignored) < sizeof...(Parameters))>::Type = 0>
-static SparkGpuError LmLaunchDispatch(long, Fallback &&fallback, void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream,
-	const Ignored &...)
+template<bool Dependent, size_t ArgCount, typename DirectCall, typename Fallback, typename... Parameters,
+	typename LmLaunchIf<(ArgCount == sizeof...(Parameters))>::Type = 0>
+static SparkGpuError LmLaunchDispatch(int, DirectCall &&direct, Fallback &&, void (*kernel)(Parameters...), dim3, dim3, size_t, SparkGpuStream)
+{
+	return(direct(kernel));
+}
+
+template<bool Dependent, size_t ArgCount, typename DirectCall, typename Fallback, typename... Parameters,
+	typename LmLaunchIf<(ArgCount < sizeof...(Parameters))>::Type = 0>
+static SparkGpuError LmLaunchDispatch(long, DirectCall &&, Fallback &&fallback, void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream)
 {
 	alignas(16) uint8_t packed[LmParameterBytes<Parameters...>() + 1u];
 	SparkDeviceParameter layout[sizeof...(Parameters) + 1u];
@@ -85,21 +96,21 @@ static SparkGpuError LmLaunchSelect(long, Direct &&, Fallback &&fallback) { retu
 
 #define LM_LAUNCH_CALL(dependent, kernel, grid, block, shared, stream, ...) \
 	([&](auto __lm_run) -> SparkGpuError { \
+		const dim3 __lm_grid(grid); \
+		const dim3 __lm_block(block); \
+		const size_t __lm_shared = (size_t)(shared); \
+		const SparkGpuStream __lm_stream = (stream); \
+		auto __lm_direct = [&](auto __lm_k) { return(LmLaunchDirect<dependent>(__lm_k, __lm_grid, __lm_block, __lm_shared, __lm_stream, ##__VA_ARGS__)); }; \
 		auto __lm_fb = [&](auto) { LM_UNPAREN kernel<<<dim3(1u), dim3(1u)>>>(__VA_ARGS__); }; \
 		return(LmLaunchSelect(__lm_run, \
-			[&](auto __lm_z) -> decltype(LmLaunchDispatch<dependent>(__lm_z, __lm_fb, LM_UNPAREN kernel, dim3(grid), dim3(block), (size_t)(shared), (stream), ##__VA_ARGS__)) { \
-				return(LmLaunchDispatch<dependent>(__lm_z, __lm_fb, LM_UNPAREN kernel, dim3(grid), dim3(block), (size_t)(shared), (stream), ##__VA_ARGS__)); \
+			[&](auto __lm_z) -> decltype(LmLaunchDispatch<dependent, decltype(LmLaunchCountArgs(__VA_ARGS__))::kCount>(__lm_z, __lm_direct, __lm_fb, LM_UNPAREN kernel, __lm_grid, __lm_block, __lm_shared, __lm_stream)) { \
+				return(LmLaunchDispatch<dependent, decltype(LmLaunchCountArgs(__VA_ARGS__))::kCount>(__lm_z, __lm_direct, __lm_fb, LM_UNPAREN kernel, __lm_grid, __lm_block, __lm_shared, __lm_stream)); \
 			}, \
-			[&](auto) { return(LmLaunchByPointers<dependent>(dim3(grid), dim3(block), (size_t)(shared), (stream), __lm_fb)); })); \
+			[&](auto) { return(LmLaunchByPointers<dependent>(__lm_grid, __lm_block, __lm_shared, __lm_stream, __lm_fb)); })); \
 	}(0))
 
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...) ((void)LM_LAUNCH_CALL(false, kernel, grid, block, shared, stream, ##__VA_ARGS__))
-
-template<typename... Parameters>
-static SparkGpuError LmLaunchDependentKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream,
-	typename LmParameterOf<Parameters>::Type... arguments)
-{ return(LmLaunchDispatch<true>(0,0,kernel,grid,block,shared,stream,arguments...)); }
-#define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) LmLaunchDependentKernel(LM_UNPAREN kernel, dim3(grid), dim3(block), (size_t)(shared), (stream), ##__VA_ARGS__)
+#define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) LM_LAUNCH_CALL(true, kernel, grid, block, shared, stream, ##__VA_ARGS__)
 
 template<typename... Parameters>
 static SparkGpuError LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, uint32_t cluster,
