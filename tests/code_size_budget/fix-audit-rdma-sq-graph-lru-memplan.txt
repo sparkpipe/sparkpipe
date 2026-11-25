@@ -1,0 +1,2 @@
++174
+Code audit (PR #2233) safety fixes: RDMA send queue occupancy guard and bounded CQ drain in node/weightd_mesh.c (+89) and bounded LRU graph cache with graceful eager fallback and graph memory telemetry in inference/runner/stage_runner.cu (+85).

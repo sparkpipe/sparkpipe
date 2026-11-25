@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import re
 import subprocess
 import sys
@@ -113,6 +114,125 @@ def check_build_ignores_site(failures):
                 failures.append(f"{path.relative_to(ROOT)} builds from Markdown {found.group(0)!r}: Markdown changes skip the engine lane")
 
 
+NODE_MEMORY_ENVELOPE_BYTES = 128 * (1024 ** 3)
+SIZE_SUFFIX = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}
+PROVENANCE_REQUIRED_FIELDS = (
+    "lane",
+    "drafter_id",
+    "upstream_repo",
+    "revision",
+    "license",
+    "verified_pack_format",
+)
+
+
+def parse_memory_bytes(value):
+    if isinstance(value, int) and value > 0:
+        return value
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"([1-9][0-9]*)([KMGT])?", value.strip())
+    if match is None:
+        return None
+    return int(match.group(1)) * SIZE_SUFFIX.get(match.group(2) or "", 1)
+
+
+def check_drafter_provenance(failures):
+    lanes_doc = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))
+    engine_doc = json.loads((ROOT / "deployment" / "hub" / "draftd_engine.json").read_text(encoding="utf-8"))
+    provenance_path = ROOT / "deployment" / "drafter_provenance.json"
+    if not provenance_path.is_file():
+        failures.append("deployment/drafter_provenance.json is missing")
+        return 0
+    provenance_doc = json.loads(provenance_path.read_text(encoding="utf-8"))
+    entries = provenance_doc.get("drafters")
+    if not isinstance(entries, list) or not entries:
+        failures.append("deployment/drafter_provenance.json must define a non-empty 'drafters' list")
+        return 0
+    by_lane = {}
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            failures.append(f"deployment/drafter_provenance.json entry #{idx} is not an object")
+            continue
+        lane_name = entry.get("lane")
+        for field in PROVENANCE_REQUIRED_FIELDS:
+            val = entry.get(field)
+            if not isinstance(val, str) or not val.strip():
+                failures.append(f"deployment/drafter_provenance.json lane {lane_name!r}: missing or empty {field!r}")
+        if isinstance(lane_name, str) and lane_name.strip():
+            if lane_name in by_lane:
+                failures.append(f"deployment/drafter_provenance.json duplicate lane {lane_name!r}")
+            by_lane[lane_name] = entry
+    for lane_name, lane_cfg in sorted(lanes_doc.get("lanes", {}).items()):
+        if "draftd" in lane_cfg or "draft_server" in lane_cfg:
+            if lane_name not in by_lane:
+                failures.append(
+                    f"lane {lane_name!r} configures draftd/draft_server in deployment/lanes.json "
+                    f"but has no entry in deployment/drafter_provenance.json"
+                )
+    for engine_lane in engine_doc.get("lanes", []):
+        lane_name = engine_lane.get("name")
+        drafter = engine_lane.get("drafter", {})
+        if lane_name not in by_lane:
+            failures.append(
+                f"draftd_engine.json lane {lane_name!r} has no entry in deployment/drafter_provenance.json"
+            )
+            continue
+        rec = by_lane[lane_name]
+        if drafter.get("model") and rec.get("drafter_id") != drafter.get("model"):
+            failures.append(
+                f"drafter_provenance.json lane {lane_name!r}: drafter_id={rec.get('drafter_id')!r} "
+                f"!= draftd_engine.json model={drafter.get('model')!r}"
+            )
+        if drafter.get("revision") and rec.get("revision") != drafter.get("revision"):
+            failures.append(
+                f"drafter_provenance.json lane {lane_name!r}: revision={rec.get('revision')!r} "
+                f"!= draftd_engine.json revision={drafter.get('revision')!r}"
+            )
+    return len(by_lane)
+
+
+def check_lane_memory_plan(failures):
+    lanes_doc = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))
+    weightd = lanes_doc.get("weightd", {})
+    device_max = weightd.get("device_bytes_max", 0)
+    kv_reserve = weightd.get("kv_reserve_bytes", 0)
+    if device_max <= 0 or kv_reserve <= 0:
+        failures.append(f"deployment/lanes.json weightd must set positive device_bytes_max and kv_reserve_bytes (got {weightd})")
+        return 0
+    if device_max + kv_reserve > NODE_MEMORY_ENVELOPE_BYTES:
+        failures.append(
+            f"deployment/lanes.json weightd device_bytes_max ({device_max / 1024**3:.1f} GiB) + "
+            f"kv_reserve_bytes ({kv_reserve / 1024**3:.1f} GiB) exceeds 128 GiB node envelope"
+        )
+    lanes = lanes_doc.get("lanes", {})
+    for lane_name, lane_cfg in sorted(lanes.items()):
+        state_budget = lane_cfg.get("state_budget_bytes")
+        mem_max = parse_memory_bytes(lane_cfg.get("memory_max"))
+        if not isinstance(state_budget, int) or state_budget <= 0:
+            failures.append(f"lane {lane_name!r}: invalid state_budget_bytes={state_budget!r}")
+            continue
+        if mem_max is None:
+            failures.append(f"lane {lane_name!r}: invalid memory_max={lane_cfg.get('memory_max')!r}")
+            continue
+        total = state_budget + mem_max + kv_reserve
+        if total > NODE_MEMORY_ENVELOPE_BYTES:
+            failures.append(
+                f"lane {lane_name!r} exceeds 128 GiB node envelope: "
+                f"state_budget={state_budget / 1024**3:.1f} GiB + "
+                f"memory_max={mem_max / 1024**3:.1f} GiB + "
+                f"kv_reserve={kv_reserve / 1024**3:.1f} GiB = "
+                f"{total / 1024**3:.1f} GiB > {NODE_MEMORY_ENVELOPE_BYTES / 1024**3:.1f} GiB"
+            )
+        if state_budget + kv_reserve > device_max:
+            failures.append(
+                f"lane {lane_name!r} state_budget ({state_budget / 1024**3:.1f} GiB) + "
+                f"kv_reserve ({kv_reserve / 1024**3:.1f} GiB) exceeds "
+                f"weightd.device_bytes_max ({device_max / 1024**3:.1f} GiB)"
+            )
+    return len(lanes)
+
+
 def main():
     failures = []
     check_classification(failures)
@@ -120,11 +240,13 @@ def main():
     check_fast_tests_exist(failures)
     check_engine_tests_ignore_site(failures)
     check_build_ignores_site(failures)
+    provenance_count = check_drafter_provenance(failures)
+    memory_plan_lanes = check_lane_memory_plan(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print(f"ci lanes: only the {len(ci_lanes.ENGINE_PATHS)} engine paths run the engine lane, and each of the {tracked} tracked files has a lane; {len(ci_lanes.SITE_PATHS)} site paths, {len(ci_lanes.LIGHT_PATHS)} repository paths and Markdown skip it; no engine test or build rule reads the site paths; {len(ci_lanes.light_tests([]))} light tests cover the site and every whole-tree scan, and Markdown changes add the {len(ci_lanes.markdown_tests())} tests that can read Markdown")
+    print(f"ci lanes: only the {len(ci_lanes.ENGINE_PATHS)} engine paths run the engine lane, and each of the {tracked} tracked files has a lane; {len(ci_lanes.SITE_PATHS)} site paths, {len(ci_lanes.LIGHT_PATHS)} repository paths and Markdown skip it; no engine test or build rule reads the site paths; {len(ci_lanes.light_tests([]))} light tests cover the site and every whole-tree scan, and Markdown changes add the {len(ci_lanes.markdown_tests())} tests that can read Markdown; drafter provenance covers {provenance_count} drafters and memory plan fits {memory_plan_lanes} lanes inside 128 GiB")
     return 0
 
 

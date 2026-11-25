@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "drafters": [
+    {
+      "lane": "kimi-k3.1-pro",
+      "drafter_id": "k31dspark",
+      "upstream_repo": "moonshotai/Kimi-K3.1-Pro-DSpark-Preview",
+      "revision": "6a2ef20a05ef",
+      "license": "Modified-MIT",
+      "verified_pack_format": "DRPK v1 (k31dspark.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "qwen3.8-27b",
+      "drafter_id": "qwen27bdspine",
+      "upstream_repo": "Qwen/Qwen3.8-27B-DSpine-b16",
+      "revision": "ac90f1df842e",
+      "license": "Apache-2.0",
+      "verified_pack_format": "DRPK v1 (qwen27bdspine.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "deepseek-v4.1-flash",
+      "drafter_id": "dsv41dspark",
+      "upstream_repo": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "revision": "1017",
+      "license": "MIT",
+      "verified_pack_format": "DRPK v1 (dsv41dspark.mxfp4.tp1.rank0.sp)"
+    },
+    {
+      "lane": "glm-5.3",
+      "drafter_id": "glm53dspark",
+      "upstream_repo": "RedHatAI/GLM-5.3-speculator.dspark",
+      "revision": "198b3ced9d2d",
+      "license": "Apache-2.0",
+      "verified_pack_format": "DRPK v1 (glm53dspark.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "qwen3.8-max",
+      "drafter_id": "qwen38maxdspark",
+      "upstream_repo": "RadixArk/Qwen3.8-2.4T-A95B-DSpark",
+      "revision": "faaee89a1b84",
+      "license": "Apache-2.0",
+      "verified_pack_format": "DRPK v1 (qwen38maxdspark.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "glm-5.3-flash",
+      "drafter_id": "glm53flashdflash2",
+      "upstream_repo": "incoai/GLM-5.3-Flash-DFlash2",
+      "revision": "6cc6c481eee9",
+      "license": "Apache-2.0",
+      "verified_pack_format": "DRPK v1 (glm53flashdflash2.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "k-exaone-2.0",
+      "drafter_id": "kexaone2dspark",
+      "upstream_repo": "LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark",
+      "revision": "e42409dbd652",
+      "license": "EXAONE-AI-Model-License-Agreement-1.2-NC",
+      "verified_pack_format": "DRPK v1 (kexaone2dspark.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "a.x-k2",
+      "drafter_id": "axk2dspark",
+      "upstream_repo": "skt/A.X-K2-DSpark",
+      "revision": "0b278334dfce",
+      "license": "Apache-2.0",
+      "verified_pack_format": "DRPK v1 (axk2dspark.bf16.tp1.rank0.sp)"
+    },
+    {
+      "lane": "kimi-k3",
+      "drafter_id": "kimi-k3-dflash2-lightseek",
+      "upstream_repo": "lightseekorg/kimi-k3-dflash2",
+      "revision": "e77935fb",
+      "license": "MIT",
+      "verified_pack_format": "safetensors (block_draftd)"
+    }
+  ]
+}

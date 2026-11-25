@@ -3193,6 +3193,99 @@ static void test_mesh_record_addresses(uint32_t local_rank)
     CHECK(test_file_contains(log_path,"WD-MESH-ADDRESS-DEADLINE interface=rocep1s0f1 sgid=3"),"the deadline names the interface");
 }
 
+static void test_sq_occupancy_guard(uint32_t local_rank)
+{
+    const uint32_t peer = 0u;
+    const uint32_t peer_rank = test_peer_rank(peer,local_rank);
+    SparkWeightdMeshSendQueue *queue = &weightd_mesh.send_queues[peer];
+    const uint64_t saved_wait_ns = weightd_mesh_sq_wait_ns;
+    const uint64_t saved_stat_logged_ns = weightd_mesh.stat_logged_ns;
+    uint32_t i,depth,produced_before,retired_before,slot0,slot2;
+    uint64_t waits_before,tag = UINT64_C(0x123456789abcdef0),saved_wr0,saved_wr2;
+    uint8_t saved_wqe0[64],saved_wqe2[64];
+    char log_path[256];
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    depth = queue->depth;
+    CHECK(depth == SPARK_WEIGHTD_MESH_SQ_SLOTS,"SQ guard fixture uses full 512-slot mlx5 SQ");
+    CHECK(queue->produced == queue->retired,"SQ starts drained before occupancy guard test");
+    produced_before = queue->produced;
+    retired_before = queue->retired;
+    waits_before = weightd_mesh.stat_sq_full_waits;
+    weightd_mesh_sq_wait_ns = UINT64_C(100000);
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    for ( i = 0u; i < depth; i++ )
+    {
+        uint64_t wr_id = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 1000u + i) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        uint32_t signaled = (i & 1u) != 0u ? 1u : 0u;
+        CHECK(SparkWeightdMeshSqWrite(peer,wr_id,signaled,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,
+            weightd_mesh.recv_mr->lkey,signaled != 0u ? 0u : 64u,(uint64_t)i * 64u,signaled != 0u ? &tag : 0) == SPARK_STATUS_OK,
+            "filling SQ up to depth succeeds without waiting");
+        if ( signaled != 0u )
+            SparkWeightdMeshSqRing(1u << peer);
+    }
+    CHECK(queue->produced - queue->retired == depth,"SQ is completely full at depth 512");
+    CHECK(weightd_mesh.stat_sq_full_waits == waits_before,"filling up to depth does not trigger SQ full waits");
+    slot0 = produced_before & queue->mask;
+    slot2 = (produced_before + 2u) & queue->mask;
+    memcpy(saved_wqe0,queue->buffer + (uint64_t)slot0 * 64u,sizeof(saved_wqe0));
+    memcpy(saved_wqe2,queue->buffer + (uint64_t)slot2 * 64u,sizeof(saved_wqe2));
+    saved_wr0 = queue->wr_id[slot0];
+    saved_wr2 = queue->wr_id[slot2];
+    {
+        uint64_t overflow_wr = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 5000u) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        CHECK(SparkWeightdMeshSqWrite(peer,overflow_wr,1u,0u,0u,0u,0u,&tag) == SPARK_STATUS_BUSY,
+            "stalled completions refuse write 513 instead of overwriting in-flight WQE");
+    }
+    CHECK(weightd_mesh.stat_sq_full_waits == waits_before + 1u,"SQ full wait counter increments on stalled overflow");
+    CHECK(queue->produced == produced_before + depth,"produced does not advance on rejected overflow write");
+    CHECK(memcmp(queue->buffer + (uint64_t)slot0 * 64u,saved_wqe0,sizeof(saved_wqe0)) == 0 && queue->wr_id[slot0] == saved_wr0,
+        "in-flight WQE slot 0 is untouched after stalled overflow");
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    CHECK(SparkWeightdMeshPostWrite(peer_rank,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_BUSY,
+        "SparkWeightdMeshPostWrite also refuses when SQ is full");
+    CHECK(weightd_mesh.stat_sq_full_waits == waits_before + 2u,"PostWrite increments SQ full wait counter");
+    CHECK(memcmp(queue->buffer + (uint64_t)slot0 * 64u,saved_wqe0,sizeof(saved_wqe0)) == 0 && queue->wr_id[slot0] == saved_wr0,
+        "PostWrite refusal leaves in-flight WQE slot 0 intact");
+    {
+        uint64_t first_tail_wr = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 1001u) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        uint64_t next_wr0 = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 5001u) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        uint64_t next_wr1 = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 5002u) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        uint64_t next_wr2 = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 5003u) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        CHECK(spark_stub_ibv_complete(first_tail_wr,IBV_WC_SUCCESS) == 0,"inject single signaled completion for WQE pair 0..1");
+        pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        CHECK(SparkWeightdMeshSqWrite(peer,next_wr0,0u,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,
+            weightd_mesh.recv_mr->lkey,64u,0u,0) == SPARK_STATUS_OK,
+            "SQ guard drains CQ internally and retires unsignaled + signaled WQEs");
+        CHECK(weightd_mesh.stat_sq_full_waits == waits_before + 3u,"CQ-drain recovery counts as one SQ full wait");
+        CHECK(queue->retired == retired_before + 2u,"signaled completion advances retired past both unsignaled WQE 0 and signaled WQE 1");
+        CHECK(SparkWeightdMeshSqWrite(peer,next_wr1,1u,0u,0u,0u,64u,&tag) == SPARK_STATUS_OK,
+            "second freed slot admits paired signaled write without waiting");
+        SparkWeightdMeshSqRing(1u << peer);
+        CHECK(weightd_mesh.stat_sq_full_waits == waits_before + 3u,"second slot uses retired headroom without extra wait");
+        CHECK(SparkWeightdMeshSqWrite(peer,next_wr2,1u,0u,0u,0u,128u,&tag) == SPARK_STATUS_BUSY,
+            "re-filled SQ rejects again before overwriting in-flight slot 2");
+        CHECK(memcmp(queue->buffer + (uint64_t)slot2 * 64u,saved_wqe2,sizeof(saved_wqe2)) == 0 && queue->wr_id[slot2] == saved_wr2,
+            "in-flight WQE slot 2 remains intact after wraparound boundary");
+        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    }
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-sq-stats.log",SPARK_WEIGHTD_MESH_DIR);
+    weightd_mesh.stat_logged_ns = 0u;
+    test_capture_begin(log_path);
+    SparkWeightdMeshRepairAndReport();
+    test_capture_end();
+    CHECK(test_file_contains(log_path,"WD-MESH-STATS") && test_file_contains(log_path,"sq_full_waits=4"),
+        "WD-MESH-STATS reports exact sq_full_waits count");
+    (void)unlink(log_path);
+    weightd_mesh.stat_logged_ns = saved_stat_logged_ns;
+    {
+        uint64_t final_tail_wr = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 5002u) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
+        CHECK(spark_stub_ibv_complete(final_tail_wr,IBV_WC_SUCCESS) == 0,"complete final signaled WQE to drain entire SQ");
+        SparkWeightdMeshDrainCq();
+        CHECK(queue->produced == queue->retired,"final signaled completion retires all 514 WQEs cleanly");
+    }
+    weightd_mesh_sq_wait_ns = saved_wait_ns;
+}
+
 int main(void)
 {
     alarm(30);
@@ -3394,6 +3487,7 @@ int main(void)
     test_pair_first_routes(local_rank);
     test_permutation_schedule(local_rank);
     test_e14_rdma_verbs_fastpath(local_rank);
+    test_sq_occupancy_guard(local_rank);
     test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not
