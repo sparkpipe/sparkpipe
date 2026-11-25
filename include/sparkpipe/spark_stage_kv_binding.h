@@ -131,6 +131,7 @@ typedef struct SparkStageKvLayoutIdentity
 #define SPARK_STAGE_KV_LANE_STATE_RESTORE_READY 0x1u
 #define SPARK_STAGE_KV_LANE_STATE_CAPTURED 0x2u
 #define SPARK_STAGE_KV_LANE_STATE_LOADING 0x4u
+#define SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS 4u
 
 typedef SparkStatus (*SparkStageKvRecurrentCopyFunction)(void *context,uint32_t direction,uint32_t resident_slot,void *buffer,uint64_t bytes,SparkDeviceQueue *queue);
 
@@ -351,7 +352,10 @@ struct SparkStageKvBinding
 	SparkStageKvRecurrent recurrent;
 	SparkKvPageStore state_store;
 	uint8_t *state_staging;
-	SparkDeviceBuffer lane_state;
+	SparkDeviceBuffer *lane_state_slots;
+	uint64_t *lane_state_use_epoch;
+	uint32_t *lane_state_in_use;
+	uint64_t lane_state_epoch;
 	uint8_t *lane_state_flags;
 	uint8_t *lane_held_digests;
 	uint32_t *lane_held_pages;
@@ -361,7 +365,7 @@ struct SparkStageKvBinding
 	uint64_t *lane_staged_sequences;
 	uint8_t *snapshot_state;
 	uint32_t state_slot_count;
-	uint32_t reserved_recurrent;
+	uint32_t lane_state_allocated_count;
 	uint64_t page_store_backing_bytes;
 	atomic_ullong recurrent_restores;
 	atomic_ullong recurrent_restore_skips;

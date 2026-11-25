@@ -421,6 +421,8 @@ static void SparkStageKvBindingFreeCompletions(SparkStageKvBinding *binding)
 static void *SparkStageKvBindingCompletionMain(void *context);
 static SparkStatus SparkStageKvBindingRecurrentAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,uint64_t *held);
 static void SparkStageKvCommitStaged(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,uint64_t *held);
+static uint32_t SparkStageKvTrimLaneStatesLocked(SparkStageKvBinding *binding,uint32_t keep_limit,SparkDeviceBuffer *doomed,uint32_t capacity);
+static void SparkStageKvFreeBuffers(SparkDeviceBuffer *buffers,uint32_t count);
 static void *SparkStageKvBindingSaveMain(void *context);
 
 _Static_assert(SPARK_STAGE_KV_RESTORE_SLOTS <= 64u,"restore slots are held in a 64-bit mask");
@@ -914,8 +916,9 @@ static const char *SparkStageKvBindingMissingIdentity(const SparkStageKvConfigur
 
 static SparkStatus SparkStageKvBindingAllocateStates(SparkStageKvBinding *binding)
 {
-	uint64_t bytes = (uint64_t)binding->resident_sequence_capacity * binding->recurrent.lane_bytes;
-	(void)SparkStageKvBindingPin(binding,&binding->lane_state,bytes);
+	binding->lane_state_slots = (SparkDeviceBuffer *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_state_slots));
+	binding->lane_state_use_epoch = (uint64_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_state_use_epoch));
+	binding->lane_state_in_use = (uint32_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_state_in_use));
 	binding->state_staging = (uint8_t *)malloc((size_t)binding->recurrent.lane_bytes);
 	binding->lane_state_flags = (uint8_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_state_flags));
 	binding->lane_held_digests = (uint8_t *)calloc(binding->resident_sequence_capacity,SPARK_KV_PAGE_STORE_DIGEST_BYTES);
@@ -924,7 +927,8 @@ static SparkStatus SparkStageKvBindingAllocateStates(SparkStageKvBinding *bindin
 	binding->lane_staged_pages = (uint32_t *)malloc((size_t)binding->resident_sequence_capacity * sizeof(*binding->lane_staged_pages));
 	binding->lane_staged_generations = (uint64_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_staged_generations));
 	binding->lane_staged_sequences = (uint64_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_staged_sequences));
-	if ( binding->lane_state.host == 0 || binding->state_staging == 0 || binding->lane_state_flags == 0 ||
+	if ( binding->lane_state_slots == 0 || binding->lane_state_use_epoch == 0 || binding->lane_state_in_use == 0 ||
+		binding->state_staging == 0 || binding->lane_state_flags == 0 ||
 		binding->lane_staged_pages == 0 || binding->lane_staged_generations == 0 || binding->lane_staged_sequences == 0 ||
 		binding->lane_held_digests == 0 || binding->lane_held_pages == 0 || binding->lane_held_generations == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1813,7 +1817,15 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->snapshot_links);
 	free(binding->snapshot_pending);
 	free(binding->snapshot_state);
-	SparkStageKvBindingRelease(&binding->lane_state);
+	if ( binding->lane_state_slots != 0 )
+	{
+		uint32_t slot;
+		for (slot=0u; slot<binding->resident_sequence_capacity; slot++)
+			SparkStageKvBindingRelease(&binding->lane_state_slots[slot]);
+	}
+	free(binding->lane_state_slots);
+	free(binding->lane_state_use_epoch);
+	free(binding->lane_state_in_use);
 	free(binding->state_staging);
 	free(binding->lane_state_flags);
 	free(binding->lane_held_digests);
@@ -1865,8 +1877,9 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
 {
+	SparkDeviceBuffer doomed[SPARK_STAGE_KV_RESTORE_SLOTS];
 	SparkStatus status;
-	uint32_t lane;
+	uint32_t lane,doomed_count = 0u;
 	uint64_t held;
 	if ( binding == 0 || request == 0 || decision == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1890,8 +1903,12 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 	if ( status == SPARK_STATUS_OK && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u )
 		for (lane=0u; lane<request->cache_lane_count; lane++)
 			atomic_store_explicit(&binding->lane_bound[request->cache_lanes[lane].resident_sequence_slot],0u,memory_order_release);
+	if ( status == SPARK_STATUS_OK && ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u ||
+		request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) )
+		doomed_count = SparkStageKvTrimLaneStatesLocked(binding,SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS,doomed,SPARK_STAGE_KV_RESTORE_SLOTS);
 	SparkStageKvBindingWakeSaver(binding);
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,held);
+	SparkStageKvFreeBuffers(doomed,doomed_count);
 	if ( status == SPARK_STATUS_PENDING )
 		return(status);
 	if ( status != SPARK_STATUS_OK )
@@ -1907,9 +1924,10 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 
 SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t generation)
 {
+	SparkDeviceBuffer doomed[SPARK_STAGE_KV_RESTORE_SLOTS];
 	SparkStatus status;
 	uint64_t held;
-	uint32_t lane;
+	uint32_t lane,doomed_count = 0u;
 	if ( binding == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvBindingLock(binding,&held);
@@ -1931,9 +1949,11 @@ SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t gener
 		{
 			memset(binding->lane_state_flags,0,binding->resident_sequence_capacity);
 			memset(binding->lane_staged_pages,0xff,(size_t)binding->resident_sequence_capacity * sizeof(*binding->lane_staged_pages));
+			doomed_count = SparkStageKvTrimLaneStatesLocked(binding,0u,doomed,SPARK_STAGE_KV_RESTORE_SLOTS);
 		}
 	}
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_RESET,held);
+	SparkStageKvFreeBuffers(doomed,doomed_count);
 	SPARK_RETURN(status);
 }
 
@@ -2152,14 +2172,110 @@ typedef struct SparkStageKvStateJob
 	uint32_t reserved0;
 } SparkStageKvStateJob;
 
-static uint64_t SparkStageKvLaneStateOffset(const SparkStageKvBinding *binding,uint32_t slot)
-{
-	return((uint64_t)slot * binding->recurrent.lane_bytes);
-}
-
 static uint8_t *SparkStageKvLaneState(const SparkStageKvBinding *binding,uint32_t slot)
 {
-	return((uint8_t *)binding->lane_state.host + SparkStageKvLaneStateOffset(binding,slot));
+	return((uint8_t *)binding->lane_state_slots[slot].host);
+}
+
+static void SparkStageKvFreeBuffers(SparkDeviceBuffer *buffers,uint32_t count)
+{
+	uint32_t index;
+	for (index=0u; index<count; index++)
+		SparkStageKvBindingRelease(&buffers[index]);
+}
+
+static void SparkStageKvLaneForgets(SparkStageKvBinding *binding,uint32_t slot);
+
+static uint32_t SparkStageKvTrimLaneStatesLocked(SparkStageKvBinding *binding,uint32_t keep_limit,SparkDeviceBuffer *doomed,uint32_t capacity)
+{
+	uint32_t count = 0u,slot,victim;
+	if ( binding->recurrent.lane_bytes == 0u || binding->lane_state_slots == 0 )
+		return(0u);
+	while ( binding->lane_state_allocated_count > keep_limit && count < capacity )
+	{
+		victim = binding->resident_sequence_capacity;
+		for (slot=0u; slot<binding->resident_sequence_capacity; slot++)
+		{
+			if ( binding->lane_state_slots[slot].host == 0 || binding->lane_state_in_use[slot] != 0u ||
+				binding->lanes[slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY || binding->lane_state_flags[slot] != 0u ||
+				binding->lane_staged_pages[slot] != SPARK_KV_CACHE_NO_BLOCK ||
+				atomic_load_explicit(&binding->lane_bound[slot],memory_order_acquire) != 0u )
+				continue;
+			if ( victim == binding->resident_sequence_capacity ||
+				binding->lane_state_use_epoch[slot] < binding->lane_state_use_epoch[victim] )
+				victim = slot;
+		}
+		if ( victim == binding->resident_sequence_capacity )
+			break;
+		SparkStageKvLaneForgets(binding,victim);
+		doomed[count++] = binding->lane_state_slots[victim];
+		memset(&binding->lane_state_slots[victim],0,sizeof(binding->lane_state_slots[victim]));
+		binding->lane_state_use_epoch[victim] = 0u;
+		binding->lane_state_allocated_count--;
+	}
+	return(count);
+}
+
+static void SparkStageKvReleaseLaneStatesUseLocked(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t count)
+{
+	uint32_t index;
+	for (index=0u; index<count; index++)
+		binding->lane_state_in_use[slots[index]]--;
+}
+
+static SparkStatus SparkStageKvAcquireLaneStatesLocked(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t count,uint32_t site,uint64_t *held)
+{
+	SparkDeviceBuffer fresh[SPARK_STAGE_KV_RESTORE_SLOTS],extra[SPARK_STAGE_KV_RESTORE_SLOTS];
+	uint32_t missing[SPARK_STAGE_KV_RESTORE_SLOTS];
+	uint32_t index,scan,slot,missing_count = 0u,allocated = 0u,extra_count = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	for (index=0u; index<count; index++)
+	{
+		slot = slots[index];
+		binding->lane_state_in_use[slot]++;
+		binding->lane_state_use_epoch[slot] = ++binding->lane_state_epoch;
+		if ( binding->lane_state_slots[slot].host != 0 )
+			continue;
+		for (scan=0u; scan<missing_count && missing[scan] != slot; scan++)
+			;
+		if ( scan == missing_count )
+			missing[missing_count++] = slot;
+	}
+	if ( missing_count == 0u )
+		return(SPARK_STATUS_OK);
+	SparkStageKvBindingUnlock(binding,site,*held);
+	for (index=0u; index<missing_count && status == SPARK_STATUS_OK; index++)
+	{
+		status = SparkStageKvBindingPin(binding,&fresh[index],binding->recurrent.lane_bytes);
+		if ( status == SPARK_STATUS_OK )
+			allocated++;
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkStageKvFreeBuffers(fresh,allocated);
+		(void)SparkStageKvBindingLock(binding,held);
+		SparkStageKvReleaseLaneStatesUseLocked(binding,slots,count);
+		SPARK_RETURN(status);
+	}
+	(void)SparkStageKvBindingLock(binding,held);
+	for (index=0u; index<missing_count; index++)
+	{
+		slot = missing[index];
+		if ( binding->lane_state_slots[slot].host == 0 )
+		{
+			binding->lane_state_slots[slot] = fresh[index];
+			binding->lane_state_allocated_count++;
+		}
+		else
+			extra[extra_count++] = fresh[index];
+	}
+	if ( extra_count != 0u )
+	{
+		SparkStageKvBindingUnlock(binding,site,*held);
+		SparkStageKvFreeBuffers(extra,extra_count);
+		(void)SparkStageKvBindingLock(binding,held);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkStageKvTerminalMutablePage(const SparkKvPageCacheSequence *sequence)
@@ -2378,12 +2494,30 @@ static SparkStatus SparkStageKvBindingRecurrentAdmit(SparkStageKvBinding *bindin
 		return(SPARK_STATUS_OK);
 	}
 	reset = binding->reset_generation;
-	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,*held);
-	start = SparkMonotonicNs();
-	for (index=0u; index<count; index++)
-		jobs[index].status = SparkStageKvStateRead(binding,&jobs[index]);
-	atomic_fetch_add(&binding->recurrent_restore_ns,SparkMonotonicNs() - start);
-	(void)SparkStageKvBindingLock(binding,held);
+	{
+		uint32_t restore_slots[SPARK_STAGE_KV_RESTORE_SLOTS];
+		for (index=0u; index<count; index++)
+			restore_slots[index] = jobs[index].slot;
+		status = SparkStageKvAcquireLaneStatesLocked(binding,restore_slots,count,SPARK_STAGE_KV_LOCK_SITE_ADMIT,held);
+		if ( status != SPARK_STATUS_OK )
+		{
+			for (index=0u; index<count; index++)
+				binding->lane_state_flags[jobs[index].slot] &= (uint8_t)~SPARK_STAGE_KV_LANE_STATE_LOADING;
+			SparkStageKvAbortPrepared(binding,request);
+			free(jobs);
+			SPARK_RETURN(status);
+		}
+		if ( binding->reset_generation == reset )
+		{
+			SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,*held);
+			start = SparkMonotonicNs();
+			for (index=0u; index<count; index++)
+				jobs[index].status = SparkStageKvStateRead(binding,&jobs[index]);
+			atomic_fetch_add(&binding->recurrent_restore_ns,SparkMonotonicNs() - start);
+			(void)SparkStageKvBindingLock(binding,held);
+		}
+		SparkStageKvReleaseLaneStatesUseLocked(binding,restore_slots,count);
+	}
 	if ( binding->reset_generation != reset )
 	{
 		for (index=0u; index<count; index++)
@@ -2518,9 +2652,11 @@ static void SparkStageKvCommitStaged(SparkStageKvBinding *binding,const SparkMod
 		}
 		job = (SparkStageKvStateJob){.slot=slot,.page=page,.generation=binding->lane_staged_generations[slot]};
 		reset = binding->reset_generation;
+		binding->lane_state_in_use[slot]++;
 		SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,*held);
 		status = SparkStageKvWriteJob(binding,&job,SPARK_STAGE_KV_LOCK_SITE_ADMIT,held);
 		(void)SparkStageKvBindingLock(binding,held);
+		binding->lane_state_in_use[slot]--;
 		if ( binding->reset_generation != reset )
 		{
 			fprintf(stderr,"%s kv binding staged checkpoint of lane %u raced a reset and is dropped\n",binding->module_tag,slot);
@@ -2560,12 +2696,16 @@ static SparkStatus SparkStageKvBindingWriteStates(SparkStageKvBinding *binding,c
 		SPARK_RETURN(result);
 	}
 	reset = binding->reset_generation;
+	for (index=0u; index<count; index++)
+		binding->lane_state_in_use[jobs[index].slot]++;
 	SparkStageKvBindingUnlock(binding,site,*held);
 	start = SparkMonotonicNs();
 	for (index=0u; index<count && result==SPARK_STATUS_OK; index++)
 		result = SparkStageKvWriteJob(binding,&jobs[index],site,held);
 	atomic_fetch_add(&binding->recurrent_capture_ns,SparkMonotonicNs() - start);
 	(void)SparkStageKvBindingLock(binding,held);
+	for (index=0u; index<count; index++)
+		binding->lane_state_in_use[jobs[index].slot]--;
 	free(jobs);
 	if ( binding->reset_generation != reset )
 	{
@@ -2600,13 +2740,13 @@ static SparkStatus SparkStageKvBindingCopyLanes(SparkStageKvBinding *binding,uin
 			SparkStageKvLaneForgets(binding,slots[index]);
 	for (index=0u; index<count && status==SPARK_STATUS_OK; index++)
 		status = binding->recurrent.copy(binding->recurrent.context,direction,slots[index],
-			(void *)(uintptr_t)(binding->lane_state.device + SparkStageKvLaneStateOffset(binding,slots[index])),binding->recurrent.lane_bytes,queue);
+			(void *)(uintptr_t)binding->lane_state_slots[slots[index]].device,binding->recurrent.lane_bytes,queue);
 	SPARK_RETURN(status);
 }
 
 SparkStatus SparkStageKvBindingRecurrentRestore(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkDeviceQueue *queue)
 {
-	uint32_t *slots,index,slot,count = 0u;
+	uint32_t *slots,index,slot,count = 0u,acquired = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
 	uint64_t held;
 	if ( binding == 0 || resident_slots == 0 || binding->mutex_initialized == 0u )
@@ -2630,16 +2770,28 @@ SparkStatus SparkStageKvBindingRecurrentRestore(SparkStageKvBinding *binding,con
 		else if ( binding->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EXECUTING && SparkKvLaneTransactionPrefixRestorePending(&binding->lanes[slot]) != 0u )
 			status = SPARK_STATUS_VALIDATION_FAILED;
 	}
+	if ( status == SPARK_STATUS_OK && count != 0u )
+	{
+		status = SparkStageKvAcquireLaneStatesLocked(binding,slots,count,SPARK_STAGE_KV_LOCK_SITE_CLAIM,&held);
+		acquired = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_CLAIM,held);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && count != 0u )
 		status = SparkStageKvBindingCopyLanes(binding,SPARK_STAGE_KV_RECURRENT_FROM_BUFFER,slots,count,queue);
+	if ( acquired != 0u )
+	{
+		(void)SparkStageKvBindingLock(binding,&held);
+		SparkStageKvReleaseLaneStatesUseLocked(binding,slots,count);
+		SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_CLAIM,held);
+	}
 	free(slots);
 	SPARK_RETURN(status);
 }
 
 SparkStatus SparkStageKvBindingRecurrentCapture(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkDeviceQueue *queue)
 {
-	uint32_t *slots,index,slot,count = 0u;
+	uint8_t keeps[SPARK_STAGE_KV_RESTORE_SLOTS];
+	uint32_t *slots,index,slot,count = 0u,acquired = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
 	uint64_t held;
 	if ( binding == 0 || resident_slots == 0 || binding->mutex_initialized == 0u )
@@ -2657,15 +2809,32 @@ SparkStatus SparkStageKvBindingRecurrentCapture(SparkStageKvBinding *binding,con
 			status = SPARK_STATUS_INVALID_ARGUMENT;
 		else if ( binding->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EXECUTING && SparkStageKvLaneKeepsState(binding->lanes[slot].lane.flags) != 0u )
 		{
-			binding->lane_state_flags[slot] |= SPARK_STAGE_KV_LANE_STATE_CAPTURED;
+			keeps[count] = 1u;
 			slots[count++] = slot;
 		}
 		else if ( binding->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EXECUTING && SparkStageKvLaneStages(binding->lanes[slot].lane.flags) != 0u )
+		{
+			keeps[count] = 0u;
 			slots[count++] = slot;
+		}
+	}
+	if ( status == SPARK_STATUS_OK && count != 0u )
+	{
+		status = SparkStageKvAcquireLaneStatesLocked(binding,slots,count,SPARK_STAGE_KV_LOCK_SITE_FINISH,&held);
+		acquired = status == SPARK_STATUS_OK ? 1u : 0u;
+		for (index=0u; acquired != 0u && index<count; index++)
+			if ( keeps[index] != 0u )
+				binding->lane_state_flags[slots[index]] |= SPARK_STAGE_KV_LANE_STATE_CAPTURED;
 	}
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_FINISH,held);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && count != 0u )
 		status = SparkStageKvBindingCopyLanes(binding,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,slots,count,queue);
+	if ( acquired != 0u )
+	{
+		(void)SparkStageKvBindingLock(binding,&held);
+		SparkStageKvReleaseLaneStatesUseLocked(binding,slots,count);
+		SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_FINISH,held);
+	}
 	free(slots);
 	SPARK_RETURN(status);
 }
@@ -2795,9 +2964,17 @@ static SparkStatus SparkStageKvBindingPublishStates(SparkStageKvBinding *binding
 	SparkStatus status,result;
 	uint64_t reset = binding->reset_generation;
 	uint32_t raced = 0u;
-	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_PUBLISH,*held);
-	status = SparkStageKvBindingCopyLanes(binding,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,indices,lane_count,0);
-	(void)SparkStageKvBindingLock(binding,held);
+	status = SparkStageKvAcquireLaneStatesLocked(binding,indices,lane_count,SPARK_STAGE_KV_LOCK_SITE_PUBLISH,held);
+	if ( status == SPARK_STATUS_OK )
+	{
+		if ( binding->reset_generation == reset )
+		{
+			SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_PUBLISH,*held);
+			status = SparkStageKvBindingCopyLanes(binding,SPARK_STAGE_KV_RECURRENT_TO_BUFFER,indices,lane_count,0);
+			(void)SparkStageKvBindingLock(binding,held);
+		}
+		SparkStageKvReleaseLaneStatesUseLocked(binding,indices,lane_count);
+	}
 	if ( binding->reset_generation != reset )
 	{
 		fprintf(stderr,"%s kv binding refused: state restore for request %s raced a reset\n",binding->module_tag,"publish");
