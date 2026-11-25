@@ -29,6 +29,7 @@
 #include "inference/kernels/stream_gemm.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_group.cuh"
+#include "inference/kernels/weight_prefetch.cuh"
 #include "runtime/gemm.cuh"
 
 #include "sparkpipe/spark_ling_family.h"
@@ -153,6 +154,7 @@ struct LingState : CudaStagePackState
 	uint32_t *route_source_token;
 	uint32_t *tile_prefix_up;
 	uint32_t *tile_prefix_down;
+	uint32_t *active_experts;
 	float *packed_weight;
 	uint16_t *expert_gate;
 	uint16_t *expert_up;
@@ -176,6 +178,8 @@ struct LingSiluClampOp
 		return WEIGHTED ? activated * weight : activated;
 	}
 };
+
+#include "ling_fast.cuh"
 
 template<uint32_t WIDTH, bool ROUND_FIRST, bool HAS_ADD>
 __global__ __launch_bounds__(LG_THREADS, 2)
@@ -284,50 +288,6 @@ static void LingSmallNBf16ProjKernel(const uint16_t *__restrict__ weight, const 
 				acc += __shfl_down_sync(0xffffffffu, acc, offset);
 			if ( lane == 0u )
 				output[(uint64_t)row * output_dim + n] = LmFloatToBf16(acc);
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t RANK, uint32_t OUT_DIM>
-__global__ __launch_bounds__(LG_THREADS, 2)
-static void LingKdaLowRankPairB1Kernel(const uint16_t *__restrict__ w_f, const uint16_t *__restrict__ in_f, uint16_t *__restrict__ out_f,
-	const uint16_t *__restrict__ w_g, const uint16_t *__restrict__ in_g, uint16_t *__restrict__ out_g)
-{
-	constexpr uint32_t CHUNKS = RANK >> 3u;
-	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = LG_THREADS / LANES;
-	const uint32_t which = blockIdx.y;
-	const uint32_t group = threadIdx.x / LANES, sub = threadIdx.x & (LANES - 1u);
-	const uint32_t col0 = (blockIdx.x * GROUPS + group) * 2u;
-	const uint4 *w_base = (const uint4 *)(which == 0u ? w_f : w_g);
-	const uint4 *a_base = (const uint4 *)(which == 0u ? in_f : in_g);
-	uint16_t *dst = which == 0u ? out_f : out_g;
-	LmDependentWait();
-	if ( col0 < OUT_DIM )
-	{
-		const bool has1 = col0 + 1u < OUT_DIM;
-		const uint4 *w0 = w_base + (uint64_t)col0 * CHUNKS;
-		const uint4 *w1 = has1 ? w0 + CHUNKS : w0;
-		float acc0 = 0.0f, acc1 = 0.0f;
-		#pragma unroll
-		for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-		{
-			const uint4 va = __ldg(a_base + c);
-			acc0 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w0 + c), va, 0.0f), acc0);
-			acc1 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w1 + c), va, 0.0f), acc1);
-		}
-		#pragma unroll
-		for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
-		{
-			acc0 += __shfl_down_sync(0xffffffffu, acc0, offset);
-			acc1 += __shfl_down_sync(0xffffffffu, acc1, offset);
-		}
-		if ( sub == 0u )
-		{
-			dst[col0] = LmFloatToBf16(acc0);
-			if ( has1 )
-				dst[col0 + 1u] = LmFloatToBf16(acc1);
 		}
 	}
 	LmDependentRelease();
@@ -809,220 +769,6 @@ static void LingSiluMulLimitKernel(const uint16_t *__restrict__ gate_up, uint16_
 	LmDependentRelease();
 }
 
-template<uint32_t EXPERTS, uint32_t GROUPS, uint32_t TOPK_GROUPS, uint32_t TOPK>
-static __device__ __forceinline__ void LingGroupTopkWarp(const float *__restrict__ logits, const float *__restrict__ bias, uint32_t row,
-	uint32_t expert_first, uint32_t local_experts, float scale, uint32_t *__restrict__ fault, float *__restrict__ gscore_warp,
-	uint32_t *__restrict__ out_exp, float *__restrict__ out_wt, uint32_t lane)
-{
-	constexpr uint32_t PER_LANE = (EXPERTS + 31u) / 32u;
-	constexpr uint32_t PER_GROUP = EXPERTS / GROUPS;
-	float sc[PER_LANE];
-	float sel_v[GROUPS > 1u ? PER_LANE : 1u];
-	unsigned long long key[PER_LANE];
-	const uint64_t row_base = (uint64_t)row * EXPERTS;
-	#pragma unroll
-	for ( uint32_t j = 0u; j < PER_LANE; ++j )
-	{
-		const uint32_t e = lane + j * 32u;
-		if ( e < EXPERTS )
-		{
-			const float s = SparkMathSigmoid(logits[row_base + e]);
-			const float sel = s + (bias != 0 ? bias[e] : 0.0f);
-			sc[j] = s;
-			if constexpr ( GROUPS > 1u )
-				sel_v[j] = sel;
-			key[j] = ((unsigned long long)LmTopkRouteKey(sel + 0.0f) << 32u) | (0xffffffffu - e);
-		}
-		else
-		{
-			sc[j] = 0.0f;
-			if constexpr ( GROUPS > 1u )
-				sel_v[j] = -INFINITY;
-			key[j] = 0ull;
-		}
-	}
-	if constexpr ( GROUPS > 1u )
-	{
-		#pragma unroll
-		for ( uint32_t g = 0u; g < GROUPS; ++g )
-		{
-			float m1 = -INFINITY, m2 = -INFINITY;
-			#pragma unroll
-			for ( uint32_t j = 0u; j < PER_LANE; ++j )
-			{
-				const uint32_t e = lane + j * 32u;
-				if ( e < EXPERTS && (e / PER_GROUP) == g )
-				{
-					const float v = sel_v[j];
-					if ( v > m1 ) { m2 = m1; m1 = v; }
-					else if ( v > m2 ) { m2 = v; }
-				}
-			}
-			#pragma unroll
-			for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-			{
-				const float om1 = __shfl_down_sync(0xffffffffu, m1, offset);
-				const float om2 = __shfl_down_sync(0xffffffffu, m2, offset);
-				if ( om1 > m1 ) { m2 = fmaxf(m1, om2); m1 = om1; }
-				else { m2 = fmaxf(m2, om1); }
-			}
-			if ( lane == 0u )
-				gscore_warp[g] = m1 + m2;
-		}
-		uint32_t open_mask = 0u;
-		if ( lane == 0u )
-		{
-			#pragma unroll
-			for ( uint32_t pick = 0u; pick < TOPK_GROUPS; ++pick )
-			{
-				uint32_t best = GROUPS;
-				float best_v = -INFINITY;
-				#pragma unroll
-				for ( uint32_t g = 0u; g < GROUPS; ++g )
-				{
-					if ( ((open_mask >> g) & 1u) == 0u && (best == GROUPS || gscore_warp[g] > best_v) )
-					{
-						best = g;
-						best_v = gscore_warp[g];
-					}
-				}
-				open_mask |= 1u << best;
-			}
-		}
-		open_mask = __shfl_sync(0xffffffffu, open_mask, 0u);
-		#pragma unroll
-		for ( uint32_t j = 0u; j < PER_LANE; ++j )
-		{
-			const uint32_t e = lane + j * 32u;
-			if ( e < EXPERTS && ((open_mask >> (e / PER_GROUP)) & 1u) == 0u )
-				key[j] = 0ull;
-		}
-	}
-	float total = 0.0f;
-	#pragma unroll
-	for ( uint32_t pick = 0u; pick < TOPK; ++pick )
-	{
-		unsigned long long best = 0ull;
-		#pragma unroll
-		for ( uint32_t j = 0u; j < PER_LANE; ++j )
-			best = key[j] > best ? key[j] : best;
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		{
-			const unsigned long long other = __shfl_xor_sync(0xffffffffu, best, offset);
-			best = other > best ? other : best;
-		}
-		const uint32_t e = 0xffffffffu - (uint32_t)best;
-		const uint32_t owner_lane = e & 31u;
-		float picked_s = 0.0f;
-		#pragma unroll
-		for ( uint32_t j = 0u; j < PER_LANE; ++j )
-			if ( lane + j * 32u == e )
-			{
-				picked_s = sc[j];
-				key[j] = 0ull;
-			}
-		picked_s = __shfl_sync(0xffffffffu, picked_s, (int)owner_lane);
-		total += picked_s;
-		if ( lane == 0u )
-		{
-			out_exp[pick] = e;
-			out_wt[pick] = picked_s;
-			LmTopkRouteFault(fault, (uint32_t)(best >> 32u));
-		}
-	}
-	if ( lane == 0u )
-	{
-		const float denom = total + 1e-20f;
-		#pragma unroll
-		for ( uint32_t pick = 0u; pick < TOPK; ++pick )
-		{
-			const uint32_t ge = out_exp[pick];
-			if ( ge >= expert_first && ge < expert_first + local_experts )
-			{
-				out_exp[pick] = ge - expert_first;
-				out_wt[pick] = out_wt[pick] / denom * scale;
-			}
-			else
-			{
-				out_exp[pick] = local_experts;
-				out_wt[pick] = 0.0f;
-			}
-		}
-	}
-}
-
-template<class G>
-__global__ __launch_bounds__(LG_THREADS, 1)
-static void LingGroupRouteSmallKernel(const float *__restrict__ logits, const float *__restrict__ bias, uint32_t rows, uint32_t expert_first,
-	uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ packed_expert,
-	uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
-	float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up, uint32_t n_down,
-	uint32_t *__restrict__ tile_prefix_down)
-{
-	constexpr uint32_t WARPS = LG_THREADS / LM_WARP_LANES;
-	__shared__ float s_gscore[WARPS][G::kGroups > 1u ? G::kGroups : 1u];
-	__shared__ uint32_t s_exp[32];
-	__shared__ float s_wt[32];
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, routes = rows * G::kTopK;
-	LmDependentWait();
-	if ( warp < rows )
-		LingGroupTopkWarp<G::kExperts, G::kGroups, G::kTopkGroups, G::kTopK>(logits, bias, warp, expert_first, G::kLocalExperts, G::kRouteScale,
-			fault, s_gscore[warp], s_exp + warp * G::kTopK, s_wt + warp * G::kTopK, lane);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		route_expert[threadIdx.x] = s_exp[threadIdx.x];
-		route_weight[threadIdx.x] = s_wt[threadIdx.x];
-	}
-	LmRouteBuildSmallBody<LG_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
-		tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		const uint32_t packed = route_packed_row[threadIdx.x];
-		packed_weight[packed] = s_wt[threadIdx.x];
-		packed_expert[packed] = s_exp[threadIdx.x];
-	}
-	LmDependentRelease();
-}
-
-template<class G>
-__global__ __launch_bounds__(LG_THREADS, 2)
-static void LingGroupTopkLocalKernel(const float *__restrict__ logits, const float *__restrict__ bias, uint32_t rows, uint32_t expert_first,
-	uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
-{
-	constexpr uint32_t WARPS = LG_THREADS / LM_WARP_LANES;
-	__shared__ float s_gscore[WARPS][G::kGroups > 1u ? G::kGroups : 1u];
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t row = blockIdx.x * WARPS + warp;
-	LmDependentWait();
-	if ( row < rows )
-		LingGroupTopkWarp<G::kExperts, G::kGroups, G::kTopkGroups, G::kTopK>(logits, bias, row, expert_first, G::kLocalExperts, G::kRouteScale,
-			fault, s_gscore[warp], route_expert + (uint64_t)row * G::kTopK, route_weight + (uint64_t)row * G::kTopK, lane);
-	LmDependentRelease();
-}
-
-template<uint32_t THREADS, uint32_t EXPERTS>
-__global__ __launch_bounds__(THREADS, 1)
-static void LingRouteBuildPackedKernel(const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint32_t routes,
-	uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
-	float *__restrict__ packed_weight, uint32_t *__restrict__ packed_expert, uint32_t tile_m, uint32_t neuron_tiles_up,
-	uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
-{
-	LmDependentWait();
-	LmRouteBuildBlock<THREADS, EXPERTS>(route_expert, routes, top_k, group_row_offset, route_packed_row, route_source_token, tile_m,
-		neuron_tiles_up, tile_prefix_up, neuron_tiles_down, tile_prefix_down);
-	__syncthreads();
-	for ( uint32_t route = threadIdx.x; route < routes; route += THREADS )
-	{
-		const uint32_t packed = route_packed_row[route];
-		packed_weight[packed] = route_weight[route];
-		packed_expert[packed] = route_expert[route];
-	}
-	LmDependentRelease();
-}
-
 template<bool ROUNDED, bool WEIGHTED>
 __global__ __launch_bounds__(LG_THREADS, 2)
 static void LingSiluClampPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight,
@@ -1348,202 +1094,6 @@ static void LingMoeSmallW2FinalizeKernel(const void *__restrict__ w2, const floa
 	LmDependentRelease();
 }
 
-template<class G, class Format>
-__global__ __launch_bounds__(LG_THREADS, 2)
-static void LingMoeBatchedW1W3SiluKernel(const void *__restrict__ w1, const float *__restrict__ s1, const void *__restrict__ w3,
-	const float *__restrict__ s3, const uint16_t *__restrict__ activation, const float *__restrict__ packed_weight,
-	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token, uint16_t *__restrict__ output, float limit)
-{
-	constexpr uint32_t ELEMS = LmSkinnyFormat<Format>::kElements;
-	constexpr bool SCALED = LmSkinnyFormat<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32;
-	constexpr uint32_t CHUNKS = G::kHidden / ELEMS;
-	constexpr uint32_t SC_STRIDE = G::kHidden / LG_FP8_BLOCK;
-	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = LG_THREADS / LANES;
-	constexpr uint32_t N = G::kMoeInter;
-	constexpr uint32_t MAX_R = 4u;
-	constexpr uint32_t NPG = SCALED ? 1u : 2u;
-	__shared__ uint32_t offset[G::kLocalExperts + 1u];
-	__shared__ uint32_t batch_first[G::kLocalExperts + 1u];
-	__shared__ uint32_t warp_total[LG_THREADS / 32u];
-	__shared__ uint32_t s_src[MAX_R];
-	const uint32_t item = blockIdx.y;
-	LmDependentWait();
-	if ( item < (__ldg(group_row_offset + G::kLocalExperts) + MAX_R - 1u) / MAX_R + G::kLocalExperts )
-	{
-		for ( uint32_t i = threadIdx.x; i <= G::kLocalExperts; i += LG_THREADS )
-			offset[i] = group_row_offset[i];
-		__syncthreads();
-		LmSkinnyGroupedBatchScan<MAX_R>(offset, G::kLocalExperts, batch_first, warp_total);
-		if ( item < batch_first[G::kLocalExperts] )
-		{
-			uint32_t exp = 0u, high = G::kLocalExperts - 1u;
-			while ( exp < high )
-			{
-				const uint32_t mid = (exp + high + 1u) >> 1u;
-				if ( batch_first[mid] <= item )
-					exp = mid;
-				else
-					high = mid - 1u;
-			}
-			const uint32_t row = offset[exp] + (item - batch_first[exp]) * MAX_R;
-			const uint32_t count = offset[exp + 1u] - row < MAX_R ? offset[exp + 1u] - row : MAX_R;
-			if ( threadIdx.x < count )
-				s_src[threadIdx.x] = route_source_token[row + threadIdx.x];
-			__syncthreads();
-			const uint32_t group = threadIdx.x / LANES, sub = threadIdx.x & (LANES - 1u);
-			const uint32_t col0 = (blockIdx.x * GROUPS + group) * NPG;
-			if ( col0 < N )
-			{
-				const bool has1 = (NPG == 2u) && (col0 + 1u < N);
-				const uint64_t row_base = (uint64_t)exp * N + col0;
-				const uint4 *w1_0 = (const uint4 *)w1 + row_base * CHUNKS;
-				const uint4 *w3_0 = (const uint4 *)w3 + row_base * CHUNKS;
-				const uint4 *w1_1 = has1 ? w1_0 + CHUNKS : w1_0;
-				const uint4 *w3_1 = has1 ? w3_0 + CHUNKS : w3_0;
-				const uint64_t sc_base0 = row_base * SC_STRIDE;
-				if ( count == 1u )
-				{
-					const uint16_t *a0 = activation + (uint64_t)s_src[0] * G::kHidden;
-					float g0 = 0.0f, u0 = 0.0f, g1 = 0.0f, u1 = 0.0f;
-					for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-					{
-						const typename LmSkinnyFormat<Format>::Activation act = LmSkinnyFormat<Format>::Load(a0 + c * ELEMS);
-						const uint4 vw1_0 = __ldcs(w1_0 + c);
-						const uint4 vw3_0 = __ldcs(w3_0 + c);
-						const uint32_t sc_idx = c >> 3u;
-						const float f1_0 = SCALED ? __ldg(s1 + sc_base0 + sc_idx) : 1.0f;
-						const float f3_0 = SCALED ? __ldg(s3 + sc_base0 + sc_idx) : 1.0f;
-						g0 = fmaf(f1_0, LmSkinnyFormat<Format>::Chunk(vw1_0, act), g0);
-						u0 = fmaf(f3_0, LmSkinnyFormat<Format>::Chunk(vw3_0, act), u0);
-						if constexpr ( NPG == 2u )
-						{
-							g1 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(__ldcs(w1_1 + c), act), g1);
-							u1 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(__ldcs(w3_1 + c), act), u1);
-						}
-					}
-					#pragma unroll
-					for ( uint32_t off = LANES >> 1u; off > 0u; off >>= 1u )
-					{
-						g0 += __shfl_down_sync(0xffffffffu, g0, off);
-						u0 += __shfl_down_sync(0xffffffffu, u0, off);
-						if constexpr ( NPG == 2u )
-						{
-							g1 += __shfl_down_sync(0xffffffffu, g1, off);
-							u1 += __shfl_down_sync(0xffffffffu, u1, off);
-						}
-					}
-					if ( sub == 0u )
-					{
-						const LingSiluClampOp<G::kFfnSiluRounded, !G::kExpertWeightAfterDown> op{
-							!G::kExpertWeightAfterDown ? __ldg(packed_weight + row) : 1.0f, limit };
-						output[(uint64_t)row * N + col0] = LmFloatToBf16(op(SparkMathRoundBf16(g0), SparkMathRoundBf16(u0)));
-						if constexpr ( NPG == 2u )
-							if ( has1 )
-								output[(uint64_t)row * N + col0 + 1u] = LmFloatToBf16(op(SparkMathRoundBf16(g1), SparkMathRoundBf16(u1)));
-					}
-				}
-				else
-				{
-					const uint16_t *ar0 = activation + (uint64_t)s_src[0] * G::kHidden;
-					const uint16_t *ar1 = activation + (uint64_t)s_src[1] * G::kHidden;
-					const uint16_t *ar2 = count > 2u ? activation + (uint64_t)s_src[2] * G::kHidden : ar0;
-					const uint16_t *ar3 = count > 3u ? activation + (uint64_t)s_src[3] * G::kHidden : ar0;
-					float g0_0 = 0.0f, g0_1 = 0.0f, g0_2 = 0.0f, g0_3 = 0.0f;
-					float u0_0 = 0.0f, u0_1 = 0.0f, u0_2 = 0.0f, u0_3 = 0.0f;
-					float g1_0 = 0.0f, g1_1 = 0.0f, g1_2 = 0.0f, g1_3 = 0.0f;
-					float u1_0 = 0.0f, u1_1 = 0.0f, u1_2 = 0.0f, u1_3 = 0.0f;
-					for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-					{
-						const uint4 vw1_0 = __ldcs(w1_0 + c);
-						const uint4 vw3_0 = __ldcs(w3_0 + c);
-						const uint4 vw1_1 = (NPG == 2u) ? __ldcs(w1_1 + c) : vw1_0;
-						const uint4 vw3_1 = (NPG == 2u) ? __ldcs(w3_1 + c) : vw3_0;
-						const uint32_t sc_idx = c >> 3u;
-						const float f1_0 = SCALED ? __ldg(s1 + sc_base0 + sc_idx) : 1.0f;
-						const float f3_0 = SCALED ? __ldg(s3 + sc_base0 + sc_idx) : 1.0f;
-						const auto a0 = LmSkinnyFormat<Format>::Load(ar0 + c * ELEMS);
-						const auto a1 = LmSkinnyFormat<Format>::Load(ar1 + c * ELEMS);
-						g0_0 = fmaf(f1_0, LmSkinnyFormat<Format>::Chunk(vw1_0, a0), g0_0);
-						u0_0 = fmaf(f3_0, LmSkinnyFormat<Format>::Chunk(vw3_0, a0), u0_0);
-						g0_1 = fmaf(f1_0, LmSkinnyFormat<Format>::Chunk(vw1_0, a1), g0_1);
-						u0_1 = fmaf(f3_0, LmSkinnyFormat<Format>::Chunk(vw3_0, a1), u0_1);
-						if constexpr ( NPG == 2u )
-						{
-							g1_0 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw1_1, a0), g1_0);
-							u1_0 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw3_1, a0), u1_0);
-							g1_1 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw1_1, a1), g1_1);
-							u1_1 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw3_1, a1), u1_1);
-						}
-						if ( count > 2u )
-						{
-							const auto a2 = LmSkinnyFormat<Format>::Load(ar2 + c * ELEMS);
-							g0_2 = fmaf(f1_0, LmSkinnyFormat<Format>::Chunk(vw1_0, a2), g0_2);
-							u0_2 = fmaf(f3_0, LmSkinnyFormat<Format>::Chunk(vw3_0, a2), u0_2);
-							if constexpr ( NPG == 2u )
-							{
-								g1_2 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw1_1, a2), g1_2);
-								u1_2 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw3_1, a2), u1_2);
-							}
-						}
-						if ( count > 3u )
-						{
-							const auto a3 = LmSkinnyFormat<Format>::Load(ar3 + c * ELEMS);
-							g0_3 = fmaf(f1_0, LmSkinnyFormat<Format>::Chunk(vw1_0, a3), g0_3);
-							u0_3 = fmaf(f3_0, LmSkinnyFormat<Format>::Chunk(vw3_0, a3), u0_3);
-							if constexpr ( NPG == 2u )
-							{
-								g1_3 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw1_1, a3), g1_3);
-								u1_3 = fmaf(1.0f, LmSkinnyFormat<Format>::Chunk(vw3_1, a3), u1_3);
-							}
-						}
-					}
-					#pragma unroll
-					for ( uint32_t off = LANES >> 1u; off > 0u; off >>= 1u )
-					{
-						g0_0 += __shfl_down_sync(0xffffffffu, g0_0, off);
-						u0_0 += __shfl_down_sync(0xffffffffu, u0_0, off);
-						g0_1 += __shfl_down_sync(0xffffffffu, g0_1, off);
-						u0_1 += __shfl_down_sync(0xffffffffu, u0_1, off);
-						g0_2 += __shfl_down_sync(0xffffffffu, g0_2, off);
-						u0_2 += __shfl_down_sync(0xffffffffu, u0_2, off);
-						g0_3 += __shfl_down_sync(0xffffffffu, g0_3, off);
-						u0_3 += __shfl_down_sync(0xffffffffu, u0_3, off);
-						if constexpr ( NPG == 2u )
-						{
-							g1_0 += __shfl_down_sync(0xffffffffu, g1_0, off);
-							u1_0 += __shfl_down_sync(0xffffffffu, u1_0, off);
-							g1_1 += __shfl_down_sync(0xffffffffu, g1_1, off);
-							u1_1 += __shfl_down_sync(0xffffffffu, u1_1, off);
-							g1_2 += __shfl_down_sync(0xffffffffu, g1_2, off);
-							u1_2 += __shfl_down_sync(0xffffffffu, u1_2, off);
-							g1_3 += __shfl_down_sync(0xffffffffu, g1_3, off);
-							u1_3 += __shfl_down_sync(0xffffffffu, u1_3, off);
-						}
-					}
-					if ( sub == 0u )
-					{
-						auto write_r = [&](uint32_t r, float gv0, float uv0, float gv1, float uv1) {
-							const uint32_t pr = row + r;
-							const LingSiluClampOp<G::kFfnSiluRounded, !G::kExpertWeightAfterDown> op{
-								!G::kExpertWeightAfterDown ? __ldg(packed_weight + pr) : 1.0f, limit };
-							output[(uint64_t)pr * N + col0] = LmFloatToBf16(op(SparkMathRoundBf16(gv0), SparkMathRoundBf16(uv0)));
-							if constexpr ( NPG == 2u )
-								if ( has1 )
-									output[(uint64_t)pr * N + col0 + 1u] = LmFloatToBf16(op(SparkMathRoundBf16(gv1), SparkMathRoundBf16(uv1)));
-						};
-						write_r(0u, g0_0, u0_0, g1_0, u1_0);
-						write_r(1u, g0_1, u0_1, g1_1, u1_1);
-						if ( count > 2u ) write_r(2u, g0_2, u0_2, g1_2, u1_2);
-						if ( count > 3u ) write_r(3u, g0_3, u0_3, g1_3, u1_3);
-					}
-				}
-			}
-		}
-	}
-	LmDependentRelease();
-}
-
 template<class G>
 struct LingModel : CudaStage<LingModel<G>>
 {
@@ -1582,6 +1132,8 @@ struct LingModel : CudaStage<LingModel<G>>
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
+		if ( exact == 0u && rows > LM_SKINNY_ROWS_WIDE )
+			LmWeightPrefetchNote(stream, weight, (uint64_t)output_dimension * input_dimension * sizeof(uint16_t));
 		if ( exact == 0u && rows > LM_SKINNY_ROWS_WIDE && output_dimension <= 8u && destination_f32 == 0 && input_dimension == G::kHidden )
 		{
 			(void)LM_LAUNCH_DEPENDENT((LingSmallNBf16ProjKernel<G::kHidden>), rows, 128u, 0, stream, weight, source, destination, rows, output_dimension);
@@ -1602,8 +1154,14 @@ struct LingModel : CudaStage<LingModel<G>>
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
 		if ( weight.scale != 0 )
+		{
+			if ( exact == 0u && rows > LM_SKINNY_ROWS_WIDE )
+				LmWeightPrefetchNote(stream, weight.weight, (uint64_t)output_dimension * input_dimension);
 			return LmDenseRows<LmFp8>(weight.weight, ScaleOf(weight, 1u, output_dimension, input_dimension), source, destination, (float *)0, rows,
 				input_dimension, output_dimension, exact, step->multiprocessors, stream);
+		}
+		if ( exact == 0u && rows > LM_SKINNY_ROWS_WIDE )
+			LmWeightPrefetchNote(stream, weight.weight, (uint64_t)output_dimension * input_dimension * sizeof(uint16_t));
 		return LmDenseRows<LmBf16Format>(weight.weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
 			output_dimension, exact, step->multiprocessors, stream);
 	}
@@ -1632,9 +1190,13 @@ struct LingModel : CudaStage<LingModel<G>>
 				return status;
 		}
 		for ( uint32_t index = 0u; index < count; ++index )
+		{
+			if ( exact == 0u && rows > LM_SKINNY_ROWS_WIDE )
+				LmWeightPrefetchNote(stream, targets[index].weight, (uint64_t)targets[index].output_dimension * input_dimension);
 			if ( LmDenseRows<LmFp8>(targets[index].weight, targets[index].scale, source, targets[index].output_bf16, targets[index].output_f32, rows,
 					input_dimension, targets[index].output_dimension, exact, step->multiprocessors, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		}
 		return LM_LAUNCH_OK;
 	}
 
@@ -1704,9 +1266,11 @@ struct LingModel : CudaStage<LingModel<G>>
 			{
 				constexpr uint32_t CHUNKS = G::kKdaRank >> 3u;
 				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-				constexpr uint32_t GROUPS = LG_THREADS / LANES;
-				(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairB1Kernel<G::kKdaRank, S::kKdaWidth>),
-					dim3((S::kKdaWidth + 2u * GROUPS - 1u) / (2u * GROUPS), 2u), LG_THREADS, 0, stream,
+				constexpr uint32_t GROUPS = 64u / LANES;
+				LmWeightPrefetchNote(stream, layer->kda_f.weight, (uint64_t)S::kKdaWidth * G::kKdaRank * sizeof(uint16_t));
+				LmWeightPrefetchNote(stream, layer->kda_g.weight, (uint64_t)S::kKdaWidth * G::kKdaRank * sizeof(uint16_t));
+				(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairB1FastKernel<G::kKdaRank, S::kKdaWidth>),
+					dim3((S::kKdaWidth + 2u * GROUPS - 1u) / (2u * GROUPS), 2u), 64u, 0, stream,
 					(const uint16_t *)layer->kda_f.weight, state->kda_low_f, state->decay_logit,
 					(const uint16_t *)layer->kda_g.weight, state->kda_low_g, state->kda_gate);
 			}
@@ -1898,6 +1462,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			state->attn_received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
+		LmWeightPrefetchNote(stream, layer->mla_uv, (uint64_t)S::kMlaRankHeads * G::kValueDim * G::kLatent * sizeof(uint16_t));
 		if ( LmLatentShardMergeLaunch<G::kLatent>(state->attn_received, partial_stride, degree, S::kMlaRankHeads, state->mla_latent, rows, stream) != SPARK_GPU_SUCCESS ||
 			LmPerHeadProjectChainLaunch<LG_THREADS,G::kLatent,G::kValueDim>(state->mla_latent, layer->mla_uv, state->mla_value, S::kMlaRankHeads, rows,
 				stream, exact) != SPARK_GPU_SUCCESS )
@@ -1984,6 +1549,242 @@ struct LingModel : CudaStage<LingModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
+	static void LaunchExactW1W3(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t routes, float rlim, SparkGpuStream stream)
+	{
+		const uint32_t max_active = routes < G::kLocalExperts ? routes : G::kLocalExperts;
+		constexpr uint32_t THREADS = G::kMoeInter <= 128u ? 128u : LG_THREADS;
+		if ( layer->moe_w1.scale != 0 )
+		{
+			if constexpr ( (G::kHidden % LG_FP8_BLOCK) == 0u )
+			{
+				constexpr uint32_t CHUNKS = G::kHidden / 16u;
+				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+				constexpr uint32_t GROUPS = THREADS / LANES;
+				(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, LmFp8, THREADS>),
+					dim3((G::kMoeInter + GROUPS - 1u) / GROUPS, max_active), THREADS, 0, stream,
+					layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed,
+					state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
+					state->expert_act, rlim);
+			}
+		}
+		else
+		{
+			constexpr uint32_t CHUNKS = G::kHidden / 8u;
+			constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+			constexpr uint32_t GROUPS = THREADS / LANES;
+			(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, LmBf16Format, THREADS>),
+				dim3((G::kMoeInter + GROUPS - 1u) / GROUPS, max_active), THREADS, 0, stream,
+				layer->moe_w1.weight, (const float *)0, layer->moe_w3.weight, (const float *)0, normed,
+				state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
+				state->expert_act, rlim);
+		}
+	}
+
+	static void LaunchExactW2(State *state, const LingLayer *layer, uint32_t routes, SparkGpuStream stream)
+	{
+		const uint32_t max_active = routes < G::kLocalExperts ? routes : G::kLocalExperts;
+		if ( layer->moe_w2.scale != 0 )
+		{
+			if constexpr ( (G::kMoeInter % LG_FP8_BLOCK) == 0u )
+			{
+				constexpr uint32_t CHUNKS = G::kMoeInter / 16u;
+				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+				constexpr uint32_t GROUPS = LG_THREADS / LANES;
+				(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, LmFp8>),
+					dim3((G::kHidden + GROUPS - 1u) / GROUPS, max_active), LG_THREADS, 0, stream,
+					layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->active_experts,
+					state->group_row_offset, state->expert_out);
+			}
+		}
+		else
+		{
+			constexpr uint32_t CHUNKS = G::kMoeInter / 8u;
+			constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+			constexpr uint32_t GROUPS = LG_THREADS / LANES;
+			(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, LmBf16Format>),
+				dim3((G::kHidden + GROUPS - 1u) / GROUPS, max_active), LG_THREADS, 0, stream,
+				layer->moe_w2.weight, (const float *)0, state->expert_act, state->active_experts,
+				state->group_row_offset, state->expert_out);
+		}
+	}
+
+	static bool LaunchMmaW1W3(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t expected_local, uint32_t sms, float rlim, SparkGpuStream stream)
+	{
+		const uint32_t mean = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
+		const uint32_t tile_m = mean > 32u ? 64u : (mean > 16u ? 32u : 16u);
+		uint32_t blocks = sms;
+		if ( layer->moe_w1.scale != 0 )
+		{
+			if constexpr ( (G::kHidden % 128u) == 0u && (G::kMoeInter % 64u) == 0u && G::kMoeInter <= 768u )
+			{
+				LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
+					state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, G::kMoeInter / 64u);
+				if ( tile_m == 64u )
+				{
+					constexpr uint32_t sh = 3u * (64u * 256u + 2u * 64u * 128u);
+					if ( LingMoeMmaSetup<G, 1u>(LingMoeMmaW1W3SiluFp8Kernel<G, 64u, 4u, 3u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+						return false;
+					LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, 64u, 4u, 3u>), blocks, 256u, sh, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+				}
+				else if ( tile_m == 32u )
+				{
+					constexpr uint32_t sh = 4u * (32u * 256u + 2u * 64u * 128u);
+					if ( LingMoeMmaSetup<G, 2u>(LingMoeMmaW1W3SiluFp8Kernel<G, 32u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+						return false;
+					LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, 32u, 2u, 4u>), blocks, 256u, sh, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+				}
+				else
+				{
+					constexpr uint32_t sh = 4u * (16u * 256u + 2u * 64u * 128u);
+					if ( LingMoeMmaSetup<G, 3u>(LingMoeMmaW1W3SiluFp8Kernel<G, 16u, 1u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+						return false;
+					LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, 16u, 1u, 4u>), blocks, 256u, sh, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+				}
+				return true;
+			}
+			return false;
+		}
+		if constexpr ( G::kMoeInter == 80u && (G::kHidden % 64u) == 0u )
+		{
+			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
+				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, 1u);
+			if ( tile_m == 64u )
+			{
+				constexpr uint32_t sh = 2u * (64u * 128u + 2u * 80u * 128u);
+				if ( LingMoeMmaSetup<G, 11u>(LingMoeMmaW1W3SiluN80Kernel<G, 64u, 2u, 2u>, 320u, sh, sms, &blocks) != LM_LAUNCH_OK )
+					return false;
+				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, 64u, 2u, 2u>), blocks, 320u, sh, stream,
+					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+			}
+			else if ( tile_m == 32u )
+			{
+				constexpr uint32_t sh = 2u * (32u * 128u + 2u * 80u * 128u);
+				if ( LingMoeMmaSetup<G, 12u>(LingMoeMmaW1W3SiluN80Kernel<G, 32u, 1u, 2u>, 160u, sh, sms, &blocks) != LM_LAUNCH_OK )
+					return false;
+				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, 32u, 1u, 2u>), blocks, 160u, sh, stream,
+					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+			}
+			else
+			{
+				constexpr uint32_t sh = 2u * (16u * 128u + 2u * 80u * 128u);
+				if ( LingMoeMmaSetup<G, 13u>(LingMoeMmaW1W3SiluN80Kernel<G, 16u, 1u, 2u>, 160u, sh, sms, &blocks) != LM_LAUNCH_OK )
+					return false;
+				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, 16u, 1u, 2u>), blocks, 160u, sh, stream,
+					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+			}
+			return true;
+		}
+		else if constexpr ( (G::kHidden % 64u) == 0u && (G::kMoeInter % 64u) == 0u )
+		{
+			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
+				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, G::kMoeInter / 64u);
+			if ( tile_m == 64u )
+			{
+				constexpr uint32_t sh = 4u * (64u * 128u + 2u * 64u * 128u);
+				if ( LingMoeMmaSetup<G, 21u>(LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+					return false;
+				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u>), blocks, 256u, sh, stream,
+					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+			}
+			else if ( tile_m == 32u )
+			{
+				constexpr uint32_t sh = 4u * (32u * 128u + 2u * 64u * 128u);
+				if ( LingMoeMmaSetup<G, 22u>(LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+					return false;
+				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u>), blocks, 256u, sh, stream,
+					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+			}
+			else
+			{
+				constexpr uint32_t sh = 4u * (16u * 128u + 2u * 64u * 128u);
+				if ( LingMoeMmaSetup<G, 23u>(LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+					return false;
+				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u>), blocks, 256u, sh, stream,
+					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	static bool LaunchSolarW2AndFinalize(State *state, const LingLayer *layer, uint32_t rows, uint32_t routes, uint32_t sms, SparkGpuStream stream)
+	{
+		if constexpr ( G::kMoeInter == 80u && (G::kHidden % 64u) == 0u )
+		{
+			const uint32_t mean = (routes + G::kLocalExperts - 1u) / G::kLocalExperts;
+			const uint32_t tile_m = mean > 32u ? 64u : (mean > 16u ? 32u : 16u);
+			const uint64_t full_bytes = (uint64_t)routes * G::kHidden * sizeof(uint16_t);
+			uint32_t slice_cols = G::kHidden;
+			if ( full_bytes > 16u * 1024u * 1024u )
+			{
+				const uint64_t target_bytes = 10u * 1024u * 1024u;
+				uint32_t raw_cols = (uint32_t)(target_bytes / ((uint64_t)routes * sizeof(uint16_t)));
+				raw_cols = (raw_cols / 256u) * 256u;
+				if ( raw_cols < 256u )
+					raw_cols = 256u;
+				if ( raw_cols > G::kHidden )
+					raw_cols = G::kHidden;
+				slice_cols = raw_cols;
+			}
+			uint32_t blocks = sms;
+			uint32_t prev_cur_cols = 0u;
+			for ( uint32_t col_begin = 0u; col_begin < G::kHidden; col_begin += slice_cols )
+			{
+				const uint32_t cur_cols = G::kHidden - col_begin < slice_cols ? G::kHidden - col_begin : slice_cols;
+				if ( cur_cols != prev_cur_cols )
+				{
+					LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
+						state->group_row_offset, state->tile_prefix_down, G::kLocalExperts, tile_m, cur_cols / 64u);
+					prev_cur_cols = cur_cols;
+				}
+				if ( tile_m == 64u )
+				{
+					constexpr uint32_t sh = 2u * ((64u + 64u) * 160u);
+					if ( LingMoeMmaSetup<G, 31u>(LingMoeMmaW2K80SliceKernel<G, 64u, 4u, 2u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+						return false;
+					LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, 64u, 4u, 2u>), blocks, 256u, sh, stream,
+						(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
+						state->expert_out, col_begin, cur_cols);
+				}
+				else if ( tile_m == 32u )
+				{
+					constexpr uint32_t sh = 2u * ((32u + 64u) * 160u);
+					if ( LingMoeMmaSetup<G, 32u>(LingMoeMmaW2K80SliceKernel<G, 32u, 2u, 2u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+						return false;
+					LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, 32u, 2u, 2u>), blocks, 256u, sh, stream,
+						(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
+						state->expert_out, col_begin, cur_cols);
+				}
+				else
+				{
+					constexpr uint32_t sh = 2u * ((16u + 64u) * 160u);
+					if ( LingMoeMmaSetup<G, 33u>(LingMoeMmaW2K80SliceKernel<G, 16u, 1u, 2u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+						return false;
+					LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, 16u, 1u, 2u>), blocks, 256u, sh, stream,
+						(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
+						state->expert_out, col_begin, cur_cols);
+				}
+				(void)LM_LAUNCH_DEPENDENT((LingMoeFinalizeWarpSliceKernel<G::kExpertWeightAfterDown, G::kTopK>),
+					(rows + 3u) / 4u, 128u, 0, stream, state->expert_out, state->route_packed_row, state->route_expert,
+					state->route_weight, state->shared_out, state->partial, rows, G::kLocalExperts, col_begin, cur_cols, G::kHidden);
+			}
+			return true;
+		}
+		return false;
+	}
+
 	static SparkStatus Experts(State *state, const Frame &frame, const LingLayer &entry, uint32_t index)
 	{
 		const LingLayer *layer = &entry;
@@ -1994,9 +1795,6 @@ struct LingModel : CudaStage<LingModel<G>>
 		const float routed_limit = G::RoutedLimit(index), shared_limit = G::SharedLimit(index);
 		const float rlim = routed_limit > 0.0f ? routed_limit : INFINITY;
 		const float slim = shared_limit > 0.0f ? shared_limit : INFINITY;
-		const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
-		const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-		const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 		const LmSkinnyDenseTarget targets[2] =
 		{
 			{ layer->router, (uint16_t *)0, state->router_logits, G::kExperts, 0u, 0u, LmScaleTensorNone() },
@@ -2004,22 +1802,26 @@ struct LingModel : CudaStage<LingModel<G>>
 		};
 		if ( LinearMulti(targets, 2u, normed, rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( routes <= 32u )
+		if ( rows == 1u )
 		{
-			(void)LM_LAUNCH_DEPENDENT((LingGroupRouteSmallKernel<G>), 1u, LG_THREADS, 0, stream, state->router_logits, layer->expert_bias, rows,
+			(void)LM_LAUNCH_DEPENDENT((LingGroupRouteRow1FastKernel<G>), 1u, LG_THREADS, 0, stream, state->router_logits, layer->expert_bias,
 				state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
-				state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down,
-				state->tile_prefix_down);
+				state->route_packed_row, state->route_source_token, state->packed_weight, state->active_experts);
+		}
+		else if ( routes <= 32u )
+		{
+			(void)LM_LAUNCH_DEPENDENT((LingGroupRouteSmallFastKernel<G>), 1u, LG_THREADS, 0, stream, state->router_logits, layer->expert_bias, rows,
+				state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
+				state->route_packed_row, state->route_source_token, state->packed_weight, state->active_experts);
 		}
 		else
 		{
 			constexpr uint32_t WARPS = LG_THREADS / LM_WARP_LANES;
-			(void)LM_LAUNCH_DEPENDENT((LingGroupTopkLocalKernel<G>), (rows + WARPS - 1u) / WARPS, LG_THREADS, 0, stream, state->router_logits,
+			(void)LM_LAUNCH_DEPENDENT((LingGroupTopkFastKernel<G>), (rows + WARPS - 1u) / WARPS, LG_THREADS, 0, stream, state->router_logits,
 				layer->expert_bias, rows, state->expert_first, step->route_fault, state->route_expert, state->route_weight);
-			(void)LM_LAUNCH_DEPENDENT((LingRouteBuildPackedKernel<LG_THREADS, G::kLocalExperts + 1u>), 1u, LG_THREADS, 0, stream,
+			(void)LM_LAUNCH_DEPENDENT((LingRouteBuildFastKernel<G::kLocalExperts>), 1u, LG_THREADS, 0, stream,
 				state->route_expert, state->route_weight, routes, G::kTopK, state->group_row_offset, state->route_packed_row,
-				state->route_source_token, state->packed_weight, state->route_global, tile_m, n_up, state->tile_prefix_up, n_down,
-				state->tile_prefix_down);
+				state->route_source_token, state->packed_weight, state->route_global, state->active_experts);
 		}
 		constexpr uint32_t kFuseSharedRows = G::kLocalExperts < G::kExperts ? 8u : 1u;
 		if ( rows <= kFuseSharedRows && (layer->moe_w1.scale == 0) == (layer->moe_w3.scale == 0) &&
@@ -2029,16 +1831,10 @@ struct LingModel : CudaStage<LingModel<G>>
 			{
 				if constexpr ( (G::kHidden % LG_FP8_BLOCK) == 0u && (G::kMoeInter % LG_FP8_BLOCK) == 0u )
 				{
-					constexpr uint32_t UP_CHUNKS = G::kHidden / 16u;
-					constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
-					constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
 					constexpr uint32_t DN_CHUNKS = G::kMoeInter / 16u;
 					constexpr uint32_t DN_LANES = DN_CHUNKS >= 32u ? 32u : (DN_CHUNKS >= 16u ? 16u : 8u);
 					constexpr uint32_t DN_GROUPS = LG_THREADS / DN_LANES;
-					(void)LM_LAUNCH_DEPENDENT((LingMoePackedW1W3SiluKernel<G, LmFp8>),
-						dim3((G::kMoeInter + 2u * UP_GROUPS - 1u) / (2u * UP_GROUPS), routes), LG_THREADS, 0, stream,
-						layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed, state->packed_weight,
-						state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rlim);
+					LaunchExactW1W3(state, layer, normed, routes, rlim, stream);
 					(void)LM_LAUNCH_DEPENDENT((LingMoeSmallW2FinalizeKernel<G, LmFp8>),
 						dim3((G::kHidden + 2u * DN_GROUPS - 1u) / (2u * DN_GROUPS), rows), LG_THREADS, 0, stream,
 						layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->route_packed_row, state->route_expert,
@@ -2048,16 +1844,21 @@ struct LingModel : CudaStage<LingModel<G>>
 			}
 			else
 			{
-				constexpr uint32_t UP_CHUNKS = G::kHidden / 8u;
-				constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
-				constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
 				constexpr uint32_t DN_CHUNKS = G::kMoeInter / 8u;
 				constexpr uint32_t DN_LANES = DN_CHUNKS >= 32u ? 32u : (DN_CHUNKS >= 16u ? 16u : 8u);
 				constexpr uint32_t DN_GROUPS = LG_THREADS / DN_LANES;
-				(void)LM_LAUNCH_DEPENDENT((LingMoePackedW1W3SiluKernel<G, LmBf16Format>),
-					dim3((G::kMoeInter + 2u * UP_GROUPS - 1u) / (2u * UP_GROUPS), routes), LG_THREADS, 0, stream,
-					layer->moe_w1.weight, (const float *)0, layer->moe_w3.weight, (const float *)0, normed, state->packed_weight,
-					state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rlim);
+				if constexpr ( G::kLocalExperts == G::kExperts )
+				{
+					constexpr uint32_t UP_CHUNKS = G::kHidden / 8u;
+					constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
+					constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
+					(void)LM_LAUNCH_DEPENDENT((LingMoePackedW1W3SiluKernel<G, LmBf16Format>),
+						dim3((G::kMoeInter + 2u * UP_GROUPS - 1u) / (2u * UP_GROUPS), routes), LG_THREADS, 0, stream,
+						layer->moe_w1.weight, (const float *)0, layer->moe_w3.weight, (const float *)0, normed, state->packed_weight,
+						state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rlim);
+				}
+				else
+					LaunchExactW1W3(state, layer, normed, routes, rlim, stream);
 				(void)LM_LAUNCH_DEPENDENT((LingMoeSmallW2FinalizeKernel<G, LmBf16Format>),
 					dim3((G::kHidden + 2u * DN_GROUPS - 1u) / (2u * DN_GROUPS), rows), LG_THREADS, 0, stream,
 					layer->moe_w2.weight, (const float *)0, state->expert_act, state->route_packed_row, state->route_expert,
@@ -2080,75 +1881,19 @@ struct LingModel : CudaStage<LingModel<G>>
 		expert_routes.top_k = G::kTopK;
 		expert_routes.local_experts = G::kLocalExperts;
 		expert_routes.multiprocessors = step->multiprocessors;
+		const uint32_t expected_local = (uint32_t)(((uint64_t)routes * G::kLocalExperts + G::kExperts - 1u) / G::kExperts);
+		const bool use_exact_moe = exact != 0u || (G::kLocalExperts == G::kExperts ? (rows <= 64u) : (expected_local <= G::kLocalExperts));
+		const bool use_solar_mma = exact == 0u && G::kMoeInter == 80u && rows >= 256u;
 		bool fused_up_done = false;
 		if ( (layer->moe_w1.scale == 0) == (layer->moe_w3.scale == 0) )
 		{
-			const bool use_stream_up = exact == 0u && ((G::kLocalExperts == G::kExperts) ? (rows >= 128u) : (rows >= 32u));
-			if ( !use_stream_up )
+			if ( !use_exact_moe && (G::kMoeInter != 80u || use_solar_mma) )
+				fused_up_done = LaunchMmaW1W3(state, layer, normed, expected_local, step->multiprocessors, rlim, stream);
+			if ( !fused_up_done && use_exact_moe &&
+				(layer->moe_w1.scale == 0 || (G::kHidden % LG_FP8_BLOCK) == 0u) )
 			{
-				const uint32_t expected_local = (uint32_t)(((uint64_t)routes * G::kLocalExperts + G::kExperts - 1u) / G::kExperts);
-				if ( expected_local <= G::kLocalExperts && routes <= 65535u )
-				{
-					if ( layer->moe_w1.scale != 0 )
-					{
-						if constexpr ( (G::kHidden % LG_FP8_BLOCK) == 0u )
-						{
-							constexpr uint32_t UP_CHUNKS = G::kHidden / 16u;
-							constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
-							constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
-							(void)LM_LAUNCH_DEPENDENT((LingMoePackedW1W3SiluKernel<G, LmFp8>),
-								dim3((G::kMoeInter + 2u * UP_GROUPS - 1u) / (2u * UP_GROUPS), routes), LG_THREADS, 0, stream,
-								layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed,
-								state->packed_weight, state->route_global, state->route_source_token, state->group_row_offset,
-								state->expert_act, rlim);
-							fused_up_done = true;
-						}
-					}
-					else
-					{
-						constexpr uint32_t UP_CHUNKS = G::kHidden / 8u;
-						constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
-						constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
-						(void)LM_LAUNCH_DEPENDENT((LingMoePackedW1W3SiluKernel<G, LmBf16Format>),
-							dim3((G::kMoeInter + 2u * UP_GROUPS - 1u) / (2u * UP_GROUPS), routes), LG_THREADS, 0, stream,
-							layer->moe_w1.weight, (const float *)0, layer->moe_w3.weight, (const float *)0, normed,
-							state->packed_weight, state->route_global, state->route_source_token, state->group_row_offset,
-							state->expert_act, rlim);
-						fused_up_done = true;
-					}
-				}
-				else if ( routes <= 65535u )
-				{
-					const uint32_t batches = (routes + 3u) / 4u + G::kLocalExperts;
-					if ( batches <= 65535u )
-					{
-						if ( layer->moe_w1.scale != 0 )
-						{
-							if constexpr ( (G::kHidden % LG_FP8_BLOCK) == 0u )
-							{
-								constexpr uint32_t UP_CHUNKS = G::kHidden / 16u;
-								constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
-								constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
-								(void)LM_LAUNCH_DEPENDENT((LingMoeBatchedW1W3SiluKernel<G, LmFp8>),
-									dim3((G::kMoeInter + UP_GROUPS - 1u) / UP_GROUPS, batches), LG_THREADS, 0, stream,
-									layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed,
-									state->packed_weight, state->group_row_offset, state->route_source_token, state->expert_act, rlim);
-								fused_up_done = true;
-							}
-						}
-						else
-						{
-							constexpr uint32_t UP_CHUNKS = G::kHidden / 8u;
-							constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
-							constexpr uint32_t UP_GROUPS = LG_THREADS / UP_LANES;
-							(void)LM_LAUNCH_DEPENDENT((LingMoeBatchedW1W3SiluKernel<G, LmBf16Format>),
-								dim3((G::kMoeInter + 2u * UP_GROUPS - 1u) / (2u * UP_GROUPS), batches), LG_THREADS, 0, stream,
-								layer->moe_w1.weight, (const float *)0, layer->moe_w3.weight, (const float *)0, normed,
-								state->packed_weight, state->group_row_offset, state->route_source_token, state->expert_act, rlim);
-							fused_up_done = true;
-						}
-					}
-				}
+				LaunchExactW1W3(state, layer, normed, routes, rlim, stream);
+				fused_up_done = true;
 			}
 		}
 		if ( !fused_up_done )
@@ -2160,8 +1905,18 @@ struct LingModel : CudaStage<LingModel<G>>
 				dim3(LmVecBlocks<LG_THREADS>(G::kMoeInter), routes), LG_THREADS, 0, stream, state->expert_gate, state->expert_up,
 				state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter, rlim);
 		}
-		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-			ExpertDown(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden, exact, stream) != LM_LAUNCH_OK )
+		if ( CudaStageLaunched() != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( use_solar_mma && layer->moe_w2.scale == 0 &&
+			LaunchSolarW2AndFinalize(state, layer, rows, routes, step->multiprocessors, stream) )
+			return CudaStageLaunched();
+		if ( use_exact_moe && (layer->moe_w2.scale == 0 || (G::kMoeInter % LG_FP8_BLOCK) == 0u) )
+		{
+			LaunchExactW2(state, layer, routes, stream);
+			if ( CudaStageLaunched() != SPARK_STATUS_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( ExpertDown(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden, exact, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		(void)LM_LAUNCH_DEPENDENT((LingMoeLocalFinalizeKernel<G::kExpertWeightAfterDown>), dim3(LmVecBlocks<LG_THREADS>(G::kHidden), rows),
 			LG_THREADS, 0, stream, state->expert_out, state->route_packed_row, state->route_expert, state->route_weight, state->shared_out,
@@ -2308,6 +2063,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			{ (void **)&state->route_source_token, routes * sizeof(uint32_t) },
 			{ (void **)&state->tile_prefix_up, groups * sizeof(uint32_t) },
 			{ (void **)&state->tile_prefix_down, groups * sizeof(uint32_t) },
+			{ (void **)&state->active_experts, (G::kLocalExperts + 1u) * sizeof(uint32_t) },
 			{ (void **)&state->packed_weight, routes * sizeof(float) },
 			{ (void **)&state->expert_gate, routes * G::kMoeInter * sizeof(uint16_t) },
 			{ (void **)&state->expert_up, routes * G::kMoeInter * sizeof(uint16_t) },
