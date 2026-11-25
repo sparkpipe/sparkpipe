@@ -1437,6 +1437,7 @@ __global__ __launch_bounds__(LmSkinnyFrameConfig<Format,RG,NPG>::kThreads,LmSkin
 	}
 }
 
+#if defined(__CUDACC__)
 static __device__ __forceinline__ void LmSkinnyCpAsync16(void *destination, const void *source, uint32_t bytes)
 {
 	const uint32_t smem = (uint32_t)__cvta_generic_to_shared(destination);
@@ -1539,6 +1540,7 @@ __global__ __launch_bounds__(WARPS_M * WARPS_N * LM_WARP_LANES, MIN_BLK) void Lm
 	if ( row_cnt != 0u )
 		LmSkinnyStore<LM_WARP_LANES,RPG,NPG>(args,accumulator,sub,1u,global_r0,global_n0,row_cnt);
 }
+#endif
 
 template<uint32_t ROWS>
 static __device__ __forceinline__ void LmSkinnyGroupedActivation(const LmSkinnyArguments &args, uint32_t row, uint32_t count, const uint16_t **activation)
@@ -1872,6 +1874,7 @@ static int32_t LmSkinnyFrameShape(LmSkinnyMultiArguments *multi, uint32_t multip
 	return(multi->count > 1u ? LmSkinnyFrameLaunch<Format,LANES,RG,NPG,true>(multi,multiprocessors,stream) : LmSkinnyFrameLaunch<Format,LANES,RG,NPG,false>(multi,multiprocessors,stream));
 }
 
+#if defined(__CUDACC__)
 template<uint32_t WARPS_M, uint32_t WARPS_N, uint32_t RPG, uint32_t NPG, uint32_t MIN_BLK, bool MULTI>
 static int32_t LmSkinnySharedBf16Launch(LmSkinnyMultiArguments *multi, SparkGpuStream stream)
 {
@@ -1906,6 +1909,7 @@ static int32_t LmSkinnySharedBf16Shape(LmSkinnyMultiArguments *multi, SparkGpuSt
 {
 	return(multi->count > 1u ? LmSkinnySharedBf16Launch<WARPS_M,WARPS_N,RPG,NPG,MIN_BLK,true>(multi,stream) : LmSkinnySharedBf16Launch<WARPS_M,WARPS_N,RPG,NPG,MIN_BLK,false>(multi,stream));
 }
+#endif
 
 template<class Format, uint32_t LANES>
 static int32_t LmSkinnyFrameGroup(LmSkinnyMultiArguments *multi, SparkGpuStream stream)
@@ -1916,6 +1920,7 @@ static int32_t LmSkinnyFrameGroup(LmSkinnyMultiArguments *multi, SparkGpuStream 
 	if ( LmSkinnyMultiprocessors(&multiprocessors) != LM_LAUNCH_OK )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	enough = (uint64_t)multiprocessors * LM_SKINNY_FRAME_WARPS_PER_SM;
+#if defined(__CUDACC__)
 	if constexpr ( std::is_same<Format,LmBf16Format>::value && LANES == LM_WARP_LANES )
 	{
 		if ( multi->part[0].input_dimension > 1024u )
@@ -1926,6 +1931,7 @@ static int32_t LmSkinnyFrameGroup(LmSkinnyMultiArguments *multi, SparkGpuStream 
 				return(LmSkinnySharedBf16Shape<4u,2u,8u,4u,2u>(multi,stream));
 		}
 	}
+#endif
 	if constexpr ( !LmSkinnyDecodeHalves<Format>::kValue )
 	{
 		if ( rows > 16u && LmSkinnyFrameWarps(multi,LANES,16u,4u) >= enough )
