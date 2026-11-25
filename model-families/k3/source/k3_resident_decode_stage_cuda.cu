@@ -962,6 +962,9 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->head_candidate_token = in->head_candidate_token;
 	b->output_token = in->output_token;
 	b->output_score = in->output_score;
+	b->normed_ready = 0u;
+	b->defer_partial_add = 0u;
+	b->pending_partial_add = 0;
 	b->row_invariant = commit == 0u ? 1u : 0u;
 	b->shard_gather = 0u;
 	b->shard_gather_expanded = 0u;
