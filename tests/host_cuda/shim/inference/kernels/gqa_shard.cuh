@@ -19,7 +19,7 @@ static inline uint32_t LmGqaShardRecordFloats(uint32_t heads, uint32_t value_dim
 
 template<class Geometry, class Pages, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 static inline cudaError_t LmGqaShardPartialLaunch(Pages, const uint16_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, float, float *,
-	uint64_t, uint32_t, cudaStream_t, const uint32_t * = 0, uint32_t = 0u, uint32_t = 1u, uint32_t = 0u)
+	uint64_t, uint32_t, cudaStream_t, const uint32_t * = 0, uint32_t = 0u, uint32_t = 1u, uint32_t = 0u, const uint32_t * = 0, const uint32_t * = 0)
 {
 	return(cudaErrorNotSupported);
 }

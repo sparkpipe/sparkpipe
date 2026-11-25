@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_draft_tree_pack.h"
 #include "sparkpipe/spark_drafter_module.h"
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_gpu.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_weightd.h"
@@ -31,13 +32,13 @@
 #define G53F_HALF (G53F_HEAD_DIM / 2u)
 #define G53F_Q_WIDTH (G53F_HEADS * G53F_HEAD_DIM)
 #define G53F_KV_WIDTH (G53F_KV_HEADS * G53F_HEAD_DIM)
-#define G53F_MLP 12288u
+#define G53F_MLP SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION
 #define G53F_BLOCK 8u
 #define G53F_DRAFTS (G53F_BLOCK - 1u)
 #define G53F_SLIDING 2048u
 #define G53F_WINDOW 2048u
 #define G53F_COLUMNS (G53F_WINDOW + G53F_BLOCK)
-#define G53F_VOCAB 154880u
+#define G53F_VOCAB SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT
 #define G53F_CONV_GROUP 16u
 #define G53F_CONV_GROUPS (G53F_HIDDEN / G53F_CONV_GROUP)
 #define G53F_CONV_TAPS 2u

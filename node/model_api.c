@@ -1562,6 +1562,37 @@ static int api_parse_chat_thinking(const SparkJsonDocument *doc, int32_t root, b
 		SparkJsonGetBoolean(doc,SparkJsonFindObjectMember(doc,kwargs,"enable_thinking"),thinking) == SPARK_STATUS_OK;
 }
 
+static void api_maybe_set_chat_cache_point(const char *prompt_text, uint32_t prompt_text_bytes,
+	uint32_t chat_suffix_offset, uint32_t prefix_count, SparkTokenizerWorkspace *workspace,
+	const SparkTokenizerEncoding *encoding, ApiOptions *options)
+{
+	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+	const uint32_t suffix_bytes = prompt_text_bytes - chat_suffix_offset;
+	uint32_t suffix_ids[256];
+	SparkTokenizerEncoding suffix_encoding;
+	if (adapter == 0 || adapter->cache_checkpoint_token_count == 0u || adapter->cache_block_token_count == 0u || suffix_bytes == 0u || suffix_bytes > 256u)
+		return;
+	SparkTokenizerEncodingReset(&suffix_encoding);
+	suffix_encoding.token_capacity = 256u;
+	suffix_encoding.token_ids = suffix_ids;
+	if (SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text + chat_suffix_offset, suffix_bytes, 0u, workspace, &suffix_encoding) != SPARK_STATUS_OK ||
+		suffix_encoding.token_count == 0u || encoding->token_count <= suffix_encoding.token_count + 2u)
+		return;
+	const uint32_t body_end = encoding->token_count - suffix_encoding.token_count;
+	const uint32_t exact_tail = memcmp(encoding->token_ids + body_end, suffix_ids, (size_t)suffix_encoding.token_count * sizeof(uint32_t)) == 0 ? 1u : 0u;
+	const uint32_t margin = exact_tail != 0u ? 1u : 2u;
+	const uint32_t min_body = 4u * adapter->cache_block_token_count;
+	if (body_end >= min_body && body_end > margin)
+	{
+		const uint32_t aligned = ((body_end - margin) / adapter->cache_block_token_count) * adapter->cache_block_token_count;
+		if (aligned != 0u && aligned + prefix_count < encoding->token_count + prefix_count - 1u)
+		{
+			options->cache_points[0] = aligned + prefix_count;
+			options->cache_point_count = 1u;
+		}
+	}
+}
+
 static void handle_completion(int fd, char *body, uint32_t body_len,
 	int chat_format)
 {
@@ -1749,41 +1780,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			prompt_text_bytes, 0u, &workspace, &encoding);
 		if (encode_status == SPARK_STATUS_OK && chat_request != 0u && options.cache_point_count == 0u &&
 			chat_suffix_offset < prompt_text_bytes)
-		{
-			const SparkModelServingAdapterDescriptor *adapter =
-				S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
-			const uint32_t suffix_bytes = prompt_text_bytes - chat_suffix_offset;
-			if (adapter != 0 && adapter->cache_checkpoint_token_count != 0u &&
-				adapter->cache_block_token_count != 0u && suffix_bytes > 0u && suffix_bytes <= 256u)
-			{
-				uint32_t suffix_ids[256];
-				SparkTokenizerEncoding suffix_encoding;
-				SparkTokenizerEncodingReset(&suffix_encoding);
-				suffix_encoding.token_capacity = 256u;
-				suffix_encoding.token_ids = suffix_ids;
-				if (SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text + chat_suffix_offset,
-						suffix_bytes, 0u, &workspace, &suffix_encoding) == SPARK_STATUS_OK &&
-					suffix_encoding.token_count > 0u &&
-					encoding.token_count > suffix_encoding.token_count + 2u)
-				{
-					const uint32_t body_end = encoding.token_count - suffix_encoding.token_count;
-					const uint32_t exact_tail = memcmp(encoding.token_ids + body_end, suffix_ids,
-						(size_t)suffix_encoding.token_count * sizeof(uint32_t)) == 0 ? 1u : 0u;
-					const uint32_t margin = exact_tail != 0u ? 1u : 2u;
-					const uint32_t min_body = 4u * adapter->cache_block_token_count;
-					if (body_end >= min_body && body_end > margin)
-					{
-						const uint32_t aligned = ((body_end - margin) / adapter->cache_block_token_count) *
-							adapter->cache_block_token_count;
-						if (aligned != 0u && aligned + prefix_count < encoding.token_count + prefix_count - 1u)
-						{
-							options.cache_points[0] = aligned + prefix_count;
-							options.cache_point_count = 1u;
-						}
-					}
-				}
-			}
-		}
+			api_maybe_set_chat_cache_point(prompt_text, prompt_text_bytes, chat_suffix_offset,
+				prefix_count, &workspace, &encoding, &options);
 		SparkTokenizerWorkspaceDestroy(&workspace);
 		free(prompt_text);
 		if (encode_status != SPARK_STATUS_OK)

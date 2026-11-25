@@ -2375,10 +2375,10 @@ define GLM53_FLASH_ADAPTER_RECIPE
 endef
 
 $(GLM53_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(GLM53_FLASH_TP16_SERVING_ADAPTER)): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_FP8_E4M3,glm53_flash-tp16,glm53_flash_stage,zai-org/GLM-5.3-Flash,84c6a6aa9497188e15a635ba793b0f95a79b1033)
+	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_FP8_E4M3,glm53_flash-tp16,glm53_flash_stage,zai-org/GLM-5.3-Flash,84c6a6aa9497188e15a635ba793b0f95a79b1033,-DGLM53_FLASH_PROGRAM=\"glm53_flash\")
 
 $(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER)): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,glm53_flash-bf16-tp16,glm53_flash_bf16_stage,zai-org/GLM-5.3-Flash-BF16,f12e0fe1f6b2ea274c11a569582edfd99d993c5e)
+	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,glm53_flash-bf16-tp16,glm53_flash_bf16_stage,zai-org/GLM-5.3-Flash-BF16,f12e0fe1f6b2ea274c11a569582edfd99d993c5e,-DGLM53_FLASH_PROGRAM=\"glm53_flash\")
 
 $(SAGE21_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(SAGE21_FLASH_TP16_SERVING_ADAPTER)): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_FP8_E4M3,sage21_flash-tp16,sage21_flash_stage,internlm/Sage-S2.1-Flash-FP8,716e6436905650b7be93e1b7dedfb0bb95afd3a3,-DSAGE21_FLASH=1 -DGLM53_FLASH_PROGRAM=\"sage21_flash\")
@@ -2731,9 +2731,9 @@ $(QWEN38_DSPINE_DRAFTER_MODULE): modules/qwen38_dspine_draft_stage/source/spark_
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(GLM53_DSPARK_DRAFTER_MODULE): modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_DSPARK_DRAFTER_MODULE): modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
@@ -2749,9 +2749,9 @@ $(KEXAONE2_DSPARK_DRAFTER_MODULE): modules/kexaone2_dspark_draft_stage/source/sp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(GLM53_FLASH_DFLASH2_DRAFTER_MODULE): modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_FLASH_DFLASH2_DRAFTER_MODULE): modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 

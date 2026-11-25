@@ -34,8 +34,12 @@ def main():
     if "wide_config" in runner:
         failures.append("the runner still configures a second device collective")
     kernel = re.search(r"SparkTpSumRanksF32Kernel\((.*?)\n\}", KERNELS.read_text(), re.S)
-    if kernel is None or not re.search(r"for \( source = 0u; source < source_count; source\+\+ \)", kernel.group(1)) \
-            or "float2 acc" not in KERNELS.read_text():
+    rank_loop = kernel is not None and (
+        re.search(r"for \( (?:uint32_t )?source = 0u; source < source_count; source\+\+ \)", kernel.group(1))
+        or (re.search(r"for \( (?:uint32_t )?source = 0u; source < 16u; source\+\+ \)", kernel.group(1))
+            and "if ( source < source_count )" in kernel.group(1))
+    )
+    if not rank_loop or "float2 acc" not in KERNELS.read_text():
         failures.append("the shared rank sum is not an fp32 accumulation in rank order")
     combine = body(COLLECTIVE.read_text(), "SparkTpDeviceCollectiveRoundCombine")
     if combine is None or combine.find("combine_fused_bf16") < 0 or \
