@@ -5,8 +5,8 @@
         [--expect-sha256 FILE=HEX ...]
 
 NAME is one of DRAFTERS: k31dspark (Kimi K3.1 Pro's DSpark), dsv41dspark (the DSpark built into DeepSeek V4.1
-1017's checkpoint), qwen27bdspine (Qwen3.8-27B's DSpine b16), glm53dspark (GLM-5.3's RedHat AI DSpark) and
-qwen38maxdspark (Qwen3.8-Max's RadixArk DSpark). For dsv41dspark the target tensors live in the
+1017's checkpoint), qwen27bdspine (Qwen3.8-27B's DSpine b16), glm53dspark (GLM-5.3's RedHat AI DSpark),
+qwen38maxdspark (Qwen3.8-Max's RadixArk DSpark) and kexaone2dspark (K-EXAONE 2.0's official DSpark). For dsv41dspark the target tensors live in the
 checkpoint's own files, so it takes no --target.
 
 Every tensor of the drafter's files and of the target files is either packed, byte for byte, or left out by a named
@@ -121,6 +121,22 @@ DRAFTERS = {
                    "target.norm": "model.norm.weight"},
         "skip": {r"^model\.layers\.\d+\.": "target decoder layers sharing the embedding and norm shards",
                  r"^mtp\.": "target MTP weights sharing the head and norm shard"},
+        "target_from_checkpoint": False,
+    },
+    "kexaone2dspark": {
+        "arm": "kexaone2dspark.bf16.tp1",
+        "config": "config.json",
+        "architectures": ["ExaoneMoeForCausalLM"],
+        "layer_count": "dspark_num_hidden_layers",
+        "layer_pattern": r"^mtp\.layers\.(\d+)\.",
+        "include": [r"^mtp\.fc\.weight$", r"^mtp\.hidden_norm\.weight$", r"^mtp\.norm\.weight$",
+                    r"^mtp\.layers\.\d+\.", r"^mtp\.markov_head\.markov_w[12]\.weight$",
+                    r"^mtp\.confidence_head\.proj\.(weight|bias)$"],
+        "dtypes": ["BF16"],
+        "target": {"target.embed": "model.embed_tokens.weight",
+                   "target.head": "lm_head.weight",
+                   "target.norm": "model.norm.weight"},
+        "skip": {r"^model\.layers\.\d+\.": "target decoder layers sharing the embedding and norm shards"},
         "target_from_checkpoint": False,
     },
 }

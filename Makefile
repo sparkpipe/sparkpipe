@@ -989,11 +989,12 @@ DSV41_DSPARK_DRAFTER_MODULE := build/modules/dsv41_dspark_draft_stage.$(SHARED_L
 QWEN38_DSPINE_DRAFTER_MODULE := build/modules/qwen38_dspine_draft_stage.$(SHARED_LIBRARY_EXT)
 GLM53_DSPARK_DRAFTER_MODULE := build/modules/glm53_dspark_draft_stage.$(SHARED_LIBRARY_EXT)
 QWEN38_MAX_DSPARK_DRAFTER_MODULE := build/modules/qwen38_max_dspark_draft_stage.$(SHARED_LIBRARY_EXT)
+KEXAONE2_DSPARK_DRAFTER_MODULE := build/modules/kexaone2_dspark_draft_stage.$(SHARED_LIBRARY_EXT)
 DRAFTER_DEVICE_OBJECTS := $(patsubst %.c,build/obj/drafter/%.o,$(WEIGHTD_DEVICE_SOURCES_cuda))
 DRAFTER_MODULES :=
 DRAFTER_CUOBJDUMP ?= $(dir $(shell command -v $(NVCC) 2>/dev/null))cuobjdump
 ifneq ($(CUDA_RUNTIME_HEADER),)
-DRAFTER_MODULES := $(K31_DSPARK_DRAFTER_MODULE) $(DSV41_DSPARK_DRAFTER_MODULE) $(QWEN38_DSPINE_DRAFTER_MODULE) $(GLM53_DSPARK_DRAFTER_MODULE) $(QWEN38_MAX_DSPARK_DRAFTER_MODULE)
+DRAFTER_MODULES := $(K31_DSPARK_DRAFTER_MODULE) $(DSV41_DSPARK_DRAFTER_MODULE) $(QWEN38_DSPINE_DRAFTER_MODULE) $(GLM53_DSPARK_DRAFTER_MODULE) $(QWEN38_MAX_DSPARK_DRAFTER_MODULE) $(KEXAONE2_DSPARK_DRAFTER_MODULE)
 endif
 STAGE_RUNNER_BINARIES += $(DRAFTER_MODULES)
 TEST_DRAFTER_PROBE_MODULE := build/test_modules/drafter_probe.$(SHARED_LIBRARY_EXT)
@@ -2716,6 +2717,12 @@ $(QWEN38_MAX_DSPARK_DRAFTER_MODULE): modules/qwen38_max_dspark_draft_stage/sourc
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
+$(KEXAONE2_DSPARK_DRAFTER_MODULE): modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
+	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	mv $@.tmp $@
+
 drafter-modules: $(DRAFTER_MODULES)
 
 build/k31_dspark_context_probe: tools/k31_dspark_context_probe.c include/sparkpipe/spark_drafter_module.h | build
@@ -2734,6 +2741,9 @@ build/glm53_dspark_block_probe: tests/glm53_dspark_block_probe.c include/sparkpi
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
 build/qwen38_max_dspark_block_probe: tests/qwen38_max_dspark_block_probe.c include/sparkpipe/spark_drafter_module.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
+
+build/kexaone2_dspark_block_probe: tests/kexaone2_dspark_block_probe.c include/sparkpipe/spark_drafter_module.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
 build/drafter_module_replay: tools/drafter_module_replay.c include/sparkpipe/spark_drafter_module.h $(CORE_LIBRARY) | build
