@@ -106,8 +106,8 @@ void ShardBitsReferenceKernel(
 		count = offsets[1] - offsets[0];
 	}
 	else if (listed != 0u)
-		count = LmLatentShardCompact(cache.shard, selection.selected_positions + (uint64_t)row * selection.selected_count, selection.selected_count,
-			row_position[row], 1u, list_shared, list_scan);
+		count = LmLatentShardCompactBlock<LM_PREFILL_ATTN_THREADS>(cache.shard, selection.selected_positions + (uint64_t)row * selection.selected_count, selection.selected_count,
+			row_position[row], list_shared, list_scan);
 	for (query_row = row; listed == 0u && query_row <= last_row; query_row++)
 	{
 		dense = context_length[sequence];
@@ -578,7 +578,7 @@ static inline cudaError_t ShardBitsReferenceAttendHeadsLaunch(
 		if ( (total_heads % LM_LATENT_SHARD_QUERIES == 0u || padded != 0u) && row_position != 0 && (partial_rank_stride % 2u) == 0u &&
 			ShardBitsReferenceSharedBytes<LATENT + ROPE>() + list <= LM_PREFILL_ATTN_SHARED_LIMIT)
 		{
-			const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, selected_count, dense_limit, record_heads, record_copies, 1u, padded };
+			const LmLatentShardSelection selection = { selected_positions, split_positions, split_offsets, 0, 0, selected_count, dense_limit, record_heads, record_copies, 1u, padded };
 			return ShardBitsReferenceRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
 				sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, selection);
 		}

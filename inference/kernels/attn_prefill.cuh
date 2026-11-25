@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/attn.cuh"
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/mma.cuh"
 #include "runtime/launch.h"
 #include <math.h>
@@ -65,7 +66,7 @@ static __device__ __forceinline__ void LmPrefillCopy(uint32_t destination, const
 }
 
 #define LM_PREFILL_UNION_THREADS 256u
-#define LM_PREFILL_UNION_WINDOW 131072u
+#define LM_PREFILL_UNION_WINDOW 32768u
 
 static __device__ __forceinline__ uint32_t LmPrefillCountBelow(const uint32_t *__restrict__ list, uint32_t length, uint32_t value, uint32_t inclusive)
 {
@@ -73,7 +74,8 @@ static __device__ __forceinline__ uint32_t LmPrefillCountBelow(const uint32_t *_
 	while (low < high)
 	{
 		middle = (low + high) >> 1u;
-		if (list[middle] < value || (inclusive != 0u && list[middle] == value))
+		const uint32_t v = __ldg(list + middle);
+		if (v < value || (inclusive != 0u && v == value))
 			low = middle + 1u;
 		else
 			high = middle;
@@ -81,8 +83,13 @@ static __device__ __forceinline__ uint32_t LmPrefillCountBelow(const uint32_t *_
 	return(low);
 }
 
+static __device__ __forceinline__ uint32_t LmPrefillNonzeroBytes4(uint32_t packed)
+{
+	return((((packed | (packed >> 4u)) & 0x0f0f0f0fu) + 0x0f0f0f0fu) & 0x10101010u);
+}
+
 template<uint32_t ROWS_PER_BLOCK, uint32_t SELECTED>
-__global__ __launch_bounds__(LM_PREFILL_UNION_THREADS)
+__global__ __launch_bounds__(LM_PREFILL_UNION_THREADS, 2)
 void LmPrefillSparseUnionKernel(
 	const uint32_t *__restrict__ selected,
 	const uint32_t *__restrict__ row_position,
@@ -93,29 +100,27 @@ void LmPrefillSparseUnionKernel(
 	uint8_t *__restrict__ union_masks,
 	uint32_t *__restrict__ union_counts)
 {
-	constexpr uint32_t WORDS = LM_PREFILL_UNION_WINDOW / 32u;
+	constexpr uint32_t WORDS = LM_PREFILL_UNION_WINDOW / 4u;
 	constexpr uint32_t WARPS = LM_PREFILL_UNION_THREADS / 32u;
-	constexpr uint32_t MERGED = ROWS_PER_BLOCK * SELECTED;
 	static_assert(ROWS_PER_BLOCK >= 1u && ROWS_PER_BLOCK <= 8u, "one membership bit per row of a block");
 	static_assert(WORDS % (WARPS * 32u) == 0u, "each warp scans whole 32-word rounds of the window");
-	static_assert(MERGED < 65536u, "a window's union index fits 16 bits");
-	__shared__ __align__(16) uint32_t present[WORDS];
-	__shared__ uint16_t below[WORDS];
-	__shared__ __align__(16) uint32_t member[(MERGED + 3u) / 4u];
+	__shared__ __align__(16) uint32_t masks[WORDS];
 	__shared__ uint32_t length[ROWS_PER_BLOCK];
 	__shared__ uint32_t begin[ROWS_PER_BLOCK];
 	__shared__ uint32_t end[ROWS_PER_BLOCK];
 	__shared__ uint32_t warp_total[WARPS];
 	__shared__ uint32_t span[2];
+	LmDependentWait();
 	const uint32_t table = blockIdx.x;
-	const uint32_t entry = block_table != 0 ? block_table[table] : 0u;
+	const uint32_t entry = block_table != 0 ? __ldg(block_table + table) : 0u;
 	const uint32_t warp = threadIdx.x >> 5u,lane = threadIdx.x & 31u;
-	uint32_t first_row,row_end,rows_here,row,index,word,offset,bits,count,window_count,base,carry,inclusive,neighbour,shift;
+	uint32_t first_row,row_end,rows_here,row,index,word,offset,count,window_count,base,carry,inclusive,neighbour,shift;
 	uint64_t window,window_end;
 	if (block_table != 0 && entry == LM_PREFILL_ATTN_EMPTY_BLOCK)
 	{
 		if (threadIdx.x == 0u)
 			union_counts[table] = 0u;
+		LmDependentRelease();
 		return;
 	}
 	first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : table * ROWS_PER_BLOCK;
@@ -124,7 +129,7 @@ void LmPrefillSparseUnionKernel(
 	if (threadIdx.x < ROWS_PER_BLOCK)
 	{
 		length[threadIdx.x] = threadIdx.x < rows_here
-			? LmPrefillCountBelow(selected + (uint64_t)(first_row + threadIdx.x) * SELECTED, SELECTED, row_position[first_row + threadIdx.x], 1u) : 0u;
+			? LmPrefillCountBelow(selected + (uint64_t)(first_row + threadIdx.x) * SELECTED, SELECTED, __ldg(row_position + first_row + threadIdx.x), 1u) : 0u;
 		end[threadIdx.x] = 0u;
 	}
 	__syncthreads();
@@ -135,8 +140,10 @@ void LmPrefillSparseUnionKernel(
 		for (row = 0u; row < ROWS_PER_BLOCK; row++)
 			if (length[row] != 0u)
 			{
-				span[0] = LmPrefillMin(span[0], selected[(uint64_t)(first_row + row) * SELECTED]);
-				span[1] = selected[(uint64_t)(first_row + row) * SELECTED + length[row] - 1u] > span[1] ? selected[(uint64_t)(first_row + row) * SELECTED + length[row] - 1u] : span[1];
+				const uint32_t lo = __ldg(selected + (uint64_t)(first_row + row) * SELECTED);
+				const uint32_t hi = __ldg(selected + (uint64_t)(first_row + row) * SELECTED + length[row] - 1u);
+				span[0] = LmPrefillMin(span[0], lo);
+				span[1] = hi > span[1] ? hi : span[1];
 			}
 	}
 	__syncthreads();
@@ -144,41 +151,59 @@ void LmPrefillSparseUnionKernel(
 	for (window = span[0] - span[0] % LM_PREFILL_UNION_WINDOW; span[0] <= span[1] && window <= span[1]; window += LM_PREFILL_UNION_WINDOW)
 	{
 		window_end = window + LM_PREFILL_UNION_WINDOW;
-		const uint32_t raw_words = span[1] < window_end ? (((uint32_t)(span[1] - window) >> 5u) + 1u) : WORDS;
+		const uint32_t raw_words = span[1] < window_end ? (((uint32_t)(span[1] - window) >> 2u) + 1u) : WORDS;
 		const uint32_t active_words = ((raw_words + (WARPS * 32u) - 1u) / (WARPS * 32u)) * (WARPS * 32u);
 		const uint32_t active_warp_words = active_words / WARPS;
 		if (threadIdx.x < ROWS_PER_BLOCK)
 		{
 			const uint32_t *list = selected + (uint64_t)(first_row + threadIdx.x) * SELECTED;
 			begin[threadIdx.x] = end[threadIdx.x];
-			end[threadIdx.x] = length[threadIdx.x] == 0u || list[length[threadIdx.x] - 1u] < window_end ? length[threadIdx.x]
+			end[threadIdx.x] = length[threadIdx.x] == 0u || __ldg(list + length[threadIdx.x] - 1u) < window_end ? length[threadIdx.x]
 				: LmPrefillCountBelow(list, length[threadIdx.x], (uint32_t)window_end, 0u);
 		}
 		for (word = threadIdx.x; word < (active_words >> 2u); word += LM_PREFILL_UNION_THREADS)
-			((uint4 *)present)[word] = uint4{0u, 0u, 0u, 0u};
+			((uint4 *)masks)[word] = uint4{0u, 0u, 0u, 0u};
 		__syncthreads();
-		for (row = 0u; row < ROWS_PER_BLOCK; row++)
-			for (index = begin[row] + threadIdx.x; index < end[row]; index += LM_PREFILL_UNION_THREADS)
+		if constexpr (WARPS % ROWS_PER_BLOCK == 0u)
+		{
+			constexpr uint32_t WARPS_PER_ROW = WARPS / ROWS_PER_BLOCK;
+			const uint32_t my_row = warp / WARPS_PER_ROW;
+			const uint32_t sub_lane = (warp % WARPS_PER_ROW) * 32u + lane;
+			const uint32_t *row_sel = selected + (uint64_t)(first_row + my_row) * SELECTED;
+			const uint32_t row_bit = 1u << my_row;
+			const uint32_t b = begin[my_row], e = end[my_row];
+			for (index = b + sub_lane; index < e; index += WARPS_PER_ROW * 32u)
 			{
-				offset = selected[(uint64_t)(first_row + row) * SELECTED + index] - (uint32_t)window;
-				atomicOr(&present[offset >> 5u], 1u << (offset & 31u));
+				offset = __ldg(row_sel + index) - (uint32_t)window;
+				atomicOr(&masks[offset >> 2u], row_bit << ((offset & 3u) << 3u));
 			}
+		}
+		else
+		{
+			for (row = 0u; row < ROWS_PER_BLOCK; row++)
+			{
+				const uint32_t *row_sel = selected + (uint64_t)(first_row + row) * SELECTED;
+				const uint32_t row_bit = 1u << row;
+				const uint32_t b = begin[row], e = end[row];
+				for (index = b + threadIdx.x; index < e; index += LM_PREFILL_UNION_THREADS)
+				{
+					offset = __ldg(row_sel + index) - (uint32_t)window;
+					atomicOr(&masks[offset >> 2u], row_bit << ((offset & 3u) << 3u));
+				}
+			}
+		}
 		__syncthreads();
 		carry = 0u;
 		for (index = 0u; index < active_warp_words / 32u; index++)
 		{
 			word = warp * active_warp_words + index * 32u + lane;
-			bits = __popc(present[word]);
-			inclusive = bits;
-			#pragma unroll
-			for (shift = 1u; shift < 32u; shift <<= 1u)
-			{
-				neighbour = __shfl_up_sync(0xffffffffu, inclusive, shift);
-				inclusive += lane >= shift ? neighbour : 0u;
-			}
-			below[word] = (uint16_t)(carry + inclusive - bits);
-			carry += __shfl_sync(0xffffffffu, inclusive, 31u);
+			const uint32_t m = masks[word];
+			if (__any_sync(0xffffffffu, m != 0u))
+				carry += __popc(LmPrefillNonzeroBytes4(m));
 		}
+		#pragma unroll
+		for (shift = 16u; shift > 0u; shift >>= 1u)
+			carry += __shfl_xor_sync(0xffffffffu, carry, shift);
 		if (lane == 0u)
 			warp_total[warp] = carry;
 		__syncthreads();
@@ -190,38 +215,46 @@ void LmPrefillSparseUnionKernel(
 			base += index < warp ? warp_total[index] : 0u;
 			window_count += warp_total[index];
 		}
-		for (index = 0u; index < active_warp_words / 32u; index++)
-			below[warp * active_warp_words + index * 32u + lane] += (uint16_t)base;
-		const uint32_t member_words = (window_count + 3u) >> 2u;
-		for (word = threadIdx.x; word < (member_words >> 2u); word += LM_PREFILL_UNION_THREADS)
-			((uint4 *)member)[word] = uint4{0u, 0u, 0u, 0u};
-		for (word = (member_words & ~3u) + threadIdx.x; word < member_words; word += LM_PREFILL_UNION_THREADS)
-			member[word] = 0u;
-		__syncthreads();
-		for (row = 0u; row < ROWS_PER_BLOCK; row++)
-			for (index = begin[row] + threadIdx.x; index < end[row]; index += LM_PREFILL_UNION_THREADS)
-			{
-				offset = selected[(uint64_t)(first_row + row) * SELECTED + index] - (uint32_t)window;
-				word = offset >> 5u;
-				bits = below[word] + __popc(present[word] & ((1u << (offset & 31u)) - 1u));
-				atomicOr(&member[bits >> 2u], (1u << row) << ((bits & 3u) * 8u));
-			}
-		__syncthreads();
-		for (index = 0u; index < active_warp_words / 32u; index++)
+		if (warp_total[warp] != 0u)
 		{
-			word = warp * active_warp_words + index * 32u + lane;
-			bits = present[word];
-			offset = below[word];
-			while (bits != 0u)
+			uint32_t *dst_pos = union_positions + (uint64_t)table * union_capacity + count;
+			uint8_t *dst_mask = union_masks + (uint64_t)table * union_capacity + count;
+			carry = base;
+			for (index = 0u; index < active_warp_words / 32u; index++)
 			{
-				const uint32_t bit = __ffs(bits) - 1u;
-				bits &= bits - 1u;
-				if (count + offset < union_capacity)
+				word = warp * active_warp_words + index * 32u + lane;
+				const uint32_t m = masks[word];
+				if (!__any_sync(0xffffffffu, m != 0u))
+					continue;
+				const uint32_t nz = LmPrefillNonzeroBytes4(m);
+				const uint32_t cnt = __popc(nz);
+				inclusive = cnt;
+				#pragma unroll
+				for (shift = 1u; shift < 32u; shift <<= 1u)
 				{
-					union_positions[(uint64_t)table * union_capacity + count + offset] = (uint32_t)window + word * 32u + bit;
-					union_masks[(uint64_t)table * union_capacity + count + offset] = (uint8_t)(member[offset >> 2u] >> ((offset & 3u) * 8u));
+					neighbour = __shfl_up_sync(0xffffffffu, inclusive, shift);
+					inclusive += lane >= shift ? neighbour : 0u;
 				}
-				offset++;
+				offset = carry + inclusive - cnt;
+				carry += __shfl_sync(0xffffffffu, inclusive, 31u);
+				if (m != 0u)
+				{
+					const uint32_t pos_base = (uint32_t)window + (word << 2u);
+					#pragma unroll
+					for (uint32_t b_idx = 0u; b_idx < 4u; b_idx++)
+					{
+						const uint32_t mb = (m >> (b_idx << 3u)) & 0xffu;
+						if (mb != 0u)
+						{
+							if (count + offset < union_capacity)
+							{
+								dst_pos[offset] = pos_base + b_idx;
+								dst_mask[offset] = (uint8_t)mb;
+							}
+							offset++;
+						}
+					}
+				}
 			}
 		}
 		count += window_count;
@@ -229,6 +262,7 @@ void LmPrefillSparseUnionKernel(
 	}
 	if (threadIdx.x == 0u)
 		union_counts[table] = count < union_capacity ? count : union_capacity;
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE, bool SPARSE, uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
@@ -276,11 +310,12 @@ void LmLatentAttentionPrefillKernel(
 	float *rescale = running_sum + QUERIES;
 	const uint8_t **slots = (const uint8_t **)(rescale + QUERIES);
 	uint32_t *key_rows = (uint32_t *)(slots + 2u * TILE);
+	LmDependentWait();
 	const uint32_t warp = threadIdx.x >> 5u,lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u,within = lane & 7u;
 	const uint32_t query_tile = warp / (2u * KEY_GROUPS),half = (warp / KEY_GROUPS) & 1u,key_group = warp % KEY_GROUPS;
 	const uint32_t table = gridDim.x - 1u - blockIdx.x;
-	const uint32_t entry = block_table != 0 ? block_table[table] : 0u;
+	const uint32_t entry = block_table != 0 ? __ldg(block_table + table) : 0u;
 	const uint32_t *tile_positions = SPARSE ? union_positions + (uint64_t)table * union_capacity : 0;
 	const uint8_t *tile_masks = SPARSE ? union_masks + (uint64_t)table * union_capacity : 0;
 	const uint32_t first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : table * ROWS_PER_BLOCK;
@@ -295,38 +330,44 @@ void LmLatentAttentionPrefillKernel(
 	const float scale_log2 = qk_scale * 1.4426950408889634f;
 
 	if (block_table != 0 && entry == LM_PREFILL_ATTN_EMPTY_BLOCK)
+	{
+		LmDependentRelease();
 		return;
-	sequence = sequence_of_row[first_row];
+	}
+	sequence = __ldg(sequence_of_row + first_row);
 	first_position_min = 0xffffffffu;
 	last_position = 0u;
 	for (row = first_row; row < row_end; row++)
 	{
-		if (sequence_of_row[row] != sequence)
+		if (__ldg(sequence_of_row + row) != sequence)
 		{
 			if (threadIdx.x == 0u)
 				LmKvReportRequiredAccessFailure(cache, LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
+			LmDependentRelease();
 			return;
 		}
-		first_position_min = row_position[row] < first_position_min ? row_position[row] : first_position_min;
-		last_position = row_position[row] > last_position ? row_position[row] : last_position;
+		const uint32_t rpos = __ldg(row_position + row);
+		first_position_min = rpos < first_position_min ? rpos : first_position_min;
+		last_position = rpos > last_position ? rpos : last_position;
 	}
 	if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
 	{
 		if (threadIdx.x == 0u)
 			LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, first_row, sequence, 0xffffffffu, 0xffffffffu);
+		LmDependentRelease();
 		return;
 	}
-	listed_keys = SPARSE ? union_counts[table] : last_position + 1u;
+	listed_keys = SPARSE ? __ldg(union_counts + table) : last_position + 1u;
 	tiles = (listed_keys + TILE - 1u) / TILE;
 #pragma unroll
 	for (row = 0u; row < ROWS_PER_BLOCK; row++)
-		row_limit[row] = first_row + row < row_end ? row_position[first_row + row] : 0u;
+		row_limit[row] = first_row + row < row_end ? __ldg(row_position + first_row + row) : 0u;
 
 	auto listing = [&](uint32_t which, uint32_t &position, uint32_t &members)
 	{
 		const uint32_t listed = which * TILE + threadIdx.x;
-		position = !SPARSE ? listed : listed < listed_keys ? tile_positions[listed] : 0xffffffffu;
-		members = !SPARSE ? 0xffffffffu : listed < listed_keys ? (uint32_t)tile_masks[listed] : 0u;
+		position = !SPARSE ? listed : listed < listed_keys ? __ldg(tile_positions + listed) : 0xffffffffu;
+		members = !SPARSE ? 0xffffffffu : listed < listed_keys ? (uint32_t)__ldg(tile_masks + listed) : 0u;
 	};
 	auto prefetch = [&](uint32_t position)
 	{
@@ -487,51 +528,80 @@ void LmLatentAttentionPrefillKernel(
 			}
 #pragma unroll
 			for (frag = 0u; frag < KEY_FRAGS; frag++)
-#pragma unroll
-				for (index = 0u; index < 4u; index++)
-					score_parts[(half * QUERIES + query_tile * 16u + (lane >> 2u) + (index >> 1u) * 8u) * LM_PREFILL_ATTN_PARTIAL_STRIDE
-						+ (key_group * KEY_FRAGS + frag) * 8u + (lane & 3u) * 2u + (index & 1u)] = score[frag][index];
+			{
+				const uint32_t base_col = (key_group * KEY_FRAGS + frag) * 8u + (lane & 3u) * 2u;
+				const uint32_t row_lo = half * QUERIES + query_tile * 16u + (lane >> 2u);
+				*(float2 *)(score_parts + row_lo * LM_PREFILL_ATTN_PARTIAL_STRIDE + base_col) = make_float2(score[frag][0], score[frag][1]);
+				*(float2 *)(score_parts + (row_lo + 8u) * LM_PREFILL_ATTN_PARTIAL_STRIDE + base_col) = make_float2(score[frag][2], score[frag][3]);
+			}
 		}
 		__syncthreads();
 		{
 			const uint32_t own = threadIdx.x / QUERY_THREADS,part = threadIdx.x % QUERY_THREADS;
-			const bool full_dense_tile = !SPARSE && (first_row + (own / HEADS) < row_end) && ((tile + 1u) * TILE - 1u <= first_position_min);
+			const uint32_t key_base_idx = part * QUERY_KEYS;
+			const uint32_t own_row = own / HEADS;
+			const bool full_dense_tile = !SPARSE && (first_row + own_row < row_end) && ((tile + 1u) * TILE - 1u <= first_position_min);
 			float value[QUERY_KEYS],weight[QUERY_KEYS],peak,previous_max,next_max,scale,shift_val,total;
-#pragma unroll
-			for (index = 0u; index < QUERY_KEYS; index++)
+			if constexpr (QUERY_KEYS == 4u)
 			{
-				const uint32_t key = part + index * QUERY_THREADS;
-				value[index] = score_parts[own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key] + score_parts[(QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key];
-				if (!full_dense_tile)
-					value[index] = ((key_rows[buffer * TILE + key] >> (own / HEADS)) & 1u) != 0u ? value[index] : -INFINITY;
+				const float4 a = *(const float4 *)(score_parts + own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+				const float4 b = *(const float4 *)(score_parts + (QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+				value[0] = a.x + b.x;
+				value[1] = a.y + b.y;
+				value[2] = a.z + b.z;
+				value[3] = a.w + b.w;
+			}
+			else
+			{
+				const float2 a = *(const float2 *)(score_parts + own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+				const float2 b = *(const float2 *)(score_parts + (QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+				value[0] = a.x + b.x;
+				value[1] = a.y + b.y;
+			}
+			if (!full_dense_tile)
+			{
+#pragma unroll
+				for (index = 0u; index < QUERY_KEYS; index++)
+					value[index] = ((key_rows[buffer * TILE + key_base_idx + index] >> own_row) & 1u) != 0u ? value[index] : -INFINITY;
 			}
 			peak = value[0];
 #pragma unroll
 			for (index = 1u; index < QUERY_KEYS; index++)
 				peak = fmaxf(peak, value[index]);
 #pragma unroll
-			for (shift = QUERY_THREADS / 2u; shift > 0u; shift >>= 1u)
+			for (shift = 1u; shift < QUERY_THREADS; shift <<= 1u)
 				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
 			previous_max = running_max[own];
 			next_max = fmaxf(previous_max, peak);
 			scale = previous_max == -INFINITY ? 0.0f : SparkMathExp2Fast((previous_max - next_max) * scale_log2);
 			shift_val = next_max == -INFINITY ? 0.0f : next_max * scale_log2;
-#pragma unroll
-			for (index = 0u; index < QUERY_KEYS; index++)
+			if (full_dense_tile)
 			{
-				weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(value[index], scale_log2, -shift_val));
-				weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
+#pragma unroll
+				for (index = 0u; index < QUERY_KEYS; index++)
+					weight[index] = SparkMathExp2Fast(fmaf(value[index], scale_log2, -shift_val));
+			}
+			else
+			{
+#pragma unroll
+				for (index = 0u; index < QUERY_KEYS; index++)
+					weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(value[index], scale_log2, -shift_val));
+			}
+			if constexpr (QUERY_KEYS == 4u)
+			{
+				*(uint2 *)(weight_high + own * LM_PREFILL_ATTN_WEIGHT_STRIDE + key_base_idx) = make_uint2(
+					LmPackBf16Pair(weight[0], weight[1]),
+					LmPackBf16Pair(weight[2], weight[3]));
+				total = (weight[0] + weight[1]) + (weight[2] + weight[3]);
+			}
+			else
+			{
+				*(uint32_t *)(weight_high + own * LM_PREFILL_ATTN_WEIGHT_STRIDE + key_base_idx) = LmPackBf16Pair(weight[0], weight[1]);
+				total = weight[0] + weight[1];
 			}
 #pragma unroll
-			for (step = QUERY_KEYS / 2u; step > 0u; step >>= 1u)
-#pragma unroll
-				for (index = 0u; index < step; index++)
-					weight[index] += weight[index + step];
-			total = weight[0];
-#pragma unroll
-			for (shift = QUERY_THREADS / 2u; shift > 0u; shift >>= 1u)
+			for (shift = 1u; shift < QUERY_THREADS; shift <<= 1u)
 				total += __shfl_xor_sync(0xffffffffu, total, shift);
-			__syncwarp();
 			if (part == 0u)
 			{
 				running_sum[own] = fmaf(running_sum[own], scale, total);
@@ -606,13 +676,14 @@ void LmLatentAttentionPrefillKernel(
 		{
 			column = warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u;
 			if (row_lo < row_end)
-				*(uint32_t *)(output_bf16 + ((uint64_t)row_lo * HEADS + q_lo % HEADS) * LATENT + column) =
-					LmPackBf16Pair(output[m][frag][0] * inv_lo, output[m][frag][1] * inv_lo);
+				__stcs((uint32_t *)(output_bf16 + ((uint64_t)row_lo * HEADS + q_lo % HEADS) * LATENT + column),
+					LmPackBf16Pair(output[m][frag][0] * inv_lo, output[m][frag][1] * inv_lo));
 			if (row_hi < row_end)
-				*(uint32_t *)(output_bf16 + ((uint64_t)row_hi * HEADS + q_hi % HEADS) * LATENT + column) =
-					LmPackBf16Pair(output[m][frag][2] * inv_hi, output[m][frag][3] * inv_hi);
+				__stcs((uint32_t *)(output_bf16 + ((uint64_t)row_hi * HEADS + q_hi % HEADS) * LATENT + column),
+					LmPackBf16Pair(output[m][frag][2] * inv_hi, output[m][frag][3] * inv_hi));
 		}
 	}
+	LmDependentRelease();
 }
 
 template<uint32_t ROWS_PER_BLOCK>
@@ -625,9 +696,13 @@ __global__ void LmPrefillBlockTableKernel(
 	uint32_t *__restrict__ segment_ends,
 	uint32_t segment_capacity)
 {
+	LmDependentWait();
 	uint32_t count = 0u,row = 0u,taken,sequence,segments = 0u;
 	if (threadIdx.x != 0u || blockIdx.x != 0u)
+	{
+		LmDependentRelease();
 		return;
+	}
 	while (row < rows && count < table_blocks)
 	{
 		sequence = sequence_of_row[row];
@@ -652,6 +727,7 @@ __global__ void LmPrefillBlockTableKernel(
 		block_table[count] = LM_PREFILL_ATTN_EMPTY_BLOCK;
 	for (; segment_ends != 0 && segments < segment_capacity; segments++)
 		segment_ends[segments] = rows - 1u;
+	LmDependentRelease();
 }
 
 template<uint32_t HEADS, uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
@@ -668,10 +744,10 @@ static inline SparkGpuError LmPrefillBlockTableLaunch(
 	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / HEADS;
 	static_assert(QUERIES % HEADS == 0u && ROWS_PER_BLOCK < (1u << (32u - LM_PREFILL_ATTN_COUNT_SHIFT)), "a block's row count fits its table entry");
 	if (rows == 0u || sequence_of_row == 0 || block_table == 0 || table_blocks < (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	if (segment_ends != 0 && segment_capacity == 0u)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
-	LM_LAUNCH((LmPrefillBlockTableKernel<ROWS_PER_BLOCK>), 1, 32, 0, stream, cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
+	LM_LAUNCH_DEPENDENT((LmPrefillBlockTableKernel<ROWS_PER_BLOCK>), 1, 32, 0, stream, cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
 	return SparkGpuPeekAtLastError();
 }
 
@@ -694,7 +770,7 @@ static inline SparkGpuError LmLatentAttentionPrefillLaunch(
 	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / 4u;
 	if (rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0 ||
 		(block_table != 0 && table_blocks == 0u))
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	if (heads == 4u)
 	{
 		static bool granted = false;
@@ -705,11 +781,11 @@ static inline SparkGpuError LmLatentAttentionPrefillLaunch(
 				return error;
 			granted = true;
 		}
-		LM_LAUNCH((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES>), block_table != 0 ? table_blocks : (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK, LM_PREFILL_ATTN_THREADS, shared, stream,
-			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, 0, 0, 0, 0u);
+		LM_LAUNCH_DEPENDENT((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES>), block_table != 0 ? table_blocks : (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK, LM_PREFILL_ATTN_THREADS, shared, stream,
+			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, (const uint32_t *)0, (const uint8_t *)0, (const uint32_t *)0, 0u);
 		return SparkGpuPeekAtLastError();
 	}
-	return SPARK_GPU_ERROR_INVALID_VALUE;
+	SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 }
 
 template<uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
@@ -746,7 +822,7 @@ static inline SparkGpuError LmLatentAttentionSparsePrefillLaunch(
 	if (heads != 4u || rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0 ||
 		selected_positions == 0 || selected_count == 0u || union_positions == 0 || union_masks == 0 || union_counts == 0 ||
 		(block_table != 0 && table_blocks == 0u) || (uint64_t)blocks * capacity > union_entries)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	{
 		static bool granted = false;
 		if (!granted)
@@ -758,10 +834,10 @@ static inline SparkGpuError LmLatentAttentionSparsePrefillLaunch(
 		}
 	}
 	if (selected_count != SELECTED)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
-	LM_LAUNCH((LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, SELECTED>), blocks, LM_PREFILL_UNION_THREADS, 0, stream,
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
+	LM_LAUNCH_DEPENDENT((LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, SELECTED>), blocks, LM_PREFILL_UNION_THREADS, 0, stream,
 		selected_positions, row_position, rows, block_table, capacity, union_positions, union_masks, union_counts);
-	LM_LAUNCH((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES>), blocks, LM_PREFILL_ATTN_THREADS, shared, stream,
+	LM_LAUNCH_DEPENDENT((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES>), blocks, LM_PREFILL_ATTN_THREADS, shared, stream,
 		query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, union_positions, union_masks, union_counts, capacity);
 	return SparkGpuPeekAtLastError();
 }

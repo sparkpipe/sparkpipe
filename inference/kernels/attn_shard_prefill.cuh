@@ -2,6 +2,7 @@
 
 #include "inference/kernels/attn_prefill.cuh"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/tma.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
@@ -10,9 +11,11 @@
 
 #define LM_LATENT_SHARD_QUERIES 32u
 #define LM_LATENT_SHARD_ROW_PAD 16u
-#define LM_LATENT_SHARD_PLANS 4u
-#define LM_LATENT_SHARD_PLAN_WORDS (8u + 2u * LM_LATENT_SHARD_QUERIES)
-#define LM_LATENT_SHARD_PREFILL_THREADS ((LM_PREFILL_ATTN_WARPS + 2u) * 32u)
+#define LM_LATENT_SHARD_PREFILL_THREADS ((LM_PREFILL_ATTN_WARPS + 1u) * 32u)
+#define LM_LATENT_SHARD_REG_STEPS 11u
+#define LM_LATENT_SHARD_SMEM_STEPS_SPARSE 2u
+#define LM_LATENT_SHARD_SMEM_BYTES_SPARSE (LM_LATENT_SHARD_SMEM_STEPS_SPARSE * 4u * 32u * 16u)
+#define LM_LATENT_SHARD_SMEM_STEP_BYTES (4u * 32u * 16u)
 
 typedef struct LmLatentShardSelection
 {
@@ -49,9 +52,20 @@ static __host__ __device__ constexpr uint32_t LmLatentShardPrefillSharedBytes(vo
 	return(2u * LM_PREFILL_ATTN_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD)
 		+ 2u * LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_SCORE_STRIDE * 4u
 		+ LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE * 2u
-		+ 3u * LM_LATENT_SHARD_QUERIES * 4u
-		+ (5u + 2u * LM_LATENT_SHARD_PLANS) * 8u
-		+ LM_LATENT_SHARD_PLANS * LM_LATENT_SHARD_PLAN_WORDS * 4u);
+		+ 4u * LM_LATENT_SHARD_QUERIES * 4u
+		+ 8u * 8u
+		+ ((DIM / 32u) > LM_LATENT_SHARD_REG_STEPS ? LM_LATENT_SHARD_SMEM_BYTES_SPARSE : 0u));
+}
+
+template<uint32_t DIM>
+static __host__ __device__ constexpr uint32_t LmLatentShardPrefillFullQueryBytes(void)
+{
+	return(2u * LM_PREFILL_ATTN_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD)
+		+ 2u * LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_SCORE_STRIDE * 4u
+		+ LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE * 2u
+		+ 4u * LM_LATENT_SHARD_QUERIES * 4u
+		+ 8u * 8u
+		+ ((DIM / 32u) > LM_LATENT_SHARD_REG_STEPS ? ((DIM / 32u) - LM_LATENT_SHARD_REG_STEPS) * LM_LATENT_SHARD_SMEM_STEP_BYTES : 0u));
 }
 
 #define LM_LATENT_SHARD_DEVICES 64u
@@ -114,14 +128,14 @@ static __device__ __forceinline__ uint32_t LmLatentShardCompactWarp(
 	uint32_t base, item, count = 0u, keep, mask, value[BATCH], upcoming[BATCH];
 #pragma unroll
 	for (item = 0u; item < BATCH; item++)
-		upcoming[item] = item * 32u + lane < selected_count ? selected[item * 32u + lane] : 0xffffffffu;
+		upcoming[item] = item * 32u + lane < selected_count ? __ldg(selected + item * 32u + lane) : 0xffffffffu;
 	for (base = 0u; base < selected_count; base += BATCH * 32u)
 	{
 #pragma unroll
 		for (item = 0u; item < BATCH; item++)
 		{
 			value[item] = upcoming[item];
-			upcoming[item] = base + (BATCH + item) * 32u + lane < selected_count ? selected[base + (BATCH + item) * 32u + lane] : 0xffffffffu;
+			upcoming[item] = base + (BATCH + item) * 32u + lane < selected_count ? __ldg(selected + base + (BATCH + item) * 32u + lane) : 0xffffffffu;
 		}
 #pragma unroll
 		for (item = 0u; item < BATCH; item++)
@@ -204,23 +218,22 @@ void LmLatentShardPrefillKernel(
 	constexpr uint32_t GROUP_WARPS = LM_PREFILL_ATTN_WARPS / 2u;
 	constexpr uint32_t WARP_COLUMNS = LATENT / GROUP_WARPS;
 	constexpr uint32_t COLUMN_FRAGS = WARP_COLUMNS / 8u;
-	constexpr uint32_t TILE_CHUNKS = TILE * CHUNKS;
 	constexpr uint32_t BLOCK_HEADS = QUERIES / ROWS;
 	constexpr uint32_t QUERY_KEYS = QUERIES * TILE / LM_PREFILL_ATTN_THREADS;
 	constexpr uint32_t QUERY_THREADS = TILE / QUERY_KEYS;
-	constexpr uint32_t PLANNER = LM_PREFILL_ATTN_WARPS, ISSUER = LM_PREFILL_ATTN_WARPS + 1u;
-	constexpr uint32_t PLANS = LM_LATENT_SHARD_PLANS;
-	constexpr uint32_t PLAN_WORDS = LM_LATENT_SHARD_PLAN_WORDS;
-	constexpr uint32_t PLAN_HEAD = 8u, PLAN_LIST = PLAN_HEAD + QUERIES;
-	static_assert(ROWS >= 1u && QUERIES % ROWS == 0u && ROWS <= 32u, "a block holds whole heads of each of its rows, one row per producer lane");
+	constexpr uint32_t ISSUER = LM_PREFILL_ATTN_WARPS;
+	constexpr uint32_t REG_STEPS = HALF_STEPS > LM_LATENT_SHARD_REG_STEPS ? LM_LATENT_SHARD_REG_STEPS : HALF_STEPS;
+	constexpr uint32_t FULL_TAIL_STEPS = HALF_STEPS - REG_STEPS;
+	constexpr uint32_t SPARSE_SMEM_STEPS = FULL_TAIL_STEPS < LM_LATENT_SHARD_SMEM_STEPS_SPARSE ? FULL_TAIL_STEPS : LM_LATENT_SHARD_SMEM_STEPS_SPARSE;
+	static_assert(ROWS >= 1u && QUERIES % ROWS == 0u && ROWS <= 32u, "a block holds whole heads of each of its rows, one row per lane");
 	static_assert(QUERIES == 32u && LM_PREFILL_ATTN_WARPS == 8u && TILE == 32u, "two 16-query tiles, a k-half and an 8-key pair per warp, one key per lane");
 	static_assert(QUERY_KEYS == 4u && QUERY_THREADS == 8u, "eight threads hold a query's keys k, k+8, k+16 and k+24");
-	static_assert(PLAN_LIST + TILE == PLAN_WORDS, "a plan holds eight row words, one key count per query and the first tile's listed positions");
 	static_assert(DIM % 64u == 0u && K_STEPS % 2u == 0u, "the query-key width must split into two halves of 16-wide steps");
 	static_assert(LATENT % (GROUP_WARPS * 16u) == 0u, "each warp of a query group owns whole 16-column value slices");
 	static_assert(Geometry::kSlotBytes >= ROW_BYTES, "the slot holds the latent and its rope part");
 	static_assert(PITCH % 128u == 16u, "a padded row starts four banks after the row before it");
 	static_assert(LmLatentShardPrefillSharedBytes<DIM>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
+	static_assert(LmLatentShardPrefillFullQueryBytes<DIM>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "full query staging exceeds shared memory");
 	extern __shared__ __align__(128) uint8_t lm_shard_prefill_shared[];
 	uint8_t *keys = lm_shard_prefill_shared;
 	float *score_parts = (float *)(keys + 2u * TILE * PITCH);
@@ -228,236 +241,135 @@ void LmLatentShardPrefillKernel(
 	float *running_max = (float *)(weight_high + QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
 	float *running_sum = running_max + QUERIES;
 	float *rescale = running_sum + QUERIES;
-	uint64_t *full = (uint64_t *)(rescale + QUERIES);
+	uint32_t *own_counts = (uint32_t *)(rescale + QUERIES);
+	uint64_t *full = (uint64_t *)(own_counts + QUERIES);
 	uint64_t *empty = full + 2u;
-	uint64_t *planned = empty + 2u;
-	uint64_t *read = planned + PLANS;
-	uint64_t *listed_free = read + PLANS;
-	uint32_t *plans = (uint32_t *)(listed_free + 1u);
-	uint32_t *list_shared = plans + PLANS * PLAN_WORDS;
+	uint32_t *meta = (uint32_t *)(empty + 2u);
+	uint4 *query_smem = (uint4 *)(full + 8u);
+	uint32_t *list_shared = (uint32_t *)((uint8_t *)query_smem + (HALF_STEPS > LM_LATENT_SHARD_REG_STEPS ? LM_LATENT_SHARD_SMEM_BYTES_SPARSE : 0u));
+	LmDependentWait();
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t own = threadIdx.x / QUERY_THREADS, part = threadIdx.x % QUERY_THREADS;
-	const uint32_t group = blockIdx.y;
-	const uint32_t blocks = (rows + ROWS - 1u) / ROWS;
+	const uint32_t group = blockIdx.x, block = blockIdx.y;
+	const uint32_t row = block * ROWS, last_row = (row + ROWS < rows ? row + ROWS : rows) - 1u;
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
 	const uint32_t qk_tile = warp >> 2u, qk_half = (warp >> 1u) & 1u, qk_pair = warp & 1u, column_warp = warp % GROUP_WARPS;
 	const uint32_t consumers = selection.padded_heads != 0u && selection.padded_heads <= 16u ? GROUP_WARPS : LM_PREFILL_ATTN_WARPS;
-	uint32_t block, index, step, frag, q, head, query_row, m, shift, copy_index, used, ordinal;
+	uint32_t index, step, frag, q, head, query_row, m, shift, copy_index;
 	uint64_t base;
 
 	partials += (uint64_t)blockIdx.z * split_stride;
-	if (threadIdx.x == 0u)
+	uint32_t sequence = __ldg(sequence_of_row + row);
+	for (query_row = row + 1u; query_row <= last_row && ROWS > 1u; query_row++)
+		if (__ldg(sequence_of_row + query_row) != sequence)
+			sequence = cache.pages.sequence_count;
+	if (!LmKvViewIsConfigured(cache.pages) || sequence >= cache.pages.sequence_count)
 	{
-		LmMbarrierInit(&full[0], 1u);
-		LmMbarrierInit(&full[1], 1u);
-		LmMbarrierInit(&empty[0], consumers);
-		LmMbarrierInit(&empty[1], consumers);
-		for (index = 0u; index < PLANS; index++)
-		{
-			LmMbarrierInit(&planned[index], 1u);
-			LmMbarrierInit(&read[index], consumers + 1u);
-		}
-		LmMbarrierInit(listed_free, 1u);
-		plans[0] = 0u;
-		LmMbarrierInitFence();
-	}
-	if (ROWS == 1u && selection.selected_positions != 0 && selection.split_positions == 0 && blockIdx.x < blocks &&
-		LmKvViewIsConfigured(cache.pages) && sequence_of_row[blockIdx.x] < cache.pages.sequence_count)
-	{
-		const uint32_t first_position = row_position[blockIdx.x];
-		uint32_t first_dense = context_length[sequence_of_row[blockIdx.x]];
-		if (selection.empty_rows != 0u && first_position == 0xffffffffu)
-			first_dense = 0u;
-		else if (first_position < first_dense)
-			first_dense = first_position + 1u;
-		if (first_dense > selection.dense_limit)
-		{
-			const uint32_t first_compacted = LmLatentShardCompactBlock<LM_LATENT_SHARD_PREFILL_THREADS>(cache.shard, selection.selected_positions + (uint64_t)blockIdx.x * selection.selected_count,
-				selection.selected_count, first_position, list_shared, list_shared + selection.selected_count);
-			if (threadIdx.x == 0u) plans[0] = first_compacted;
-		}
-	}
-	__syncthreads();
-	if (warp == PLANNER)
-	{
-		uint32_t compactions = 0u;
-		for (block = blockIdx.x, ordinal = 0u; block < blocks; block += gridDim.x, ordinal++)
-		{
-			const uint32_t record = ordinal % PLANS, row = block * ROWS, last_row = (row + ROWS < rows ? row + ROWS : rows) - 1u;
-			const uint32_t mine = row + (lane < ROWS && row + lane <= last_row ? lane : 0u);
-			const uint32_t lane_sequence = sequence_of_row[mine], lane_position = row_position[mine];
-			uint32_t sequence, valid, listed, count, list_first = 0u, first_listed = 0u, limit, window_begin, tiles, tile_low, span, tile_first, tile_end, lane_dense, lane_keys, own_keys;
-			sequence = __shfl_sync(0xffffffffu, lane_sequence, 0u);
-			if (__ballot_sync(0xffffffffu, lane_sequence != sequence) != 0u)
-				sequence = cache.pages.sequence_count;
-			valid = LmKvViewIsConfigured(cache.pages) && sequence < cache.pages.sequence_count ? 1u : 0u;
-			lane_dense = valid != 0u ? context_length[sequence] : 0u;
-			if (selection.empty_rows != 0u && lane_position == 0xffffffffu)
-				lane_dense = 0u;
-			else if (lane_position < lane_dense)
-				lane_dense = lane_position + 1u;
-			listed = ROWS == 1u && selection.selected_positions != 0 && valid != 0u && lane_dense > selection.dense_limit ? 1u : 0u;
-			count = 0u;
-			if (listed != 0u && selection.split_positions != 0)
-			{
-				const uint32_t *offsets = selection.split_offsets + (uint64_t)row * (cache.shard.degree + 1u) + cache.shard.rank;
-				const uint32_t row_fork = selection.fork_positions != 0 ? selection.fork_positions[row] : 0xffffffffu;
-				const uint32_t row_offset = selection.slot_offsets != 0 ? selection.slot_offsets[row] : 0u;
-				list_first = offsets[0];
-				count = offsets[1] - list_first;
-				first_listed = lane < count ? selection.split_positions[(uint64_t)row * selection.selected_count + list_first + lane] : 0u;
-				if (lane < count && first_listed >= row_fork)
-					first_listed += row_offset;
-			}
-			else if (listed != 0u)
-			{
-				if (compactions > 0u)
-					LmMbarrierWait(listed_free, (compactions - 1u) & 1u);
-				count = ordinal == 0u ? plans[0] : LmLatentShardCompactWarp(cache.shard, selection.selected_positions + (uint64_t)row * selection.selected_count,
-					selection.selected_count, __shfl_sync(0xffffffffu, lane_position, 0u), list_shared);
-				compactions++;
-			}
-			lane_keys = lane < ROWS && row + lane <= last_row ? SparkKvShardLocalKeys(cache.shard, lane_dense) : 0u;
-			if (listed == 0u)
-			{
-				count = lane_keys;
-#pragma unroll
-				for (shift = 16u; shift > 0u; shift >>= 1u)
-				{
-					const uint32_t other = __shfl_xor_sync(0xffffffffu, count, shift);
-					count = other > count ? other : count;
-				}
-			}
-			window_begin = listed != 0u ? 0u : LmKvKeyWindowBegin(cache);
-			limit = listed != 0u ? count : LmKvKeyWindowEnd(cache);
-			limit = count < limit ? count : limit;
-			tile_low = window_begin / TILE;
-			tiles = limit > window_begin ? (limit + TILE - 1u) / TILE : tile_low;
-			span = tiles - tile_low;
-			tile_first = tile_low + (span + split_count - 1u) / split_count * blockIdx.z;
-			tile_end = tile_first + (span + split_count - 1u) / split_count;
-			tile_first = tile_first < tiles ? tile_first : tiles;
-			tile_end = tile_end < tiles ? tile_end : tiles;
-			if (valid == 0u)
-				tile_first = tile_end = 0u;
-			own_keys = __shfl_sync(0xffffffffu, lane_keys, lane / BLOCK_HEADS);
-			own_keys = row + lane / BLOCK_HEADS > last_row ? 0u : listed != 0u ? count : own_keys;
-			own_keys = own_keys < limit ? own_keys : limit;
-			if (ordinal >= PLANS)
-				LmMbarrierWait(&read[record], ((ordinal / PLANS) - 1u) & 1u);
-			plans[record * PLAN_WORDS + PLAN_HEAD + lane] = own_keys;
-			plans[record * PLAN_WORDS + PLAN_LIST + lane] = first_listed;
-			if (lane == 0u)
-			{
-				plans[record * PLAN_WORDS] = tile_first;
-				plans[record * PLAN_WORDS + 1u] = tile_end;
-				plans[record * PLAN_WORDS + 2u] = window_begin;
-				plans[record * PLAN_WORDS + 3u] = valid;
-				plans[record * PLAN_WORDS + 4u] = limit;
-				plans[record * PLAN_WORDS + 5u] = listed;
-				plans[record * PLAN_WORDS + 6u] = list_first;
-				plans[record * PLAN_WORDS + 7u] = sequence;
-			}
-			__syncwarp();
-			if (lane == 0u)
-				LmMbarrierArrive(&planned[record]);
-		}
+		if (threadIdx.x == 0u)
+			LmKvReportRequiredAccessFailure(cache.pages, !LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
+		LmDependentRelease();
 		return;
+	}
+	uint32_t listed = 0u, count = 0u, list_first = 0u;
+	const uint32_t ctx_len = __ldg(context_length + sequence);
+	if (ROWS == 1u && selection.selected_positions != 0)
+	{
+		const uint32_t rpos = __ldg(row_position + row);
+		uint32_t dense = ctx_len;
+		if (selection.empty_rows != 0u && rpos == 0xffffffffu)
+			dense = 0u;
+		else if (rpos < dense)
+			dense = rpos + 1u;
+		listed = dense > selection.dense_limit ? 1u : 0u;
+	}
+	if (listed != 0u && selection.split_positions != 0)
+	{
+		const uint32_t *offsets = selection.split_offsets + (uint64_t)row * (cache.shard.degree + 1u) + cache.shard.rank;
+		list_first = __ldg(offsets);
+		count = __ldg(offsets + 1u) - list_first;
+	}
+	else if (listed != 0u)
+	{
+		count = LmLatentShardCompactBlock<LM_LATENT_SHARD_PREFILL_THREADS>(cache.shard,
+			selection.selected_positions + (uint64_t)row * selection.selected_count,
+			selection.selected_count, __ldg(row_position + row), list_shared, list_shared + selection.selected_count);
 	}
 	if (warp == ISSUER)
 	{
-		uint32_t row = 0u, sequence = 0u, listed = 0u, limit = 0u, window_begin = 0u, tile = 0u, tile_end = 0u, ahead = 0u, ahead_tile = 0xffffffffu, fork = 0xffffffffu, offset = 0u, zeroed0 = 0u, zeroed1 = 0u;
-		const uint32_t *list = 0;
-		const uint8_t *slot = 0;
-		auto next = [&]() -> uint32_t
+		const uint32_t mine = row + (lane < ROWS && row + lane <= last_row ? lane : 0u);
+		const uint32_t lane_position = __ldg(row_position + mine);
+		uint32_t lane_dense = ctx_len;
+		if (selection.empty_rows != 0u && lane_position == 0xffffffffu)
+			lane_dense = 0u;
+		else if (lane_position < lane_dense)
+			lane_dense = lane_position + 1u;
+		const uint32_t lane_keys = lane < ROWS && row + lane <= last_row ? SparkKvShardLocalKeys(cache.shard, lane_dense) : 0u;
+		uint32_t max_keys = count;
+		if (listed == 0u)
 		{
-			if (tile + 1u < tile_end)
+			max_keys = lane_keys;
+#pragma unroll
+			for (shift = 16u; shift > 0u; shift >>= 1u)
 			{
-				tile++;
-				return 1u;
+				const uint32_t other = __shfl_xor_sync(0xffffffffu, max_keys, shift);
+				max_keys = other > max_keys ? other : max_keys;
 			}
-			while (block < blocks)
-			{
-				const uint32_t record = ordinal % PLANS;
-				uint32_t first;
-				LmMbarrierWait(&planned[record], (ordinal / PLANS) & 1u);
-				first = plans[record * PLAN_WORDS];
-				tile_end = plans[record * PLAN_WORDS + 1u];
-				window_begin = plans[record * PLAN_WORDS + 2u];
-				limit = plans[record * PLAN_WORDS + 4u];
-				listed = plans[record * PLAN_WORDS + 5u];
-				sequence = plans[record * PLAN_WORDS + 7u];
-				row = block * ROWS;
-				fork = selection.fork_positions != 0 ? selection.fork_positions[row] : 0xffffffffu;
-				offset = selection.slot_offsets != 0 ? selection.slot_offsets[row] : 0u;
-				list = listed == 0u ? 0 : selection.split_positions != 0 ? selection.split_positions + (uint64_t)row * selection.selected_count + plans[record * PLAN_WORDS + 6u] : list_shared;
-				ahead_tile = listed != 0u && selection.split_positions != 0 ? first : 0xffffffffu;
-				ahead = plans[record * PLAN_WORDS + PLAN_LIST + lane];
-				LmSharedReadsDone();
-				if (lane == 0u)
-				{
-					LmMbarrierArrive(&read[record]);
-					if (listed != 0u && selection.split_positions == 0 && first >= tile_end)
-						LmMbarrierArrive(listed_free);
-				}
-				if (block + gridDim.x < blocks && (selection.padded_heads == 0u || lane < selection.padded_heads))
-				{
-					const uint32_t ahead_row = (block + gridDim.x) * ROWS, ahead_last = (ahead_row + ROWS < rows ? ahead_row + ROWS : rows) - 1u;
-					const uint32_t query_head = selection.padded_heads != 0u ? lane : group * BLOCK_HEADS + lane % BLOCK_HEADS;
-					const uint32_t query_at = ahead_row + lane / BLOCK_HEADS <= ahead_last ? ahead_row + lane / BLOCK_HEADS : ahead_last;
-					LmPrefetchL2(query_bf16 + (uint64_t)(query_head / heads_per_rank) * query_rank_stride + ((uint64_t)query_at * heads_per_rank + query_head % heads_per_rank) * DIM,
-						ROW_BYTES);
-				}
-				block += gridDim.x;
-				ordinal++;
-				if (first < tile_end)
-				{
-					tile = first;
-					return 1u;
-				}
-			}
-			return 0u;
-		};
+		}
+		const uint32_t win_end = listed != 0u ? max_keys : LmKvKeyWindowEnd(cache);
+		const uint32_t lim = max_keys < win_end ? max_keys : win_end;
+		uint32_t okeys = __shfl_sync(0xffffffffu, lane_keys, lane / BLOCK_HEADS);
+		okeys = row + lane / BLOCK_HEADS > last_row ? 0u : listed != 0u ? max_keys : okeys;
+		okeys = okeys < lim ? okeys : lim;
+		own_counts[lane] = okeys;
+		if (lane == 0u)
+		{
+			LmMbarrierInit(&full[0], 1u);
+			LmMbarrierInit(&full[1], 1u);
+			LmMbarrierInit(&empty[0], consumers);
+			LmMbarrierInit(&empty[1], consumers);
+			meta[0] = lim;
+			LmMbarrierInitFence();
+		}
+	}
+	__syncthreads();
+	const uint32_t limit = meta[0];
+	const uint32_t window_begin = listed != 0u ? 0u : LmKvKeyWindowBegin(cache);
+	const uint32_t tile_low = window_begin / TILE;
+	const uint32_t tiles = limit > window_begin ? (limit + TILE - 1u) / TILE : tile_low;
+	const uint32_t span = tiles - tile_low;
+	const uint32_t per_split = (span + split_count - 1u) / split_count;
+	const uint32_t tile_first = tile_low + per_split * blockIdx.z < tiles ? tile_low + per_split * blockIdx.z : tiles;
+	const uint32_t tile_end = tile_first + per_split < tiles ? tile_first + per_split : tiles;
+	if (warp == ISSUER)
+	{
+		const uint32_t fork = selection.fork_positions != 0 ? __ldg(selection.fork_positions + row) : 0xffffffffu;
+		const uint32_t offset = selection.slot_offsets != 0 ? __ldg(selection.slot_offsets + row) : 0u;
+		const uint32_t *list_ptr = listed == 0u ? 0 : selection.split_positions != 0 ? selection.split_positions + (uint64_t)row * selection.selected_count + list_first : list_shared;
+		uint32_t zeroed0 = 0u, zeroed1 = 0u, ahead = 0u;
 		auto listing = [&](uint32_t which) -> uint32_t
 		{
 			const uint32_t local = which * TILE + lane;
 			if (local >= limit || local < window_begin)
 				return 0u;
-			const uint32_t pos = listed == 0u ? SparkKvShardLocalPosition(cache.shard, local) : list[local];
+			const uint32_t pos = listed == 0u ? SparkKvShardLocalPosition(cache.shard, local) : list_ptr[local];
 			return pos >= fork ? pos + offset : pos;
 		};
-		auto resolve = [&]() -> const uint8_t *
+		if (tile_first < tile_end)
 		{
-			const uint32_t local = tile * TILE + lane;
-			const uint32_t position = ahead_tile == tile ? ahead : listing(tile);
-			ahead_tile = 0xffffffffu;
-			if (tile + 1u < tile_end)
+			ahead = listing(tile_first);
+			for (uint32_t used = 0u; tile_first + used < tile_end; used++)
 			{
-				ahead = listing(tile + 1u);
-				ahead_tile = tile + 1u;
-				if ((tile + 1u) * TILE + lane < limit && (tile + 1u) * TILE + lane >= window_begin)
-					LmLatentShardSlotPrefetch<Geometry>(cache, sequence, ahead);
-			}
-			else if (listed != 0u && selection.split_positions == 0)
-			{
-				LmSharedReadsDone();
-				if (lane == 0u)
-					LmMbarrierArrive(listed_free);
-			}
-			if (local >= limit || local < window_begin)
-				return 0;
-			return LmKvShardSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
-		};
-		block = blockIdx.x;
-		ordinal = 0u;
-		tile_end = 0u;
-		if (next() != 0u)
-		{
-			slot = resolve();
-			for (used = 0u;; used++)
-			{
-				const uint32_t buffer = used & 1u, uses = used >> 1u;
+				const uint32_t tile = tile_first + used, buffer = used & 1u, uses = used >> 1u;
+				const uint32_t local = tile * TILE + lane;
+				const uint32_t position = ahead;
+				if (tile + 1u < tile_end)
+				{
+					ahead = listing(tile + 1u);
+					if ((tile + 1u) * TILE + lane < limit && (tile + 1u) * TILE + lane >= window_begin)
+						LmLatentShardSlotPrefetch<Geometry>(cache, sequence, ahead);
+				}
+				const uint8_t *slot = (local < limit && local >= window_begin) ? LmKvShardSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ) : 0;
 				const uint32_t present = __ballot_sync(0xffffffffu, slot != 0);
 				uint32_t clear = ~present & ~(buffer == 0u ? zeroed0 : zeroed1);
 				if (uses > 0u)
@@ -465,29 +377,31 @@ void LmLatentShardPrefillKernel(
 				(buffer == 0u ? zeroed0 : zeroed1) = ~present;
 				if (slot != 0)
 					LmTmaLoadBulk1d(keys + (buffer * TILE + lane) * PITCH, slot, &full[buffer], ROW_BYTES);
+				const uint32_t had_clear = clear;
 				for (; clear != 0u; clear &= clear - 1u)
 					for (index = lane; index < CHUNKS; index += 32u)
 						*(uint4 *)(keys + (buffer * TILE + (uint32_t)(__ffs(clear) - 1)) * PITCH + index * 16u) = make_uint4(0u, 0u, 0u, 0u);
-				LmMbarrierInitFence();
+				if (had_clear != 0u)
+					LmMbarrierInitFence();
 				__syncwarp();
 				if (lane == 0u)
 					LmMbarrierArriveExpect(&full[buffer], (uint32_t)__popc(present) * ROW_BYTES);
-				if (next() == 0u)
-					break;
-				slot = resolve();
 			}
 		}
+		LmDependentRelease();
 		return;
 	}
 	if (warp >= consumers)
+	{
+		LmDependentRelease();
 		return;
-	constexpr uint32_t QUERY_CACHE_STEPS = HALF_STEPS > 7u ? 7u : HALF_STEPS;
-	uint32_t query_frag[QUERY_CACHE_STEPS][4];
+	}
+	const uint32_t own_count = own_counts[own];
+	const bool full_query_smem = selection.selected_positions == 0 || selection.split_positions != 0;
+	uint32_t query_frag[REG_STEPS][4];
 	const uint32_t *low_query = 0, *high_query = 0;
 	float output[COLUMN_FRAGS][4];
-	auto fetch = [&](uint32_t which)
 	{
-		const uint32_t row = which * ROWS, last_row = (row + ROWS < rows ? row + ROWS : rows) - 1u;
 		const uint32_t low = qk_tile * 16u + (lane >> 2u), high = low + 8u;
 		const uint32_t low_head = selection.padded_heads != 0u ? (low % BLOCK_HEADS) % selection.padded_heads : group * BLOCK_HEADS + low % BLOCK_HEADS;
 		const uint32_t high_head = selection.padded_heads != 0u ? (high % BLOCK_HEADS) % selection.padded_heads : group * BLOCK_HEADS + high % BLOCK_HEADS;
@@ -498,124 +412,155 @@ void LmLatentShardPrefillKernel(
 		high_query = (const uint32_t *)(query_bf16 + (uint64_t)(high_head / heads_per_rank) * query_rank_stride +
 			((uint64_t)high_row * heads_per_rank + high_head % heads_per_rank) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
 #pragma unroll
-		for (step = 0u; step < QUERY_CACHE_STEPS; step++)
+		for (step = 0u; step < REG_STEPS; step++)
 		{
-			query_frag[step][0] = __ldg(low_query + step * 8u); query_frag[step][1] = __ldg(high_query + step * 8u);
-			query_frag[step][2] = __ldg(low_query + step * 8u + 4u); query_frag[step][3] = __ldg(high_query + step * 8u + 4u);
+			query_frag[step][0] = __ldg(low_query + step * 8u);
+			query_frag[step][1] = __ldg(high_query + step * 8u);
+			query_frag[step][2] = __ldg(low_query + step * 8u + 4u);
+			query_frag[step][3] = __ldg(high_query + step * 8u + 4u);
 		}
-	};
-	used = 0u;
-	if (blockIdx.x < blocks)
-		fetch(blockIdx.x);
-	for (block = blockIdx.x, ordinal = 0u; block < blocks; block += gridDim.x, ordinal++)
+		if constexpr (FULL_TAIL_STEPS > 0u)
+		{
+			if (qk_pair == 0u)
+			{
+				const uint32_t smem_count = full_query_smem ? FULL_TAIL_STEPS : SPARSE_SMEM_STEPS;
+				uint4 *dst = query_smem + (qk_tile * 2u + qk_half) * smem_count * 32u + lane;
+				for (step = 0u; step < smem_count; step++)
+				{
+					const uint32_t s = REG_STEPS + step;
+					dst[step * 32u] = make_uint4(__ldg(low_query + s * 8u), __ldg(high_query + s * 8u),
+						__ldg(low_query + s * 8u + 4u), __ldg(high_query + s * 8u + 4u));
+				}
+			}
+		}
+	}
+	if (threadIdx.x % (32u * GROUP_WARPS) < 16u)
 	{
-		const uint32_t record = ordinal % PLANS, row = block * ROWS, last_row = (row + ROWS < rows ? row + ROWS : rows) - 1u;
-		const uint32_t following = block + gridDim.x;
-		uint32_t tile, tile_first, tile_end, window_begin, valid, own_count;
-		LmMbarrierWait(&planned[record], (ordinal / PLANS) & 1u);
-		tile_first = plans[record * PLAN_WORDS];
-		tile_end = plans[record * PLAN_WORDS + 1u];
-		window_begin = plans[record * PLAN_WORDS + 2u];
-		valid = plans[record * PLAN_WORDS + 3u];
-		own_count = plans[record * PLAN_WORDS + PLAN_HEAD + own];
-		LmSharedReadsDone();
-		if (lane == 0u)
-			LmMbarrierArrive(&read[record]);
-		if (valid == 0u)
-		{
-			if (threadIdx.x == 0u)
-				LmKvReportRequiredAccessFailure(cache.pages, !LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
-			if (following < blocks)
-				fetch(following);
-			continue;
-		}
-		if (threadIdx.x % (32u * GROUP_WARPS) < 16u)
-		{
-			running_max[qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS)] = -INFINITY;
-			running_sum[qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS)] = 0.0f;
-		}
+		running_max[qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS)] = -INFINITY;
+		running_sum[qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS)] = 0.0f;
+	}
 #pragma unroll
-		for (frag = 0u; frag < COLUMN_FRAGS; frag++)
-			output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
-		for (tile = tile_first; tile < tile_end; tile++, used++)
-		{
-			const uint32_t buffer = used & 1u;
-			const uint32_t tile_base = key_base + buffer * TILE * PITCH;
-			LmMbarrierWait(&full[buffer], (used >> 1u) & 1u);
-			{
-				float score[2][4] = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
-				uint32_t b[4], first[2], second[2];
-				const uint32_t b_row = (qk_pair * 2u + (matrix >> 1u)) * 8u + within;
-#pragma unroll
-				for (step = 0u; step < QUERY_CACHE_STEPS; step++)
-				{
-					const uint32_t b_chunk = (qk_half * HALF_STEPS + step) * 2u + (matrix & 1u);
-					LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
-					first[0] = b[0]; first[1] = b[1];
-					second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(score[0], query_frag[step], first);
-					LmMmaBf16(score[1], query_frag[step], second);
-				}
+	for (frag = 0u; frag < COLUMN_FRAGS; frag++)
+		output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
+	if constexpr (FULL_TAIL_STEPS > 0u)
+		LmLatentShardGroupBarrier(1u + qk_tile);
+
 #pragma unroll 1
-				for (step = QUERY_CACHE_STEPS; step < HALF_STEPS; step++)
-				{
-					const uint32_t b_chunk = (qk_half * HALF_STEPS + step) * 2u + (matrix & 1u);
-					uint32_t q_tail[4] = {
-						__ldg(low_query + step * 8u), __ldg(high_query + step * 8u),
-						__ldg(low_query + step * 8u + 4u), __ldg(high_query + step * 8u + 4u)
-					};
-					LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
-					first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(score[0], q_tail, first);
-					LmMmaBf16(score[1], q_tail, second);
-				}
+	for (uint32_t used = 0u; tile_first + used < tile_end; used++)
+	{
+		const uint32_t tile = tile_first + used;
+		const uint32_t buffer = used & 1u;
+		const uint32_t tile_base = key_base + buffer * TILE * PITCH;
+		LmMbarrierWait(&full[buffer], (used >> 1u) & 1u);
+		{
+			float score[2][4] = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+			uint32_t b[4], first[2], second[2];
+			const uint32_t b_row = (qk_pair * 2u + (matrix >> 1u)) * 8u + within;
 #pragma unroll
-				for (m = 0u; m < 2u; m++)
-#pragma unroll
-					for (index = 0u; index < 4u; index++)
-						score_parts[(qk_half * QUERIES + qk_tile * 16u + (lane >> 2u) + (index >> 1u) * 8u) * LM_PREFILL_ATTN_SCORE_STRIDE + (qk_pair * 2u + m) * 8u + (lane & 3u) * 2u + (index & 1u)] = score[m][index];
-			}
-			if (tile + 1u == tile_end && following < blocks)
-				fetch(following);
-			LmLatentShardGroupBarrier(1u + qk_tile);
+			for (step = 0u; step < REG_STEPS; step++)
 			{
-				float value[QUERY_KEYS], weight[QUERY_KEYS], peak, previous_max, next_max, scale, total;
-#pragma unroll
-				for (index = 0u; index < QUERY_KEYS; index++)
+				const uint32_t b_chunk = (qk_half * HALF_STEPS + step) * 2u + (matrix & 1u);
+				LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
+				first[0] = b[0]; first[1] = b[1];
+				second[0] = b[2]; second[1] = b[3];
+				LmMmaBf16(score[0], query_frag[step], first);
+				LmMmaBf16(score[1], query_frag[step], second);
+			}
+			if constexpr (FULL_TAIL_STEPS > 0u)
+			{
+				if (full_query_smem)
 				{
-					const uint32_t key = part + index * QUERY_THREADS, local = tile * TILE + key;
-					value[index] = (score_parts[own * LM_PREFILL_ATTN_SCORE_STRIDE + key] + score_parts[(QUERIES + own) * LM_PREFILL_ATTN_SCORE_STRIDE + key]) * qk_scale;
+					const uint4 *src = query_smem + (qk_tile * 2u + qk_half) * FULL_TAIL_STEPS * 32u + lane;
+#pragma unroll
+					for (step = 0u; step < FULL_TAIL_STEPS; step++)
+					{
+						const uint32_t b_chunk = (qk_half * HALF_STEPS + REG_STEPS + step) * 2u + (matrix & 1u);
+						const uint4 qv = src[step * 32u];
+						uint32_t q_sm[4] = { qv.x, qv.y, qv.z, qv.w };
+						LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
+						first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
+						LmMmaBf16(score[0], q_sm, first);
+						LmMmaBf16(score[1], q_sm, second);
+					}
+				}
+				else
+				{
+					const uint4 *src = query_smem + (qk_tile * 2u + qk_half) * SPARSE_SMEM_STEPS * 32u + lane;
+#pragma unroll
+					for (step = 0u; step < SPARSE_SMEM_STEPS; step++)
+					{
+						const uint32_t b_chunk = (qk_half * HALF_STEPS + REG_STEPS + step) * 2u + (matrix & 1u);
+						const uint4 qv = src[step * 32u];
+						uint32_t q_sm[4] = { qv.x, qv.y, qv.z, qv.w };
+						LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
+						first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
+						LmMmaBf16(score[0], q_sm, first);
+						LmMmaBf16(score[1], q_sm, second);
+					}
+#pragma unroll
+					for (step = REG_STEPS + SPARSE_SMEM_STEPS; step < HALF_STEPS; step++)
+					{
+						const uint32_t b_chunk = (qk_half * HALF_STEPS + step) * 2u + (matrix & 1u);
+						uint32_t q_tail[4] = {
+							__ldg(low_query + step * 8u), __ldg(high_query + step * 8u),
+							__ldg(low_query + step * 8u + 4u), __ldg(high_query + step * 8u + 4u)
+						};
+						LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
+						first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
+						LmMmaBf16(score[0], q_tail, first);
+						LmMmaBf16(score[1], q_tail, second);
+					}
+				}
+			}
+#pragma unroll
+			for (m = 0u; m < 2u; m++)
+#pragma unroll
+				for (index = 0u; index < 4u; index++)
+					score_parts[(qk_half * QUERIES + qk_tile * 16u + (lane >> 2u) + (index >> 1u) * 8u) * LM_PREFILL_ATTN_SCORE_STRIDE + (qk_pair * 2u + m) * 8u + (lane & 3u) * 2u + (index & 1u)] = score[m][index];
+		}
+		LmLatentShardGroupBarrier(1u + qk_tile);
+		{
+			float value[QUERY_KEYS], weight[QUERY_KEYS], peak, previous_max, next_max, scale, total;
+			const bool full_tile = tile * TILE >= window_begin && (tile + 1u) * TILE <= own_count;
+#pragma unroll
+			for (index = 0u; index < QUERY_KEYS; index++)
+			{
+				const uint32_t key = part + index * QUERY_THREADS, local = tile * TILE + key;
+				value[index] = (score_parts[own * LM_PREFILL_ATTN_SCORE_STRIDE + key] + score_parts[(QUERIES + own) * LM_PREFILL_ATTN_SCORE_STRIDE + key]) * qk_scale;
+				if (!full_tile)
 					value[index] = local < own_count && local >= window_begin ? value[index] : -INFINITY;
-				}
-				peak = fmaxf(fmaxf(value[0], value[2]), fmaxf(value[1], value[3]));
-#pragma unroll
-				for (shift = QUERY_THREADS / 2u; shift > 0u; shift >>= 1u)
-					peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
-				previous_max = running_max[own];
-				next_max = fmaxf(previous_max, peak);
-				scale = previous_max == -INFINITY ? 0.0f : __expf(previous_max - next_max);
-#pragma unroll
-				for (index = 0u; index < QUERY_KEYS; index++)
-				{
-					weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : __expf(value[index] - next_max);
-					weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
-				}
-				total = (weight[0] + weight[2]) + (weight[1] + weight[3]);
-#pragma unroll
-				for (shift = QUERY_THREADS / 2u; shift > 0u; shift >>= 1u)
-					total += __shfl_xor_sync(0xffffffffu, total, shift);
-				__syncwarp();
-				if (part == 0u)
-				{
-					running_sum[own] = running_sum[own] * scale + total;
-					running_max[own] = next_max;
-					rescale[own] = scale;
-				}
 			}
-			LmLatentShardGroupBarrier(1u + qk_tile);
+			peak = fmaxf(fmaxf(value[0], value[2]), fmaxf(value[1], value[3]));
+#pragma unroll
+			for (shift = QUERY_THREADS / 2u; shift > 0u; shift >>= 1u)
+				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
+			previous_max = running_max[own];
+			next_max = fmaxf(previous_max, peak);
+			scale = previous_max == -INFINITY ? 0.0f : __expf(previous_max - next_max);
+#pragma unroll
+			for (index = 0u; index < QUERY_KEYS; index++)
 			{
-				const float low_scale = rescale[qk_tile * 16u + (lane >> 2u)], high_scale = rescale[qk_tile * 16u + (lane >> 2u) + 8u];
-				uint32_t a_high[4], b[4], first[2], second[2];
+				weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : __expf(value[index] - next_max);
+				weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
+			}
+			total = (weight[0] + weight[2]) + (weight[1] + weight[3]);
+#pragma unroll
+			for (shift = QUERY_THREADS / 2u; shift > 0u; shift >>= 1u)
+				total += __shfl_xor_sync(0xffffffffu, total, shift);
+			__syncwarp();
+			if (part == 0u)
+			{
+				running_sum[own] = running_sum[own] * scale + total;
+				running_max[own] = next_max;
+				rescale[own] = scale;
+			}
+		}
+		LmLatentShardGroupBarrier(1u + qk_tile);
+		{
+			const float low_scale = rescale[qk_tile * 16u + (lane >> 2u)], high_scale = rescale[qk_tile * 16u + (lane >> 2u) + 8u];
+			uint32_t a_high[4], b[4], first[2], second[2];
+			if (low_scale != 1.0f || high_scale != 1.0f)
+			{
 #pragma unroll
 				for (frag = 0u; frag < COLUMN_FRAGS; frag++)
 				{
@@ -624,62 +569,60 @@ void LmLatentShardPrefillKernel(
 					output[frag][2] *= high_scale;
 					output[frag][3] *= high_scale;
 				}
+			}
 #pragma unroll 1
-				for (step = 0u; step < TILE / 16u; step++)
-				{
-					const uint32_t a_row = qk_tile * 16u + (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
-					LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high);
+			for (step = 0u; step < TILE / 16u; step++)
+			{
+				const uint32_t a_row = qk_tile * 16u + (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
+				LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high);
 #pragma unroll
-					for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
-					{
-						const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
-						const uint32_t b_chunk = (column_warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
-						LmPrefillLoadX4Trans(tile_base + b_row * PITCH + b_chunk * 16u, b);
-						first[0] = b[0]; first[1] = b[1];
-						second[0] = b[2]; second[1] = b[3];
-						LmMmaBf16(output[frag], a_high, first);
-						LmMmaBf16(output[frag + 1u], a_high, second);
-					}
+				for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
+				{
+					const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
+					const uint32_t b_chunk = (column_warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
+					LmPrefillLoadX4Trans(tile_base + b_row * PITCH + b_chunk * 16u, b);
+					first[0] = b[0]; first[1] = b[1];
+					second[0] = b[2]; second[1] = b[3];
+					LmMmaBf16(output[frag], a_high, first);
+					LmMmaBf16(output[frag + 1u], a_high, second);
 				}
 			}
-			LmSharedReadsDone();
-			if (lane == 0u)
-				LmMbarrierArrive(&empty[buffer]);
 		}
-		if (tile_first >= tile_end && following < blocks)
-			fetch(following);
+		LmSharedReadsDone();
+		if (lane == 0u)
+			LmMbarrierArrive(&empty[buffer]);
+	}
 #pragma unroll
-		for (index = 0u; index < 4u; index += 2u)
+	for (index = 0u; index < 4u; index += 2u)
+	{
+		q = qk_tile * 16u + (lane >> 2u) + (index >> 1u) * 8u;
+		head = group * BLOCK_HEADS + q % BLOCK_HEADS;
+		query_row = row + q / BLOCK_HEADS;
+		if (query_row > last_row || (selection.padded_heads != 0u && q % BLOCK_HEADS >= selection.padded_heads))
+			continue;
+		for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
 		{
-			q = qk_tile * 16u + (lane >> 2u) + (index >> 1u) * 8u;
-			head = group * BLOCK_HEADS + q % BLOCK_HEADS;
-			query_row = row + q / BLOCK_HEADS;
-			if (query_row > last_row || (selection.padded_heads != 0u && q % BLOCK_HEADS >= selection.padded_heads))
-				continue;
-			for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
-			{
-				float *target = partials + ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
-					((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) + 2u + column_warp * WARP_COLUMNS + (lane & 3u) * 2u;
+			float *target = partials + ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
+				((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) + 2u + column_warp * WARP_COLUMNS + (lane & 3u) * 2u;
 #pragma unroll
-				for (frag = 0u; frag < COLUMN_FRAGS; frag++)
-					*(float2 *)(target + frag * 8u) = make_float2(output[frag][index], output[frag][index + 1u]);
-			}
-		}
-		q = qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS);
-		if (threadIdx.x % (32u * GROUP_WARPS) < 16u && row + q / BLOCK_HEADS <= last_row &&
-			(selection.padded_heads == 0u || q % BLOCK_HEADS < selection.padded_heads))
-		{
-			head = group * BLOCK_HEADS + q % BLOCK_HEADS;
-			query_row = row + q / BLOCK_HEADS;
-			for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
-			{
-				base = ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
-					((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-				partials[base] = running_max[q];
-				partials[base + 1u] = running_sum[q];
-			}
+			for (frag = 0u; frag < COLUMN_FRAGS; frag++)
+				__stcs((float2 *)(target + frag * 8u), make_float2(output[frag][index], output[frag][index + 1u]));
 		}
 	}
+	q = qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS);
+	if (threadIdx.x % (32u * GROUP_WARPS) < 16u && row + q / BLOCK_HEADS <= last_row &&
+		(selection.padded_heads == 0u || q % BLOCK_HEADS < selection.padded_heads))
+	{
+		head = group * BLOCK_HEADS + q % BLOCK_HEADS;
+		query_row = row + q / BLOCK_HEADS;
+		for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
+		{
+			base = ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
+				((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+			__stcs((float2 *)(partials + base), make_float2(running_max[q], running_sum[q]));
+		}
+	}
+	LmDependentRelease();
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE, uint32_t ROWS>
@@ -702,8 +645,10 @@ static inline SparkGpuError LmLatentShardPrefillRowsLaunch(
 	LmLatentShardSelection selection)
 {
 	constexpr uint32_t block_heads = LM_LATENT_SHARD_QUERIES / ROWS;
-	const uint64_t shared = LmLatentShardPrefillSharedBytes<LATENT + ROPE>() +
-		(selection.selected_positions != 0 && selection.split_positions == 0 ? LmLatentShardListBytes(selection.selected_count) : 0u);
+	const bool unsplit_sparse = selection.selected_positions != 0 && selection.split_positions == 0;
+	const uint64_t shared = unsplit_sparse
+		? LmLatentShardPrefillSharedBytes<LATENT + ROPE>() + LmLatentShardListBytes(selection.selected_count)
+		: LmLatentShardPrefillFullQueryBytes<LATENT + ROPE>();
 	static bool granted = false;
 	if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 || row_position == 0 ||
 		total_heads == 0u || (selection.padded_heads != 0u ? ROWS != 1u || selection.padded_heads != total_heads || total_heads >= block_heads :
@@ -725,9 +670,7 @@ static inline SparkGpuError LmLatentShardPrefillRowsLaunch(
 		granted = true;
 	}
 	const uint32_t blocks = (rows + ROWS - 1u) / ROWS, groups = selection.padded_heads != 0u ? 1u : total_heads / block_heads;
-	const uint32_t resident = LmLatentShardPrefillMultiprocessors() / (groups * split_count);
-	const uint32_t grid = blocks < resident ? blocks : resident > 0u ? resident : 1u;
-	LM_LAUNCH((LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>), dim3(grid, groups, split_count), LM_LATENT_SHARD_PREFILL_THREADS, shared, stream,
+	LM_LAUNCH_DEPENDENT((LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>), dim3(groups, blocks, split_count), LM_LATENT_SHARD_PREFILL_THREADS, shared, stream,
 		cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows,
 		split_count, split_stride, selection);
 	return SparkGpuPeekAtLastError();
@@ -744,36 +687,63 @@ void LmLatentShardSplitMergeKernel(
 	uint64_t partial_rank_stride,
 	uint32_t heads_per_rank)
 {
+	__shared__ float shared_weights[32];
+	__shared__ float shared_max;
+	LmDependentWait();
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
 	const uint64_t record = ((uint64_t)row * heads_per_rank + head % heads_per_rank) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
 	const uint64_t source = (uint64_t)(head / heads_per_rank) * split_rank_stride + record;
 	const uint64_t base = (uint64_t)(head / heads_per_rank) * partial_rank_stride + record;
-	float maximum = -INFINITY, sum = 0.0f, weight, value;
+	float maximum = -INFINITY, sum = 0.0f;
 	uint32_t split, element;
-	for (split = 0u; split < split_count; split++)
-		maximum = fmaxf(maximum, split_partials[(uint64_t)split * split_stride + source]);
-	for (split = 0u; split < split_count; split++)
-	{
-		const float local = split_partials[(uint64_t)split * split_stride + source];
-		weight = maximum == -INFINITY || local == -INFINITY ? 0.0f : __expf(local - maximum);
-		sum = fmaf(split_partials[(uint64_t)split * split_stride + source + 1u], weight, sum);
-	}
-	for (element = threadIdx.x; element < LATENT; element += LM_LATENT_SHARD_THREADS)
-	{
-		value = 0.0f;
-		for (split = 0u; split < split_count; split++)
-		{
-			const float local = split_partials[(uint64_t)split * split_stride + source];
-			weight = maximum == -INFINITY || local == -INFINITY ? 0.0f : __expf(local - maximum);
-			value = fmaf(split_partials[(uint64_t)split * split_stride + source + 2u + element], weight, value);
-		}
-		partials[base + 2u + element] = value;
-	}
 	if (threadIdx.x == 0u)
 	{
+		for (split = 0u; split < split_count; split++)
+			maximum = fmaxf(maximum, __ldg(split_partials + (uint64_t)split * split_stride + source));
+		for (split = 0u; split < split_count; split++)
+		{
+			const float local = __ldg(split_partials + (uint64_t)split * split_stride + source);
+			const float weight = maximum == -INFINITY || local == -INFINITY ? 0.0f : __expf(local - maximum);
+			if (split < 32u)
+				shared_weights[split] = weight;
+			sum = fmaf(__ldg(split_partials + (uint64_t)split * split_stride + source + 1u), weight, sum);
+		}
+		shared_max = maximum;
 		partials[base] = maximum;
 		partials[base + 1u] = sum;
 	}
+	__syncthreads();
+	maximum = shared_max;
+	if (split_count <= 32u && (LATENT & 1u) == 0u && ((base + 2u) & 1u) == 0u && ((source + 2u) & 1u) == 0u && (split_stride & 1u) == 0u)
+	{
+		for (element = threadIdx.x; element < (LATENT >> 1u); element += LM_LATENT_SHARD_THREADS)
+		{
+			float v0 = 0.0f, v1 = 0.0f;
+			for (split = 0u; split < split_count; split++)
+			{
+				const float weight = shared_weights[split];
+				const float2 s2 = __ldg((const float2 *)(split_partials + (uint64_t)split * split_stride + source + 2u) + element);
+				v0 = fmaf(s2.x, weight, v0);
+				v1 = fmaf(s2.y, weight, v1);
+			}
+			*((float2 *)(partials + base + 2u) + element) = make_float2(v0, v1);
+		}
+	}
+	else
+	{
+		for (element = threadIdx.x; element < LATENT; element += LM_LATENT_SHARD_THREADS)
+		{
+			float value = 0.0f;
+			for (split = 0u; split < split_count; split++)
+			{
+				const float local = __ldg(split_partials + (uint64_t)split * split_stride + source);
+				const float weight = split < 32u ? shared_weights[split] : (maximum == -INFINITY || local == -INFINITY ? 0.0f : __expf(local - maximum));
+				value = fmaf(__ldg(split_partials + (uint64_t)split * split_stride + source + 2u + element), weight, value);
+			}
+			partials[base + 2u + element] = value;
+		}
+	}
+	LmDependentRelease();
 }
 
 static inline uint32_t LmLatentShardDecodeSplits(uint32_t rows)
@@ -830,7 +800,7 @@ static inline SparkGpuError LmLatentShardSplitLaunch(
 			LmLatentShardDense(heads_per_rank, fork_positions != 0 ? fork_positions + first : 0, slot_offsets != 0 ? slot_offsets + first : 0));
 		if (error != SPARK_GPU_SUCCESS)
 			return error;
-		LM_LAUNCH((LmLatentShardSplitMergeKernel<LATENT>), dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, split_partials, split_rank_stride, split_stride, splits,
+		LM_LAUNCH_DEPENDENT((LmLatentShardSplitMergeKernel<LATENT>), dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, split_partials, split_rank_stride, split_stride, splits,
 			partials + records * LM_LATENT_SHARD_RECORD_FLOATS(LATENT), partial_rank_stride, heads_per_rank);
 		error = SparkGpuPeekAtLastError();
 		if (error != SPARK_GPU_SUCCESS)
