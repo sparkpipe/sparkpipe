@@ -1,7 +1,7 @@
 const LANES = 32;
 const BLOCK = 128;
 
-kernel[BLOCK, 64] skinny_nvfp4_b1(
+kernel[BLOCK, 88] skinny_nvfp4_b1(
     global u32* weight, global u32* act_bf16, global u32* scales_ue4m3,
     global f32* global_scale_ptr, global u16* out_bf16,
     u32 chunks32, u32 out_dim, u32 out_col_off
@@ -74,7 +74,7 @@ kernel[BLOCK, 64] skinny_nvfp4_b1(
     }
 }
 
-kernel[BLOCK, 64] skinny_mxfp4_b1(
+kernel[BLOCK, 88] skinny_mxfp4_b1(
     global u32* weight, global u32* act_bf16, global u16* scales_ue8m0,
     global u16* out_bf16,
     u32 chunks32, u32 out_dim, u32 out_col_off
@@ -148,7 +148,7 @@ kernel[BLOCK, 64] skinny_mxfp4_b1(
     }
 }
 
-kernel[BLOCK, 64] skinny_bf16_b1(
+kernel[BLOCK, 112] skinny_bf16_b1(
     global u32* weight_bf16, global u32* act_bf16, global u16* out_bf16,
     u32 chunks16, u32 out_dim, u32 out_col_off
 ) {
@@ -167,7 +167,7 @@ kernel[BLOCK, 64] skinny_bf16_b1(
     reg f32 b2 = 0.0f;
     reg f32 b3 = 0.0f;
 
-    for (reg u32 c = lane; c < chunks16; c += LANES) {
+    pipeline for (reg u32 c = lane; c < chunks16; c += LANES) {
         reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
         reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
         reg u32x8 av = ldg256_persist(ptr_add(act_bf16, c, 32));

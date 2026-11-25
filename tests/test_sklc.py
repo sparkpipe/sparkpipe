@@ -79,10 +79,35 @@ def verify_long_name_manifest():
         assert f"kernel {long_name} short {expected_short} " in mtxt, f"expected NVRM hashed short name {expected_short} in manifest:\n{mtxt}"
 
 
+def verify_codegen_invariants():
+    sys.path.insert(0, str(ROOT / "tools" / "sklc"))
+    from codegen import compile_program
+    from frontend import parse_skl
+
+    for suite in SUITES:
+        text = (SKL_DIR / suite).read_text(encoding="utf-8")
+        kernels = compile_program(parse_skl(text))
+        for k in kernels:
+            if k.name == "latent_attn_decode_512_64":
+                assert k.registers <= 80, f"expected <=80 regs for {k.name}, got {k.registers}"
+            for idx, (lo, hi) in enumerate(k.insns):
+                wr = (hi >> 46) & 0x7
+                rd = (hi >> 49) & 0x7
+                wait = (hi >> 52) & 0x3F
+                if wr < 6:
+                    assert (wait & (1 << wr)) == 0, f"self-wait on wr barrier {wr} in {k.name} at insn {idx}"
+                if rd < 6:
+                    assert (wait & (1 << rd)) == 0, f"self-wait on rd barrier {rd} in {k.name} at insn {idx}"
+                if (lo & 0xFFFF) == 0x7B1D:
+                    assert (hi & 0x10000) == 0, f"BAR.SYNC must not set DEFER_BLOCKING in {k.name}"
+                    assert idx + 1 < len(k.insns) and (k.insns[idx + 1][0] & 0xFFFF) == 0x7918, f"BAR.SYNC must be followed by NOP in {k.name}"
+
+
 def main():
     verify_arch("sm121", 121)
     verify_arch("sm120", 120)
     verify_long_name_manifest()
+    verify_codegen_invariants()
     print(f"PASS sklc compiled {len(EXPECTED_KERNELS)} kernels cleanly for sm121 and sm120")
 
 

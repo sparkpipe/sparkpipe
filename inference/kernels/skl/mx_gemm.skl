@@ -1,6 +1,6 @@
 const BLOCK = 256;
 
-kernel[BLOCK, 32] mx_quantize_e4m3_ue8m0(
+kernel[BLOCK, 96] mx_quantize_e4m3_ue8m0(
     global u32* src_bf16, global u32* dst_fp8, global u8* dst_scales,
     u32 total_blocks
 ) {
