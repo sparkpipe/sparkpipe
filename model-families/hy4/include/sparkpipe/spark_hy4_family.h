@@ -25,6 +25,18 @@ struct HyLayout
 	static_assert(G::kIndexTopk % kCandidateSplit == 0u, "the candidate rows split evenly into collective rows");
 };
 
+template<class B, class = void>
+struct HyHasFusedPostNorm
+{
+	static constexpr bool kValue = false;
+};
+
+template<class B>
+struct HyHasFusedPostNorm<B, decltype((void)B::kFusedPostNorm)>
+{
+	static constexpr bool kValue = B::kFusedPostNorm;
+};
+
 template<class G, class B>
 struct HySchedule
 {
@@ -37,29 +49,43 @@ struct HySchedule
 		SparkStatus status = B::Begin(state, step, queue, frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		return B::HyperBegin(state, *frame);
+		status = B::HyperBegin(state, *frame);
+		if constexpr ( HyHasFusedPostNorm<B>::kValue )
+			if ( status == SPARK_STATUS_OK )
+				status = B::HyperNorm(state, *frame, B::LayerOf(state, 0u), HY_ATTENTION_PART);
+		return status;
 	}
 
 	static SparkStatus Layer(State *state, const Frame &frame, uint32_t index)
 	{
 		const typename B::Layer &layer = B::LayerOf(state, index);
-		SparkStatus status = B::HyperNorm(state, frame, layer, HY_ATTENTION_PART);
+		SparkStatus status = SPARK_STATUS_OK;
+		if constexpr ( !HyHasFusedPostNorm<B>::kValue )
+			status = B::HyperNorm(state, frame, layer, HY_ATTENTION_PART);
 		if ( status == SPARK_STATUS_OK )
 			status = B::Attention(state, frame, layer, index);
 		if ( status == SPARK_STATUS_OK )
 			status = B::AllReduce(state, frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		status = B::HyperPost(state, frame);
-		if ( status == SPARK_STATUS_OK )
-			status = B::HyperNorm(state, frame, layer, HY_FFN_PART);
+		if constexpr ( HyHasFusedPostNorm<B>::kValue )
+			status = B::HyperPostNorm(state, frame, layer, HY_FFN_PART);
+		else
+		{
+			status = B::HyperPost(state, frame);
+			if ( status == SPARK_STATUS_OK )
+				status = B::HyperNorm(state, frame, layer, HY_FFN_PART);
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = index < G::kDenseLayers ? B::Dense(state, frame, layer) : B::Experts(state, frame, layer);
 		if ( status == SPARK_STATUS_OK )
 			status = B::AllReduce(state, frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		status = B::HyperPost(state, frame);
+		if constexpr ( HyHasFusedPostNorm<B>::kValue )
+			status = index + 1u < G::kLayers ? B::HyperPostNorm(state, frame, B::LayerOf(state, index + 1u), HY_ATTENTION_PART) : B::HyperPost(state, frame);
+		else
+			status = B::HyperPost(state, frame);
 		if ( status == SPARK_STATUS_OK )
 			status = B::Check(state, frame);
 		if ( status == SPARK_STATUS_OK )

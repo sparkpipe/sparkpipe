@@ -32,6 +32,18 @@ struct MimoLayout
 	static_assert(G::kRopeDim % 2u == 0u && G::kRopeDim <= G::kHeadDim, "the rotary part is whole pairs inside a head");
 };
 
+template<class B, class = void>
+struct MimoHasFusedResidualNorm
+{
+	static constexpr bool kValue = false;
+};
+
+template<class B>
+struct MimoHasFusedResidualNorm<B, decltype((void)B::kFusedResidualNorm)>
+{
+	static constexpr bool kValue = B::kFusedResidualNorm;
+};
+
 template<class G, class B>
 struct MimoSchedule
 {
@@ -41,27 +53,42 @@ struct MimoSchedule
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
 	{
-		return B::Begin(state, step, queue, frame);
+		SparkStatus status = B::Begin(state, step, queue, frame);
+		if constexpr ( MimoHasFusedResidualNorm<B>::kValue )
+			if ( status == SPARK_STATUS_OK )
+				status = B::RmsNorm(state, *frame, B::LayerOf(state, 0u).input_norm);
+		return status;
 	}
 
 	static SparkStatus Layer(State *state, const Frame &frame, uint32_t index)
 	{
 		const typename B::Layer &layer = B::LayerOf(state, index);
-		SparkStatus status = B::RmsNorm(state, frame, layer.input_norm);
+		SparkStatus status = SPARK_STATUS_OK;
+		if constexpr ( !MimoHasFusedResidualNorm<B>::kValue )
+			status = B::RmsNorm(state, frame, layer.input_norm);
 		if ( status == SPARK_STATUS_OK )
 			status = L::Full(index) ? B::template Attention<true>(state, frame, layer) : B::template Attention<false>(state, frame, layer);
 		if ( status == SPARK_STATUS_OK )
 			status = B::AllReduce(state, frame);
-		if ( status == SPARK_STATUS_OK )
-			status = B::AddResidual(state, frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		status = B::RmsNorm(state, frame, layer.post_attn_norm);
+		if constexpr ( MimoHasFusedResidualNorm<B>::kValue )
+			status = B::AddRmsNorm(state, frame, layer.post_attn_norm);
+		else
+		{
+			status = B::AddResidual(state, frame);
+			if ( status == SPARK_STATUS_OK )
+				status = B::RmsNorm(state, frame, layer.post_attn_norm);
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = index < G::kDenseLayers ? B::Dense(state, frame, layer) : B::Experts(state, frame, layer);
 		if ( status == SPARK_STATUS_OK )
 			status = B::AllReduce(state, frame);
-		if ( status == SPARK_STATUS_OK )
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if constexpr ( MimoHasFusedResidualNorm<B>::kValue )
+			status = index + 1u < G::kLayers ? B::AddRmsNorm(state, frame, B::LayerOf(state, index + 1u).input_norm) : B::AddResidual(state, frame);
+		else
 			status = B::AddResidual(state, frame);
 		if ( status == SPARK_STATUS_OK )
 			status = B::LayerDone(state, frame, index);
