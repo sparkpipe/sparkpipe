@@ -1,5 +1,6 @@
 #pragma once
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/mxfp8.cuh"
@@ -378,8 +379,17 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
 	const uint32_t k_tiles = TAIL ? (args.input_dimension + TILE_K - 1u) / TILE_K : args.input_dimension / TILE_K;
 	const uint64_t weight_row_bytes = (uint64_t)args.input_dimension * Weight::kElementBytes;
-	uint32_t total_tiles;
+	const uint32_t b_row0 = threadIdx.x / B_ROW_CHUNKS,b_col0 = threadIdx.x % B_ROW_CHUNKS;
+	const uint32_t b_row_step = LM_STREAM_THREADS / B_ROW_CHUNKS;
+	const uint64_t b_ptr_step = (uint64_t)b_row_step * weight_row_bytes;
+	const uint16_t *a_source[A_PER_THREAD];
+	const uint8_t *b_base = args.weight;
+	uint32_t a_mask = 0u,b_mask = 0u;
+	float total[MF][NF][4];
+	LmStreamTile load,work;
+	uint32_t total_tiles,i,j,e;
 
+	LmDependentWait();
 	if ( args.group_row_offset != 0 )
 	{
 		LmStreamTilePrefix(args,prefix,groups,TILE_M,neuron_tiles);
@@ -399,16 +409,6 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 				offset = 0u;
 		}
 	};
-
-	const uint32_t b_row0 = threadIdx.x / B_ROW_CHUNKS,b_col0 = threadIdx.x % B_ROW_CHUNKS;
-	const uint32_t b_row_step = LM_STREAM_THREADS / B_ROW_CHUNKS;
-	const uint64_t b_ptr_step = (uint64_t)b_row_step * weight_row_bytes;
-	const uint16_t *a_source[A_PER_THREAD];
-	const uint8_t *b_base = args.weight;
-	uint32_t a_mask = 0u,b_mask = 0u;
-	float total[MF][NF][4];
-	LmStreamTile load,work;
-	uint32_t i,j,e;
 
 	auto locate = [&](uint32_t tile_index)
 	{
@@ -491,7 +491,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 					if ( args.output_f32 != 0 )
 						*(float2 *)(args.output_f32 + at) = make_float2(total[i][j][e],total[i][j][e + 1u]);
 					else
-						*(uint32_t *)(args.output_bf16 + at) = (uint32_t)LmFloatToBf16(total[i][j][e]) | ((uint32_t)LmFloatToBf16(total[i][j][e + 1u]) << 16u);
+						*(uint32_t *)(args.output_bf16 + at) = LmPackBf16Pair(total[i][j][e],total[i][j][e + 1u]);
 				}
 	};
 
@@ -523,12 +523,10 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 			for (uint32_t s = 0u; s + 1u < STAGES; s++)
 			{
 				if ( kp < k_tiles )
-				{
 					issue_k(sp_off,kp);
-					LmStreamCommit();
-					kp++;
-					advance_stage(sp_off);
-				}
+				LmStreamCommit();
+				kp++;
+				advance_stage(sp_off);
 			}
 			for (uint32_t kt = 0u; kt < k_tiles; kt++)
 			{
@@ -538,22 +536,17 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 				float scale_tile[Weight::kScaled && !INLINE_BLOCK32 && !DEFER_SCALE ? SCALE_BLOCKS : 1u][Weight::kScaled && !INLINE_BLOCK32 && !DEFER_SCALE ? NF : 1u][2];
 				uint32_t scale_pack[PACK4_UE8M0 ? SCALE_BLOCKS / 4u : 1u][PACK4_UE8M0 ? NF : 1u][2];
 				if constexpr ( STAGES > 2u )
-				{
-					if ( kp < k_tiles )
-						LmStreamWait<STAGES - 2u>();
-					else
-						LmStreamWait<0u>();
-				}
+					LmStreamWait<STAGES - 2u>();
 				else
 					LmStreamWait<0u>();
 				__syncthreads();
 				if ( kp < k_tiles )
 				{
 					issue_k(sp_off,kp);
-					LmStreamCommit();
 					kp++;
 					advance_stage(sp_off);
 				}
+				LmStreamCommit();
 				if constexpr ( PACK4_UE8M0 )
 				{
 #pragma unroll
@@ -711,48 +704,103 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 				}
 				else if constexpr ( PACK4_UE8M0 )
 				{
+					constexpr bool MX_TIGHT = MF * NF >= 16u;
 #pragma unroll
 					for (uint32_t blk = 0u; blk < SCALE_BLOCKS / 4u; blk++)
 					{
-						uint32_t sp[NF][2];
-#pragma unroll
-						for (j = 0u; j < NF; j++)
+						if constexpr ( MX_TIGHT )
 						{
-							sp[j][0] = scale_pack[blk][j][0];
-							sp[j][1] = scale_pack[blk][j][1];
-						}
-#pragma unroll 1
-						for (uint32_t s = 0u; s < 4u; s++)
-						{
-							const uint32_t step = blk * 4u + s;
-							uint32_t b[NF][4];
+							uint32_t sp[NF][2];
 #pragma unroll
 							for (j = 0u; j < NF; j++)
-								Weight::template Fragment<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j]);
-#pragma unroll
-							for (i = 0u; i < MF; i++)
 							{
-								const uint32_t row = ldm_a_row + i * 16u;
-								uint32_t first[4],second[4];
-								LmStreamLdMatrix4(first,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + ldm_a_col) * 16u);
-								LmStreamLdMatrix4(second,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + 2u + ldm_a_col) * 16u);
+								sp[j][0] = scale_pack[blk][j][0];
+								sp[j][1] = scale_pack[blk][j][1];
+							}
+#pragma unroll 1
+							for (uint32_t s = 0u; s < 4u; s++)
+							{
+								const uint32_t step = blk * 4u + s;
+								uint32_t b[NF][4];
+								float sc[NF][2];
 #pragma unroll
 								for (j = 0u; j < NF; j++)
 								{
-									uint32_t b_first[2] = { b[j][0], b[j][1] },b_second[2] = { b[j][2], b[j][3] };
-									float p[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-									LmMmaBf16(p,first,b_first);
-									LmMmaBf16(p,second,b_second);
+									sc[j][0] = LmUe8m0ToFloat((uint8_t)(sp[j][0] & 0xffu));
+									sc[j][1] = LmUe8m0ToFloat((uint8_t)(sp[j][1] & 0xffu));
+									sp[j][0] >>= 8u;
+									sp[j][1] >>= 8u;
+								}
 #pragma unroll
-									for (e = 0u; e < 4u; e++)
-										total[i][j][e] = fmaf(p[e],LmUe8m0ToFloat(sp[j][e & 1u] & 0xffu),total[i][j][e]);
+								for (j = 0u; j < NF; j++)
+									Weight::template Fragment<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j]);
+#pragma unroll
+								for (i = 0u; i < MF; i++)
+								{
+									const uint32_t row = ldm_a_row + i * 16u;
+									uint32_t first[4],second[4];
+									LmStreamLdMatrix4(first,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + ldm_a_col) * 16u);
+									LmStreamLdMatrix4(second,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + 2u + ldm_a_col) * 16u);
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+									{
+										uint32_t b_first[2] = { b[j][0], b[j][1] },b_second[2] = { b[j][2], b[j][3] };
+										float p[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+										LmMmaBf16(p,first,b_first);
+										LmMmaBf16(p,second,b_second);
+#pragma unroll
+										for (e = 0u; e < 4u; e++)
+											total[i][j][e] = fmaf(p[e],sc[j][e & 1u],total[i][j][e]);
+									}
 								}
 							}
-#pragma unroll
-							for (j = 0u; j < NF; j++)
+						}
+						else
+						{
+#pragma unroll 2
+							for (uint32_t s = 0u; s < 4u; s++)
 							{
-								sp[j][0] >>= 8u;
-								sp[j][1] >>= 8u;
+								const uint32_t step = blk * 4u + s;
+								const uint32_t shift = s * 8u;
+								uint32_t b[NF][4];
+								float sc[NF][2];
+#pragma unroll
+								for (j = 0u; j < NF; j++)
+								{
+									sc[j][0] = LmUe8m0ToFloat((uint8_t)((scale_pack[blk][j][0] >> shift) & 0xffu));
+									sc[j][1] = LmUe8m0ToFloat((uint8_t)((scale_pack[blk][j][1] >> shift) & 0xffu));
+								}
+								if constexpr ( (NF % 2u) == 0u )
+								{
+#pragma unroll
+									for (j = 0u; j < NF; j += 2u)
+										Weight::template FragmentPair<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j],b[j + 1u]);
+								}
+								else
+								{
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+										Weight::template Fragment<B_ROW_BYTES>(stage_b_s,warp_n * WARP_N + j * 8u,step,lane,b[j]);
+								}
+#pragma unroll
+								for (i = 0u; i < MF; i++)
+								{
+									const uint32_t row = ldm_a_row + i * 16u;
+									uint32_t first[4],second[4];
+									LmStreamLdMatrix4(first,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + ldm_a_col) * 16u);
+									LmStreamLdMatrix4(second,stage_a_s + row * A_ROW_BYTES + LmStreamSwizzle8(row,step * 4u + 2u + ldm_a_col) * 16u);
+#pragma unroll
+									for (j = 0u; j < NF; j++)
+									{
+										uint32_t b_first[2] = { b[j][0], b[j][1] },b_second[2] = { b[j][2], b[j][3] };
+										float p[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+										LmMmaBf16(p,first,b_first);
+										LmMmaBf16(p,second,b_second);
+#pragma unroll
+										for (e = 0u; e < 4u; e++)
+											total[i][j][e] = fmaf(p[e],sc[j][e & 1u],total[i][j][e]);
+									}
+								}
 							}
 						}
 					}
@@ -802,6 +850,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 			if ( tile + gridDim.x < total_tiles )
 				__syncthreads();
 		}
+		LmDependentRelease();
 		return;
 	}
 
@@ -927,6 +976,7 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 		if ( tile + gridDim.x < total_tiles )
 			__syncthreads();
 	}
+	LmDependentRelease();
 }
 
 template<class Format>
@@ -990,7 +1040,7 @@ static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_
 		if ( tile_bound < blocks )
 			blocks = tile_bound;
 	}
-	LM_LAUNCH((LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS,TAIL>),(uint32_t)blocks,LM_STREAM_THREADS,shared,stream,*args);
+	LM_LAUNCH_DEPENDENT((LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS,TAIL>),(uint32_t)blocks,LM_STREAM_THREADS,shared,stream,*args);
 	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return(LM_LAUNCH_OK);

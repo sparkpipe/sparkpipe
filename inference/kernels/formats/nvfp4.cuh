@@ -5,7 +5,7 @@
 
 static __device__ __forceinline__ float2 LmNvfp4Pair(uint8_t packed)
 {
-	return(LmE2m1PairToFloat(packed));
+	return(LmE2m1PairToFloatPure(packed));
 }
 
 struct LmNvfp4

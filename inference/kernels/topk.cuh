@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/norm.cuh"
 #include <stdint.h>
 
@@ -65,21 +66,32 @@ static __device__ __forceinline__ void LmTopkSelectRounds(uint32_t *keys, uint32
 	__syncthreads();
 	for (round = 0u; round < K; ++round)
 	{
-		unsigned long long best = 0ull,other;
-		uint32_t step,warp;
+		unsigned long long best = 0ull;
+		uint32_t warp;
+		#pragma unroll
 		for (item = 0u; item < kPerThread; ++item)
 			best = mine[item] > best ? mine[item] : best;
-		for (step = 16u; step > 0u; step >>= 1u)
+#if defined(__CUDA_ARCH__)
 		{
-			other = __shfl_xor_sync(0xffffffffu, best, step);
+			const uint32_t high = __reduce_max_sync(0xffffffffu, (uint32_t)(best >> 32u));
+			const uint32_t low = __reduce_max_sync(0xffffffffu, (uint32_t)(best >> 32u) == high ? (uint32_t)best : 0u);
+			best = ((unsigned long long)high << 32u) | (unsigned long long)low;
+		}
+#else
+		for (uint32_t step = 16u; step > 0u; step >>= 1u)
+		{
+			unsigned long long other = __shfl_xor_sync(0xffffffffu, best, step);
 			best = other > best ? other : best;
 		}
+#endif
 		if ( (threadIdx.x & 31u) == 0u )
 			lm_topk_best[round & 1u][threadIdx.x >> 5u] = best;
 		__syncthreads();
 		best = 0ull;
+		#pragma unroll
 		for (warp = 0u; warp < kWarps; ++warp)
 			best = lm_topk_best[round & 1u][warp] > best ? lm_topk_best[round & 1u][warp] : best;
+		#pragma unroll
 		for (item = 0u; item < kPerThread; ++item)
 			mine[item] = mine[item] == best ? 0ull : mine[item];
 		if ( threadIdx.x == 0u )
@@ -104,6 +116,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	uint32_t index,size,stride,width = 2u;
 	while ( width < n && width < LM_TOPK_SMALL_LIMIT )
 		width <<= 1u;
+	LmDependentWait();
 	for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 	{
 		keys[index] = index < n ? LmTopkRouteKey(LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16,
@@ -223,4 +236,5 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		for (index = threadIdx.x; index < K; index += THREADS)
 			out_values[((uint64_t)blockIdx.x * K) + index] *= mixture_scale;
 	}
+	LmDependentRelease();
 }

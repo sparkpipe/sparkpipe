@@ -56,10 +56,17 @@ struct LmInt7
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
 		const uint8_t *base = tile + (row * row_pitch_bytes);
-		const uint32_t low = LmInt7Raw(base,k,row_pitch_bytes) & 127u;
-		const uint32_t high = LmInt7Raw(base,k + 1u,row_pitch_bytes) & 127u;
-		const int32_t signed_low = ((int32_t)(low << 25u)) >> 25;
-		const int32_t signed_high = ((int32_t)(high << 25u)) >> 25;
+		const uint32_t bit = k * 7u;
+		const uint32_t byte = bit >> 3u;
+		const uint32_t shift = bit & 7u;
+		uint32_t word = base[byte];
+		if ( byte + 1u < row_pitch_bytes )
+			word |= (uint32_t)base[byte + 1u] << 8u;
+		if ( shift > 2u && byte + 2u < row_pitch_bytes )
+			word |= (uint32_t)base[byte + 2u] << 16u;
+		word >>= shift;
+		const int32_t signed_low = ((int32_t)(word << 25u)) >> 25;
+		const int32_t signed_high = ((int32_t)(word << 18u)) >> 25;
 		return(LmPackBf16Pair((float)signed_low * scale,(float)signed_high * scale));
 	}
 };

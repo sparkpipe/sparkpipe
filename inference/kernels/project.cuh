@@ -1,6 +1,7 @@
 #pragma once
 
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "runtime/gemm.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
@@ -22,8 +23,12 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale, bool key_is_value = false)
 {
 	const uint32_t row = blockIdx.x;
+	LmDependentWait();
 	if ( row >= rows )
+	{
+		LmDependentRelease();
 		return;
+	}
 	const uint32_t total = layout.query_dimension + layout.key_dimension + (key_is_value ? 0u : layout.value_dimension);
 	const uint16_t *src = fused_bf16 + (uint64_t)row * total;
 	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * layout.query_dimension, layout.query_dimension);
@@ -33,6 +38,7 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 	if ( value_scale == 1.0f )
 	{
 		LmCopySliceBf16<THREADS>(vsrc, vdst, layout.value_dimension);
+		LmDependentRelease();
 		return;
 	}
 	if ( ((layout.value_dimension & 7u) == 0u) && LmIsAligned16(vsrc) && LmIsAligned16(vdst) )
@@ -46,10 +52,12 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 				out_f[k] *= value_scale;
 			*(uint4 *)(vdst + index) = LmPackUint4FloatToBf16(out_f);
 		}
+		LmDependentRelease();
 		return;
 	}
 	for (uint32_t index = threadIdx.x; index < layout.value_dimension; index += THREADS)
 		vdst[index] = LmFloatToBf16(LmBf16ToFloat(vsrc[index]) * value_scale);
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS>
@@ -57,11 +65,16 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSplit2RowsKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *__restrict__ first_bf16, uint16_t *__restrict__ second_bf16, uint32_t rows, uint32_t first_width, uint32_t second_width = 0u)
 {
 	const uint32_t row = blockIdx.x, w2 = second_width != 0u ? second_width : first_width;
+	LmDependentWait();
 	if ( row >= rows )
+	{
+		LmDependentRelease();
 		return;
+	}
 	const uint16_t *src = fused_bf16 + (uint64_t)row * (first_width + w2);
 	LmCopySliceBf16<THREADS>(src, first_bf16 + (uint64_t)row * first_width, first_width);
 	LmCopySliceBf16<THREADS>(src + first_width, second_bf16 + (uint64_t)row * w2, w2);
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS>
@@ -69,13 +82,18 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSplitQkvbKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
 {
 	const uint32_t row = blockIdx.x;
+	LmDependentWait();
 	if ( row >= rows )
+	{
+		LmDependentRelease();
 		return;
+	}
 	const uint16_t *src = qkvb_bf16 + (uint64_t)row * fused_rows;
 	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
 	LmCopySliceBf16<THREADS>(src + qk_dim, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
 	LmCopySliceBf16<THREADS>(src + 2u * qk_dim, value_bf16 + (uint64_t)row * v_dim, v_dim);
 	LmCopySliceBf16<THREADS>(src + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS>
@@ -85,21 +103,29 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 	uint32_t row = blockIdx.x,index,head,element;
 	uint64_t fused_base = (uint64_t)row * heads * 2u * head_dimension;
 	uint64_t half_base = (uint64_t)row * heads * head_dimension;
+	LmDependentWait();
 	if ( row >= rows )
+	{
+		LmDependentRelease();
 		return;
+	}
 	if ( ((head_dimension & 7u) == 0u) && LmIsAligned16(fused_bf16) && LmIsAligned16(query_bf16) && LmIsAligned16(gate_bf16) )
 	{
 		const uint32_t head_vecs = head_dimension >> 3u;
 		const uint32_t total_vecs = heads * head_vecs;
+		const bool pow2 = head_vecs != 0u && ((head_vecs & (head_vecs - 1u)) == 0u);
+		const uint32_t shift = pow2 ? (uint32_t)(__ffs((int)head_vecs) - 1) : 0u;
+		const uint32_t mask = head_vecs - 1u;
 		for (uint32_t v = threadIdx.x; v < total_vecs; v += THREADS)
 		{
-			head = v / head_vecs;
-			element = (v % head_vecs) << 3u;
+			head = pow2 ? (v >> shift) : (v / head_vecs);
+			element = (pow2 ? (v & mask) : (v % head_vecs)) << 3u;
 			*(uint4 *)(query_bf16 + half_base + ((uint64_t)v << 3u)) =
 				*(const uint4 *)(fused_bf16 + fused_base + ((uint64_t)head * 2u * head_dimension) + element);
 			*(uint4 *)(gate_bf16 + half_base + ((uint64_t)v << 3u)) =
 				*(const uint4 *)(fused_bf16 + fused_base + ((uint64_t)head * 2u * head_dimension) + head_dimension + element);
 		}
+		LmDependentRelease();
 		return;
 	}
 	for (index = threadIdx.x; index < heads * head_dimension; index += THREADS)
@@ -111,6 +137,7 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 		gate_bf16[half_base + index] =
 			fused_bf16[fused_base + (head * 2u * head_dimension) + head_dimension + element];
 	}
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, LmRopeRounding ROUNDING = LM_ROPE_FP32>
@@ -121,12 +148,14 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 	uint32_t half = rope_dimension / 2u;
 	uint64_t base = (((uint64_t)row * heads) + head) * head_dimension
 		+ (rope_offset == 0xffffffffu ? (head_dimension - rope_dimension) : rope_offset);
+	LmDependentWait();
 	float position = (float)positions[row];
 	for (index = threadIdx.x; index < half; index += THREADS)
 		LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,
 			position * (inv_freq_table != 0 ? inv_freq_table[index]
 				: __powf(theta,-2.0f * (float)index / (float)rope_dimension)),
 			attention_scale);
+	LmDependentRelease();
 }
 
 template<
@@ -264,14 +293,43 @@ void LmExtractRopePerHeadKernel(
 	uint32_t out_stride = output_head_stride != 0u ? output_head_stride : rope_dimension;
 	uint64_t input_base,output_base;
 	float position;
-	LmDependentRelease();
+	LmDependentWait();
 	if ( head >= heads || input_offset > input_head_dimension ||
 		rope_dimension > input_head_dimension - input_offset )
+	{
+		LmDependentRelease();
 		return;
+	}
 	input_base = ((((uint64_t)row * heads) + head) * input_head_dimension)
 		+ input_offset;
 	output_base = ((((uint64_t)row * heads) + head) * out_stride) + output_offset;
 	position = (float)positions[row];
+	if constexpr ( PAIRING == LM_ROPE_INTERLEAVED )
+	{
+		const uint16_t *in_ptr = input_bf16 + input_base;
+		uint16_t *out_ptr = output_bf16 + output_base;
+		if ( (((uintptr_t)in_ptr & 3u) == 0u) && (((uintptr_t)out_ptr & 3u) == 0u) )
+		{
+			const uint32_t *in32 = (const uint32_t *)in_ptr;
+			uint32_t *out32 = (uint32_t *)out_ptr;
+			for (index = threadIdx.x; index < half; index += THREADS)
+			{
+				const uint32_t pair = in32[index];
+				float low = __uint_as_float(pair << 16u);
+				float high = __uint_as_float(pair & 0xffff0000u);
+				float angle;
+				if constexpr ( TABLE )
+					angle = position * inv_freq_table[index];
+				else
+					angle = position * __powf(
+						theta,-2.0f * (float)index / (float)rope_dimension);
+				LmRopePairRounded<ROUNDING>(&low,&high,angle);
+				out32[index] = LmPackBf16Pair(low,high);
+			}
+			LmDependentRelease();
+			return;
+		}
+	}
 	for (index = threadIdx.x; index < half; index += THREADS)
 	{
 		uint32_t low_offset,high_offset;
@@ -290,4 +348,5 @@ void LmExtractRopePerHeadKernel(
 		output_bf16[output_base + low_offset] = LmFloatToBf16(low);
 		output_bf16[output_base + high_offset] = LmFloatToBf16(high);
 	}
+	LmDependentRelease();
 }

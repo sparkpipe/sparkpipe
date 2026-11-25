@@ -58,84 +58,132 @@ static __device__ __forceinline__ float2 LmLoadBf16Pair(const void *base, uint64
 }
 
 
+static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value);
+
 static __device__ __forceinline__ uint8_t LmFloatToE4m3(float value)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
 	uint16_t encoded;
-	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
+	asm("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(0.0f), "f"(value));
 	return((uint8_t)encoded);
+#else
+	return(LmFloatToUe4m3(fabsf(value)) | (signbit(value) ? 0x80u : 0u));
+#endif
 }
 
 static __device__ __forceinline__ uint16_t LmFloatPairToE4m3(float low, float high)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
 	uint16_t encoded;
-	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
+	asm("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(high), "f"(low));
 	return(encoded);
-}
-
-static __device__ __forceinline__ float LmE4m3ToFloat(uint8_t value)
-{
-	uint32_t widened;
-	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
-		: "=r"(widened) : "h"((uint16_t)value));
-	return(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))));
+#else
+	return((uint16_t)LmFloatToE4m3(low) | ((uint16_t)LmFloatToE4m3(high) << 8u));
+#endif
 }
 
 static __device__ __forceinline__ float2 LmHalfPairBitsToFloat2(uint32_t widened)
 {
+#if defined(__CUDA_ARCH__)
+	float low,high;
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(low) : "h"((uint16_t)widened));
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(high) : "h"((uint16_t)(widened >> 16u)));
+	return(make_float2(low,high));
+#else
 	float2 result;
 	result.x = __half2float(__ushort_as_half((uint16_t)widened));
 	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
 	return(result);
+#endif
+}
+
+static __device__ __forceinline__ float LmE4m3ToFloat(uint8_t value)
+{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
+	uint32_t widened;
+	float result;
+	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"((uint16_t)value));
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(result) : "h"((uint16_t)widened));
+	return(result);
+#else
+	return(SparkMathE4m3ToFloat(value));
+#endif
 }
 
 static __device__ __forceinline__ float2 LmE4m3PairToFloat2(uint16_t value)
 {
-	uint32_t widened;
-	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
-		: "=r"(widened) : "h"(value));
-	return(LmHalfPairBitsToFloat2(widened));
-}
-
-static __device__ __forceinline__ float2 LmE4m3PairToFloat2Pure(uint16_t value)
-{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
 	uint32_t widened;
 	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
 		: "=r"(widened) : "h"(value));
 	return(LmHalfPairBitsToFloat2(widened));
+#else
+	return(make_float2(SparkMathE4m3ToFloat(value & 0xffu),SparkMathE4m3ToFloat(value >> 8u)));
+#endif
+}
+
+static __device__ __forceinline__ float2 LmE4m3PairToFloat2Pure(uint16_t value)
+{
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
+	uint32_t widened;
+	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"(value));
+	return(LmHalfPairBitsToFloat2(widened));
+#else
+	return(make_float2(SparkMathE4m3ToFloat(value & 0xffu),SparkMathE4m3ToFloat(value >> 8u)));
+#endif
 }
 
 
 static __device__ __forceinline__ uint8_t LmFloatPairToE2m1(float low, float high)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
 	uint16_t encoded;
-	asm volatile("{\n\t.reg .b8 packed;\n"
+	asm("{\n\t.reg .b8 packed;\n"
 		"\tcvt.rn.satfinite.e2m1x2.f32 packed, %1, %2;\n"
 		"\tcvt.u16.u8 %0, packed;\n\t}\n"
 		: "=h"(encoded) : "f"(high), "f"(low));
 	return((uint8_t)(encoded & 0xffu));
+#else
+	(void)low;
+	(void)high;
+	return(0u);
+#endif
 }
 
 static __device__ __forceinline__ float2 LmE2m1PairToFloat(uint8_t packed)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
 	uint32_t widened;
-	float2 result;
-	asm volatile("{\n\t.reg .b8 narrow;\n"
-		"\tcvt.u8.u16 narrow, %1;\n"
+	asm("{\n\t.reg .b8 narrow;\n"
+		"\tcvt.u8.u32 narrow, %1;\n"
 		"\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
-		: "=r"(widened) : "h"((uint16_t)packed));
-	result.x = __half2float(__ushort_as_half((uint16_t)(widened & 0xffffu)));
-	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
-	return(result);
+		: "=r"(widened) : "r"((uint32_t)packed));
+	return(LmHalfPairBitsToFloat2(widened));
+#else
+	return(make_float2(SparkMathE2m1ToFloat(packed & 15u),SparkMathE2m1ToFloat((packed >> 4u) & 15u)));
+#endif
+}
+
+static __device__ __forceinline__ float2 LmE2m1PairToFloatPure(uint8_t packed)
+{
+	return(LmE2m1PairToFloat(packed));
 }
 
 static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
 	uint16_t encoded;
-	asm volatile("cvt.rn.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
+	asm("cvt.rn.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
 		: "=h"(encoded) : "f"(0.0f), "f"(value));
 	return((uint8_t)(encoded >> 8u));
+#else
+	(void)value;
+	return(0u);
+#endif
 }
 
 static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
@@ -145,7 +193,18 @@ static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
 
 static __device__ __forceinline__ float LmE2m1ToFloatPure(uint32_t nibble)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
+	uint32_t widened;
+	float result;
+	asm("{\n\t.reg .b8 narrow;\n"
+		"\tcvt.u8.u32 narrow, %1;\n"
+		"\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
+		: "=r"(widened) : "r"(nibble & 15u));
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(result) : "h"((uint16_t)widened));
+	return(result);
+#else
 	return(SparkMathE2m1ToFloat(nibble));
+#endif
 }
 
 static __device__ __forceinline__ uint32_t LmRoundPositiveToNearestEven(
@@ -186,7 +245,17 @@ static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value)
 
 static __device__ __forceinline__ float LmUe4m3ToFloat(uint8_t value)
 {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
+	const uint32_t bits = (uint32_t)value & 0x7fu;
+	const uint16_t clamped = (uint16_t)(bits == 0x7fu ? 0x7eu : bits);
+	uint32_t widened;
+	float result;
+	asm("cvt.rn.f16x2.e4m3x2 %0, %1;\n" : "=r"(widened) : "h"(clamped));
+	asm("cvt.f32.f16 %0, %1;\n" : "=f"(result) : "h"((uint16_t)widened));
+	return(result);
+#else
 	return(SparkMathUe4m3ToFloat(value));
+#endif
 }
 
 template<class T>
