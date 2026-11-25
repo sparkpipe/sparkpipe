@@ -289,7 +289,6 @@ HY4_FP8 = {
     "swap_id": "hy4-fp8",
     "api_port": 8494,
     "kv_label": "hy4_fp8_tp16_stage",
-    "node_memory_bytes": 60 << 30,
     "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/hy4-fp8/tokenizer.json",
     "pack": "sparkdata/hy4_fp8.fp8.tp16/hy4.tp16.rank{rank:02d}.pack",
     "adapter": "libhy4_fp8_tp16_serving_adapter.so",

@@ -1,2 +1,2 @@
-+52
-Wire the four RAIS v1.1 frontier TP16 lanes (ling-3.2-air, sage-s2.1-flash, ling-3.1-flash, hy4-fp8) in tools/stage_lane.py (+52 non-test lines) alongside their lane, swap, chat frontend, LiteLLM, Open WebUI, README, and release rollout records.
++51
+Wire the four RAIS v1.1 frontier TP16 lanes (ling-3.2-air, sage-s2.1-flash, ling-3.1-flash, hy4-fp8) in tools/stage_lane.py (+51 non-test lines) alongside their lane, swap, chat frontend, LiteLLM, Open WebUI, README, and release rollout records.
