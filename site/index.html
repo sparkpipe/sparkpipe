@@ -72,7 +72,7 @@ h1 { max-width: 15ch; }
 <aside class="rais-banner" aria-label="RAIS v1.0 Benchmark Announcement">
   <div class="wrap rais-banner-inner">
     <span class="rais-badge">Introducing RAIS v1.0</span>
-    <p class="rais-banner-copy">Open three-roofline inference benchmark across compute, memory &amp; network. Live on 16× DGX Spark: <b class="num">46.7 / 100</b> Certified Fleet RAIS across <b>19 / 19 VALID</b> models — K-EXAONE 2.0 <b class="num">60.0</b>, Kimi K3 <b class="num">57.6</b>, Solar Open 2 <b class="num">53.1</b>, Qwen 3.8 Max <b class="num">52.7</b>, DeepSeek V4.1 Flash <b class="num">46.3</b> (<span class="num">19.2k</span> tok/s cold prefill).</p>
+    <p class="rais-banner-copy">Open three-roofline inference benchmark across compute, memory &amp; network. Live on 16× DGX Spark: <b class="num">47.6 / 100</b> Certified Fleet RAIS across <b>19 / 19 VALID</b> models — K-EXAONE 2.0 <b class="num">64.0</b>, Solar Open 2 <b class="num">53.8</b>, Qwen 3.8 Max <b class="num">53.6</b>, Kimi K3.1 Pro <b class="num">53.3</b>, DeepSeek V4.1 Flash <b class="num">46.9</b> (<span class="num">15.7k</span> tok/s 32K prefill); plus Zero-NVIDIA NVRM <b class="num">63.3</b> (beats CUDA <span class="num">63.2</span>) on 1× GB10.</p>
     <a class="btn small solid rais-banner-cta" href="rais.html">View RAIS v1.0</a>
   </div>
 </aside>
@@ -341,7 +341,7 @@ curl $OPENAI_BASE_URL/chat/completions \
       <div class="bar top"><span>K3, speculation</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, one request</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">For brand-new code, Kimi K3 decodes at 16.2 tok/s for one request today; a draft model trained on your own code is how our engine gets faster on it. Across the full 16-Spark fleet on our open three-roofline <a href="rais.html">RAIS v1.0 scorecard</a>, all 19 of 19 canonical models (100% fleet weight) certify VALID at <b>46.7 / 100</b> Certified Fleet RAIS — led by K-EXAONE 2.0 (<b>60.0</b>), Kimi K3 (<b>57.6</b>), Solar Open 2 (<b>53.1</b>), Qwen 3.8 Max (<b>52.7</b>), Qwen 3.8 27B (<b>49.9</b>), and DeepSeek V4.1 Flash (<b>46.3</b>, 11.0k–19.2k tok/s cold prefill). All figures are measured with our engine on Fleet 1; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a> and <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
+    <p class="caption">For brand-new code, Kimi K3 decodes at 16.2 tok/s for one request today; a draft model trained on your own code is how our engine gets faster on it. Across the full 16-Spark fleet on our open three-roofline <a href="rais.html">RAIS v1.0 scorecard</a>, all 19 of 19 canonical models (100% fleet weight) certify VALID at <b>47.6 / 100</b> Certified Fleet RAIS — led by K-EXAONE 2.0 (<b>64.0</b>), Kimi K3 (<b>54.5</b>), Solar Open 2 (<b>53.8</b>), Qwen 3.8 Max (<b>53.6</b>), Kimi K3.1 Pro (<b>53.3</b>), Qwen 3.8 27B (<b>50.9</b>), and DeepSeek V4.1 Flash (<b>46.9</b>, 15.7k tok/s 32K cold prefill); on single-GB10, our zero-NVIDIA NVRM stack scores <b>63.3</b> VALID vs CUDA <b>63.2</b> on Qwen 3.8 27B. All figures are measured with our engine on Fleet 1; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a> and <span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
   </div>
 </section>
 

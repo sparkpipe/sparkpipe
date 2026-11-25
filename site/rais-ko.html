@@ -140,7 +140,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <a class="btn" href="#reproduce">내 엔진에서 실행</a>
         <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">전체 명세(영문)</a>
       </div>
-      <p class="note">참조 채점기: <span class="mono">tools/rais_score.py</span> · OpenAI 호환 러너: <span class="mono">tools/rais_bench.py</span>. DGX Spark 16대(<span class="mono">16x-gb10-1x100g</span>) 단일 릴리스 실측 스윕 공개: <b>19개 표준 모델 전원 VALID 인증</b>(플릿 비중 100%, <b>인증 플릿 RAIS 46.7</b>). 원본 기록: <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
+      <p class="note">참조 채점기: <span class="mono">tools/rais_score.py</span> · OpenAI 호환 러너: <span class="mono">tools/rais_bench.py</span>. DGX Spark 16대(<span class="mono">16x-gb10-1x100g</span>) Wave-4B 단일 릴리스 실측 스윕 공개: <b>19개 표준 모델 전원 VALID 인증</b>(플릿 비중 100%, <b>인증 플릿 RAIS 47.6</b>, <span class="mono">99fc2a2c1</span> 대비 +0.96). 원본 기록: <span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span> 및 단일 GB10 제로-NVIDIA NVRM(<b>63.3</b> VALID, CUDA 63.2 상회)·Apple M5 Ultra Metal 4.0(<b>20.3</b> VALID).</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.0</b> · 물리적 하한</span><span>0–100 척도</span></div>
@@ -288,7 +288,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>플릿 스코어카드 및 하드웨어 루프라인.</h2>
-    <p class="prose">DGX Spark 16대 단일 릴리스 실측 원본 기록(<span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>)을 <span class="mono">python3 tools/rais_score.py score --format html-data</span>로 직접 채점해 생성했습니다. 티어 1·2·3 전체를 포함한 19개 표준 모델 전원(플릿 비중 100%)이 4개 이진 정확성 게이트를 오류 0건으로 통과(<span class="mono">VALID</span>)해 <b>인증 플릿 RAIS 46.7</b>을 기록했습니다. 미측정 대기 하드웨어 프로필은 추정하거나 보간하지 않습니다.</p>
+    <p class="prose">DGX Spark 16대 단일 릴리스 실측 원본 기록(<span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>), 단일 GB10 제로-NVIDIA NVRM 기록(<span class="mono">qualification/hardware/1x-gb10/rais-qwen38-27b-nvrm.jsonl</span>), Apple M5 Ultra Metal 4.0 기록(<span class="mono">qualification/hardware/1x-m5-ultra/rais-qwen38-27b-metal4.jsonl</span>)을 <span class="mono">python3 tools/rais_score.py score --format html-data</span>로 직접 채점해 생성했습니다. 티어 1·2·3 전체를 포함한 19개 표준 모델 전원(플릿 비중 100%)이 4개 이진 정확성 게이트를 오류 0건으로 통과(<span class="mono">VALID</span>)해 <b>인증 플릿 RAIS 47.6</b>을 기록했습니다. 미측정 대기 하드웨어 프로필은 추정하거나 보간하지 않습니다.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
