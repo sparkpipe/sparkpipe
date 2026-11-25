@@ -92,7 +92,8 @@ def check_runner(failures):
         failures.append("the step does not report a failed copy or collective "
                         "before it completes")
     chain = body(text, "StageRunnerChainBegin")
-    if "SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id)" not in chain:
+    if ("SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id)" not in chain
+            and "SparkTpDeviceCollectiveChainKeyQueue(&state->device_collective, request_id," not in chain):
         failures.append("StageRunnerChainBegin does not key the device collective with the whole request id")
     if "CHAIN_ID_MASK" in chain:
         failures.append("StageRunnerChainBegin masks the request id; a wave's epoch rises with the whole id "

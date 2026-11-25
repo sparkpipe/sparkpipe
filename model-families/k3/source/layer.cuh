@@ -495,20 +495,21 @@ template<uint32_t THREADS, uint32_t KEY_DIM>
 __global__ __launch_bounds__(THREADS, 1)
 void K3KdaPrepFinishKernel(uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ decay_logit_bf16, const float *__restrict__ channel_bias, const float *__restrict__ head_log_scale, const uint16_t *__restrict__ beta_logit_bf16, float *__restrict__ retention, float *__restrict__ write_gate, uint32_t heads, float minimum_log_decay, float epsilon, uint32_t rows)
 {
-	static_assert(THREADS == KEY_DIM, "one thread per KDA key element");
 	__shared__ float reduction[2u * LmBlockWarps<THREADS>()];
-	const uint32_t row = blockIdx.x, head = blockIdx.y, idx = threadIdx.x;
-	if ( row >= rows || head >= heads )
-		return;
+	const uint32_t row = blockIdx.x, head = blockIdx.y;
+	if ( row >= rows || head >= heads ) return;
 	const uint64_t base = (((uint64_t)row * heads) + head) * KEY_DIM;
-	const float qv = LmBf16ToFloat(query_bf16[base + idx]), kv = LmBf16ToFloat(key_bf16[base + idx]);
-	float q_sum = qv * qv, k_sum = kv * kv;
+	float q_sum = 0.0f, k_sum = 0.0f, q0 = 0.0f, k0 = 0.0f;
+	for (uint32_t idx = threadIdx.x; idx < KEY_DIM; idx += THREADS) { q0 = LmBf16ToFloat(query_bf16[base + idx]); k0 = LmBf16ToFloat(key_bf16[base + idx]); q_sum += q0 * q0; k_sum += k0 * k0; }
 	LmBlockSum2Once<THREADS>(&q_sum, &k_sum, reduction);
-	query_bf16[base + idx] = LmFloatToBf16(qv * rsqrtf(q_sum + epsilon));
-	key_bf16[base + idx] = LmFloatToBf16(kv * rsqrtf(k_sum + epsilon));
-	retention[base + idx] = LmBoundedDecay(LmBf16ToFloat(decay_logit_bf16[base + idx]), channel_bias[(head * KEY_DIM) + idx], head_log_scale[head], minimum_log_decay);
-	if ( idx == 0u )
-		write_gate[(uint64_t)row * heads + head] = SparkMathSigmoidFast(LmBf16ToFloat(beta_logit_bf16[(uint64_t)row * heads + head]));
+	const float q_inv = rsqrtf(q_sum + epsilon), k_inv = rsqrtf(k_sum + epsilon);
+	for (uint32_t idx = threadIdx.x; idx < KEY_DIM; idx += THREADS)
+	{
+		query_bf16[base + idx] = LmFloatToBf16((THREADS == KEY_DIM ? q0 : LmBf16ToFloat(query_bf16[base + idx])) * q_inv);
+		key_bf16[base + idx] = LmFloatToBf16((THREADS == KEY_DIM ? k0 : LmBf16ToFloat(key_bf16[base + idx])) * k_inv);
+		retention[base + idx] = LmBoundedDecay(LmBf16ToFloat(decay_logit_bf16[base + idx]), channel_bias[(head * KEY_DIM) + idx], head_log_scale[head], minimum_log_decay);
+	}
+	if ( threadIdx.x == 0u ) write_gate[(uint64_t)row * heads + head] = SparkMathSigmoidFast(LmBf16ToFloat(beta_logit_bf16[(uint64_t)row * heads + head]));
 }
 
 template<uint32_t THREADS, uint32_t VALUE_DIM>
@@ -517,14 +518,14 @@ void K3KdaNormGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__r
 {
 	__shared__ float reduction[LmBlockWarps<THREADS>()];
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
-	if ( row >= rows || head >= heads )
-		return;
+	if ( row >= rows || head >= heads ) return;
 	const uint64_t base = (((uint64_t)row * heads) + head) * VALUE_DIM;
-	const uint32_t idx = threadIdx.x;
-	const float v = idx < VALUE_DIM ? LmBf16ToFloat(output_bf16[base + idx]) : 0.0f;
-	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(v * v, reduction), (float)VALUE_DIM, epsilon);
-	if ( idx < VALUE_DIM )
+	float sum = 0.0f, v0 = 0.0f;
+	for (uint32_t idx = threadIdx.x; idx < VALUE_DIM; idx += THREADS) { v0 = LmBf16ToFloat(output_bf16[base + idx]); sum += v0 * v0; }
+	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(sum, reduction), (float)VALUE_DIM, epsilon);
+	for (uint32_t idx = threadIdx.x; idx < VALUE_DIM; idx += THREADS)
 	{
+		const float v = THREADS == VALUE_DIM ? v0 : LmBf16ToFloat(output_bf16[base + idx]);
 		const float normed = LmBf16ToFloat(LmFloatToBf16(v * scale * norm_weight[idx]));
 		output_bf16[base + idx] = LmFloatToBf16(normed * SparkMathSigmoidFast(LmBf16ToFloat(gate_bf16[base + idx])));
 	}
@@ -688,16 +689,13 @@ template<class Format>
 static int32_t K3LayerKdaPrepare(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	int32_t status;
-	uint32_t state_slot_bytes;
 	const uint32_t rank_heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
-	const uint32_t rank_qk = rank_heads * K3_KDA_KEY_DIM;
-	const uint32_t rank_v = rank_heads * K3_KDA_VALUE_DIM;
+	const uint32_t rank_qk = rank_heads * K3_KDA_KEY_DIM, rank_v = rank_heads * K3_KDA_VALUE_DIM;
 	const uint32_t head_base = b->tp_rank * rank_heads;
 	if ( b->kda_state_bf16 != 0u )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( head_base + rank_heads > K3_KDA_HEADS )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
-	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
 	if ( b->parent_rows != 0 && (b->replay_conv_q == 0 || b->replay_conv_k == 0 || b->replay_conv_v == 0) )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	const LmCausalConvStreams<float> conv = {
@@ -713,15 +711,13 @@ static int32_t K3LayerKdaPrepare(const K3LayerBuffers *b, uint32_t rows, uint32_
 		K3_RANK_DIM(b,kda_decay_up_rows,K3_KDA_QK_DIM),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	float *retention = b->replay_retention != 0
-		? b->replay_retention : b->kda_retention;
-	float *write_gate = b->replay_write_gate != 0
-		? b->replay_write_gate : b->kda_write_gate_out;
-	LM_LAUNCH((K3KdaPrepFinishKernel<K3_KDA_KEY_DIM,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), K3_KDA_KEY_DIM, 0, stream,
+	float *retention = b->replay_retention != 0 ? b->replay_retention : b->kda_retention;
+	float *write_gate = b->replay_write_gate != 0 ? b->replay_write_gate : b->kda_write_gate_out;
+	constexpr uint32_t prep_threads = K3_LAYER_THREADS < K3_KDA_KEY_DIM ? K3_LAYER_THREADS : K3_KDA_KEY_DIM;
+	LM_LAUNCH((K3KdaPrepFinishKernel<prep_threads,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), prep_threads, 0, stream,
 		b->query_bf16,b->key_bf16,b->decay_logit_bf16,b->kda_decay_bias + ((uint64_t)head_base * K3_KDA_KEY_DIM),
 		b->kda_head_log_scale + head_base,(const uint16_t *)b->kda_beta_logit,retention,write_gate,
 		rank_heads,K3_KDA_GATE_LOWER_BOUND,K3_RMS_EPSILON,rows);
-	(void)state_slot_bytes;
 	return(LM_LAUNCH_OK);
 }
 
@@ -757,7 +753,8 @@ static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf
 static int32_t K3LayerKdaGate(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
 	const uint32_t rank_heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
-	LM_LAUNCH((K3KdaNormGateKernel<K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM>), dim3(rows,rank_heads), K3_KDA_VALUE_DIM, 0, stream,
+	constexpr uint32_t gate_threads = K3_LAYER_THREADS < K3_KDA_VALUE_DIM ? K3_LAYER_THREADS : K3_KDA_VALUE_DIM;
+	LM_LAUNCH((K3KdaNormGateKernel<gate_threads,K3_KDA_VALUE_DIM>), dim3(rows,rank_heads), gate_threads, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,b->kda_out_norm_weight,rank_heads,K3_RMS_EPSILON,rows);
 	return(LM_LAUNCH_OK);
 }
