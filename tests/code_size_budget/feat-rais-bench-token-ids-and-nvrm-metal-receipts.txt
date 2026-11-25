@@ -1,0 +1,2 @@
++278
+Add --tokenizer-json, --tokenizer-compiled, --tokenizer-bin, and --synthetic-token-ids prompt_token_ids support, token-ID exactness verification for tokenizerless endpoints, and multi-turn continuation anchors to tools/rais_bench.py.
