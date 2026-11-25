@@ -282,6 +282,46 @@ def test_qwen38max(scratch):
                  "--revision", "faaee89a1b84", "--out", scratch / "o10")
     check(result.returncode == 1 and "layer 2 is past num_hidden_layers = 2" in result.stderr,
           f"qwen38maxdspark: layer_count refuses out-of-range layer: {result.stderr}")
+def test_kexaone2(scratch):
+    checkpoint, target, out = (
+        scratch / "kexaone2", scratch / "kexaone2-target" / "target_io.safetensors", scratch / "kexaone2-out")
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({
+        "architectures": ["ExaoneMoeForCausalLM"], "dspark_num_hidden_layers": 2, "dspark_num_target_layers": 78,
+        "dspark_target_layer_ids": [2, 20, 38, 56, 74], "dspark_block_size": 7, "dspark_markov_rank": 4,
+        "dspark_noise_token_id": 84, "hidden_size": 8}))
+    sources = write_safetensors(checkpoint / "model-dspark.safetensors", {
+        "mtp.fc.weight": ("BF16", [8, 40], None), "mtp.hidden_norm.weight": ("BF16", [8], None),
+        "mtp.norm.weight": ("BF16", [8], None), "mtp.layers.0.self_attn.q_proj.weight": ("BF16", [8, 8], None),
+        "mtp.layers.1.mlp.down_proj.weight": ("BF16", [8, 16], None),
+        "mtp.markov_head.markov_w1.weight": ("BF16", [32, 4], None),
+        "mtp.markov_head.markov_w2.weight": ("BF16", [32, 4], None),
+        "mtp.confidence_head.proj.weight": ("BF16", [1, 12], None), "mtp.confidence_head.proj.bias": ("BF16", [1], None)})
+    sources.update(write_safetensors(target, {
+        "model.embed_tokens.weight": ("BF16", [32, 8], None),
+        "lm_head.weight": ("BF16", [32, 8], None),
+        "model.norm.weight": ("BF16", [8], None),
+        "model.layers.0.input_layernorm.weight": ("BF16", [8], None)}))
+    result = run("--drafter", "kexaone2dspark", "--checkpoint", checkpoint, "--target", target,
+                 "--revision", "official", "--out", out)
+    check(result.returncode == 0, f"kexaone2dspark packs: {result.stderr}")
+    _, _, manifest, payloads = read_pack(out / "kexaone2dspark.bf16.tp1.rank0.sp")
+    check(manifest["format"]["drafter"] == "kexaone2dspark" and
+          set(payloads) == {name for name in sources if not name.startswith("model.") and name != "lm_head.weight"} |
+          {"target.embed", "target.head", "target.norm"}, f"kexaone2dspark: packed names {sorted(payloads)}")
+    for name, blob in payloads.items():
+        check(blob == sources[manifest["tensors"][name]["source"]], f"kexaone2dspark: {name} byte for byte")
+    receipt = json.loads((out / "kexaone2dspark.bf16.tp1.rank0.sp.receipt.json").read_text())
+    check(len(receipt["skipped"]) == 1 and len(receipt["sources"]) == 2,
+          "kexaone2dspark: skips target layers and records both sources")
+    deep = scratch / "kexaone2-deep"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text((checkpoint / "config.json").read_text())
+    write_safetensors(deep / "model-dspark.safetensors", {"mtp.layers.2.input_layernorm.weight": ("BF16", [8], None)})
+    result = run("--drafter", "kexaone2dspark", "--checkpoint", deep, "--target", target,
+                 "--revision", "official", "--out", scratch / "o10")
+    check(result.returncode == 1 and "layer 2 is past dspark_num_hidden_layers = 2" in result.stderr,
+          f"kexaone2dspark: dspark_num_hidden_layers refuses out-of-range layer: {result.stderr}")
 
 
 def main():
@@ -292,6 +332,7 @@ def main():
         test_qwen(scratch)
         test_glm53(scratch)
         test_qwen38max(scratch)
+        test_kexaone2(scratch)
     for failure in FAILURES:
         print(f"FAIL {failure}")
     if FAILURES:
