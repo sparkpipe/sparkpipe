@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <math.h>
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/shard_reduce.cuh"
@@ -86,6 +87,7 @@ void LmLatentShardSplitKernel(
     __shared__ uint32_t cursor[SPARK_KV_SHARD_MAX_DEGREE];
     __shared__ uint32_t starts[SPARK_KV_SHARD_MAX_DEGREE + 1u];
     const uint32_t row = blockIdx.x, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u, below = (1u << lane) - 1u;
+    LmDependentWait();
     const uint32_t *selected = selected_positions + (uint64_t)row * selected_count;
     uint32_t *split = split_positions + (uint64_t)row * selected_count;
     uint32_t base, index, position, owner, source, mask, rank_in_warp, running, here, w;
@@ -151,6 +153,7 @@ void LmLatentShardSplitKernel(
             cursor[threadIdx.x] += chunk_total[threadIdx.x];
         __syncthreads();
     }
+    LmDependentRelease();
 }
 
 static inline SparkGpuError LmLatentShardSplitLaunch(SparkKvShard shard, const uint32_t *selected_positions, uint32_t selected_count,
@@ -159,7 +162,7 @@ static inline SparkGpuError LmLatentShardSplitLaunch(SparkKvShard shard, const u
     if (rows == 0u || selected_positions == 0 || split_positions == 0 || split_offsets == 0 || shard.degree == 0u ||
         shard.degree > SPARK_KV_SHARD_MAX_DEGREE || shard.grain == 0u || selected_count > LM_LATENT_SHARD_LIST_CAPACITY)
         return SPARK_GPU_ERROR_INVALID_VALUE;
-    LM_LAUNCH((LmLatentShardSplitKernel), rows, LM_LATENT_SHARD_THREADS, 0, stream, shard, selected_positions, selected_count, row_position, split_positions,
+    LM_LAUNCH_DEPENDENT((LmLatentShardSplitKernel), rows, LM_LATENT_SHARD_THREADS, 0, stream, shard, selected_positions, selected_count, row_position, split_positions,
         split_offsets);
     return SparkGpuPeekAtLastError();
 }
@@ -188,12 +191,49 @@ static __device__ __forceinline__ void LmLatentShardStripedLoadPacked(const uint
     }
 }
 
-template<uint32_t HEADS, uint32_t LAT_WORDS, uint32_t ROPE_WORDS, bool QUERY_SHARED = false>
+template<uint32_t HEADS, uint32_t LAT_WORDS, uint32_t ROPE_WORDS>
+static __device__ __forceinline__ void LmLatentShardDot(
+    const float (*query_lat)[LAT_WORDS * 2u],
+    const float (*query_rope)[ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u],
+    const float *v_lat,
+    const float *v_rope,
+    float *scores)
+{
+    #pragma unroll
+    for (uint32_t head = 0u; head < HEADS; ++head)
+    {
+        float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+        #pragma unroll
+        for (uint32_t e = 0u; e < LAT_WORDS * 2u; e += 4u)
+        {
+            s0 = fmaf(query_lat[head][e + 0u], v_lat[e + 0u], s0);
+            s1 = fmaf(query_lat[head][e + 1u], v_lat[e + 1u], s1);
+            if constexpr (LAT_WORDS * 2u >= 4u)
+            {
+                if (e + 2u < LAT_WORDS * 2u)
+                {
+                    s2 = fmaf(query_lat[head][e + 2u], v_lat[e + 2u], s2);
+                    s3 = fmaf(query_lat[head][e + 3u], v_lat[e + 3u], s3);
+                }
+            }
+        }
+        if constexpr (ROPE_WORDS > 0u)
+        {
+            #pragma unroll
+            for (uint32_t e = 0u; e < ROPE_WORDS * 2u; e += 2u)
+            {
+                s0 = fmaf(query_rope[head][e + 0u], v_rope[e + 0u], s0);
+                s1 = fmaf(query_rope[head][e + 1u], v_rope[e + 1u], s1);
+            }
+        }
+        scores[head] = (s0 + s1) + (s2 + s3);
+    }
+}
+
+template<uint32_t HEADS, uint32_t LAT_WORDS, uint32_t ROPE_WORDS>
 static __device__ __forceinline__ void LmLatentShardOnlineStepPacked(
-    const uint32_t (*query_lat)[LAT_WORDS],
-    const uint32_t (*query_rope)[ROPE_WORDS > 0u ? ROPE_WORDS : 1u],
-    const uint16_t *query_shared,
-    uint32_t lane,
+    const float (*query_lat)[LAT_WORDS * 2u],
+    const float (*query_rope)[ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u],
     const uint32_t *val_lat_packed,
     const uint32_t *val_rope_packed,
     float scale_log2,
@@ -201,16 +241,15 @@ static __device__ __forceinline__ void LmLatentShardOnlineStepPacked(
     float *running_sum,
     float (*accumulator)[LAT_WORDS * 2u])
 {
-    constexpr uint32_t WIDTH = (LAT_WORDS + ROPE_WORDS) * 64u;
-    constexpr uint32_t LATENT = LAT_WORDS * 64u;
     float v_lat[LAT_WORDS * 2u];
+    float v_rope[ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u];
+    float scores[HEADS];
     #pragma unroll
     for (uint32_t w = 0u; w < LAT_WORDS; ++w)
     {
         v_lat[w * 2u] = __uint_as_float(val_lat_packed[w] << 16u);
         v_lat[w * 2u + 1u] = __uint_as_float(val_lat_packed[w] & 0xffff0000u);
     }
-    float v_rope[ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u];
     if constexpr (ROPE_WORDS > 0u)
     {
         #pragma unroll
@@ -220,82 +259,16 @@ static __device__ __forceinline__ void LmLatentShardOnlineStepPacked(
             v_rope[w * 2u + 1u] = __uint_as_float(val_rope_packed[w] & 0xffff0000u);
         }
     }
+    LmLatentShardDot<HEADS, LAT_WORDS, ROPE_WORDS>(query_lat, query_rope, v_lat, v_rope, scores);
+    #pragma unroll
+    for (uint32_t mask = 16u; mask > 0u; mask >>= 1u)
+        #pragma unroll
+        for (uint32_t head = 0u; head < HEADS; ++head)
+            scores[head] += __shfl_xor_sync(0xffffffffu, scores[head], mask);
     #pragma unroll
     for (uint32_t head = 0u; head < HEADS; ++head)
     {
-        float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
-        if constexpr (QUERY_SHARED)
-        {
-            const uint16_t *qh = query_shared + head * WIDTH;
-            constexpr uint32_t VEC4 = LAT_WORDS / 4u;
-            if constexpr (VEC4 > 0u)
-            {
-                #pragma unroll
-                for (uint32_t c = 0u; c < VEC4; ++c)
-                {
-                    const uint4 qv = ((const uint4 *)qh)[c * 32u + lane];
-                    s0 = fmaf(__uint_as_float(qv.x << 16u), v_lat[c * 8u + 0u], s0);
-                    s1 = fmaf(__uint_as_float(qv.x & 0xffff0000u), v_lat[c * 8u + 1u], s1);
-                    s2 = fmaf(__uint_as_float(qv.y << 16u), v_lat[c * 8u + 2u], s2);
-                    s3 = fmaf(__uint_as_float(qv.y & 0xffff0000u), v_lat[c * 8u + 3u], s3);
-                    s0 = fmaf(__uint_as_float(qv.z << 16u), v_lat[c * 8u + 4u], s0);
-                    s1 = fmaf(__uint_as_float(qv.z & 0xffff0000u), v_lat[c * 8u + 5u], s1);
-                    s2 = fmaf(__uint_as_float(qv.w << 16u), v_lat[c * 8u + 6u], s2);
-                    s3 = fmaf(__uint_as_float(qv.w & 0xffff0000u), v_lat[c * 8u + 7u], s3);
-                }
-            }
-            if constexpr (VEC4 * 4u < LAT_WORDS)
-            {
-                #pragma unroll
-                for (uint32_t w = VEC4 * 4u; w < LAT_WORDS; ++w)
-                {
-                    const uint32_t q0 = ((const uint32_t *)qh)[w * 32u + lane];
-                    s0 = fmaf(__uint_as_float(q0 << 16u), v_lat[w * 2u], s0);
-                    s1 = fmaf(__uint_as_float(q0 & 0xffff0000u), v_lat[w * 2u + 1u], s1);
-                }
-            }
-            if constexpr (ROPE_WORDS > 0u)
-            {
-                const uint32_t *qrh = (const uint32_t *)(qh + LATENT);
-                #pragma unroll
-                for (uint32_t w = 0u; w < ROPE_WORDS; ++w)
-                {
-                    const uint32_t qr = qrh[w * 32u + lane];
-                    s0 = fmaf(__uint_as_float(qr << 16u), v_rope[w * 2u], s0);
-                    s1 = fmaf(__uint_as_float(qr & 0xffff0000u), v_rope[w * 2u + 1u], s1);
-                }
-            }
-        }
-        else
-        {
-            #pragma unroll
-            for (uint32_t w = 0u; w < LAT_WORDS; w += 2u)
-            {
-                const uint32_t q0 = query_lat[head][w];
-                s0 = fmaf(__uint_as_float(q0 << 16u), v_lat[w * 2u], s0);
-                s1 = fmaf(__uint_as_float(q0 & 0xffff0000u), v_lat[w * 2u + 1u], s1);
-                if (w + 1u < LAT_WORDS)
-                {
-                    const uint32_t q1 = query_lat[head][w + 1u];
-                    s2 = fmaf(__uint_as_float(q1 << 16u), v_lat[w * 2u + 2u], s2);
-                    s3 = fmaf(__uint_as_float(q1 & 0xffff0000u), v_lat[w * 2u + 3u], s3);
-                }
-            }
-            if constexpr (ROPE_WORDS > 0u)
-            {
-                #pragma unroll
-                for (uint32_t w = 0u; w < ROPE_WORDS; ++w)
-                {
-                    const uint32_t qr = query_rope[head][w];
-                    s0 = fmaf(__uint_as_float(qr << 16u), v_rope[w * 2u], s0);
-                    s1 = fmaf(__uint_as_float(qr & 0xffff0000u), v_rope[w * 2u + 1u], s1);
-                }
-            }
-        }
-        float score = (s0 + s1) + (s2 + s3);
-        #pragma unroll
-        for (uint32_t mask = 16u; mask > 0u; mask >>= 1u)
-            score += __shfl_xor_sync(0xffffffffu, score, mask);
+        const float score = scores[head];
         const float previous = running_max[head];
         if (score > previous)
         {
@@ -315,6 +288,129 @@ static __device__ __forceinline__ void LmLatentShardOnlineStepPacked(
             for (uint32_t e = 0u; e < LAT_WORDS * 2u; ++e)
                 accumulator[head][e] = fmaf(vw, v_lat[e], accumulator[head][e]);
         }
+    }
+}
+
+template<uint32_t HEADS, uint32_t LAT_WORDS, uint32_t ROPE_WORDS>
+static __device__ __forceinline__ void LmLatentShardOnlinePairPacked(
+    const float (*query_lat)[LAT_WORDS * 2u],
+    const float (*query_rope)[ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u],
+    const uint32_t *val_lat0,
+    const uint32_t *val_rope0,
+    const uint32_t *val_lat1,
+    const uint32_t *val_rope1,
+    float scale_log2,
+    float *running_max,
+    float *running_sum,
+    float (*accumulator)[LAT_WORDS * 2u])
+{
+    float v_lat[LAT_WORDS * 2u];
+    float v_rope[ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u];
+    float score0[HEADS], score1[HEADS], scale_p[HEADS], vw0[HEADS], vw1[HEADS];
+    #pragma unroll
+    for (uint32_t w = 0u; w < LAT_WORDS; ++w)
+    {
+        v_lat[w * 2u] = __uint_as_float(val_lat0[w] << 16u);
+        v_lat[w * 2u + 1u] = __uint_as_float(val_lat0[w] & 0xffff0000u);
+    }
+    if constexpr (ROPE_WORDS > 0u)
+    {
+        #pragma unroll
+        for (uint32_t w = 0u; w < ROPE_WORDS; ++w)
+        {
+            v_rope[w * 2u] = __uint_as_float(val_rope0[w] << 16u);
+            v_rope[w * 2u + 1u] = __uint_as_float(val_rope0[w] & 0xffff0000u);
+        }
+    }
+    LmLatentShardDot<HEADS, LAT_WORDS, ROPE_WORDS>(query_lat, query_rope, v_lat, v_rope, score0);
+    #pragma unroll
+    for (uint32_t w = 0u; w < LAT_WORDS; ++w)
+    {
+        v_lat[w * 2u] = __uint_as_float(val_lat1[w] << 16u);
+        v_lat[w * 2u + 1u] = __uint_as_float(val_lat1[w] & 0xffff0000u);
+    }
+    if constexpr (ROPE_WORDS > 0u)
+    {
+        #pragma unroll
+        for (uint32_t w = 0u; w < ROPE_WORDS; ++w)
+        {
+            v_rope[w * 2u] = __uint_as_float(val_rope1[w] << 16u);
+            v_rope[w * 2u + 1u] = __uint_as_float(val_rope1[w] & 0xffff0000u);
+        }
+    }
+    LmLatentShardDot<HEADS, LAT_WORDS, ROPE_WORDS>(query_lat, query_rope, v_lat, v_rope, score1);
+    #pragma unroll
+    for (uint32_t mask = 16u; mask > 0u; mask >>= 1u)
+    {
+        #pragma unroll
+        for (uint32_t head = 0u; head < HEADS; ++head)
+        {
+            score0[head] += __shfl_xor_sync(0xffffffffu, score0[head], mask);
+            score1[head] += __shfl_xor_sync(0xffffffffu, score1[head], mask);
+        }
+    }
+    #pragma unroll
+    for (uint32_t head = 0u; head < HEADS; ++head)
+    {
+        const float previous = running_max[head];
+        const float pair_max = fmaxf(score0[head], score1[head]);
+        if (pair_max > previous)
+        {
+            const float sp = previous == -INFINITY ? 0.0f : SparkMathExp2Fast((previous - pair_max) * scale_log2);
+            const float w0 = score0[head] == pair_max ? 1.0f : SparkMathExp2Fast((score0[head] - pair_max) * scale_log2);
+            const float w1 = score1[head] == pair_max ? 1.0f : SparkMathExp2Fast((score1[head] - pair_max) * scale_log2);
+            running_max[head] = pair_max;
+            running_sum[head] = fmaf(running_sum[head], sp, w0 + w1);
+            scale_p[head] = sp;
+            vw0[head] = SparkMathAttentionValueWeight(w0);
+            vw1[head] = SparkMathAttentionValueWeight(w1);
+        }
+        else if (pair_max > -INFINITY)
+        {
+            const float w0 = score0[head] > -INFINITY ? SparkMathExp2Fast((score0[head] - previous) * scale_log2) : 0.0f;
+            const float w1 = score1[head] > -INFINITY ? SparkMathExp2Fast((score1[head] - previous) * scale_log2) : 0.0f;
+            running_sum[head] += w0 + w1;
+            scale_p[head] = 1.0f;
+            vw0[head] = SparkMathAttentionValueWeight(w0);
+            vw1[head] = SparkMathAttentionValueWeight(w1);
+        }
+        else
+        {
+            scale_p[head] = 1.0f;
+            vw0[head] = 0.0f;
+            vw1[head] = 0.0f;
+        }
+    }
+    #pragma unroll
+    for (uint32_t head = 0u; head < HEADS; ++head)
+    {
+        const float sp = scale_p[head], w1 = vw1[head];
+        if (sp != 1.0f)
+        {
+            #pragma unroll
+            for (uint32_t e = 0u; e < LAT_WORDS * 2u; ++e)
+                accumulator[head][e] = fmaf(accumulator[head][e], sp, w1 * v_lat[e]);
+        }
+        else
+        {
+            #pragma unroll
+            for (uint32_t e = 0u; e < LAT_WORDS * 2u; ++e)
+                accumulator[head][e] = fmaf(w1, v_lat[e], accumulator[head][e]);
+        }
+    }
+    #pragma unroll
+    for (uint32_t w = 0u; w < LAT_WORDS; ++w)
+    {
+        v_lat[w * 2u] = __uint_as_float(val_lat0[w] << 16u);
+        v_lat[w * 2u + 1u] = __uint_as_float(val_lat0[w] & 0xffff0000u);
+    }
+    #pragma unroll
+    for (uint32_t head = 0u; head < HEADS; ++head)
+    {
+        const float w0 = vw0[head];
+        #pragma unroll
+        for (uint32_t e = 0u; e < LAT_WORDS * 2u; ++e)
+            accumulator[head][e] = fmaf(w0, v_lat[e], accumulator[head][e]);
     }
 }
 
@@ -346,8 +442,7 @@ void LmLatentShardPartialKernel(
     constexpr uint32_t ROPE_WORDS = ROPE / 64u;
     constexpr uint32_t LAT_PER_LANE = LATENT / 32u;
     constexpr uint32_t LAT_VEC4 = LAT_WORDS / 4u;
-    constexpr bool QUERY_SHARED = HEADS >= 8u;
-    constexpr uint32_t MERGE_SLICE = (HEADS <= 2u && LATENT <= 512u) ? LATENT : (HEADS >= 8u ? (LATENT < 128u ? LATENT : 128u) : (LATENT < 256u ? LATENT : 256u));
+    constexpr uint32_t MERGE_SLICE = (HEADS <= 2u && LATENT <= 512u) ? (LATENT < 256u ? LATENT : 256u) : (LATENT < 128u ? LATENT : 128u);
     static_assert(LATENT % 64u == 0u && ROPE % 64u == 0u, "each lane loads whole bf16 pairs of latent and rope");
     static_assert(Geometry::kSlotBytes >= WIDTH * 2u, "the slot holds the latent and its rope part");
     __shared__ union
@@ -359,14 +454,13 @@ void LmLatentShardPartialKernel(
         } compact;
         float warp_acc[LM_LATENT_SHARD_WARPS][HEADS][MERGE_SLICE];
     } shared_buf;
-    __shared__ __align__(16) uint16_t query_s[QUERY_SHARED ? HEADS * WIDTH : 1u];
     __shared__ float warp_max[LM_LATENT_SHARD_WARPS][HEADS];
     __shared__ float warp_sum[LM_LATENT_SHARD_WARPS][HEADS];
     __shared__ float warp_scale[LM_LATENT_SHARD_WARPS][HEADS];
     __shared__ float global_max_s[HEADS];
     const uint8_t *slot[LM_LATENT_SHARD_UNROLL];
-    uint32_t query_lat[QUERY_SHARED ? 1u : HEADS][LAT_WORDS];
-    uint32_t query_rope[QUERY_SHARED ? 1u : HEADS][ROPE_WORDS > 0u ? ROPE_WORDS : 1u];
+    float query_lat[HEADS][LAT_WORDS * 2u];
+    float query_rope[HEADS][ROPE_WORDS > 0u ? ROPE_WORDS * 2u : 1u];
     uint32_t val_lat[LM_LATENT_SHARD_UNROLL][LAT_WORDS];
     uint32_t val_rope[LM_LATENT_SHARD_UNROLL][ROPE_WORDS > 0u ? ROPE_WORDS : 1u];
     float accumulator[HEADS][LAT_PER_LANE];
@@ -374,11 +468,16 @@ void LmLatentShardPartialKernel(
     const float scale_log2 = qk_scale * 1.4426950408889634f;
     uint32_t row = GROUP_FIRST ? blockIdx.y : blockIdx.x, group = GROUP_FIRST ? blockIdx.x : blockIdx.y;
     uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-    uint32_t sequence = sequence_of_row[row], head, global_head, index, element, dense, listed, count, step, unroll, failed, position, copy;
+    uint32_t sequence, head, global_head, index, element, dense, listed, count, step, unroll, failed, position, copy;
     uint64_t base;
 
+    LmDependentWait();
+    sequence = sequence_of_row[row];
     if (!LmKvCheckSequence(cache.pages, row, sequence))
+    {
+        LmDependentRelease();
         return;
+    }
     dense = context_length[sequence];
     if (row_position != 0 && row_position[row] == 0xffffffffu)
         dense = 0u;
@@ -388,6 +487,7 @@ void LmLatentShardPartialKernel(
     if (listed != 0u && selected_count > LM_LATENT_SHARD_LIST_CAPACITY)
     {
         LmKvReportRequiredAccessFailure(cache.pages, (LmKvAccessErrorCode)LM_FRAME_ERROR_SPARSE_INDEX_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, selected_count, 0xffffffffu);
+        LmDependentRelease();
         return;
     }
     const uint32_t *split_list = 0;
@@ -401,31 +501,31 @@ void LmLatentShardPartialKernel(
         count = listed != 0u
             ? LmLatentShardCompact(cache.shard, selected_positions + (uint64_t)row * selected_count, selected_count, row_position != 0 ? row_position[row] : 0u, row_position != 0 ? 1u : 0u, shared_buf.compact.list, shared_buf.compact.scan)
             : SparkKvShardLocalKeys(cache.shard, dense);
-    if constexpr (QUERY_SHARED)
-    {
-        constexpr uint32_t WIDTH_U4 = WIDTH / 8u;
-        for (index = threadIdx.x; index < HEADS * WIDTH_U4; index += LM_LATENT_SHARD_THREADS)
-        {
-            head = index / WIDTH_U4;
-            const uint32_t c = index % WIDTH_U4;
-            global_head = group * HEADS + head;
-            const uint16_t *q_ptr = query_bf16 + (uint64_t)(global_head / heads_per_rank) * query_rank_stride + ((uint64_t)row * heads_per_rank + global_head % heads_per_rank) * WIDTH;
-            ((uint4 *)(query_s + head * WIDTH))[c] = LmLatentShardLoadRo(((const uint4 *)q_ptr) + c);
-        }
-        __syncthreads();
-    }
     #pragma unroll
     for (head = 0u; head < HEADS; ++head)
     {
         global_head = group * HEADS + head;
         running_max[head] = -INFINITY;
         running_sum[head] = 0.0f;
-        if constexpr (!QUERY_SHARED)
+        const uint16_t *q_ptr = query_bf16 + (uint64_t)(global_head / heads_per_rank) * query_rank_stride + ((uint64_t)row * heads_per_rank + global_head % heads_per_rank) * WIDTH;
+        uint32_t q_lat_p[LAT_WORDS];
+        LmLatentShardStripedLoadPacked<LAT_WORDS>(q_ptr, lane, q_lat_p);
+        #pragma unroll
+        for (uint32_t w = 0u; w < LAT_WORDS; ++w)
         {
-            const uint16_t *q_ptr = query_bf16 + (uint64_t)(global_head / heads_per_rank) * query_rank_stride + ((uint64_t)row * heads_per_rank + global_head % heads_per_rank) * WIDTH;
-            LmLatentShardStripedLoadPacked<LAT_WORDS>(q_ptr, lane, query_lat[head]);
-            if constexpr (ROPE_WORDS > 0u)
-                LmLatentShardStripedLoadPacked<ROPE_WORDS>(q_ptr + LATENT, lane, query_rope[head]);
+            query_lat[head][w * 2u] = __uint_as_float(q_lat_p[w] << 16u);
+            query_lat[head][w * 2u + 1u] = __uint_as_float(q_lat_p[w] & 0xffff0000u);
+        }
+        if constexpr (ROPE_WORDS > 0u)
+        {
+            uint32_t q_rope_p[ROPE_WORDS];
+            LmLatentShardStripedLoadPacked<ROPE_WORDS>(q_ptr + LATENT, lane, q_rope_p);
+            #pragma unroll
+            for (uint32_t w = 0u; w < ROPE_WORDS; ++w)
+            {
+                query_rope[head][w * 2u] = __uint_as_float(q_rope_p[w] << 16u);
+                query_rope[head][w * 2u + 1u] = __uint_as_float(q_rope_p[w] & 0xffff0000u);
+            }
         }
         #pragma unroll
         for (element = 0u; element < LAT_PER_LANE; ++element)
@@ -458,10 +558,15 @@ void LmLatentShardPartialKernel(
                 if constexpr (ROPE_WORDS > 0u)
                     LmLatentShardStripedLoadPacked<ROPE_WORDS>(s_ptr + LATENT, lane, val_rope[unroll]);
             }
-        #pragma unroll
-        for (unroll = 0u; unroll < LM_LATENT_SHARD_UNROLL; ++unroll)
-            if (slot[unroll] != 0)
-                LmLatentShardOnlineStepPacked<HEADS, LAT_WORDS, ROPE_WORDS, QUERY_SHARED>(query_lat, query_rope, query_s, lane, val_lat[unroll], val_rope[unroll], scale_log2, running_max, running_sum, accumulator);
+        if (slot[0] != 0 && slot[1] != 0)
+            LmLatentShardOnlinePairPacked<HEADS, LAT_WORDS, ROPE_WORDS>(query_lat, query_rope, val_lat[0], val_rope[0], val_lat[1], val_rope[1], scale_log2, running_max, running_sum, accumulator);
+        else
+        {
+            #pragma unroll
+            for (unroll = 0u; unroll < LM_LATENT_SHARD_UNROLL; ++unroll)
+                if (slot[unroll] != 0)
+                    LmLatentShardOnlineStepPacked<HEADS, LAT_WORDS, ROPE_WORDS>(query_lat, query_rope, val_lat[unroll], val_rope[unroll], scale_log2, running_max, running_sum, accumulator);
+        }
     }
     #pragma unroll
     for (head = 0u; head < HEADS; ++head)
@@ -527,6 +632,7 @@ void LmLatentShardPartialKernel(
         if (slice_end < LATENT)
             __syncthreads();
     }
+    LmDependentRelease();
 }
 
 static __global__ __launch_bounds__(LM_LATENT_SHARD_THREADS, 1)
@@ -539,6 +645,7 @@ void LmQueryRopePackKernel(
     uint32_t nope_dim,
     uint32_t rope_dim)
 {
+    LmDependentWait();
     const uint64_t pair = (uint64_t)blockIdx.x * heads + blockIdx.y;
     const uint32_t total = latent_dim + rope_dim;
     if (((latent_dim | nope_dim | rope_dim) & 7u) == 0u &&
@@ -550,12 +657,14 @@ void LmQueryRopePackKernel(
         uint4 *out4 = (uint4 *)(query_bf16 + pair * total);
         for (uint32_t v = threadIdx.x; v < total_vecs; v += blockDim.x)
             out4[v] = v < latent_vecs ? lat4[v] : rope4[v - latent_vecs];
+        LmDependentRelease();
         return;
     }
     for (uint32_t element = threadIdx.x; element < total; element += blockDim.x)
         query_bf16[pair * total + element] = element < latent_dim
             ? latent_bf16[pair * latent_dim + element]
             : q_bf16[pair * (nope_dim + rope_dim) + nope_dim + element - latent_dim];
+    LmDependentRelease();
 }
 
 template<uint32_t LATENT, uint32_t ROPE>
@@ -563,7 +672,7 @@ static inline SparkGpuError LmLatentShardQueryPackLaunch(const uint16_t *latent_
 {
     if (latent_bf16 == 0 || rope_bf16 == 0 || query_bf16 == 0 || heads == 0u || rows == 0u)
         return SPARK_GPU_ERROR_INVALID_VALUE;
-    LM_LAUNCH((LmQueryRopePackKernel), dim3(rows, heads), LM_LATENT_SHARD_THREADS, 0, stream, latent_bf16, rope_bf16, query_bf16, heads, LATENT, 0u, ROPE);
+    LM_LAUNCH_DEPENDENT((LmQueryRopePackKernel), dim3(rows, heads), LM_LATENT_SHARD_THREADS, 0, stream, latent_bf16, rope_bf16, query_bf16, heads, LATENT, 0u, ROPE);
     return SparkGpuPeekAtLastError();
 }
 
@@ -579,6 +688,7 @@ void LmLatentShardMergeKernel(
 {
     __shared__ float scales[SPARK_KV_SHARD_MAX_DEGREE];
     __shared__ float denom_shared;
+    LmDependentWait();
     const uint32_t row = blockIdx.x, head = blockIdx.y;
     const uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
     if (threadIdx.x < 32u)
@@ -596,6 +706,7 @@ void LmLatentShardMergeKernel(
     LmWeightedSourcesMergeBf16<LATENT, THREADS>(
         partials + block_base + 2u, source_stride, sources, scales, denom_shared,
         output_bf16 + ((uint64_t)row * heads_per_rank + head) * LATENT);
+    LmDependentRelease();
 }
 
 template<uint32_t THREADS, uint32_t LATENT>
@@ -609,6 +720,7 @@ void LmLatentShardFoldKernel(
     uint32_t first)
 {
     __shared__ float scales[SPARK_KV_SHARD_MAX_DEGREE + 1u];
+    LmDependentWait();
     const uint32_t row = blockIdx.x, head = blockIdx.y;
     const uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
     if (threadIdx.x < 32u)
@@ -628,6 +740,7 @@ void LmLatentShardFoldKernel(
     LmWeightedSourcesFoldF32<LATENT, THREADS>(
         partials + block_base + 2u, source_stride, sources, scales, scales[sources], first,
         running + block_base + 2u);
+    LmDependentRelease();
 }
 
 static inline uint32_t LmLatentShardHeadsPerBlock(uint32_t heads_per_rank)
@@ -670,21 +783,13 @@ static inline SparkGpuError LmLatentShardPartialHeadsLaunch(
         query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
         partial_rank_stride < (uint64_t)rows * record_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
         return SPARK_GPU_ERROR_INVALID_VALUE;
-    const bool use_h8 = heads_per_block_limit >= 4u && selected_positions != 0 && split_positions == 0 &&
-        (total_heads % 8u) == 0u && ((LATENT + ROPE) <= 576u) && (uint64_t)rows * (total_heads / 8u) >= 96u;
-    per_block = use_h8 ? 8u : (heads_per_block_limit >= 2u && (total_heads % 2u) == 0u ? 2u : 1u);
-    while (per_block > (use_h8 ? 8u : heads_per_block_limit) && per_block > 1u)
-        per_block /= 2u;
+    per_block = heads_per_block_limit >= 2u && total_heads % 2u == 0u ? 2u : 1u;
     while (per_block > 1u && (uint64_t)rows * (total_heads / per_block) < 48u)
         per_block /= 2u;
-    if (per_block == 8u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 8u, true>), dim3(total_heads / 8u, rows), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
-    else if (per_block == 4u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u, true>), dim3(total_heads / 4u, rows), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
-    else if (per_block == 2u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u, true>), dim3(total_heads / 2u, rows), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
+    if (per_block == 2u)
+        LM_LAUNCH_DEPENDENT((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u, true>), dim3(total_heads / 2u, rows), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     else
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u, true>), dim3(total_heads, rows), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
+        LM_LAUNCH_DEPENDENT((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u, true>), dim3(total_heads, rows), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     return SparkGpuPeekAtLastError();
 }
 
@@ -744,7 +849,7 @@ static inline SparkGpuError LmLatentShardFoldLaunch(
     if (rows == 0u || heads_per_rank == 0u || sources == 0u || sources > SPARK_KV_SHARD_MAX_DEGREE || partials == 0 || running == 0 ||
         source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
         return SPARK_GPU_ERROR_INVALID_VALUE;
-    LM_LAUNCH((LmLatentShardFoldKernel<LM_LATENT_SHARD_THREADS, LATENT>), dim3(rows, heads_per_rank), LM_LATENT_SHARD_THREADS, 0, stream, partials, source_stride, sources, heads_per_rank, running, first);
+    LM_LAUNCH_DEPENDENT((LmLatentShardFoldKernel<LM_LATENT_SHARD_THREADS, LATENT>), dim3(rows, heads_per_rank), LM_LATENT_SHARD_THREADS, 0, stream, partials, source_stride, sources, heads_per_rank, running, first);
     return SparkGpuPeekAtLastError();
 }
 
@@ -762,6 +867,6 @@ static inline SparkGpuError LmLatentShardMergeLaunch(
     if (rows == 0u || heads_per_rank == 0u || sources == 0u || sources > SPARK_KV_SHARD_MAX_DEGREE || partials == 0 || output_bf16 == 0 ||
         source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
         return SPARK_GPU_ERROR_INVALID_VALUE;
-    LM_LAUNCH((LmLatentShardMergeKernel<LM_LATENT_SHARD_THREADS, LATENT>), dim3(rows, heads_per_rank), LM_LATENT_SHARD_THREADS, 0, stream, partials, source_stride, sources, heads_per_rank, output_bf16, sinks);
+    LM_LAUNCH_DEPENDENT((LmLatentShardMergeKernel<LM_LATENT_SHARD_THREADS, LATENT>), dim3(rows, heads_per_rank), LM_LATENT_SHARD_THREADS, 0, stream, partials, source_stride, sources, heads_per_rank, output_bf16, sinks);
     return SparkGpuPeekAtLastError();
 }

@@ -511,98 +511,6 @@ static __device__ __forceinline__ void QwenCpAsync16(void *dst, const void *src,
 	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
 }
 
-template<class Format, uint32_t LANES, uint32_t ROWS_PER_GROUP, uint32_t NPG>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenExactLinearKernel(const uint8_t *__restrict__ weight, const uint16_t *__restrict__ activation,
-	uint16_t *__restrict__ output, uint32_t rows, uint32_t input_dim, uint32_t output_dim)
-{
-	constexpr uint32_t GROUPS = QH_THREADS / LANES;
-	constexpr uint32_t TILE_ROWS = GROUPS * ROWS_PER_GROUP;
-	constexpr uint32_t ELEMENTS = LmSkinnyFormat<Format>::kElements;
-	constexpr uint32_t TOTAL_W = NPG * LANES;
-	__shared__ __align__(16) uint4 s_w[2][NPG][LANES];
-	const uint32_t n0 = blockIdx.x * NPG;
-	const uint32_t grp = threadIdx.x / LANES;
-	const uint32_t sub = threadIdx.x & (LANES - 1u);
-	const uint32_t warp_first_row = blockIdx.y * TILE_ROWS + grp * ROWS_PER_GROUP;
-	const uint32_t row_cnt = warp_first_row < rows ? (rows - warp_first_row < ROWS_PER_GROUP ? rows - warp_first_row : ROWS_PER_GROUP) : 0u;
-	const uint32_t chunks = input_dim / ELEMENTS;
-	const uint4 *w4 = (const uint4 *)weight;
-	LmDependentWait();
-	auto stage_w = [&](uint32_t st, uint32_t k_base) {
-		if ( threadIdx.x < TOTAL_W )
-		{
-			const uint32_t wn = threadIdx.x / LANES, wc = threadIdx.x & (LANES - 1u);
-			const uint32_t neuron = n0 + wn, c = k_base + wc;
-			const bool ok = neuron < output_dim && c < chunks;
-			const uint4 *src = ok ? (w4 + (uint64_t)neuron * chunks + c) : w4;
-			QwenCpAsync16(&s_w[st][wn][wc], src, ok ? 16u : 0u);
-		}
-		asm volatile("cp.async.commit_group;\n" ::: "memory");
-	};
-	stage_w(0u, 0u);
-	float acc[NPG][ROWS_PER_GROUP];
-	#pragma unroll
-	for ( uint32_t n = 0u; n < NPG; ++n )
-		#pragma unroll
-		for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
-			acc[n][r] = 0.0f;
-	for ( uint32_t k_base = 0u; k_base < chunks; k_base += LANES )
-	{
-		const uint32_t cur = (k_base / LANES) & 1u;
-		if ( k_base + LANES < chunks )
-			stage_w(cur ^ 1u, k_base + LANES);
-		if ( k_base + LANES < chunks )
-			asm volatile("cp.async.wait_group 1;\n" ::: "memory");
-		else
-			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-		__syncthreads();
-		const uint32_t c = k_base + sub;
-		if ( row_cnt != 0u && c < chunks )
-		{
-			uint4 w[NPG];
-			#pragma unroll
-			for ( uint32_t n = 0u; n < NPG; ++n )
-				w[n] = s_w[cur][n][sub];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
-			{
-				const uint32_t row = r < row_cnt ? warp_first_row + r : 0u;
-				const uint4 a = LmSkinnyFormat<LmBf16Format>::Load(activation + (uint64_t)row * input_dim + c * 8u);
-				float af[8];
-				LmSkinnyUnpackBf16x8(a, af);
-				#pragma unroll
-				for ( uint32_t n = 0u; n < NPG; ++n )
-					acc[n][r] = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(w[n], af, 0.0f), acc[n][r]);
-			}
-		}
-		if ( k_base + LANES < chunks )
-			__syncthreads();
-	}
-	if ( row_cnt != 0u )
-	{
-		#pragma unroll
-		for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-			#pragma unroll
-			for ( uint32_t n = 0u; n < NPG; ++n )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
-					acc[n][r] += __shfl_xor_sync(0xffffffffu, acc[n][r], step, LANES);
-		if ( sub == 0u )
-			#pragma unroll
-			for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
-				if ( r < row_cnt )
-				{
-					const uint64_t row_off = (uint64_t)(warp_first_row + r) * output_dim + n0;
-					#pragma unroll
-					for ( uint32_t n = 0u; n < NPG; ++n )
-						if ( n0 + n < output_dim )
-							output[row_off + n] = LmFloatToBf16(acc[n][r]);
-				}
-	}
-	LmDependentRelease();
-}
-
 template<uint32_t MAX_M_TILES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP, uint32_t SCALE_TILES = 4u>
 __global__ __launch_bounds__(WARPS * 32u, MAX_M_TILES <= 2u ? 2 : 1)
 static void QwenNvfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
@@ -2220,36 +2128,9 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	}
 
 	template<class Format>
-	static int32_t ExactLinear(const void *weight, const float *, const uint16_t *source, uint16_t *destination,
-		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream)
-	{
-		const uint32_t chunks = input_dimension / LmSkinnyFormat<Format>::kElements;
-		if ( chunks >= 32u )
-			(void)LM_LAUNCH_DEPENDENT((QwenExactLinearKernel<LmBf16Format, 32u, 8u, 4u>),
-				dim3((output_dimension + 3u) / 4u, (rows + 63u) / 64u), QH_THREADS, 0, stream,
-				(const uint8_t *)weight, source, destination, rows, input_dimension, output_dimension);
-		else
-			(void)LM_LAUNCH_DEPENDENT((QwenExactLinearKernel<LmBf16Format, 16u, 4u, 4u>),
-				dim3((output_dimension + 3u) / 4u, (rows + 63u) / 64u), QH_THREADS, 0, stream,
-				(const uint8_t *)weight, source, destination, rows, input_dimension, output_dimension);
-		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
-	}
-
-	template<class Format>
 	static int32_t Project(const void *weight, const float *scale_rows, const uint16_t *source, uint16_t *destination,
 		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, uint32_t multiprocessors, SparkGpuStream stream)
 	{
-		if constexpr ( std::is_same<Format, LmBf16Format>::value )
-		{
-			constexpr uint32_t ELEMENTS = LmSkinnyFormat<Format>::kElements;
-			if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE && (input_dimension % ELEMENTS) == 0u &&
-				LmSkinnyAligned(weight) != 0u && LmSkinnyAligned(source) != 0u )
-			{
-				const uint32_t chunks = input_dimension / ELEMENTS;
-				if ( chunks >= 16u && (output_dimension > LM_SKINNY_SPLIT_MAX_OUTPUTS || chunks < LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES) )
-					return ExactLinear<Format>(weight, 0, source, destination, rows, input_dimension, output_dimension, stream);
-			}
-		}
 		const LmScaleTensor scale = scale_rows != 0 ?
 			LmScaleTensorBuild(scale_rows, LM_SCALE_ENCODING_F32, 1u, output_dimension, input_dimension, 1u, QH_SCALE_K) : LmScaleTensorNone();
 		return LmDenseRows<Format>(weight, scale, source, destination, (float *)0, rows, input_dimension, output_dimension, exact, multiprocessors,
@@ -2313,15 +2194,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const uint32_t qkvz_width = state->gdn_channels + state->gdn_v;
 		const bool fused_qkvz = rows > LM_SKINNY_ROWS_WIDE && exact == 0u && step->tree == 0u && qkvz_width <= S::kQkvWidth;
 		SparkStatus status;
-		if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE && state->linear_bytes == 2u )
-		{
-			const uint8_t *z_weight = layer->mix_weight + (uint64_t)state->gdn_channels * G::kHidden * 2u;
-			if ( ExactLinear<LmBf16Format>(layer->mix_weight, 0, state->normed, state->qkv, rows, G::kHidden, state->gdn_channels, stream) != LM_LAUNCH_OK ||
-				ExactLinear<LmBf16Format>(z_weight, 0, state->normed, state->z, rows, G::kHidden, state->gdn_v, stream) != LM_LAUNCH_OK ||
-				ExactLinear<LmBf16Format>(layer->gdn_ba, 0, state->normed, state->ba, rows, G::kHidden, 2u * heads, stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
-		else if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
+		if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
 		{
 			if ( state->linear_bytes == 2u )
 			{
@@ -2531,13 +2404,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const LmLocalExpertRoutes expert_routes = ExpertRoutes(state, rows, routes, sms);
 		const bool multi_shared_done = rows <= LM_SKINNY_ROWS_WIDE || exact != 0u;
 		int32_t launch;
-		if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE )
-		{
-			if ( ExactLinear<LmBf16Format>(layer->moe_router, 0, normed, state->router_logits, rows, G::kHidden, G::kExperts, stream) != LM_LAUNCH_OK ||
-				ExactLinear<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
-		else if ( multi_shared_done )
+		if ( multi_shared_done )
 		{
 			const LmSkinnyDenseTarget targets[2] =
 			{
@@ -2731,7 +2598,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	{
 		if constexpr ( S::kHyper )
 		{
-			const bool exact_wide = exact != 0u && rows > LM_SKINNY_ROWS_WIDE;
 			const bool skinny = rows <= LM_SKINNY_ROWS_WIDE;
 			const bool fuse_down_inject = inject != 0 && skinny;
 			if ( state->hc_pending_inject != 0u )
@@ -2759,9 +2625,10 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			}
 			else
 			{
-				if ( exact_wide && inject != 0 )
+				if ( exact != 0u && inject != 0 )
 				{
-					if ( ExactLinear<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, stream) != LM_LAUNCH_OK )
+					const LmSkinnyDenseTarget down_target = { down, state->hc_low, (float *)0, G::kHcLowRank, G::kHcLowRank, 0u, LmScaleTensorNone() };
+					if ( LmSkinnyDenseMulti<LmBf16Format>(&down_target, 1u, state->hc_normed, rows, S::kResidual, stream, exact) != LM_LAUNCH_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 				else if ( Project<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, exact, sms, stream) != LM_LAUNCH_OK )
@@ -2855,13 +2722,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->ple_embed, state->ple_embed);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE )
-		{
-			if ( ExactLinear<LmBf16Format>(state->ple_key_weight, 0, state->ple_embed, state->ple_key, rows, G::kHidden, S::kResidual, stream) != LM_LAUNCH_OK ||
-				ExactLinear<LmBf16Format>(state->ple_value_weight, 0, state->ple_embed, state->ple_value, rows, G::kHidden, G::kHidden, stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
-		else if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
+		if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
 		{
 			const LmSkinnyDenseTarget targets[2] =
 			{

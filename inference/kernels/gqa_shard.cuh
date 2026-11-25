@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/attn_prefill.cuh"
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/gqa.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -36,6 +37,15 @@ static __host__ __forceinline__ uint32_t LmGqaShardGeometryValid(uint32_t heads,
 	return(degree != 0u && degree <= SPARK_KV_SHARD_MAX_DEGREE && kv_heads != 0u && heads >= kv_heads &&
 		(heads % kv_heads) == 0u && heads / kv_heads <= LM_GQA_SHARD_MAX_GROUP &&
 		((uint64_t)heads * value_dim) % degree == 0u ? 1u : 0u);
+}
+
+static __device__ __forceinline__ void LmGqaShardPrefetchLine(const void *ptr)
+{
+#if defined(__CUDA_ARCH__)
+	asm volatile("prefetch.global.L2 [%0];\n" :: "l"(ptr));
+#else
+	(void)ptr;
+#endif
 }
 
 template<uint32_t COUNT>
@@ -88,6 +98,7 @@ void LmGqaShardPartialKernel(
 
 	if ( row >= rows || warp >= group )
 		return;
+	LmDependentWait();
 	sequence = sequence_of_row[row];
 	if ( !LmKvCheckSequence(cache.pages,row,sequence) )
 		return;
@@ -163,6 +174,7 @@ void LmGqaShardPartialKernel(
 				base[element - destination * width] = accumulator[index];
 		}
 	}
+	LmDependentRelease();
 }
 
 template<uint32_t HEAD_DIM>
@@ -198,9 +210,7 @@ static __host__ __device__ constexpr uint32_t LmGqaShardTiledSharedFor(uint32_t 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 static __host__ __device__ constexpr uint32_t LmGqaShardTiledValueGroups(void)
 {
-	return((VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()) % 4u == 0u && ((HEAD_DIM / 16u) % 4u) == 0u &&
-		LmGqaShardTiledSharedFor<HEAD_DIM,VALUE_DIM,4u>(LM_GQA_SHARD_TILED_WARPS) <= LM_PREFILL_ATTN_SHARED_LIMIT ? 4u :
-		(VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()) % 2u == 0u && ((HEAD_DIM / 16u) % 2u) == 0u &&
+	return((VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()) % 2u == 0u && ((HEAD_DIM / 16u) % 2u) == 0u &&
 		LmGqaShardTiledSharedFor<HEAD_DIM,VALUE_DIM,2u>(LM_GQA_SHARD_TILED_WARPS) <= LM_PREFILL_ATTN_SHARED_LIMIT ? 2u : 1u);
 }
 
@@ -262,11 +272,12 @@ void LmGqaShardTiledKernel(
 	uint32_t *run = (uint32_t *)(slots + 2u * TILE);
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t q_tile = warp / V_GROUPS, v_part = warp % V_GROUPS;
-	const uint32_t kv_head = blockIdx.y, part_block = blockIdx.z, group = heads / KV_HEADS, degree = cache.shard.degree;
+	constexpr uint32_t Z_PARTS = VALUE_DIM / BLOCK_VDIM;
+	const uint32_t kv_head = blockIdx.y, part_block = blockIdx.x % Z_PARTS, q_block = blockIdx.x / Z_PARTS, group = heads / KV_HEADS, degree = cache.shard.degree;
 	const uint32_t head_tiles = SINGLE_ROW ? ((group + 15u) >> 4u) : 1u;
-	const uint32_t single_row_id = SINGLE_ROW ? (blockIdx.x / head_tiles) : 0u;
-	const uint32_t single_head_base = SINGLE_ROW ? ((blockIdx.x % head_tiles) * 16u) : 0u;
-	const uint32_t vectors = rows * group, block_first = SINGLE_ROW ? 0u : blockIdx.x * BLOCK_QUERIES;
+	const uint32_t single_row_id = SINGLE_ROW ? (q_block / head_tiles) : 0u;
+	const uint32_t single_head_base = SINGLE_ROW ? ((q_block % head_tiles) * 16u) : 0u;
+	const uint32_t vectors = rows * group, block_first = SINGLE_ROW ? 0u : q_block * BLOCK_QUERIES;
 	const uint32_t block_last = SINGLE_ROW ? 0u : ((block_first + BLOCK_QUERIES < vectors ? block_first + BLOCK_QUERIES : vectors) - 1u);
 	const uint32_t row_last = SINGLE_ROW ? single_row_id : (block_last / group);
 	const bool warp_active = SINGLE_ROW ? (warp < V_GROUPS) : (block_first + q_tile * 16u < vectors);
@@ -281,6 +292,7 @@ void LmGqaShardTiledKernel(
 
 	if ( SINGLE_ROW ? (single_row_id >= rows) : (block_first >= vectors) )
 		return;
+	LmDependentWait();
 	#pragma unroll
 	for (side = 0u; side < 2u; ++side)
 	{
@@ -585,6 +597,29 @@ void LmGqaShardTiledKernel(
 							my_score[(frag * 4u + entry) * 32u + lane] = score[frag][entry];
 				}
 			}
+			else if constexpr ( SINGLE_ROW && BLOCK_WARPS == LM_GQA_SHARD_TILED_WARPS && BLOCK_WARPS > V_GROUPS && TILE == 32u && STAGES == 1u )
+			{
+				constexpr uint32_t PREFETCH_DIST = 6u;
+				constexpr uint32_t K_LINES = (HEAD_DIM * 2u + 127u) / 128u;
+				constexpr uint32_t V_LINES = (BLOCK_VDIM * 2u + 127u) / 128u;
+				const uint32_t idle_tid = (warp - V_GROUPS) * 32u + lane;
+				const uint32_t pf_tile = tile + PREFETCH_DIST;
+				if ( pf_tile < tile_end && idle_tid < TILE )
+				{
+					const uint8_t *pslot = lookup_at(pf_tile,idle_tid);
+					if ( pslot != 0 )
+					{
+						const uint8_t *kp = pslot + kv_head * HEAD_DIM * 2u;
+						const uint8_t *vp = pslot + (KV_HEADS * HEAD_DIM + kv_head * VALUE_DIM + part_block * BLOCK_VDIM) * 2u;
+						#pragma unroll
+						for ( uint32_t ln = 0u; ln < K_LINES; ++ln )
+							LmGqaShardPrefetchLine(kp + ln * 128u);
+						#pragma unroll
+						for ( uint32_t ln = 0u; ln < V_LINES; ++ln )
+							LmGqaShardPrefetchLine(vp + ln * 128u);
+					}
+				}
+			}
 			if constexpr ( STAGES == 1u )
 			{
 				asm volatile("cp.async.wait_group 0;\n" ::: "memory");
@@ -700,6 +735,29 @@ void LmGqaShardTiledKernel(
 					}
 				}
 			}
+			else if constexpr ( SINGLE_ROW && BLOCK_WARPS == LM_GQA_SHARD_TILED_WARPS && BLOCK_WARPS > V_GROUPS && TILE == 32u && STAGES == 2u )
+			{
+				constexpr uint32_t PREFETCH_DIST = 6u;
+				constexpr uint32_t K_LINES = (HEAD_DIM * 2u + 127u) / 128u;
+				constexpr uint32_t V_LINES = (BLOCK_VDIM * 2u + 127u) / 128u;
+				const uint32_t idle_tid = (warp - V_GROUPS) * 32u + lane;
+				const uint32_t pf_tile = tile + PREFETCH_DIST;
+				if ( pf_tile < tile_end && idle_tid < TILE )
+				{
+					const uint8_t *pslot = lookup_at(pf_tile,idle_tid);
+					if ( pslot != 0 )
+					{
+						const uint8_t *kp = pslot + kv_head * HEAD_DIM * 2u;
+						const uint8_t *vp = pslot + (KV_HEADS * HEAD_DIM + kv_head * VALUE_DIM + part_block * BLOCK_VDIM) * 2u;
+						#pragma unroll
+						for ( uint32_t ln = 0u; ln < K_LINES; ++ln )
+							LmGqaShardPrefetchLine(kp + ln * 128u);
+						#pragma unroll
+						for ( uint32_t ln = 0u; ln < V_LINES; ++ln )
+							LmGqaShardPrefetchLine(vp + ln * 128u);
+					}
+				}
+			}
 			if constexpr ( STAGES == 2u )
 				__syncthreads();
 		}
@@ -707,7 +765,10 @@ void LmGqaShardTiledKernel(
 			__syncthreads();
 	}
 	if ( !warp_active )
+	{
+		LmDependentRelease();
 		return;
+	}
 	#pragma unroll
 	for (side = 0u; side < 2u; ++side)
 	{
@@ -743,6 +804,7 @@ void LmGqaShardTiledKernel(
 				}
 		}
 	}
+	LmDependentRelease();
 }
 
 #define LM_GQA_SHARD_MERGE_SLOTS 64u
@@ -767,6 +829,7 @@ void LmGqaShardMergeKernel(
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	if ( row >= rows || width == 0u )
 		return;
+	LmDependentWait();
 	const uint32_t used_slots = (rank * width + width - 1u) / VALUE_DIM - origin + 1u;
 	const float *row_base = received + (uint64_t)row * record;
 	uint16_t *out_row = output_bf16 + (uint64_t)row * width;
@@ -799,6 +862,7 @@ void LmGqaShardMergeKernel(
 		if ( slot_end < used_slots )
 			__syncthreads();
 	}
+	LmDependentRelease();
 }
 
 template<class Geometry, class Pages, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -837,7 +901,7 @@ static inline SparkGpuError LmGqaShardPartialLaunch(
 		if ( rows <= 64u )
 		{
 			const uint32_t head_tiles = (group + 15u) >> 4u;
-			if ( (uint64_t)rows * head_tiles * KV_HEADS * Z_PARTS <= 24u )
+			if ( rows <= 2u && (uint64_t)rows * head_tiles * KV_HEADS * Z_PARTS <= 24u )
 			{
 				constexpr uint32_t DECODE_WARPS = LM_GQA_SHARD_TILED_WARPS;
 				constexpr uint32_t shared = LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM,DECODE_WARPS,true>();
@@ -850,8 +914,8 @@ static inline SparkGpuError LmGqaShardPartialLaunch(
 						return(error);
 					granted_decode_wide = true;
 				}
-				LM_LAUNCH((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM,DECODE_WARPS,true>),
-					dim3(rows * head_tiles,KV_HEADS,Z_PARTS),DECODE_WARPS * 32u,shared,stream,
+				LM_LAUNCH_DEPENDENT((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM,DECODE_WARPS,true>),
+					dim3(rows * head_tiles * Z_PARTS,KV_HEADS,1u),DECODE_WARPS * 32u,shared,stream,
 					cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 					fork_positions,slot_offsets);
 				return(SparkGpuPeekAtLastError());
@@ -867,8 +931,8 @@ static inline SparkGpuError LmGqaShardPartialLaunch(
 					return(error);
 				granted_decode = true;
 			}
-			LM_LAUNCH((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM,DECODE_WARPS,true>),
-				dim3(rows * head_tiles,KV_HEADS,Z_PARTS),DECODE_WARPS * 32u,shared,stream,
+			LM_LAUNCH_DEPENDENT((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM,DECODE_WARPS,true>),
+				dim3(rows * head_tiles * Z_PARTS,KV_HEADS,1u),DECODE_WARPS * 32u,shared,stream,
 				cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 				fork_positions,slot_offsets);
 			return(SparkGpuPeekAtLastError());
@@ -884,13 +948,13 @@ static inline SparkGpuError LmGqaShardPartialLaunch(
 				return(error);
 			granted = true;
 		}
-		LM_LAUNCH((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM,LM_GQA_SHARD_TILED_WARPS,false>),
-			dim3((rows * group + PREFILL_QUERIES - 1u) / PREFILL_QUERIES,KV_HEADS,Z_PARTS),LM_GQA_SHARD_TILED_THREADS,shared,stream,
+		LM_LAUNCH_DEPENDENT((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM,LM_GQA_SHARD_TILED_WARPS,false>),
+			dim3(((rows * group + PREFILL_QUERIES - 1u) / PREFILL_QUERIES) * Z_PARTS,KV_HEADS,1u),LM_GQA_SHARD_TILED_THREADS,shared,stream,
 			cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 			fork_positions,slot_offsets);
 		return(SparkGpuPeekAtLastError());
 	}
-	LM_LAUNCH((LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>),dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream,
+	LM_LAUNCH_DEPENDENT((LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>),dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream,
 		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 		fork_positions,slot_offsets);
 	return(SparkGpuPeekAtLastError());
@@ -912,6 +976,6 @@ static inline SparkGpuError LmGqaShardMergeLaunch(
 		rank >= sources || ((uint64_t)heads * VALUE_DIM) % sources != 0u ||
 		source_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,sources) )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((LmGqaShardMergeKernel<VALUE_DIM>),rows,256u,0,stream,received,source_stride,sources,heads,rank,output_bf16,rows,sinks);
+	LM_LAUNCH_DEPENDENT((LmGqaShardMergeKernel<VALUE_DIM>),rows,256u,0,stream,received,source_stride,sources,heads,rank,output_bf16,rows,sinks);
 	return(SparkGpuPeekAtLastError());
 }
