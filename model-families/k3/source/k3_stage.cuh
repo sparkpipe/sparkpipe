@@ -73,24 +73,27 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	const uint32_t count = phase == 2u ? gate_up_elements : rows * K3_HIDDEN;
 	const uint16_t *primary = phase == 2u ? gate_up : (phase == 0u ? attention : hidden);
 	const bool add_shared = phase != 2u && phase != 0u && segments == 2u;
+	LmDependentWait();
 	if ( ((count & 7u) == 0u) && LmIsAligned16(primary) && LmIsAligned16(fused) && (!add_shared || LmIsAligned16(shared)) )
 	{
-		if ( index >= (count >> 3u) )
-			return;
-		if ( !add_shared )
+		if ( index < (count >> 3u) )
 		{
-			((uint4 *)fused)[index] = ((const uint4 *)primary)[index];
-			return;
+			if ( !add_shared )
+				((uint4 *)fused)[index] = ((const uint4 *)primary)[index];
+			else
+			{
+				float sum[8];
+				LmLoadBf16x8AsFloat(((const uint4 *)primary)[index], sum);
+				LmAddBf16x8(sum, ((const uint4 *)shared)[index]);
+				((uint4 *)fused)[index] = LmPackUint4FloatToBf16(sum);
+			}
 		}
-		float sum[8];
-		LmLoadBf16x8AsFloat(((const uint4 *)primary)[index], sum);
-		LmAddBf16x8(sum, ((const uint4 *)shared)[index]);
-		((uint4 *)fused)[index] = LmPackUint4FloatToBf16(sum);
+		LmDependentRelease();
 		return;
 	}
-	if ( index >= count )
-		return;
-	fused[index] = add_shared ? LmFloatToBf16(LmBf16ToFloat(primary[index]) + LmBf16ToFloat(shared[index])) : primary[index];
+	if ( index < count )
+		fused[index] = add_shared ? LmFloatToBf16(LmBf16ToFloat(primary[index]) + LmBf16ToFloat(shared[index])) : primary[index];
+	LmDependentRelease();
 }
 
 __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint16_t *query,
@@ -99,6 +102,7 @@ __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint1
 	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
 	const uint32_t stride = query_slice + key_slice;
 	uint32_t rank;
+	LmDependentWait();
 	if ( ((query_slice & 7u) == 0u) && ((key_slice & 3u) == 0u) && ((stride & 3u) == 0u) &&
 		LmIsAligned16(query) && ((((uintptr_t)gathered) & 7u) == 0u) && ((((uintptr_t)key) & 7u) == 0u) )
 	{
@@ -111,15 +115,15 @@ __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint1
 			const uint2 *s = (const uint2 *)(gathered + src_off);
 			const uint2 lo = s[0], hi = s[1];
 			((uint4 *)(query + (uint64_t)row * K3_Q_LORA_RANK))[column] = make_uint4(lo.x, lo.y, hi.x, hi.y);
-			return;
 		}
-		if ( column < qv + kv )
+		else if ( column < qv + kv )
 		{
 			const uint32_t c = column - qv;
 			rank = c / ks;
 			const uint64_t src_off = ((uint64_t)rank * rows + row) * stride + query_slice + ((c % ks) << 2u);
 			((uint2 *)(key + (uint64_t)row * K3_MLA_KV_A_DIM))[c] = *(const uint2 *)(gathered + src_off);
 		}
+		LmDependentRelease();
 		return;
 	}
 	if ( column < K3_Q_LORA_RANK )
@@ -134,6 +138,7 @@ __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint1
 		key[(uint64_t)row * K3_MLA_KV_A_DIM + column - K3_Q_LORA_RANK] =
 			gathered[((uint64_t)rank * rows + row) * stride + query_slice + (column - K3_Q_LORA_RANK) % key_slice];
 	}
+	LmDependentRelease();
 }
 
 __global__ static void K3RunnerLatentLogitsKernel(const uint16_t *gathered, uint16_t *latent,
@@ -141,6 +146,7 @@ __global__ static void K3RunnerLatentLogitsKernel(const uint16_t *gathered, uint
 {
 	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
 	const uint64_t stride = (uint64_t)rows * (slice + 2u * experts);
+	LmDependentWait();
 	if ( ((slice & 7u) == 0u) && ((experts & 3u) == 0u) && LmIsAligned16(gathered) && LmIsAligned16(latent) && LmIsAligned16(logits) )
 	{
 		const uint32_t vslice = slice >> 3u, vexp = experts >> 2u;
@@ -149,14 +155,18 @@ __global__ static void K3RunnerLatentLogitsKernel(const uint16_t *gathered, uint
 			const uint32_t r = column / vslice, c = column % vslice;
 			((uint4 *)(latent + (uint64_t)row * slice * ranks))[column] =
 				((const uint4 *)(gathered + (uint64_t)r * stride + (uint64_t)row * slice))[c];
-			return;
 		}
-		const uint32_t ve = column - vslice * ranks;
-		if ( ve >= vexp * ranks )
-			return;
-		const uint32_t r = ve / vexp, c = ve % vexp;
-		((float4 *)(logits + (uint64_t)row * experts * ranks))[ve] =
-			((const float4 *)(gathered + (uint64_t)r * stride + (uint64_t)rows * slice))[(uint64_t)row * vexp + c];
+		else
+		{
+			const uint32_t ve = column - vslice * ranks;
+			if ( ve < vexp * ranks )
+			{
+				const uint32_t r = ve / vexp, c = ve % vexp;
+				((float4 *)(logits + (uint64_t)row * experts * ranks))[ve] =
+					((const float4 *)(gathered + (uint64_t)r * stride + (uint64_t)rows * slice))[(uint64_t)row * vexp + c];
+			}
+		}
+		LmDependentRelease();
 		return;
 	}
 	uint32_t expert;
@@ -164,13 +174,15 @@ __global__ static void K3RunnerLatentLogitsKernel(const uint16_t *gathered, uint
 	{
 		latent[(uint64_t)row * slice * ranks + column] =
 			gathered[(column / slice) * stride + (uint64_t)row * slice + (column % slice)];
-		return;
 	}
-	expert = column - slice * ranks;
-	if ( expert >= experts * ranks )
-		return;
-	logits[(uint64_t)row * experts * ranks + expert] =
-		((const float *)(gathered + (expert / experts) * stride + (uint64_t)rows * slice))[(uint64_t)row * experts + (expert % experts)];
+	else
+	{
+		expert = column - slice * ranks;
+		if ( expert < experts * ranks )
+			logits[(uint64_t)row * experts * ranks + expert] =
+				((const float *)(gathered + (expert / experts) * stride + (uint64_t)rows * slice))[(uint64_t)row * experts + (expert % experts)];
+	}
+	LmDependentRelease();
 }
 
 #define K3_RUNNER_GATHER_SOURCES_MAX 16u
@@ -297,9 +309,13 @@ static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 			if ( fused != b->attnres_partial_bf16 )
 				K3PartialSet(b, fused, rows, tp->stream);
 		}
+		else if ( b->defer_partial_add != 0u && LmIsAligned16(b->attnres_partial_bf16) && LmIsAligned16(fused) )
+			b->pending_partial_add = fused;
 		else
 			K3PartialAdd(b, fused, rows, tp->stream);
 	}
+	else if ( b->defer_partial_add != 0u && LmIsAligned16(b->attnres_partial_bf16) && LmIsAligned16(fused) )
+		b->pending_partial_add = fused;
 	else
 		K3PartialAdd(b, fused, rows, tp->stream);
 	K3RunnerTpContextRelease(tp);
@@ -448,12 +464,12 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, Sp
 		const uint32_t cols = ((slice & 7u) == 0u && (experts & 3u) == 0u && LmIsAligned16(gathered) &&
 			LmIsAligned16(b->latent_full_bf16) && LmIsAligned16(b->router_logits))
 			? (K3_ROUTED_EXPERT_HIDDEN >> 3u) + (K3_EXPERTS >> 2u) : (K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS);
-		LM_LAUNCH((K3RunnerLatentLogitsKernel), dim3((cols + 255u) / 256u, rows), 256u, 0, stream,
+		LM_LAUNCH_DEPENDENT((K3RunnerLatentLogitsKernel), dim3((cols + 255u) / 256u, rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, b->router_logits, rows, slice, experts, ranks);
 	}
 	else if ( rows > 1u )
 		LM_LAUNCH((LmRankMajorRowsKernel<256u>), dim3(LmVecBlocks<256u>(K3_ROUTED_EXPERT_HIDDEN), rows), 256u, 0, stream,
-			gathered, b->latent_full_bf16, rows, slice, ranks);
+			gathered, b->latent_full_bf16, rows, slice, ranks, 0u);
 }
 
 static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, SparkGpuStream stream,
@@ -556,7 +572,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		const uint32_t cols = vec != 0u ? (K3_Q_LORA_RANK >> 3u) + (K3_MLA_KV_A_DIM >> 2u) : (K3_Q_LORA_RANK + K3_MLA_KV_A_DIM);
 		K3RunnerRound(state, stream, rows, b->latent_bf16, state->fused_device,
 			stride, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
-		LM_LAUNCH((K3RunnerMlaDownRowsKernel), dim3((cols + 255u) / 256u, rows), 256u, 0, stream,
+		LM_LAUNCH_DEPENDENT((K3RunnerMlaDownRowsKernel), dim3((cols + 255u) / 256u, rows), 256u, 0, stream,
 			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, query_slice, key_slice);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			K3ModelFail(state);
@@ -646,7 +662,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			(row_shard != 0u && ((rows + state->tp_degree - 1u) / state->tp_degree) * state->tp_degree != rows) ? 1u : 0u;
 		const uint16_t *send_buf = need_pack != 0u ? state->fused_device : primary;
 		if ( need_pack != 0u )
-			LM_LAUNCH((K3RunnerFusedPackKernel), K3VecGrid(elements, primary, state->fused_device, base != 0u && segments == 2u ? b->shared_out_bf16 : 0),
+			LM_LAUNCH_DEPENDENT((K3RunnerFusedPackKernel), K3VecGrid(elements, primary, state->fused_device, base != 0u && segments == 2u ? b->shared_out_bf16 : 0),
 				256u, 0, stream,
 				phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 				state->fused_device,rows,base,segments,0u);
@@ -1283,6 +1299,9 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	b->state_loads = step->tree != 0u ? step->state_loads : 0;
 	b->state_saves = step->tree != 0u ? step->state_saves : 0;
 	b->kda_snapshots = step->tree != 0u ? state->kda_snapshots : 0;
+	b->normed_ready = 0u;
+	b->defer_partial_add = 0u;
+	b->pending_partial_add = 0;
 	K3RunnerTpStepReset(state);
 	memset(&in, 0, sizeof(in));
 	in.hidden_in = step->hidden_bf16;

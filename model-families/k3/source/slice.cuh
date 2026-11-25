@@ -6,7 +6,7 @@
 #include "sparkpipe/spark_k3_resident_decode_stage_cuda.h"
 #include "sparkpipe/spark_gpu.h"
 
-#define K3_L2_LOAD_BYTES (8u << 20)
+#define K3_L2_LOAD_BYTES (12u << 20)
 #define K3_L2_LOAD_BLOCKS 48u
 
 struct K3SliceState
@@ -173,6 +173,7 @@ static void K3L2PlanMoe(const K3LayerBuffers *b, uint32_t layer, LmL2LoadPlan *p
 	LmL2LoadAdd(plan,(const uint8_t *)b->router_weight + (K3_EXPERT_CELLS(b) ? (uint64_t)b->tp_rank * experts * row : 0u),(uint64_t)experts * row);
 	LmL2LoadAdd(plan,b->routed_down_weight,(uint64_t)moe_in * row);
 	LmL2LoadAdd(plan,b->shared_w1_weight,(uint64_t)K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u) * row);
+	LmL2LoadAdd(plan,b->shared_w2_weight,(uint64_t)K3_HIDDEN * K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE) * sizeof(uint16_t));
 }
 
 static void K3L2PlanAttention(const K3LayerBuffers *b, uint32_t layer, LmL2LoadPlan *plan)
@@ -181,9 +182,15 @@ static void K3L2PlanAttention(const K3LayerBuffers *b, uint32_t layer, LmL2LoadP
 	LmL2LoadBegin(plan,K3_L2_LOAD_BYTES);
 	LmL2LoadAdd(plan,b->attn_norm_weight,row);
 	if ( K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT )
+	{
 		LmL2LoadAdd(plan,b->kda_qkv_beta_weight,(uint64_t)K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS) * row);
+		LmL2LoadAdd(plan,b->kda_gate_weight,(uint64_t)K3_RANK_DIM(b,kda_gate_rows,K3_KDA_V_DIM) * row);
+	}
 	else
+	{
 		LmL2LoadAdd(plan,b->mla_q_down_weight,(uint64_t)K3_Q_LORA_RANK * row);
+		LmL2LoadAdd(plan,b->mla_kv_a_weight,(uint64_t)K3_MLA_KV_A_DIM * row);
+	}
 }
 
 static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t phase, const LmL2LoadPlan *plan, SparkGpuStream stream)
@@ -349,9 +356,10 @@ struct K3Cuda
 
 	static void AttnRes(Context &c, uint32_t lane, uint32_t site, uint32_t sources, uint32_t stream)
 	{
-		const K3LayerBuffers *b = Lane(c, lane);
+		K3LayerBuffers *b = Lane(c, lane);
 		const void *weight = site == K3_ATTNRES_ATTENTION ? b->attnres_attn_weight : site == K3_ATTNRES_MLP ? b->attnres_mlp_weight : b->attnres_out_weight;
-		K3AttnRes(b, weight, sources, c.rows[lane], Stream(c, stream));
+		const void *norm = site == K3_ATTNRES_ATTENTION ? b->attn_norm_weight : site == K3_ATTNRES_MLP ? b->mlp_norm_weight : (const void *)0;
+		K3AttnResWithNorm(b, weight, norm, sources, c.rows[lane], Stream(c, stream));
 	}
 
 	static void PartialSet(Context &c, uint32_t lane, uint32_t stream)
@@ -373,19 +381,26 @@ struct K3Cuda
 
 	static int32_t Kda(Context &c, uint32_t lane, uint32_t sequences, uint32_t accumulate, uint32_t stream)
 	{
-		const K3LayerBuffers *b = Lane(c, lane);
-		return K3LayerKda<Format>(b, c.rows[lane], sequences, c.commit, Accumulate(b, accumulate), c.multiprocessors, Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerKda<Format>(b, c.rows[lane], sequences, c.commit, Accumulate(b, accumulate), c.multiprocessors, Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t MlaLocal(Context &c, uint32_t lane, uint32_t accumulate, uint32_t stream)
 	{
-		const K3LayerBuffers *b = Lane(c, lane);
-		return K3LayerMla<Format,Geometry>(b, c.rows[lane], c.context, Accumulate(b, accumulate), c.multiprocessors, Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerMla<Format,Geometry>(b, c.rows[lane], c.context, Accumulate(b, accumulate), c.multiprocessors, Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t MlaQuery(Context &c, uint32_t lane, uint32_t stream)
 	{
-		return K3LayerMlaQuery<Format,Geometry>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerMlaQuery<Format,Geometry>(b, c.rows[lane], c.multiprocessors, Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t MlaGatherPack(Context &c, uint32_t lane, uint32_t stream)
@@ -437,12 +452,18 @@ struct K3Cuda
 
 	static int32_t MlaDownSlice(Context &c, uint32_t lane, uint32_t stream)
 	{
-		return K3LayerMlaDownSlice(Lane(c, lane), c.rows[lane], Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerMlaDownSlice(b, c.rows[lane], Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t MlaDown(Context &c, uint32_t lane, uint32_t stream)
 	{
-		return K3LayerMlaDown<Format>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerMlaDown<Format>(b, c.rows[lane], c.multiprocessors, Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t MlaUp(Context &c, uint32_t lane, uint32_t stream)
@@ -502,12 +523,19 @@ struct K3Cuda
 
 	static int32_t Dense(Context &c, uint32_t lane, uint32_t stream)
 	{
-		return K3LayerDenseMlp<Format>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerDenseMlp<Format>(b, c.rows[lane], c.multiprocessors, Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t LatentMoe(Context &c, uint32_t lane, uint32_t rows, uint32_t packed_rows, uint32_t phase, uint32_t stream)
 	{
-		return K3LayerLatentMoe<Format>(Lane(c, lane), rows, packed_rows, c.multiprocessors, Stream(c, stream), phase);
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerLatentMoe<Format>(b, rows, packed_rows, c.multiprocessors, Stream(c, stream), phase);
+		if ( phase == 0u )
+			b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t SharedUp(Context &c, uint32_t lane, uint32_t stream)
@@ -529,7 +557,10 @@ struct K3Cuda
 
 	static int32_t MoeRoute(Context &c, uint32_t lane, uint32_t stream)
 	{
-		return K3LayerMoeRoute<Format>(Lane(c, lane), c.rows[lane], c.packed_rows, c.multiprocessors, Stream(c, stream));
+		K3LayerBuffers *b = Lane(c, lane);
+		const int32_t status = K3LayerMoeRoute<Format>(b, c.rows[lane], c.packed_rows, c.multiprocessors, Stream(c, stream));
+		b->normed_ready = 0u;
+		return status;
 	}
 
 	static int32_t MoeWeighted(Context &c, uint32_t lane, uint32_t phase, uint32_t stream)
@@ -565,20 +596,28 @@ struct K3Cuda
 
 	static int32_t MlpPrefetchRound(Context &c, uint32_t layer)
 	{
-		K3L2PlanMoe(Lane(c, K3_LANE_A), layer, &c.load);
-		return K3L2LoadRound(c.state, layer, 0u, &c.load, Stream(c, K3_STREAM_MAIN));
+		K3LayerBuffers *b = Lane(c, K3_LANE_A);
+		K3L2PlanMoe(b, layer, &c.load);
+		b->defer_partial_add = 1u;
+		const int32_t status = K3L2LoadRound(c.state, layer, 0u, &c.load, Stream(c, K3_STREAM_MAIN));
+		b->defer_partial_add = 0u;
+		return status;
 	}
 
 	static int32_t AttentionPrefetchRound(Context &c, uint32_t offset, uint32_t layer, uint32_t layer_count)
 	{
+		K3LayerBuffers *b = Lane(c, K3_LANE_A);
 		c.load.count = 0u;
 		if ( offset + 1u < layer_count )
 		{
-			K3LayerBuffers next = *Lane(c, K3_LANE_A);
+			K3LayerBuffers next = *b;
 			K3BindLayer(&c.weights[offset + 1u], &next);
 			K3L2PlanAttention(&next, layer + 1u, &c.load);
 		}
-		return K3L2LoadRound(c.state, layer, 1u, &c.load, Stream(c, K3_STREAM_MAIN));
+		b->defer_partial_add = c.state->tap_slab == 0 && (offset + 1u < layer_count || layer + 1u == K3_LAYERS) ? 1u : 0u;
+		const int32_t status = K3L2LoadRound(c.state, layer, 1u, &c.load, Stream(c, K3_STREAM_MAIN));
+		b->defer_partial_add = 0u;
+		return status;
 	}
 
 	static void Tap(Context &c, uint32_t lane, uint32_t layer, uint32_t row_offset, uint32_t stream)
@@ -658,7 +697,8 @@ void K3FoldL2NormKernel(uint16_t *__restrict__ query_bf16, uint16_t *__restrict_
 {
 	__shared__ float reduction[2u * LmBlockWarps<THREADS>()];
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
-	if ( row >= rows || head >= heads ) return;
+	LmDependentWait();
+	if ( row >= rows || head >= heads ) { LmDependentRelease(); return; }
 	const uint64_t base = (((uint64_t)row * heads) + head) * KEY_DIM;
 	float q_sum = 0.0f, k_sum = 0.0f, q0 = 0.0f, k0 = 0.0f;
 	for (uint32_t idx = threadIdx.x; idx < KEY_DIM; idx += THREADS) { q0 = LmBf16ToFloat(query_bf16[base + idx]); k0 = LmBf16ToFloat(key_bf16[base + idx]); q_sum += q0 * q0; k_sum += k0 * k0; }
@@ -669,6 +709,7 @@ void K3FoldL2NormKernel(uint16_t *__restrict__ query_bf16, uint16_t *__restrict_
 		query_bf16[base + idx] = LmFloatToBf16((THREADS == KEY_DIM ? q0 : LmBf16ToFloat(query_bf16[base + idx])) * q_inv);
 		key_bf16[base + idx] = LmFloatToBf16((THREADS == KEY_DIM ? k0 : LmBf16ToFloat(key_bf16[base + idx])) * k_inv);
 	}
+	LmDependentRelease();
 }
 
 template<class Format>
@@ -709,11 +750,11 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 		if ( LmCausalConvStreamsLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(conv,buffers->kda_state_index,verify_row_begin,accepted,sequences,1u,verify_row_indices,slab_rows,stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		constexpr uint32_t fold_threads = K3_LAYER_THREADS < K3_KDA_KEY_DIM ? K3_LAYER_THREADS : K3_KDA_KEY_DIM;
-		LM_LAUNCH((K3FoldL2NormKernel<fold_threads,K3_KDA_KEY_DIM>), dim3(slab_rows,rank_heads), fold_threads, 0, stream,
+		LM_LAUNCH_DEPENDENT((K3FoldL2NormKernel<fold_threads,K3_KDA_KEY_DIM>), dim3(slab_rows,rank_heads), fold_threads, 0, stream,
 			buffers->query_bf16,buffers->key_bf16,rank_heads,slab_rows,K3_RMS_EPSILON);
 		if constexpr ( LM_WARP_LANES == 32u )
 			LM_LAUNCH((LmDeltaRuleColumnKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>), dim3(sequences,rank_heads,K3_KDA_VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
-				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices,0,0,0);
+				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices,(const uint32_t *)0,(const uint32_t *)0,(float *)0);
 		else
 			LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,rank_heads,K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
 				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices);

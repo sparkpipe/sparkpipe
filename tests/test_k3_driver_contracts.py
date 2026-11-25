@@ -194,7 +194,7 @@ def main():
               f"decay_down standalone and the full-rank gate (docs/archive/"
               f"K3_GATE_RECONCILIATION.md), so exactly three wide GEMMs run")
         failures += 1
-    if kda.count("LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>)") != 1:
+    if len(re.findall(r"LM_LAUNCH(?:_DEPENDENT)?\(\(K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>\)", kda)) != 1:
         print("  FAIL the fused projections lost their section split; every "
               "consumer reads dense rows, so the wide GEMM needs the split")
         failures += 1
