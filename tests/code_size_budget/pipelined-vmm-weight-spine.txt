@@ -1,0 +1,2 @@
++147
+Pipelined 256 MiB VMM chunked private weight spine in runtime/spark_weightd_lazy_pack.c (+124), runtime/spark_weightd_spine.c (+16), include/sparkpipe/spark_weightd_lazy_pack.h (+5), and include/sparkpipe/spark_weightd_spine.h (+2) to eliminate the monolithic 3.22s NVRM / 1.75s CUDA pre-read allocation stall and keep 51 GiB weights on 2 MiB huge pages under NVRM.

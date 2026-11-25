@@ -18,7 +18,7 @@
 #include <unistd.h>
 #include "sparkpipe/spark_gpu.h"
 
-static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *index,const uint8_t *buffer,uint64_t offset,uint32_t bytes,uint8_t *destination,uint32_t pack_offsets)
+static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *index,const uint8_t *buffer,uint64_t offset,uint32_t bytes,uint8_t *destination,uint32_t pack_offsets,SparkWeightdSpineEnsure ensure,void *ensure_context)
 {
 	const SparkWeightdSpan *span;
 	uint64_t start,end,placed,limit = (offset + bytes);
@@ -34,7 +34,14 @@ static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *ind
 		placed = pack_offsets != 0u ? span->offset : span->compact_offset;
 		if ( end > start )
 		{
-			const SparkStatus written = SparkWeightdDeviceWrite(destination + placed + (start - span->offset),buffer + (start - offset),end - start);
+			const uint64_t destination_offset = placed + (start - span->offset);
+			if ( ensure != 0 )
+			{
+				const SparkStatus ready = ensure(ensure_context,destination_offset,end - start);
+				if ( ready != SPARK_STATUS_OK )
+					SPARK_RETURN(ready);
+			}
+			const SparkStatus written = SparkWeightdDeviceWrite(destination + destination_offset,buffer + (start - offset),end - start);
 			if ( written != SPARK_STATUS_OK )
 				SPARK_RETURN(written);
 		}
@@ -57,6 +64,8 @@ typedef struct SpineSink
 	SparkCk128Context *quick;
 	SparkWeightdSpinePace pace;
 	void *pace_context;
+	SparkWeightdSpineEnsure ensure;
+	void *ensure_context;
 	uint32_t pack_offsets;
 	uint32_t index;
 } SpineSink;
@@ -74,7 +83,7 @@ static SparkStatus spine_sink(void *context,uint32_t span_index,uint64_t span_of
 		SparkCk128Update(sink->quick,data,(size_t)bytes);
 	if ( sink->hash != 0 )
 		SparkSha256Update(sink->hash,data,(size_t)bytes);
-	return(spine_copy(sink->manifest,&sink->index,data,sink->spans[span_index].offset + span_offset,(uint32_t)bytes,sink->destination,sink->pack_offsets));
+	return(spine_copy(sink->manifest,&sink->index,data,sink->spans[span_index].offset + span_offset,(uint32_t)bytes,sink->destination,sink->pack_offsets,sink->ensure,sink->ensure_context));
 }
 
 static SparkStatus spine_stream_spans(int32_t fd,SpineSink *sink,const SparkWeightdDirectSpan *spans,uint32_t span_count)
@@ -116,7 +125,7 @@ static SparkWeightdDirectSpan *spine_direct_spans(const SparkWeightdManifest *ma
 	return(spans);
 }
 
-static SparkStatus spine_stream(const char *pack_path,int32_t fd,const SparkWeightdManifest *manifest,uint64_t pack_bytes,const char *expected,uint8_t *destination,char ck_hex[SPARK_CK128_HEX_BYTES])
+static SparkStatus spine_stream(const char *pack_path,int32_t fd,const SparkWeightdManifest *manifest,uint64_t pack_bytes,const char *expected,uint8_t *destination,SparkWeightdSpineEnsure ensure,void *ensure_context,char ck_hex[SPARK_CK128_HEX_BYTES])
 {
 	SparkSha256Context hash;
 	SparkCk128Context quick;
@@ -131,6 +140,8 @@ static SparkStatus spine_stream(const char *pack_path,int32_t fd,const SparkWeig
 	memset(&sink,0,sizeof(sink));
 	sink.manifest = manifest;
 	sink.destination = destination;
+	sink.ensure = ensure;
+	sink.ensure_context = ensure_context;
 	status = SparkWeightdReceiptCheck(pack_path,fd,expected,0,&reason);
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -163,7 +174,7 @@ static SparkStatus spine_stream(const char *pack_path,int32_t fd,const SparkWeig
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkWeightdSpineLoad(const char *pack_path,int32_t fd,const SparkWeightdManifest *manifest,uint64_t pack_bytes,const char *sha256,void *destination,uint64_t capacity)
+SparkStatus SparkWeightdSpineLoadEnsured(const char *pack_path,int32_t fd,const SparkWeightdManifest *manifest,uint64_t pack_bytes,const char *sha256,void *destination,uint64_t capacity,SparkWeightdSpineEnsure ensure,void *ensure_context)
 {
 	struct stat before,after;
 	char ck_hex[SPARK_CK128_HEX_BYTES];
@@ -176,7 +187,7 @@ SparkStatus SparkWeightdSpineLoad(const char *pack_path,int32_t fd,const SparkWe
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( fstat(fd,&before) != 0 || S_ISREG(before.st_mode) == 0 || before.st_size < 0 || (uint64_t)before.st_size != pack_bytes )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	status = spine_stream(pack_path,fd,manifest,pack_bytes,sha256,destination,ck_hex);
+	status = spine_stream(pack_path,fd,manifest,pack_bytes,sha256,destination,ensure,ensure_context,ck_hex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( fstat(fd,&after) != 0 || SparkWeightdPackStatSame(&before,&after) == 0 )
@@ -188,6 +199,11 @@ SparkStatus SparkWeightdSpineLoad(const char *pack_path,int32_t fd,const SparkWe
 			fprintf(stderr,"weightd spine path=%s receipt not written status=%s: the next load verifies again\n",pack_path,SparkStatusToString(status));
 	}
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdSpineLoad(const char *pack_path,int32_t fd,const SparkWeightdManifest *manifest,uint64_t pack_bytes,const char *sha256,void *destination,uint64_t capacity)
+{
+	return(SparkWeightdSpineLoadEnsured(pack_path,fd,manifest,pack_bytes,sha256,destination,capacity,0,0));
 }
 
 SparkStatus SparkWeightdSpinePreload(int32_t fd,const SparkWeightdManifest *manifest,void *device_base,SparkWeightdSpinePace pace,void *pace_context)
