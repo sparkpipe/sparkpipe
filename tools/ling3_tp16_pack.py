@@ -41,8 +41,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
+FP8_BLOCK = 128
 EXPERTS_MAGIC = 0x58504557
 EXPERTS_VERSION = 2
+DTYPES = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8}
+
+
+def ceil_div(value, divisor):
+    return (value + divisor - 1) // divisor
+
+
+def expand_block128_rows(scale, rows):
+    row_blocks = np.arange(rows, dtype=np.int64) // FP8_BLOCK
+    return np.ascontiguousarray(scale[row_blocks], dtype=np.float32)
+
+
+E4M3 = np.array([(-1.0 if code & 0x80 else 1.0) * (
+    (2.0 ** (((code >> 3) & 15) - 7)) * (1.0 + (code & 7) / 8.0) if (code >> 3) & 15 else (2.0 ** -6) * ((code & 7) / 8.0))
+    for code in range(256)], dtype=np.float32)
+E4M3[0x7F] = np.nan
+E4M3[0xFF] = np.nan
+
+
+def to_bf16(values):
+    bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
+    rounded = (bits + 0x7FFF + ((bits >> 16) & 1)) >> 16
+    return rounded.astype(np.uint16)
+
+
+def dequantise_to_bf16(item):
+    kind, weight, scale = item
+    if kind == "bf16":
+        return np.asarray(weight)
+    values = E4M3[np.asarray(weight)] * np.repeat(np.asarray(scale, dtype=np.float32), FP8_BLOCK, axis=-1)
+    return to_bf16(values)
 
 
 class PackFailure(RuntimeError):
@@ -55,7 +87,7 @@ class Checkpoint:
         self.weight_map = json.loads((self.directory / "model.safetensors.index.json").read_text())["weight_map"]
         self.headers = {}
 
-    def raw(self, name, shape, dtype):
+    def meta(self, name):
         shard = self.weight_map.get(name)
         if shard is None:
             raise PackFailure(f"checkpoint has no tensor {name}")
@@ -64,11 +96,14 @@ class Checkpoint:
                 length = struct.unpack("<Q", handle.read(8))[0]
                 self.headers[shard] = (8 + length, json.loads(handle.read(length)))
         base, header = self.headers[shard]
-        meta = header[name]
+        return shard, base, header[name]
+
+    def raw(self, name, shape, dtype):
+        shard, base, meta = self.meta(name)
         if meta["dtype"] != dtype or tuple(meta["shape"]) != tuple(shape):
             raise PackFailure(f"{name}: {meta['dtype']} {meta['shape']}, expected {dtype} {list(shape)}")
         begin, end = meta["data_offsets"]
-        kind = np.uint16 if dtype == "BF16" else np.float32
+        kind = DTYPES[dtype]
         return np.memmap(self.directory / shard, dtype=kind, mode="r", offset=base + begin,
                          shape=((end - begin) // np.dtype(kind).itemsize,)).reshape(shape)
 
@@ -80,6 +115,23 @@ class Checkpoint:
 
     def bf16_as_f32(self, name, shape):
         return (np.asarray(self.bf16(name, shape)).astype(np.uint32) << 16).view(np.float32)
+
+    def linear(self, name, shape):
+        weight_name = name + ".weight"
+        _, _, meta = self.meta(weight_name)
+        if meta["dtype"] == "BF16":
+            return ("bf16", self.bf16(weight_name, shape), None)
+        if meta["dtype"] != "F8_E4M3":
+            raise PackFailure(f"{weight_name}: unsupported dtype {meta['dtype']}")
+        scale_name = name + ".weight_scale_inv"
+        if scale_name not in self.weight_map and (name + ".weight_scale") in self.weight_map:
+            scale_name = name + ".weight_scale"
+        rows, cols = shape
+        if cols % FP8_BLOCK != 0:
+            raise PackFailure(f"{weight_name}: cols {cols} not divisible by {FP8_BLOCK}")
+        weight = self.raw(weight_name, shape, "F8_E4M3")
+        scale = np.asarray(self.raw(scale_name, (ceil_div(rows, FP8_BLOCK), cols // FP8_BLOCK), "F32"))
+        return ("fp8_e4m3", weight, expand_block128_rows(scale, rows))
 
 
 class RankPacks:
@@ -100,9 +152,25 @@ class RankPacks:
             array = np.ascontiguousarray(array)
             self.writers[rank].add(name, array.tobytes(), kind, array.shape)
 
+    def add_parts(self, rank, name, parts, kind, shape):
+        if rank in self.writers:
+            self.writers[rank].add_parts(name, [np.ascontiguousarray(part) for part in parts], kind, shape)
+
+    def linear(self, rank, name, item):
+        kind, weight, scale = item
+        if kind == "bf16":
+            self.add(rank, name, weight, "bf16")
+        else:
+            self.add(rank, name, weight, "fp8_e4m3")
+            self.add(rank, name + ".scale", scale, "f32")
+
     def replicated(self, name, array, kind):
         for rank in self.ranks:
             self.add(rank, name, array, kind)
+
+    def replicated_linear(self, name, item):
+        for rank in self.ranks:
+            self.linear(rank, name, item)
 
 
 def shared_rows(config):
@@ -115,6 +183,36 @@ def pad_rows(array, rows):
     return padded
 
 
+def rows_of(item, window):
+    kind, weight, scale = item
+    return (kind, weight[window], None if scale is None else scale[window])
+
+
+def concat_rows(items):
+    kind = items[0][0]
+    if any(item[0] != kind for item in items):
+        raise PackFailure("cannot concatenate mismatched codecs")
+    weight = np.concatenate([item[1] for item in items])
+    scale = None if kind == "bf16" else np.concatenate([item[2] for item in items])
+    return (kind, weight, scale)
+
+
+def columns_of(item, first, count):
+    kind, weight, scale = item
+    if kind == "bf16":
+        return (kind, weight[:, first:first + count], None)
+    if first % FP8_BLOCK != 0 or count % FP8_BLOCK != 0:
+        raise PackFailure(f"column slice [{first}, +{count}) not aligned to {FP8_BLOCK}")
+    return (kind, weight[:, first:first + count], scale[:, first // FP8_BLOCK:(first + count) // FP8_BLOCK])
+
+
+def resolve_text_config(raw):
+    cfg = dict(raw)
+    if isinstance(raw.get("text_config"), dict):
+        cfg.update(raw["text_config"])
+    return cfg
+
+
 def pack_layer(checkpoint, packs, config, layer):
     hidden, heads, head_dim = config["hidden_size"], config["num_attention_heads"], config["head_dim"]
     p = f"model.layers.{layer}."
@@ -125,69 +223,93 @@ def pack_layer(checkpoint, packs, config, layer):
     rank_heads = heads // TP
     if (layer + 1) % config["layer_group_size"] == 0:
         nope, rope, value, latent = config["qk_nope_head_dim"], config["qk_rope_head_dim"], config["v_head_dim"], config["kv_lora_rank"]
-        q = checkpoint.bf16(a + "q_proj.weight", (heads * (nope + rope), hidden))
-        kv_b = np.asarray(checkpoint.bf16(a + "kv_b_proj.weight", (heads * (nope + value), latent))).reshape(heads, nope + value, latent)
+        q_lora = config.get("q_lora_rank")
+        if q_lora is not None:
+            packs.replicated_linear(name + "mla_q_a", checkpoint.linear(a + "q_a_proj", (q_lora, hidden)))
+            packs.replicated(name + "mla_q_norm", checkpoint.bf16_as_f32(a + "q_a_layernorm.weight", (q_lora,)), "f32")
+            q_b = checkpoint.linear(a + "q_b_proj", (heads * (nope + rope), q_lora))
+        else:
+            q = checkpoint.linear(a + "q_proj", (heads * (nope + rope), hidden))
+        kv_b = dequantise_to_bf16(checkpoint.linear(a + "kv_b_proj", (heads * (nope + value), latent))).reshape(heads, nope + value, latent)
         gate = checkpoint.bf16(a + "g_proj.weight", (heads, hidden))
-        dense = checkpoint.bf16(a + "dense.weight", (hidden, heads * value))
-        packs.replicated(name + "mla_kv_a", checkpoint.bf16(a + "kv_a_proj_with_mqa.weight", (latent + rope, hidden)), "bf16")
+        dense = checkpoint.linear(a + "dense", (hidden, heads * value))
+        packs.replicated_linear(name + "mla_kv_a", checkpoint.linear(a + "kv_a_proj_with_mqa", (latent + rope, hidden)))
         packs.replicated(name + "mla_kv_norm", checkpoint.bf16_as_f32(a + "kv_a_layernorm.weight", (latent,)), "f32")
         for rank in packs.ranks:
             owned = slice(rank * rank_heads, (rank + 1) * rank_heads)
-            packs.add(rank, name + "mla_q", q[rank * rank_heads * (nope + rope):(rank + 1) * rank_heads * (nope + rope)], "bf16")
+            q_window = slice(rank * rank_heads * (nope + rope), (rank + 1) * rank_heads * (nope + rope))
+            if q_lora is not None:
+                packs.linear(rank, name + "mla_q_b", rows_of(q_b, q_window))
+            else:
+                packs.linear(rank, name + "mla_q", rows_of(q, q_window))
             packs.add(rank, name + "mla_uk", kv_b[owned, :nope, :].transpose(0, 2, 1), "bf16")
             packs.add(rank, name + "mla_uv", kv_b[owned, nope:, :], "bf16")
             packs.add(rank, name + "mla_gate", gate[owned], "bf16")
-            packs.add(rank, name + "mla_out", dense[:, rank * rank_heads * value:(rank + 1) * rank_heads * value], "bf16")
+            packs.linear(rank, name + "mla_out", columns_of(dense, rank * rank_heads * value, rank_heads * value))
     else:
         width = heads * head_dim
-        projections = {key: checkpoint.bf16(a + f"{key}_proj.weight", (width, hidden)) for key in ("q", "k", "v", "f", "g")}
+        projections = {key: checkpoint.linear(a + f"{key}_proj", (width, hidden)) for key in ("q", "k", "v", "f", "g")}
         convs = {key: np.asarray(checkpoint.bf16(a + f"{key}_conv1d.weight", (width, 1, config["short_conv_kernel_size"])))[:, 0, :]
                  for key in ("q", "k", "v")}
         beta = checkpoint.bf16(a + "b_proj.weight", (heads, hidden))
         a_log = checkpoint.f32(a + "A_log", (heads,))
         dt_bias = checkpoint.f32(a + "dt_bias", (width,))
-        out = checkpoint.bf16(a + "o_proj.weight", (hidden, width))
+        out = checkpoint.linear(a + "o_proj", (hidden, width))
         packs.replicated(name + "kda_norm", checkpoint.bf16(a + "o_norm.weight", (head_dim,)), "bf16")
         for rank in packs.ranks:
             rows = slice(rank * rank_heads * head_dim, (rank + 1) * rank_heads * head_dim)
-            packs.add(rank, name + "kda_qkv", np.concatenate([projections[key][rows] for key in ("q", "k", "v")]), "bf16")
-            packs.add(rank, name + "kda_f", projections["f"][rows], "bf16")
-            packs.add(rank, name + "kda_g", projections["g"][rows], "bf16")
+            packs.linear(rank, name + "kda_qkv", concat_rows([rows_of(projections[key], rows) for key in ("q", "k", "v")]))
+            packs.linear(rank, name + "kda_f", rows_of(projections["f"], rows))
+            packs.linear(rank, name + "kda_g", rows_of(projections["g"], rows))
             packs.add(rank, name + "kda_beta", beta[rank * rank_heads:(rank + 1) * rank_heads], "bf16")
             packs.add(rank, name + "kda_conv", np.concatenate([convs[key][rows] for key in ("q", "k", "v")]), "bf16")
             packs.add(rank, name + "kda_a_log", a_log[rank * rank_heads:(rank + 1) * rank_heads], "f32")
             packs.add(rank, name + "kda_dt_bias", dt_bias[rows], "f32")
-            packs.add(rank, name + "kda_out", out[:, rows], "bf16")
+            packs.linear(rank, name + "kda_out", columns_of(out, rank * rank_heads * head_dim, rank_heads * head_dim))
     m = p + "mlp."
     if layer < config["first_k_dense_replace"]:
         inter = config["intermediate_size"]
         ffn = inter // TP
-        gate = checkpoint.bf16(m + "gate_proj.weight", (inter, hidden))
-        up = checkpoint.bf16(m + "up_proj.weight", (inter, hidden))
-        down = checkpoint.bf16(m + "down_proj.weight", (hidden, inter))
+        gate = checkpoint.linear(m + "gate_proj", (inter, hidden))
+        up = checkpoint.linear(m + "up_proj", (inter, hidden))
+        down = checkpoint.linear(m + "down_proj", (hidden, inter))
         for rank in packs.ranks:
             window = slice(rank * ffn, (rank + 1) * ffn)
-            packs.add(rank, name + "ffn_gate_up", np.concatenate((gate[window], up[window])), "bf16")
-            packs.add(rank, name + "ffn_down", down[:, window], "bf16")
+            packs.linear(rank, name + "ffn_gate_up", concat_rows([rows_of(gate, window), rows_of(up, window)]))
+            packs.linear(rank, name + "ffn_down", columns_of(down, rank * ffn, ffn))
         return
     experts, inter, shared = config["num_experts"], config["moe_intermediate_size"], config["moe_shared_expert_intermediate_size"]
     local, rank_shared = experts // TP, shared // TP
     packs.replicated(name + "router", checkpoint.bf16(m + "gate.weight", (experts, hidden)), "bf16")
     packs.replicated(name + "expert_bias", checkpoint.f32(m + "gate.expert_bias", (experts,)), "f32")
-    shared_gate = checkpoint.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
-    shared_up = checkpoint.bf16(m + "shared_experts.up_proj.weight", (shared, hidden))
-    shared_down = checkpoint.bf16(m + "shared_experts.down_proj.weight", (hidden, shared))
+    shared_gate = dequantise_to_bf16(checkpoint.linear(m + "shared_experts.gate_proj", (shared, hidden)))
+    shared_up = dequantise_to_bf16(checkpoint.linear(m + "shared_experts.up_proj", (shared, hidden)))
+    shared_down = dequantise_to_bf16(checkpoint.linear(m + "shared_experts.down_proj", (hidden, shared)))
     for rank in packs.ranks:
         owned = range(rank * local, (rank + 1) * local)
         for key, target, shape in (("gate", "moe_w1", (inter, hidden)), ("up", "moe_w3", (inter, hidden)), ("down", "moe_w2", (hidden, inter))):
-            packs.add(rank, name + target, np.stack([checkpoint.bf16(m + f"experts.{expert}.{key}_proj.weight", shape) for expert in owned]), "bf16")
+            weights, scales, kind = [], [], None
+            for expert in owned:
+                ek, ew, es = checkpoint.linear(m + f"experts.{expert}.{key}_proj", shape)
+                if kind is None:
+                    kind = ek
+                elif kind != ek:
+                    raise PackFailure(f"layer {layer} expert {expert} {key}_proj: codec {ek} != {kind}")
+                weights.append(ew)
+                if es is not None:
+                    scales.append(es)
+            if kind == "bf16":
+                packs.add_parts(rank, name + target, weights, "bf16", (local,) + shape)
+            else:
+                packs.add_parts(rank, name + target, weights, "fp8_e4m3", (local,) + shape)
+                packs.add_parts(rank, name + target + ".scale", scales, "f32", (local, shape[0], shape[1] // FP8_BLOCK))
         window = slice(rank * rank_shared, (rank + 1) * rank_shared)
         padded = shared_rows(config)
         packs.add(rank, name + "shared_gate_up", np.concatenate((pad_rows(shared_gate[window], padded), pad_rows(shared_up[window], padded))), "bf16")
         packs.add(rank, name + "shared_down", pad_rows(np.ascontiguousarray(shared_down[:, window].T), padded).T, "bf16")
 
 
-def finish(packs, config, model, revision, contract_sha256):
+def finish(packs, config, model, codec, revision, contract_sha256):
     vocab_rows = config["vocab_size"] // TP
     local = config["num_experts"] // TP
     for rank in packs.ranks:
@@ -196,8 +318,10 @@ def finish(packs, config, model, revision, contract_sha256):
                   "vocab": config["vocab_size"], "vocab_first": rank * vocab_rows, "vocab_rows": vocab_rows,
                   "ffn_rows": config["intermediate_size"] // TP, "experts": config["num_experts"], "local_experts": local,
                   "expert_first": rank * local, "top_k": config["num_experts_per_tok"], "shared_rows": shared_rows(config)}
+        if config.get("q_lora_rank") is not None:
+            layout["q_lora_rank"] = config["q_lora_rank"]
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
-               "linear_codec": "bf16", "expert_codec": "bf16", "revision": revision, "contract_sha256": contract_sha256}
+               "linear_codec": codec, "expert_codec": codec, "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
         assemble(final, packs.payload(rank), NAMED_PACK_MAGIC, NAMED_PACK_VERSION, NAMED_PACK_ALIGN, fmt, layout,
                  packs.writers[rank].manifest)
@@ -215,7 +339,7 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
-    parser.add_argument("--model", choices=("ling3_flash", "ling3_fin"), required=True)
+    parser.add_argument("--model", choices=("ling3_flash", "ling3_fin", "ling32_air", "ling31_flash"), required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
     parser.add_argument("--ranks")
@@ -227,13 +351,17 @@ def main():
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
-    config = json.loads((args.checkpoint / "config.json").read_text())
-    if config.get("q_lora_rank") is not None or not config.get("no_kda_lora") or not config.get("rope_interleave") or \
-            config.get("gated_attention_proj_granularity_type") != "head_wise" or config.get("num_shared_experts") != 1:
-        raise PackFailure("this packer handles the Ling 3.0 flash layout: no q LoRA, no KDA LoRA, interleaved rope, head-wise gate, one shared expert")
+    raw_config = json.loads((args.checkpoint / "config.json").read_text())
+    config = resolve_text_config(raw_config)
+    q_lora = config.get("q_lora_rank")
+    if (args.model == "ling31_flash") != (q_lora is not None) or not config.get("no_kda_lora") or \
+            config.get("gated_attention_proj_granularity_type") != "head_wise" or config.get("num_shared_experts", 1) != 1:
+        raise PackFailure("checkpoint layout does not match the selected Ling 3.x model variant")
     if config["num_attention_heads"] % TP or config["num_experts"] % TP or config["vocab_size"] % TP or \
             config["intermediate_size"] % (TP * 64) or config["moe_shared_expert_intermediate_size"] % TP:
         raise PackFailure(f"heads, experts, vocab or intermediate sizes do not fit the TP{TP} layout")
+    qcfg = raw_config.get("quantization_config") or {}
+    codec = "fp8_block128" if qcfg.get("quant_method") == "fp8" else "bf16"
     receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
     revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
     contract = json.loads(args.contract.read_text())
@@ -251,7 +379,7 @@ def main():
     for layer in range(config["num_hidden_layers"]):
         pack_layer(checkpoint, packs, config, layer)
         print(f"layer {layer} packed", flush=True)
-    finish(packs, config, args.model, revision if revision != "unknown" else contract.get("source_revision", "unknown"), contract_sha256)
+    finish(packs, config, args.model, codec, revision if revision != "unknown" else contract.get("source_revision", "unknown"), contract_sha256)
     return 0
 
 

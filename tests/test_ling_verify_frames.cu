@@ -22,6 +22,8 @@
 
 static_assert(SolarOpen2Geometry<SPARK_SOLAR_OPEN2_TP16_STAGE_TP_DEGREE>::kVerifyRows == VF_MAX_FRAME && Ling3Geometry<SPARK_LING3_STAGE_TP_DEGREE>::kVerifyRows == VF_MAX_FRAME,
 	"the test frames reach the verify rows Solar Open 2 and Ling 3.0 serve");
+static_assert(LingShape<Ling31FlashGeometry<16u>>::kAttnLayers == 9u && LingShape<Ling31FlashGeometry<16u>>::kKdaLayers == 63u,
+	"Ling 3.1 Flash has 9 MLA and 63 KDA layers over TP16");
 
 struct SmallSolar : SolarOpen2Geometry<SPARK_SOLAR_OPEN2_TP16_STAGE_TP_DEGREE>
 {
@@ -33,6 +35,7 @@ struct SmallSolar : SolarOpen2Geometry<SPARK_SOLAR_OPEN2_TP16_STAGE_TP_DEGREE>
 	static constexpr uint32_t kGqaKvHeads = 1u;
 	static constexpr uint32_t kExperts = 16u;
 	static constexpr uint32_t kLocalExperts = 16u;
+	static constexpr bool kFp8Weights = false;
 	static const char *Tag(void) { return "solar-open-2"; }
 };
 
@@ -46,10 +49,62 @@ struct SmallLing3 : Ling3Geometry<SPARK_LING3_STAGE_TP_DEGREE>
 	static constexpr uint32_t kExperts = 32u;
 	static constexpr uint32_t kLocalExperts = 16u;
 	static constexpr uint32_t kMoeInter = 128u;
+	static constexpr bool kFp8Weights = false;
 	static float RoutedLimit(uint32_t layer) { return layer == 4u ? 4.0f : 0.0f; }
 	static float SharedLimit(uint32_t layer) { return layer == 3u ? 5.0f : 0.0f; }
 	static const char *Tag(void) { return "ling-3.0-flash"; }
 };
+
+struct SmallLing32Fp8 : SmallLing3
+{
+	static constexpr bool kFp8Weights = true;
+	static const char *Tag(void) { return "ling-3.2-air"; }
+};
+
+struct SmallLing31Flash : Ling31FlashGeometry<16u>
+{
+	static constexpr uint32_t kTpDegree = 1u;
+	static constexpr uint32_t kHidden = 2304u;
+	static constexpr uint32_t kLayers = 8u;
+	static constexpr uint32_t kDenseLayers = 1u;
+	static constexpr uint32_t kKdaHeads = 2u;
+	static constexpr uint32_t kMlaHeads = 2u;
+	static constexpr uint32_t kQLora = 256u;
+	static constexpr uint32_t kExperts = 32u;
+	static constexpr uint32_t kLocalExperts = 16u;
+	static constexpr uint32_t kMoeInter = 128u;
+	static constexpr uint32_t kSharedInter = 64u;
+	static constexpr uint32_t kSharedRows = 64u;
+	static constexpr bool kFp8Weights = true;
+	static float RoutedLimit(uint32_t layer) { return layer == 6u ? 10.0f : 0.0f; }
+	static float SharedLimit(uint32_t layer) { return layer == 5u ? 10.0f : 0.0f; }
+	static const char *Tag(void) { return "ling-3.1-flash"; }
+};
+
+static LingWeight Bf16Weight(uint64_t rows, uint64_t columns)
+{
+	LingWeight weight;
+	weight.weight = Matrix(rows, columns);
+	weight.scale = 0;
+	return weight;
+}
+
+static LingWeight Fp8Weight(uint64_t rows, uint64_t columns)
+{
+	const uint64_t payload = rows * columns, scales = rows * (columns / LG_FP8_BLOCK);
+	const float base = 1.0f / sqrtf((float)columns);
+	std::vector<uint8_t> w_host(payload);
+	std::vector<float> s_host(scales);
+	const uint32_t seed = vf_seed++;
+	LingWeight weight;
+	for ( uint64_t index = 0u; index < payload; ++index )
+		w_host[index] = E4m3(Uniform(seed, (uint32_t)index));
+	for ( uint64_t index = 0u; index < scales; ++index )
+		s_host[index] = base * (0.75f + 0.5f * ((float)(Mix(seed + (uint32_t)index) & 255u) / 255.0f));
+	weight.weight = Device(w_host.data(), w_host.size());
+	weight.scale = (const float *)Device(s_host.data(), s_host.size() * sizeof(float));
+	return weight;
+}
 
 template<class G>
 struct VfRig
@@ -76,6 +131,11 @@ struct VfRig
 		return (uint64_t)S::kKdaLayers * VF_SLOTS * (state->kda_state_bytes + state->kda_window_bytes);
 	}
 
+	static LingWeight Proj(uint64_t rows, uint64_t columns)
+	{
+		return G::kFp8Weights ? Fp8Weight(rows, columns) : Bf16Weight(rows, columns);
+	}
+
 	void Layer(LingLayer *layer, uint32_t index)
 	{
 		layer->input_norm = Norm(G::kHidden);
@@ -90,44 +150,51 @@ struct VfRig
 			}
 			else
 			{
-				layer->mla_q = Matrix(S::kMlaRankHeads * S::kQkDim, G::kHidden);
-				layer->mla_kv_a = Matrix(S::kSlot, G::kHidden);
+				if constexpr ( G::kQLora != 0u )
+				{
+					layer->mla_q_a = Proj(G::kQLora, G::kHidden);
+					layer->mla_q_norm = Norm(G::kQLora);
+					layer->mla_q_b = Proj((uint64_t)S::kMlaRankHeads * S::kQkDim, G::kQLora);
+				}
+				else
+					layer->mla_q = Proj((uint64_t)S::kMlaRankHeads * S::kQkDim, G::kHidden);
+				layer->mla_kv_a = Proj(S::kSlot, G::kHidden);
 				layer->mla_kv_norm = Norm(G::kLatent);
 				layer->mla_uk = Tensor<uint16_t>((uint64_t)S::kMlaRankHeads * G::kLatent * G::kNope, 1.7f / sqrtf((float)G::kNope), 0.0f);
 				layer->mla_uv = Tensor<uint16_t>((uint64_t)S::kMlaRankHeads * G::kValueDim * G::kLatent, 1.7f / sqrtf((float)G::kLatent), 0.0f);
 				layer->mla_gate = Matrix(S::kMlaRankHeads, G::kHidden);
-				layer->mla_out = Matrix(G::kHidden, S::kMlaRankHeads * G::kValueDim);
+				layer->mla_out = Proj(G::kHidden, (uint64_t)S::kMlaRankHeads * G::kValueDim);
 			}
 		}
 		else
 		{
-			layer->kda_qkv = Matrix(S::kKdaChannels, G::kHidden);
+			layer->kda_qkv = Proj(S::kKdaChannels, G::kHidden);
 			if ( G::kKdaRank != 0u )
 			{
-				layer->kda_f_a = Matrix(G::kKdaRank, G::kHidden);
-				layer->kda_g_a = Matrix(G::kKdaRank, G::kHidden);
+				layer->kda_f_a = Bf16Weight(G::kKdaRank, G::kHidden);
+				layer->kda_g_a = Bf16Weight(G::kKdaRank, G::kHidden);
 			}
-			layer->kda_f = Matrix(S::kKdaWidth, G::kKdaRank != 0u ? G::kKdaRank : G::kHidden);
-			layer->kda_g = Matrix(S::kKdaWidth, G::kKdaRank != 0u ? G::kKdaRank : G::kHidden);
+			layer->kda_f = Proj(S::kKdaWidth, G::kKdaRank != 0u ? G::kKdaRank : G::kHidden);
+			layer->kda_g = Proj(S::kKdaWidth, G::kKdaRank != 0u ? G::kKdaRank : G::kHidden);
 			layer->kda_beta = Matrix(S::kKdaRankHeads, G::kHidden);
 			layer->kda_conv = Tensor<uint16_t>((uint64_t)S::kKdaChannels * G::kConv, 0.5f, 0.0f);
 			layer->kda_a_log = Tensor<float>(S::kKdaRankHeads, 0.5f, 0.0f);
 			layer->kda_dt_bias = Tensor<float>(S::kKdaWidth, 0.5f, 0.0f);
 			layer->kda_norm = Tensor<uint16_t>(G::kKdaDim, 0.2f, 1.0f);
-			layer->kda_out = Matrix(G::kHidden, S::kKdaWidth);
+			layer->kda_out = Proj(G::kHidden, S::kKdaWidth);
 		}
 		if ( index < G::kDenseLayers )
 		{
-			layer->ffn_gate_up = Matrix(2u * VF_FFN, G::kHidden);
-			layer->ffn_down = Matrix(G::kHidden, VF_FFN);
+			layer->ffn_gate_up = Proj(2u * VF_FFN, G::kHidden);
+			layer->ffn_down = Proj(G::kHidden, VF_FFN);
 		}
 		else
 		{
 			layer->router = Matrix(G::kExperts, G::kHidden);
 			layer->expert_bias = Tensor<float>(G::kExperts, 0.05f, 0.0f);
-			layer->moe_w1 = Matrix((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
-			layer->moe_w3 = Matrix((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
-			layer->moe_w2 = Tensor<uint16_t>((uint64_t)G::kLocalExperts * G::kHidden * G::kMoeInter, 1.7f / sqrtf((float)G::kMoeInter), 0.0f);
+			layer->moe_w1 = Proj((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+			layer->moe_w3 = Proj((uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+			layer->moe_w2 = Proj((uint64_t)G::kLocalExperts * G::kHidden, G::kMoeInter);
 			layer->shared_gate_up = Matrix(2u * G::kSharedRows, G::kHidden);
 			layer->shared_down = Matrix(G::kHidden, G::kSharedRows);
 		}
@@ -656,6 +723,8 @@ int main(void)
 {
 	Check<SmallSolar>();
 	Check<SmallLing3>();
+	Check<SmallLing32Fp8>();
+	Check<SmallLing31Flash>();
 	if ( vf_failures != 0 )
 	{
 		printf("FAIL ling verify frames: %d failures\n", vf_failures);

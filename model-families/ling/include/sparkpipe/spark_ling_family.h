@@ -17,6 +17,7 @@ struct LingDefaults
 	static constexpr uint32_t kRope = 0u;
 	static constexpr uint32_t kValueDim = 0u;
 	static constexpr uint32_t kLatent = 0u;
+	static constexpr uint32_t kQLora = 0u;
 	static constexpr float kRopeTheta = 0.0f;
 	static constexpr uint32_t kGqaHeads = 0u;
 	static constexpr uint32_t kGqaKvHeads = 0u;
@@ -24,6 +25,54 @@ struct LingDefaults
 	static constexpr uint32_t kVerifyRows = 0u;
 	static float RoutedLimit(uint32_t layer) { (void)layer; return 0.0f; }
 	static float SharedLimit(uint32_t layer) { (void)layer; return 0.0f; }
+};
+
+template<uint32_t TP>
+struct Ling31FlashGeometry : LingDefaults
+{
+	static constexpr uint32_t kTpDegree = TP;
+	static constexpr uint32_t kHidden = 4096u;
+	static constexpr uint32_t kLayers = 72u;
+	static constexpr uint32_t kVocab = 157184u;
+	static constexpr uint32_t kPeriod = 8u;
+	static constexpr uint32_t kPhase = 7u;
+	static constexpr uint32_t kDenseLayers = 4u;
+	static constexpr uint32_t kKdaHeads = 64u;
+	static constexpr uint32_t kKdaDim = 128u;
+	static constexpr uint32_t kConv = 4u;
+	static constexpr float kKdaLowerBound = -5.0f;
+	static constexpr uint32_t kMlaHeads = 64u;
+	static constexpr uint32_t kNope = 128u;
+	static constexpr uint32_t kRope = 64u;
+	static constexpr uint32_t kValueDim = 128u;
+	static constexpr uint32_t kLatent = 512u;
+	static constexpr uint32_t kQLora = 1536u;
+	static constexpr float kRopeTheta = 6000000.0f;
+	static constexpr uint32_t kExperts = 512u;
+	static constexpr uint32_t kLocalExperts = kExperts / kTpDegree;
+	static constexpr uint32_t kTopK = 8u;
+	static constexpr uint32_t kGroups = 8u;
+	static constexpr uint32_t kTopkGroups = 4u;
+	static constexpr uint32_t kMoeInter = 1280u;
+	static constexpr uint32_t kSharedInter = 1280u;
+	static constexpr uint32_t kSharedRows = (kSharedInter / TP + 63u) / 64u * 64u;
+	static constexpr uint32_t kVerifyRows = 256u;
+	static constexpr float kRouteScale = 2.5f;
+	static constexpr uint32_t kPageSlots = 64u;
+	static float RoutedLimit(uint32_t layer) { return layer >= 65u ? 10.0f : 0.0f; }
+	static float SharedLimit(uint32_t layer) { return layer >= 64u ? 10.0f : 0.0f; }
+	static const char *Tag(void) { return "sparkpipe_ling31"; }
+	static const char *Name(void) { return "ling-3.1-flash"; }
+	static const char *ReportTag(void) { return "LING31-STATE"; }
+	static constexpr uint32_t kAttention = LING_ATTENTION_MLA;
+	static constexpr float kNormEpsilon = LG_EPSILON;
+	static constexpr bool kNormRoundFirst = true;
+	static constexpr bool kKdaDoubledBeta = false;
+	static constexpr bool kKdaConvRoundedSum = false;
+	static constexpr bool kKdaNormRoundOnce = true;
+	static constexpr bool kFfnSiluRounded = true;
+	static constexpr bool kExpertWeightAfterDown = true;
+	static constexpr bool kTpPartialsF32 = false;
 };
 
 template<class G>

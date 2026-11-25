@@ -591,6 +591,33 @@ class TestRaisDivisorReconstitution(unittest.TestCase):
             scored = json.loads(score_out.read_text(encoding="utf-8"))
             self.assertAlmostEqual(scored["fleet_rais_index"], res["index_after"], places=2)
 
+    def test_latest_release_model_specs_and_reconstitution(self) -> None:
+        hw = rais_score.resolve_hardware("16x-gb10-1x100g")
+        for alias, canonical in (
+            ("hy4_fp8", "hy4-fp8"),
+            ("ling31_flash", "ling-3.1-flash"),
+            ("ling32_air", "ling-3.2-air"),
+        ):
+            self.assertEqual(rais_score.resolve_model_name(alias), canonical)
+            spec = rais_score.MODEL_SPECS[canonical]
+            self.assertEqual(spec.fleet_weight, 0.0)
+            rf = rais_score.compute_roofline(spec, hw, batch=1, ctx=256)
+            self.assertGreater(rf.floor_tok_s, 10.0)
+        overlap = [
+            sample_valid_record("hy4-preview", scale=1.0),
+            sample_valid_record("hy4-fp8", scale=1.05),
+            sample_valid_record("ling-3.0-flash", scale=1.0),
+            sample_valid_record("ling-3.1-flash", scale=0.85),
+            sample_valid_record("ling-3.2-air", scale=1.15),
+        ]
+        rec = rais_score.reconstitute_basket(
+            overlap,
+            "16x-gb10-1x100g",
+            prev_weights={"hy4-preview": 0.5, "ling-3.0-flash": 0.5},
+            new_weights={"hy4-fp8": 0.4, "ling-3.1-flash": 0.35, "ling-3.2-air": 0.25},
+        )
+        self.assertAlmostEqual(rec["index_before"], rec["index_after"], places=4)
+
 
 if __name__ == "__main__":
     unittest.main()
