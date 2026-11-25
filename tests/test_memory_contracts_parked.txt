@@ -22,9 +22,17 @@
 # and stage_lane.py's per-model hidden sizes, which equal each contract's
 # hidden dimension (the GLM-literal rule matches 6144 for HY4 and MiMo Pro
 # and the Qwen GDN value width).
+# Re-pinned 2026-11-25: mesh_round_bench's six raw widths became sizeof
+# and its three entries are pruned; the GLM 5.3 drafter modules take the
+# target's hidden size, vocab and DSpark width from the model contracts.
+# Parked as new debt: the GLM 5.3 Flash drafter's own MLP width, which its
+# pack's checkpoint config fixes and no contract describes, and
+# rais_score.py's per-model hidden sizes (GLM 5.3, MiMo Pro, two HY4
+# entries and K-EXAONE 2.0), a table like stage_lane.py's.
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 12288 is outside the model contract
 1 model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h: GLM model literal 154880 is outside the model contract
 5 tools/dsv41_flash_experts_manifest.c: memcpy uses a direct size/count literal
+1 modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu: GLM model literal 12288 is outside the model contract
 1 node/weightd_spawn.c: fread uses a direct size/count literal
 1 qualification/dsv4/performance/tp4_b1_20260814/indexer_post_fusion_probe_da7f/probe.cu: GLM model literal 12288 is outside the model contract
 1 runtime/spark_weightd.c: fread uses a direct size/count literal
@@ -115,11 +123,9 @@
 1 tools/ling3_tp16_pack.py: GLM model literal 576 is outside the model contract
 1 tools/mesh_register_attach_repro.c: memcpy uses a direct size/count literal
 1 tools/mesh_register_repro.c: memset uses a direct size/count literal
-2 tools/mesh_round_bench.cu: cudaMalloc uses a raw byte-width multiplier
-2 tools/mesh_round_bench.cu: cudaMemcpy uses a raw byte-width multiplier
-2 tools/mesh_round_bench.cu: malloc uses a raw byte-width multiplier
 9 tools/multi_dev_smoke.c: memcpy uses a direct size/count literal
 1 tools/qwen4_flash_pack_stamp_check.py: GLM model literal 6144 is outside the model contract
+5 tools/rais_score.py: GLM model literal 6144 is outside the model contract
 3 tools/stage_lane.py: GLM model literal 6144 is outside the model contract
 1 tools/t1_reference_glm53full.py: GLM model literal 12288 is outside the model contract
 1 tools/t1_reference_glm53full.py: GLM model literal 6144 is outside the model contract
