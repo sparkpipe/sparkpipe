@@ -22,7 +22,8 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the DFT3 wire format 
 #define DRAFT_SERVER_MAGIC_BYTES 4u
 #define DRAFT_SERVER_NS_PER_MS UINT64_C(1000000)
 #define DRAFT_SERVER_CLOSED (-1)
-#define DRAFT_SERVER_RX_BUFFER_BYTES 65536u
+#define DRAFT_SERVER_RX_BUFFER_BYTES 262144u
+#define DRAFT_SERVER_SOCKBUF_BYTES (512 * 1024)
 
 #define DRAFT_SERVER_PHASE_IDLE 0u
 #define DRAFT_SERVER_PHASE_HEADER 1u
@@ -58,6 +59,8 @@ struct SparkDraftServer
 	uint64_t reply_bytes;
 	uint64_t reply_sent;
 	uint32_t reply_counts;
+	uint32_t reply_pending_counts;
+	uint32_t batch_cork;
 	SparkDraftServerRequest request;
 	SparkDraftServerStats stats;
 };
@@ -125,6 +128,10 @@ static void DraftServerDrop(SparkDraftServer *server)
 	server->body_got = 0u;
 	server->rx_head = 0u;
 	server->rx_tail = 0u;
+	server->reply_bytes = 0u;
+	server->reply_sent = 0u;
+	server->reply_pending_counts = 0u;
+	server->batch_cork = 0u;
 	server->deadline_ns = 0u;
 	server->close_after_send = 0u;
 }
@@ -145,6 +152,7 @@ static uint64_t DraftServerDeadline(const SparkDraftServer *server)
 static void DraftServerAccept(SparkDraftServer *server)
 {
 	int enabled = 1;
+	int buf_bytes = DRAFT_SERVER_SOCKBUF_BYTES;
 	const int fd = accept(server->listen_fd, 0, 0);
 	if ( fd < 0 )
 		return;
@@ -155,6 +163,8 @@ static void DraftServerAccept(SparkDraftServer *server)
 		return;
 	}
 	DraftServerQuickAck(fd);
+	(void)setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf_bytes, (socklen_t)sizeof(buf_bytes));
+	(void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_bytes, (socklen_t)sizeof(buf_bytes));
 #ifdef SO_NOSIGPIPE
 	(void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, (socklen_t)sizeof(enabled));
 #endif
@@ -164,10 +174,46 @@ static void DraftServerAccept(SparkDraftServer *server)
 	DraftServerAwaitHeader(server);
 }
 
+static void DraftServerSend(SparkDraftServer *server);
+
 static void DraftServerBuildReply(SparkDraftServer *server, uint32_t status, const SparkDraftBridgeNode *nodes, uint32_t node_count,
 	const SparkDraftBridgeProposalInfo *info, uint64_t sequence_id, uint64_t generation, uint32_t elapsed_us)
 {
-	uint8_t *cursor = server->reply;
+	const uint64_t record_bytes = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES +
+		(uint64_t)node_count * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES + SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES;
+	uint8_t *cursor;
+	if ( server->reply_sent == server->reply_bytes )
+	{
+		server->reply_sent = 0u;
+		server->reply_bytes = 0u;
+	}
+	if ( server->reply_bytes + record_bytes > server->reply_capacity )
+	{
+		if ( server->reply_sent != 0u )
+		{
+			const uint64_t pending = server->reply_bytes - server->reply_sent;
+			memmove(server->reply, server->reply + server->reply_sent, (size_t)pending);
+			server->reply_bytes = pending;
+			server->reply_sent = 0u;
+		}
+		if ( server->reply_bytes + record_bytes > server->reply_capacity )
+		{
+			const uint64_t needed = server->reply_bytes + record_bytes;
+			uint8_t *grown = (uint8_t *)realloc(server->reply, (size_t)needed);
+			if ( grown != 0 )
+			{
+				server->reply = grown;
+				server->reply_capacity = needed;
+			}
+			else if ( server->reply_bytes != 0u )
+			{
+				DraftServerSend(server);
+				if ( server->socket_fd == DRAFT_SERVER_CLOSED )
+					return;
+			}
+		}
+	}
+	cursor = server->reply + server->reply_bytes;
 	memcpy(cursor, DRAFT_SERVER_MAGIC, DRAFT_SERVER_MAGIC_BYTES);
 	cursor += DRAFT_SERVER_MAGIC_BYTES;
 	DraftServerPutU32(cursor, status);
@@ -193,7 +239,12 @@ static void DraftServerBuildReply(SparkDraftServer *server, uint32_t status, con
 	DraftServerPutU32(cursor + 12u, 0u);
 	cursor += 16u;
 	server->reply_bytes = (uint64_t)(cursor - server->reply);
-	server->reply_sent = 0u;
+	server->reply_pending_counts += server->reply_counts;
+	if ( server->batch_cork != 0u && server->rx_head < server->rx_tail && server->close_after_send == 0u )
+	{
+		DraftServerAwaitHeader(server);
+		return;
+	}
 	server->phase = DRAFT_SERVER_PHASE_SEND;
 	server->deadline_ns = DraftServerDeadline(server);
 }
@@ -339,11 +390,19 @@ static void DraftServerSend(SparkDraftServer *server)
 		if ( put < 0 && errno == EINTR )
 			continue;
 		if ( put < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
+		{
+			server->phase = DRAFT_SERVER_PHASE_SEND;
+			if ( server->deadline_ns == 0u )
+				server->deadline_ns = DraftServerDeadline(server);
 			return;
+		}
 		DraftServerDrop(server);
 		return;
 	}
-	server->stats.answered += server->reply_counts;
+	server->reply_bytes = 0u;
+	server->reply_sent = 0u;
+	server->stats.answered += server->reply_pending_counts;
+	server->reply_pending_counts = 0u;
 	if ( server->close_after_send != 0u )
 	{
 		server->close_after_send = 0u;
@@ -352,7 +411,8 @@ static void DraftServerSend(SparkDraftServer *server)
 		DraftServerDrop(server);
 		return;
 	}
-	DraftServerAwaitHeader(server);
+	if ( server->phase == DRAFT_SERVER_PHASE_SEND )
+		DraftServerAwaitHeader(server);
 }
 
 SparkStatus SparkDraftServerCreate(const SparkDraftServerConfig *config, SparkDraftServer **server_out)
@@ -459,7 +519,8 @@ SparkStatus SparkDraftServerAdvance(SparkDraftServer *server, SparkDraftServerRe
 {
 	if ( server == 0 || request_out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	DraftServerAccept(server);
+	if ( server->socket_fd == DRAFT_SERVER_CLOSED || server->rx_head == server->rx_tail )
+		DraftServerAccept(server);
 	for ( ;; )
 	{
 		const uint32_t phase = server->phase;
@@ -475,13 +536,21 @@ SparkStatus SparkDraftServerAdvance(SparkDraftServer *server, SparkDraftServerRe
 		if ( phase == DRAFT_SERVER_PHASE_HEADER )
 		{
 			if ( DraftServerReceive(server, server->header, sizeof(server->header), &server->header_got) == 0u )
+			{
+				if ( server->socket_fd != DRAFT_SERVER_CLOSED && server->reply_sent < server->reply_bytes )
+					DraftServerSend(server);
 				return SPARK_STATUS_PENDING;
+			}
 			DraftServerHeaderDone(server);
 		}
 		else if ( phase == DRAFT_SERVER_PHASE_BODY )
 		{
 			if ( DraftServerReceive(server, server->body, server->body_expected, &server->body_got) == 0u )
+			{
+				if ( server->socket_fd != DRAFT_SERVER_CLOSED && server->reply_sent < server->reply_bytes )
+					DraftServerSend(server);
 				return SPARK_STATUS_PENDING;
+			}
 			if ( DraftServerBodyDone(server, request_out) != 0u )
 				return SPARK_STATUS_OK;
 		}
@@ -492,6 +561,21 @@ SparkStatus SparkDraftServerAdvance(SparkDraftServer *server, SparkDraftServerRe
 				return SPARK_STATUS_PENDING;
 		}
 	}
+}
+
+void SparkDraftServerBeginBatch(SparkDraftServer *server)
+{
+	if ( server != 0 )
+		server->batch_cork = 1u;
+}
+
+void SparkDraftServerFlushBatch(SparkDraftServer *server)
+{
+	if ( server == 0 )
+		return;
+	server->batch_cork = 0u;
+	if ( server->socket_fd != DRAFT_SERVER_CLOSED && server->reply_sent < server->reply_bytes )
+		DraftServerSend(server);
 }
 
 SparkStatus SparkDraftServerAnswer(SparkDraftServer *server, uint32_t server_status, const SparkDraftBridgeNode *nodes, uint32_t node_count,
@@ -508,14 +592,16 @@ SparkStatus SparkDraftServerAnswer(SparkDraftServer *server, uint32_t server_sta
 			server->port, node_count, server_status, server->request.node_capacity);
 		server->reply_counts = 0u;
 		DraftServerBuildReply(server, SPARK_DRAFT_BRIDGE_SERVER_STATUS_INTERNAL, 0, 0u, 0, server->request.sequence_id, server->request.generation, 0u);
-		DraftServerSend(server);
+		if ( server->phase == DRAFT_SERVER_PHASE_SEND )
+			DraftServerSend(server);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	elapsed = (SparkMonotonicNs() - server->request.received_ns) / 1000u;
 	server->reply_counts = 1u;
 	DraftServerBuildReply(server, server_status, nodes, node_count, info, server->request.sequence_id, server->request.generation,
 		elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed);
-	DraftServerSend(server);
+	if ( server->phase == DRAFT_SERVER_PHASE_SEND )
+		DraftServerSend(server);
 	return SPARK_STATUS_OK;
 }
 

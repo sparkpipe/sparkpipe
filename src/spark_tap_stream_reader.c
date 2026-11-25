@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,8 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the tap stream is lit
 
 #define TAP_READER_CLOSED (-1)
 #define TAP_READER_NS_PER_MS UINT64_C(1000000)
+#define TAP_READER_RX_BUFFER_BYTES 65536u
+#define TAP_READER_SOCKBUF_BYTES (512 * 1024)
 #define TAP_READER_FORM_OUTPUT 1u
 #define TAP_READER_FORM_FINAL 3u
 #define TAP_READER_FINAL_NAME "final"
@@ -45,6 +48,9 @@ struct SparkTapStreamReader
 	SparkTapStreamHello hello;
 	SparkTapStreamFrame frame;
 	uint64_t got;
+	uint8_t *rx_buffer;
+	uint64_t rx_head;
+	uint64_t rx_tail;
 	uint8_t *payload;
 	uint64_t payload_capacity;
 	uint64_t row_bytes;
@@ -114,6 +120,16 @@ SparkStatus SparkTapStreamReaderParseEntries(const char *text, SparkTapStreamEnt
 	return SPARK_STATUS_OK;
 }
 
+static void TapReaderQuickAck(int fd)
+{
+#ifdef TCP_QUICKACK
+	int enabled = 1;
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &enabled, (socklen_t)sizeof(enabled));
+#else
+	(void)fd;
+#endif
+}
+
 static void TapReaderClose(SparkTapStreamReader *reader)
 {
 	if ( reader->fd != TAP_READER_CLOSED )
@@ -121,6 +137,8 @@ static void TapReaderClose(SparkTapStreamReader *reader)
 	reader->fd = TAP_READER_CLOSED;
 	reader->phase = TAP_READER_PHASE_IDLE;
 	reader->got = 0u;
+	reader->rx_head = 0u;
+	reader->rx_tail = 0u;
 	reader->deadline_ns = 0u;
 }
 
@@ -243,13 +261,41 @@ static int TapReaderReadSome(SparkTapStreamReader *reader, uint8_t *destination,
 {
 	while ( reader->got < want )
 	{
-		const ssize_t part = reader->file != 0u ? read(reader->fd, destination + reader->got, (size_t)(want - reader->got)) :
-			recv(reader->fd, destination + reader->got, (size_t)(want - reader->got), 0);
-		if ( part > 0 )
+		const uint64_t need = want - reader->got;
+		const uint64_t avail = reader->rx_tail - reader->rx_head;
+		ssize_t part;
+		if ( avail != 0u )
 		{
+			const uint64_t take = avail < need ? avail : need;
 			if ( reader->deadline_ns == 0u && reader->file == 0u )
 				reader->deadline_ns = SparkMonotonicNs() + (uint64_t)reader->io_timeout_ms * TAP_READER_NS_PER_MS;
-			reader->got += (uint64_t)part;
+			memcpy(destination + reader->got, reader->rx_buffer + reader->rx_head, (size_t)take);
+			reader->got += take;
+			reader->rx_head += take;
+			if ( reader->rx_head == reader->rx_tail )
+			{
+				reader->rx_head = 0u;
+				reader->rx_tail = 0u;
+			}
+			continue;
+		}
+		reader->rx_head = 0u;
+		reader->rx_tail = 0u;
+		if ( reader->file != 0u || need >= TAP_READER_RX_BUFFER_BYTES || reader->rx_buffer == 0 )
+			part = reader->file != 0u ? read(reader->fd, destination + reader->got, (size_t)need) :
+				recv(reader->fd, destination + reader->got, (size_t)need, 0);
+		else
+			part = recv(reader->fd, reader->rx_buffer, TAP_READER_RX_BUFFER_BYTES, 0);
+		if ( part > 0 )
+		{
+			if ( reader->file == 0u )
+				TapReaderQuickAck(reader->fd);
+			if ( reader->deadline_ns == 0u && reader->file == 0u )
+				reader->deadline_ns = SparkMonotonicNs() + (uint64_t)reader->io_timeout_ms * TAP_READER_NS_PER_MS;
+			if ( reader->file != 0u || need >= TAP_READER_RX_BUFFER_BYTES || reader->rx_buffer == 0 )
+				reader->got += (uint64_t)part;
+			else
+				reader->rx_tail = (uint64_t)part;
 			continue;
 		}
 		if ( part < 0 && errno == EINTR )
@@ -271,6 +317,8 @@ static SparkStatus TapReaderNonBlocking(int fd)
 
 static void TapReaderAccept(SparkTapStreamReader *reader)
 {
+	int enabled = 1;
+	int buf_bytes = TAP_READER_SOCKBUF_BYTES;
 	const int fd = accept(reader->listen_fd, 0, 0);
 	if ( fd < 0 )
 		return;
@@ -279,6 +327,9 @@ static void TapReaderAccept(SparkTapStreamReader *reader)
 		(void)close(fd);
 		return;
 	}
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, (socklen_t)sizeof(enabled));
+	TapReaderQuickAck(fd);
+	(void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_bytes, (socklen_t)sizeof(buf_bytes));
 	TapReaderClose(reader);
 	reader->fd = fd;
 	reader->phase = TAP_READER_PHASE_HELLO;
@@ -349,10 +400,14 @@ SparkStatus SparkTapStreamReaderCreate(const SparkTapStreamReaderConfig *config,
 		reader->phase = TAP_READER_PHASE_HELLO;
 		(void)snprintf(reader->label, sizeof(reader->label), "%s", config->path);
 	}
-	else if ( TapReaderListen(reader, config->host, config->port) != SPARK_STATUS_OK )
+	else
 	{
-		SparkTapStreamReaderDestroy(reader);
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		reader->rx_buffer = (uint8_t *)malloc(TAP_READER_RX_BUFFER_BYTES);
+		if ( reader->rx_buffer == 0 || TapReaderListen(reader, config->host, config->port) != SPARK_STATUS_OK )
+		{
+			SparkTapStreamReaderDestroy(reader);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
 	}
 	if ( reader->file == 0u )
 		(void)snprintf(reader->label, sizeof(reader->label), "port %u", reader->port);
@@ -368,6 +423,7 @@ void SparkTapStreamReaderDestroy(SparkTapStreamReader *reader)
 		(void)close(reader->fd);
 	if ( reader->listen_fd != TAP_READER_CLOSED )
 		(void)close(reader->listen_fd);
+	free(reader->rx_buffer);
 	free(reader->payload);
 	free(reader);
 }
@@ -398,7 +454,7 @@ SparkStatus SparkTapStreamReaderAdvance(SparkTapStreamReader *reader, SparkTapSt
 {
 	if ( reader == 0 || frame_out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( reader->file == 0u )
+	if ( reader->file == 0u && (reader->fd == TAP_READER_CLOSED || reader->rx_head == reader->rx_tail) )
 		TapReaderAccept(reader);
 	for ( ;; )
 	{

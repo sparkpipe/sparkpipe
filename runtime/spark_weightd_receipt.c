@@ -398,21 +398,36 @@ SparkStatus SparkWeightdReceiptRecord(const char *pack_path,int32_t fd,const str
 	return(receipt_write_atomic(fallback,text,bytes));
 }
 
+#define STREAM_SLOT_EMPTY 0u
+#define STREAM_SLOT_FULL 1u
+
+typedef struct StreamSlot
+{
+	uint8_t *buffer;
+	uint64_t chunk;
+	uint64_t length;
+	uint32_t state;
+	SparkStatus status;
+} StreamSlot;
+
 typedef struct StreamState
 {
 	pthread_mutex_t lock;
 	pthread_cond_t changed;
-	uint8_t *buffers[SPARK_WEIGHTD_STREAM_DEPTH];
-	uint64_t lengths[SPARK_WEIGHTD_STREAM_DEPTH];
+	StreamSlot slots[SPARK_WEIGHTD_STREAM_DEPTH];
 	uint64_t bytes;
-	uint64_t produced;
-	uint64_t consumed;
 	uint64_t chunks;
+	uint32_t readers;
 	int32_t fd;
 	int32_t direct;
 	int32_t stop;
-	SparkStatus status;
 } StreamState;
+
+typedef struct StreamReaderArg
+{
+	StreamState *state;
+	uint32_t index;
+} StreamReaderArg;
 
 static SparkStatus stream_read(StreamState *state,uint8_t *buffer,uint64_t offset,uint64_t want)
 {
@@ -434,13 +449,15 @@ static SparkStatus stream_read(StreamState *state,uint8_t *buffer,uint64_t offse
 
 static void *stream_reader(void *argument)
 {
-	StreamState *state = (StreamState *)argument;
+	StreamReaderArg *arg = (StreamReaderArg *)argument;
+	StreamState *state = arg->state;
 	uint64_t index,offset,want;
 	SparkStatus status = SPARK_STATUS_OK;
-	for (index=0u; index<state->chunks && status == SPARK_STATUS_OK; index++)
+	for (index=arg->index; index<state->chunks; index+=state->readers)
 	{
+		StreamSlot *slot = &state->slots[index % SPARK_WEIGHTD_STREAM_DEPTH];
 		(void)pthread_mutex_lock(&state->lock);
-		while ( state->stop == 0 && (state->produced - state->consumed) >= SPARK_WEIGHTD_STREAM_DEPTH )
+		while ( state->stop == 0 && slot->state != STREAM_SLOT_EMPTY )
 			(void)pthread_cond_wait(&state->changed,&state->lock);
 		if ( state->stop != 0 )
 		{
@@ -450,20 +467,16 @@ static void *stream_reader(void *argument)
 		(void)pthread_mutex_unlock(&state->lock);
 		offset = index * SPARK_WEIGHTD_STREAM_CHUNK_BYTES;
 		want = state->bytes - offset < SPARK_WEIGHTD_STREAM_CHUNK_BYTES ? state->bytes - offset : SPARK_WEIGHTD_STREAM_CHUNK_BYTES;
-		status = stream_read(state,state->buffers[index % SPARK_WEIGHTD_STREAM_DEPTH],offset,want);
+		status = stream_read(state,slot->buffer,offset,want);
 		(void)pthread_mutex_lock(&state->lock);
-		if ( status == SPARK_STATUS_OK )
-		{
-			state->lengths[index % SPARK_WEIGHTD_STREAM_DEPTH] = want;
-			state->produced++;
-		}
-		else
-		{
-			state->status = status;
-			state->stop = 1;
-		}
+		slot->chunk = index;
+		slot->length = want;
+		slot->status = status;
+		slot->state = STREAM_SLOT_FULL;
 		(void)pthread_cond_broadcast(&state->changed);
 		(void)pthread_mutex_unlock(&state->lock);
+		if ( status != SPARK_STATUS_OK )
+			return(0);
 	}
 	return(0);
 }
@@ -474,30 +487,33 @@ static SparkStatus stream_consume(StreamState *state,SparkWeightdStreamSink sink
 	SparkStatus status = SPARK_STATUS_OK;
 	for (index=0u; index<state->chunks && status == SPARK_STATUS_OK; index++)
 	{
+		StreamSlot *slot = &state->slots[index % SPARK_WEIGHTD_STREAM_DEPTH];
 		mark = receipt_now(CLOCK_MONOTONIC);
 		(void)pthread_mutex_lock(&state->lock);
-		while ( state->stop == 0 && state->produced <= index )
+		while ( !(slot->state == STREAM_SLOT_FULL && slot->chunk == index) )
 			(void)pthread_cond_wait(&state->changed,&state->lock);
-		if ( state->produced <= index )
-			status = state->status != SPARK_STATUS_OK ? state->status : SPARK_STATUS_IO_ERROR;
+		status = slot->status;
 		(void)pthread_mutex_unlock(&state->lock);
 		stats->wait_ns += receipt_now(CLOCK_MONOTONIC) - mark;
-		if ( status != SPARK_STATUS_OK )
-			break;
-		mark = receipt_now(CLOCK_MONOTONIC);
-		status = sink(context,state->buffers[index % SPARK_WEIGHTD_STREAM_DEPTH],index * SPARK_WEIGHTD_STREAM_CHUNK_BYTES,state->lengths[index % SPARK_WEIGHTD_STREAM_DEPTH]);
-		stats->sink_ns += receipt_now(CLOCK_MONOTONIC) - mark;
-		(void)pthread_mutex_lock(&state->lock);
 		if ( status == SPARK_STATUS_OK )
 		{
-			state->consumed++;
-			stats->bytes += state->lengths[index % SPARK_WEIGHTD_STREAM_DEPTH];
+			mark = receipt_now(CLOCK_MONOTONIC);
+			status = sink(context,slot->buffer,index * SPARK_WEIGHTD_STREAM_CHUNK_BYTES,slot->length);
+			stats->sink_ns += receipt_now(CLOCK_MONOTONIC) - mark;
 		}
+		(void)pthread_mutex_lock(&state->lock);
+		if ( status == SPARK_STATUS_OK )
+			stats->bytes += slot->length;
 		else
 			state->stop = 1;
+		slot->state = STREAM_SLOT_EMPTY;
 		(void)pthread_cond_broadcast(&state->changed);
 		(void)pthread_mutex_unlock(&state->lock);
 	}
+	(void)pthread_mutex_lock(&state->lock);
+	state->stop = 1;
+	(void)pthread_cond_broadcast(&state->changed);
+	(void)pthread_mutex_unlock(&state->lock);
 	return(status);
 }
 
@@ -530,24 +546,27 @@ static SparkStatus stream_open(StreamState *state,const char *pack_path,int32_t 
 SparkStatus SparkWeightdPackStream(const char *pack_path,int32_t fd,uint64_t bytes,SparkWeightdStreamSink sink,void *context,SparkWeightdStreamStats *stats)
 {
 	StreamState state;
-	pthread_t reader;
+	StreamReaderArg args[SPARK_WEIGHTD_STREAM_READERS];
+	pthread_t readers[SPARK_WEIGHTD_STREAM_READERS];
 	SparkStatus status;
 	uint64_t start;
-	uint32_t i,allocated = 0u;
+	uint32_t i,allocated = 0u,launched = 0u,slot_count;
 	if ( pack_path == 0 || fd < 0 || bytes == 0u || sink == 0 || stats == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(stats,0,sizeof(*stats));
 	memset(&state,0,sizeof(state));
 	state.bytes = bytes;
 	state.chunks = (bytes + SPARK_WEIGHTD_STREAM_CHUNK_BYTES - 1u) / SPARK_WEIGHTD_STREAM_CHUNK_BYTES;
+	state.readers = state.chunks < SPARK_WEIGHTD_STREAM_READERS ? (uint32_t)state.chunks : SPARK_WEIGHTD_STREAM_READERS;
+	slot_count = state.chunks < SPARK_WEIGHTD_STREAM_DEPTH ? (uint32_t)state.chunks : SPARK_WEIGHTD_STREAM_DEPTH;
 	start = receipt_now(CLOCK_MONOTONIC);
 	status = stream_open(&state,pack_path,fd);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	stats->direct = (uint32_t)state.direct;
-	for (i=0u; i<SPARK_WEIGHTD_STREAM_DEPTH && status == SPARK_STATUS_OK; i++)
+	for (i=0u; i<slot_count && status == SPARK_STATUS_OK; i++)
 	{
-		if ( posix_memalign((void **)&state.buffers[i],SPARK_WEIGHTD_STREAM_ALIGN,(size_t)SPARK_WEIGHTD_STREAM_CHUNK_BYTES) != 0 )
+		if ( posix_memalign((void **)&state.slots[i].buffer,SPARK_WEIGHTD_STREAM_ALIGN,(size_t)SPARK_WEIGHTD_STREAM_CHUNK_BYTES) != 0 )
 			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 		else
 			allocated++;
@@ -556,18 +575,33 @@ SparkStatus SparkWeightdPackStream(const char *pack_path,int32_t fd,uint64_t byt
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
-		if ( pthread_create(&reader,0,stream_reader,&state) != 0 )
-			status = SPARK_STATUS_INTERNAL_ERROR;
+		for (i=0u; i<state.readers; i++)
+		{
+			args[i].state = &state;
+			args[i].index = i;
+			if ( pthread_create(&readers[i],0,stream_reader,&args[i]) != 0 )
+			{
+				status = SPARK_STATUS_INTERNAL_ERROR;
+				break;
+			}
+			launched++;
+		}
+		if ( status == SPARK_STATUS_OK )
+			status = stream_consume(&state,sink,context,stats);
 		else
 		{
-			status = stream_consume(&state,sink,context,stats);
-			(void)pthread_join(reader,0);
+			(void)pthread_mutex_lock(&state.lock);
+			state.stop = 1;
+			(void)pthread_cond_broadcast(&state.changed);
+			(void)pthread_mutex_unlock(&state.lock);
 		}
+		for (i=0u; i<launched; i++)
+			(void)pthread_join(readers[i],0);
 		(void)pthread_cond_destroy(&state.changed);
 		(void)pthread_mutex_destroy(&state.lock);
 	}
 	for (i=0u; i<allocated; i++)
-		free(state.buffers[i]);
+		free(state.slots[i].buffer);
 	if ( state.direct != 0 )
 		(void)close(state.fd);
 	stats->elapsed_ns = receipt_now(CLOCK_MONOTONIC) - start;

@@ -862,16 +862,13 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
     arena->epoch_device = 0;
 }
 
-static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
+static SparkStatus SparkWeightdVmmReserveChunks(uint64_t arena_bytes,
     SparkWeightdArena *arena)
 {
     SparkDeviceAddress base = 0;
     uint64_t granularity = 0;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
-    uint32_t created = 0u;
-    uint32_t mapped = 0u;
-    uint32_t index;
 
     if (SparkWeightdDeviceOpen() != SPARK_STATUS_OK ||
         SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_RECOMMENDED,
@@ -906,49 +903,47 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
         arena->chunk_refs = 0;
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
-    for (index = 0u; index < chunk_count; index++)
+    arena->device_base = (void *)(uintptr_t)base;
+    arena->virtual_bytes = chunk_count * chunk_bytes;
+    arena->chunk_bytes = chunk_bytes;
+    arena->chunk_count = chunk_count;
+    arena->staging = (uint8_t *)malloc(SPARK_WEIGHTD_ARENA_STAGING_BYTES);
+    if (arena->staging == 0)
+    {
+        SparkWeightdVmmRelease(arena);
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkWeightdVmmEnsureRange(SparkWeightdArena *arena,
+    uint64_t offset, uint64_t bytes)
+{
+    SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)arena->device_base;
+    uint32_t first, last, index;
+
+    if (bytes == 0u)
+        return SPARK_STATUS_OK;
+    first = (uint32_t)(offset / arena->chunk_bytes);
+    last = (uint32_t)((offset + bytes - 1ull) / arena->chunk_bytes);
+    for (index = first; index <= last && index < arena->chunk_count; index++)
     {
         SparkDeviceMemoryHandle handle = 0u;
-        if (SparkDeviceMemoryCreate(&handle, chunk_bytes, "weightd arena") !=
+        if (arena->chunk_handles[index] != 0)
+            continue;
+        if (SparkDeviceMemoryCreate(&handle, arena->chunk_bytes, "weightd arena") !=
+            SPARK_STATUS_OK)
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+        if (SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * arena->chunk_bytes,
+                arena->chunk_bytes, handle, 0u, SPARK_WEIGHTD_DEVICE_READ_WRITE) !=
             SPARK_STATUS_OK)
         {
-            break;
+            (void)SparkDeviceMemoryRelease(handle);
+            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         arena->chunk_handles[index] = (void *)(uintptr_t)handle;
-        created++;
-        if (SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * chunk_bytes,
-                chunk_bytes, handle, 0u, SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK)
-        {
-            break;
-        }
-        mapped++;
     }
-    if (mapped == chunk_count)
-    {
-        arena->device_base = (void *)(uintptr_t)base;
-        arena->virtual_bytes = chunk_count * chunk_bytes;
-        arena->chunk_bytes = chunk_bytes;
-        arena->chunk_count = chunk_count;
-        arena->staging = (uint8_t *)malloc(SPARK_WEIGHTD_ARENA_STAGING_BYTES);
-        if (arena->staging != 0)
-        {
-            return SPARK_STATUS_OK;
-        }
-    }
-    if (mapped != 0u)
-    {
-        (void)SparkDeviceMemoryUnmap(base, mapped * chunk_bytes);
-    }
-    for (index = 0u; index < created; index++)
-    {
-        (void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(arena->chunk_handles[index]));
-    }
-    (void)SparkDeviceAddressRelease(base, chunk_count * chunk_bytes);
-    free(arena->chunk_handles);
-    free(arena->chunk_refs);
-    arena->chunk_handles = 0;
-    arena->chunk_refs = 0;
-    SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
@@ -1381,10 +1376,13 @@ static SparkStatus SparkWeightdSidecarCk128(const char *pack_path,
 typedef struct SparkWeightdVerifySink
 {
     SparkWeightdServer *server;
+    SparkWeightdArena *arena;
+    const SparkWeightdManifest *spine_manifest;
     uint8_t *device;
     SparkSha256Context sha;
     SparkCk128Context ck;
     uint32_t hash;
+    uint32_t spine_index;
 } SparkWeightdVerifySink;
 
 static SparkStatus SparkWeightdVerifySinkWrite(void *context,
@@ -1398,6 +1396,40 @@ static SparkStatus SparkWeightdVerifySinkWrite(void *context,
         SparkSha256Update(&sink->sha, data, (size_t)bytes);
     if (sink->hash == 2u)
         SparkCk128Update(&sink->ck, data, (size_t)bytes);
+    if (sink->arena != 0)
+    {
+        SparkStatus ensured = SparkWeightdVmmEnsureRange(sink->arena, offset, bytes);
+        if (ensured != SPARK_STATUS_OK)
+            SPARK_RETURN(ensured);
+    }
+    if (sink->device != 0 && sink->spine_manifest != 0)
+    {
+        const uint64_t limit = offset + bytes;
+        while (sink->spine_index < sink->spine_manifest->spine_count)
+        {
+            const SparkWeightdSpan *span = &sink->spine_manifest->spine[sink->spine_index];
+            uint64_t start, end;
+            if (span->offset >= limit)
+                break;
+            start = span->offset > offset ? span->offset : offset;
+            end = span->offset + span->bytes;
+            if (end > limit)
+                end = limit;
+            if (end > start)
+            {
+                SparkStatus written = SparkWeightdDeviceWrite(
+                    (void *)(sink->device + start),
+                    data + (start - offset),
+                    end - start);
+                if (written != SPARK_STATUS_OK)
+                    SPARK_RETURN(written);
+            }
+            if (span->offset + span->bytes > limit)
+                break;
+            sink->spine_index++;
+        }
+        return SPARK_STATUS_OK;
+    }
     if (sink->device != 0)
         SPARK_RETURN(SparkWeightdDeviceWrite((void *)(sink->device + offset), data, bytes));
     return SPARK_STATUS_OK;
@@ -1405,8 +1437,9 @@ static SparkStatus SparkWeightdVerifySinkWrite(void *context,
 
 static SparkStatus SparkWeightdPackVerifiedLoad(SparkWeightdServer *server,
     const char *pack_path,
-    int32_t fd, const SparkWeightdIdentity *identity, uint8_t *device,
-    const struct stat *before)
+    int32_t fd, const SparkWeightdIdentity *identity,
+    SparkWeightdArena *arena, const SparkWeightdManifest *spine_manifest,
+    uint8_t *device, const struct stat *before, uint32_t *streamed_out)
 {
     SparkWeightdVerifySink sink;
     SparkWeightdStreamStats stats;
@@ -1418,9 +1451,13 @@ static SparkStatus SparkWeightdPackVerifiedLoad(SparkWeightdServer *server,
     const char *mode = "receipt";
     SparkStatus status;
     int32_t sidecar;
+    if (streamed_out != 0)
+        *streamed_out = 0u;
     memset(&sink, 0, sizeof(sink));
     memset(&stats, 0, sizeof(stats));
     sink.server = server;
+    sink.arena = arena;
+    sink.spine_manifest = spine_manifest;
     sidecar = SparkWeightdSidecarCk128(pack_path, ck_hex) == SPARK_STATUS_OK;
     status = SparkWeightdReceiptCheck(pack_path, fd, identity->pack_sha256,
         sidecar ? ck_hex : 0, &reason);
@@ -1437,9 +1474,13 @@ static SparkStatus SparkWeightdPackVerifiedLoad(SparkWeightdServer *server,
     }
     sink.device = device;
     status = SPARK_STATUS_OK;
-    if (sink.hash != 0u || device != 0)
+    if (sink.hash != 0u || (device != 0 && spine_manifest == 0))
+    {
         status = SparkWeightdPackStream(pack_path, fd,
             identity->arena_bytes, SparkWeightdVerifySinkWrite, &sink, &stats);
+        if (status == SPARK_STATUS_OK && streamed_out != 0)
+            *streamed_out = 1u;
+    }
     if (status != SPARK_STATUS_OK)
     {
         fprintf(stderr, "weightd pack-verify path=%s read failed status=%s\n",
@@ -1587,7 +1628,7 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
 
-    if (SparkWeightdVmmAllocate(identity.arena_bytes, &pending) !=
+    if (SparkWeightdVmmReserveChunks(identity.arena_bytes, &pending) !=
         SPARK_STATUS_OK)
     {
         (void)close(pack_fd);
@@ -1595,7 +1636,10 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         return;
     }
     status = SparkWeightdPackVerifiedLoad(server, request->pack_path, pack_fd,
-        &identity, (uint8_t *)pending.device_base, &pack_stat_before);
+        &identity, &pending, 0, (uint8_t *)pending.device_base,
+        &pack_stat_before, 0);
+    if (status == SPARK_STATUS_OK)
+        status = SparkWeightdVmmEnsureRange(&pending, 0u, identity.arena_bytes);
     (void)close(pack_fd);
     if (status != SPARK_STATUS_OK)
     {
@@ -2003,8 +2047,10 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
         S_ISREG(pack_stat.st_mode) == 0 ||
         (uint64_t)pack_stat.st_size != identity.arena_bytes
         ? SPARK_STATUS_IO_ERROR
-        : SparkWeightdPackVerifiedLoad(server, request->pack_path, pack_fd,
-            &identity, 0, &pack_stat);
+        : (request->expert_pool_bytes > identity.arena_bytes
+            ? SPARK_STATUS_OK
+            : SparkWeightdPackVerifiedLoad(server, request->pack_path, pack_fd,
+                &identity, 0, 0, 0, &pack_stat, 0));
     if (status != SPARK_STATUS_OK)
     {
         if (pack_fd >= 0)
@@ -2077,8 +2123,13 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
 
     {
         struct stat preloaded;
+        uint32_t fused_spine = 0u;
         status = SparkWeightdPremapPool(server,arena);
         if (status == SPARK_STATUS_OK && arena->pool_export_handle != 0)
+            status = SparkWeightdPackVerifiedLoad(server, request->pack_path, pack_fd,
+                &identity, 0, &arena->manifest, (uint8_t *)arena->device_base,
+                &pack_stat, &fused_spine);
+        if (status == SPARK_STATUS_OK && arena->pool_export_handle != 0 && fused_spine == 0u)
             status = SparkWeightdPreloadSpine(server,arena,pack_fd);
         if (status == SPARK_STATUS_OK && (fstat(pack_fd,&preloaded) != 0 || SparkWeightdPackStatSame(&pack_stat,&preloaded) == 0))
             status = SPARK_STATUS_HASH_MISMATCH;

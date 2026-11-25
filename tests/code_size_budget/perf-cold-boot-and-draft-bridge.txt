@@ -1,0 +1,2 @@
++367
+Pillar 5a cold-boot/swap and Pillar 2 draft-bridge/tap IPC optimization: 4-reader O_DIRECT pack streaming with pipelined VMM chunk allocation and fused single-pass lazy attach in weightd, 4x-unrolled CK128 hashing, reusable CUDA zero stream, fast nanosleep bringup polling in model_api, parallel multi-rank connect in model_pipeline_client, reply coalescing and large socket/rx buffers in draft_bridge/draft_server/draftd, and buffered TCP_NODELAY/TCP_QUICKACK reads in spark_tap_stream_reader.

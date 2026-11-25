@@ -2257,11 +2257,14 @@ static void api_seed_submission_ids(void)
 
 static void *api_bringup(void *argument)
 {
-	unsigned attempt = 0u, waited = 0u, pause_s = 1u;
+	unsigned attempt = 0u, waited = 0u, pause_ms = 50u;
+	uint64_t last_log_ms = 0u;
 	SparkStatus status;
 	(void)argument;
 	for (;;)
 	{
+		uint64_t elapsed_ms;
+		struct timespec nap;
 		attempt++;
 		S.bringup_attempts = attempt;
 		S.bringup_phase = "connecting";
@@ -2269,21 +2272,32 @@ static void *api_bringup(void *argument)
 		if (status == SPARK_STATUS_OK)
 			break;
 		S.bringup_status = (uint32_t)status;
-		if (attempt <= 10u || attempt % 30u == 0u)
-			api_logf("engine_connect_failed attempt=%u status=%s elapsed_ms=%llu; retrying in %us", attempt,
-				SparkStatusToString(status), (unsigned long long)(api_now_ms() - S.bringup_started_ms), pause_s);
-		sleep(pause_s);
-		if (pause_s < 8u)
-			pause_s *= 2u;
+		elapsed_ms = api_now_ms() - S.bringup_started_ms;
+		if (attempt <= 3u || elapsed_ms >= last_log_ms + 5000u)
+		{
+			last_log_ms = elapsed_ms;
+			api_logf("engine_connect_failed attempt=%u status=%s elapsed_ms=%llu; retrying in %ums", attempt,
+				SparkStatusToString(status), (unsigned long long)elapsed_ms, pause_ms);
+		}
+		nap.tv_sec = (time_t)(pause_ms / 1000u);
+		nap.tv_nsec = (long)((pause_ms % 1000u) * 1000000u);
+		(void)nanosleep(&nap, 0);
+		if (pause_ms < 200u)
+		{
+			pause_ms *= 2u;
+			if (pause_ms > 200u)
+				pause_ms = 200u;
+		}
 	}
 	S.bringup_phase = "waiting_ranks";
 	while (SparkModelBatchEngineAllRanksReady(S.engine) == 0u)
 	{
-		if ((waited % 10u) == 0u)
+		struct timespec nap = {0, 50000000L};
+		if ((waited % 100u) == 0u)
 			api_logf("engine_ranks_waiting elapsed_ms=%llu: not every rank is connected and helloed on one generation yet",
 				(unsigned long long)(api_now_ms() - S.bringup_started_ms));
 		waited++;
-		sleep(1);
+		(void)nanosleep(&nap, 0);
 	}
 	api_logf("engine_connected attempts=%u elapsed_ms=%llu all_ranks_ready=1", attempt,
 		(unsigned long long)(api_now_ms() - S.bringup_started_ms));

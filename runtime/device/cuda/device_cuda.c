@@ -111,6 +111,8 @@ static int cuda_pageable_access;
 static int cuda_host_numa;
 static int cuda_host_share;
 static pthread_mutex_t cuda_host_handles_gate = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t cuda_zero_stream_gate = PTHREAD_MUTEX_INITIALIZER;
+static cudaStream_t cuda_zero_stream;
 static CUmemGenericAllocationHandle cuda_host_handles[CUDA_HOST_HANDLES_MAX];
 static uint32_t cuda_host_handle_count;
 static uint64_t cuda_page_bytes;
@@ -333,6 +335,13 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 
 SparkStatus SparkDeviceBackendShutdown(void)
 {
+	pthread_mutex_lock(&cuda_zero_stream_gate);
+	if ( cuda_zero_stream != 0 )
+	{
+		(void)cudaStreamDestroy(cuda_zero_stream);
+		cuda_zero_stream = 0;
+	}
+	pthread_mutex_unlock(&cuda_zero_stream_gate);
 	return(SPARK_STATUS_OK);
 }
 
@@ -646,14 +655,14 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 	}
 	if ( allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE || allocation->space == SPARK_DEVICE_SPACE_SHARED_COHERENT )
 	{
-		cudaStream_t zero = 0;
-		status = CudaStatus(cudaStreamCreateWithFlags(&zero,cudaStreamNonBlocking),"allocate",allocation->owner);
+		pthread_mutex_lock(&cuda_zero_stream_gate);
+		if ( cuda_zero_stream == 0 )
+			status = CudaStatus(cudaStreamCreateWithFlags(&cuda_zero_stream,cudaStreamNonBlocking),"allocate",allocation->owner);
 		if ( status == SPARK_STATUS_OK )
-			status = CudaStatus(cudaMemsetAsync(cuda->base,0,(size_t)allocation->bytes,zero),"allocate",allocation->owner);
+			status = CudaStatus(cudaMemsetAsync(cuda->base,0,(size_t)allocation->bytes,cuda_zero_stream),"allocate",allocation->owner);
 		if ( status == SPARK_STATUS_OK )
-			status = CudaStatus(cudaStreamSynchronize(zero),"allocate",allocation->owner);
-		if ( zero != 0 )
-			(void)cudaStreamDestroy(zero);
+			status = CudaStatus(cudaStreamSynchronize(cuda_zero_stream),"allocate",allocation->owner);
+		pthread_mutex_unlock(&cuda_zero_stream_gate);
 	}
 	else
 		memset(cuda->base,0,(size_t)allocation->bytes);

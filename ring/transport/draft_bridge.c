@@ -23,6 +23,7 @@
 #define SPARK_DRAFT_BRIDGE_NS_PER_MS UINT64_C(1000000)
 #define SPARK_DRAFT_BRIDGE_DISCONNECTED_FD (-1)
 #define SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES 65536u
+#define SPARK_DRAFT_BRIDGE_SOCKBUF_BYTES (512 * 1024)
 
 #define SPARK_DRAFT_BRIDGE_PHASE_IDLE 0u
 #define SPARK_DRAFT_BRIDGE_PHASE_CONNECT 1u
@@ -80,36 +81,55 @@ static void SparkDraftBridgePutU32Le(
     uint8_t *destination,
     uint32_t value)
 {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    memcpy(destination, &value, sizeof(value));
+#else
     destination[0] = (uint8_t)(value & 0xFFu);
     destination[1] = (uint8_t)((value >> 8u) & 0xFFu);
     destination[2] = (uint8_t)((value >> 16u) & 0xFFu);
     destination[3] = (uint8_t)((value >> 24u) & 0xFFu);
+#endif
 }
 
 static void SparkDraftBridgePutU64Le(
     uint8_t *destination,
     uint64_t value)
 {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    memcpy(destination, &value, sizeof(value));
+#else
     uint32_t shift;
 
     for (shift = 0u; shift < 64u; shift += 8u)
     {
         destination[shift / 8u] = (uint8_t)((value >> shift) & 0xFFu);
     }
+#endif
 }
 
 static uint32_t SparkDraftBridgeGetU32Le(
     const uint8_t *source)
 {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    uint32_t value;
+    memcpy(&value, source, sizeof(value));
+    return value;
+#else
     return (uint32_t)source[0] |
         ((uint32_t)source[1] << 8u) |
         ((uint32_t)source[2] << 16u) |
         ((uint32_t)source[3] << 24u);
+#endif
 }
 
 static uint64_t SparkDraftBridgeGetU64Le(
     const uint8_t *source)
 {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    uint64_t value;
+    memcpy(&value, source, sizeof(value));
+    return value;
+#else
     uint64_t value;
     uint32_t shift;
 
@@ -119,6 +139,7 @@ static uint64_t SparkDraftBridgeGetU64Le(
         value |= (uint64_t)source[shift / 8u] << shift;
     }
     return value;
+#endif
 }
 
 static float SparkDraftBridgeGetF32Le(
@@ -205,6 +226,7 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
     int socket_fd)
 {
     int enabled;
+    int buf_bytes;
 
     enabled = 1;
     if (setsockopt(
@@ -217,6 +239,19 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     SparkDraftBridgeQuickAck(socket_fd);
+    buf_bytes = SPARK_DRAFT_BRIDGE_SOCKBUF_BYTES;
+    (void)setsockopt(
+        socket_fd,
+        SOL_SOCKET,
+        SO_SNDBUF,
+        &buf_bytes,
+        (socklen_t)sizeof(buf_bytes));
+    (void)setsockopt(
+        socket_fd,
+        SOL_SOCKET,
+        SO_RCVBUF,
+        &buf_bytes,
+        (socklen_t)sizeof(buf_bytes));
 #ifdef SO_NOSIGPIPE
     enabled = 1;
     if (setsockopt(
@@ -744,9 +779,14 @@ static SparkStatus SparkDraftBridgeSubmitTree(
 {
     SparkStatus status;
     uint8_t *cursor;
+    uint64_t token_bytes;
+    uint64_t tap_bytes;
     uint64_t message_bytes;
-    uint32_t token_index;
     uint32_t tail;
+    const uint64_t seed = sampling != 0 ? sampling->seed : 0u;
+    const float inverse_temperature = sampling != 0 ? sampling->inverse_temperature : 0.0f;
+    const float nucleus = sampling != 0 ? sampling->nucleus : 0.0f;
+    uint32_t bits;
 
     if (bridge == 0 || committed_token_ids == 0)
     {
@@ -798,10 +838,12 @@ static SparkStatus SparkDraftBridgeSubmitTree(
         SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
+    token_bytes = (uint64_t)committed_token_count * sizeof(uint32_t);
+    tap_bytes = (uint64_t)tap_row_count * bridge->tap_row_bytes;
     message_bytes =
         (uint64_t)SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES +
-        (uint64_t)committed_token_count * sizeof(uint32_t) +
-        (uint64_t)tap_row_count * bridge->tap_row_bytes;
+        token_bytes +
+        tap_bytes;
     status = SparkDraftBridgeReserveRequest(bridge, message_bytes);
     if (status != SPARK_STATUS_OK)
     {
@@ -842,36 +884,35 @@ static SparkStatus SparkDraftBridgeSubmitTree(
     cursor += sizeof(uint32_t);
     SparkDraftBridgePutU32Le(cursor, node_capacity);
     cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU64Le(cursor, seed);
+    cursor += sizeof(uint64_t);
+    memcpy(&bits, &inverse_temperature, sizeof(bits));
+    SparkDraftBridgePutU32Le(cursor, bits);
+    cursor += sizeof(uint32_t);
+    memcpy(&bits, &nucleus, sizeof(bits));
+    SparkDraftBridgePutU32Le(cursor, bits);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, sampling != 0 ? sampling->top_k : 0u);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, 0u);
+    cursor += sizeof(uint32_t);
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    memcpy(cursor, committed_token_ids, (size_t)token_bytes);
+    cursor += token_bytes;
+#else
     {
-        const uint64_t seed = sampling != 0 ? sampling->seed : 0u;
-        const float inverse_temperature = sampling != 0 ? sampling->inverse_temperature : 0.0f;
-        const float nucleus = sampling != 0 ? sampling->nucleus : 0.0f;
-        uint32_t bits;
-        SparkDraftBridgePutU64Le(cursor, seed);
-        cursor += sizeof(uint64_t);
-        memcpy(&bits, &inverse_temperature, sizeof(bits));
-        SparkDraftBridgePutU32Le(cursor, bits);
-        cursor += sizeof(uint32_t);
-        memcpy(&bits, &nucleus, sizeof(bits));
-        SparkDraftBridgePutU32Le(cursor, bits);
-        cursor += sizeof(uint32_t);
-        SparkDraftBridgePutU32Le(cursor, sampling != 0 ? sampling->top_k : 0u);
-        cursor += sizeof(uint32_t);
-        SparkDraftBridgePutU32Le(cursor, 0u);
-        cursor += sizeof(uint32_t);
+        uint32_t token_index;
+        for (token_index = 0u; token_index < committed_token_count; ++token_index)
+        {
+            SparkDraftBridgePutU32Le(cursor, committed_token_ids[token_index]);
+            cursor += sizeof(uint32_t);
+        }
     }
-    for (token_index = 0u; token_index < committed_token_count; ++token_index)
+#endif
+    if (tap_bytes != 0u)
     {
-        SparkDraftBridgePutU32Le(cursor, committed_token_ids[token_index]);
-        cursor += sizeof(uint32_t);
-    }
-    if (tap_row_count != 0u)
-    {
-        memcpy(
-            cursor,
-            tap_rows,
-            (size_t)tap_row_count * bridge->tap_row_bytes);
-        cursor += (size_t)tap_row_count * bridge->tap_row_bytes;
+        memcpy(cursor, tap_rows, (size_t)tap_bytes);
+        cursor += tap_bytes;
     }
     bridge->request_bytes = (uint64_t)(cursor - bridge->request_buffer);
     tail = (bridge->inflight_head + bridge->inflight_count) %
