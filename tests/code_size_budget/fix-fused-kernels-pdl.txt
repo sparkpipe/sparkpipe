@@ -1,0 +1,2 @@
++6
+Add optional dependent_launch boolean to tools/fused_kernels.py so model-families/dsv41_flash/fusion/decode.json regenerates dsv41_flash_fused.cuh with PDL byte for byte.

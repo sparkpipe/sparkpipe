@@ -43,6 +43,7 @@
    "threads": 256,
    "rows_max": 16,
    "shared_bytes": "(D41_HIDDEN + 8u) * sizeof(float)",
+   "dependent_launch": true,
    "replaces": ["LmHcSinkhornPartialKernel<4u>", "LmHcSinkhornKernel<4u>", "D41RmsNormQdqKernel<256u>"],
    "arguments": [
     {"name": "streams", "type": "const uint16_t *", "elements": "rows * D41K_HC * D41_HIDDEN", "fill": "bf16"},
@@ -95,6 +96,7 @@
    "threads": 256,
    "rows_max": 16,
    "shared_bytes": "32u * sizeof(float) + D41K_LATENT * sizeof(uint16_t)",
+   "dependent_launch": true,
    "replaces": ["D41WindowRingStoreKernel", "D41MergeSinkKernel", "D41RopeRowsKernel", "D41ColumnsKernel", "SparkDsv41FlashFp8QdqKernel"],
    "arguments": [
     {"name": "records", "type": "const float *", "elements": "rows * D41_LOCAL_HEADS * D41K_RECORD", "fill": "index",
@@ -155,6 +157,7 @@
    "threads": 256,
    "rows_max": 16,
    "shared_bytes": "0u",
+   "dependent_launch": true,
    "replaces": ["LmTopkWarpKernel", "D41RouteLocalKernel", "LmRouteBuildKernel", "LmPackedRouteWeightKernel"],
    "arguments": [
     {"name": "scores", "type": "const float *", "elements": "rows * D41_EXPERTS", "fill": "f32"},

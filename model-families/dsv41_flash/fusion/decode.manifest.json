@@ -135,6 +135,6 @@
   "inference/kernels/topk_warp.cuh",
   "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
  ],
- "plan_sha256": "e2893764994139de7bcfcbc1bc35a10e8f34b208a7cf2c02aded9790213a74c3",
+ "plan_sha256": "243677547f1495513acc52fb399fbc089aabedd837bdfc14c6c50f6f41750f96",
  "test": "tests/cuda/dsv41_flash_fused_exact.cu"
 }
