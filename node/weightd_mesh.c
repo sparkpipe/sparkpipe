@@ -43,10 +43,12 @@
 #define SPARK_WEIGHTD_MESH_TIMING_PEER_TEXT 80u
 #define SPARK_WEIGHTD_MESH_DEFAULT_DIR "/tmp/weightd-mesh"
 #define SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS 250000000L
+#define SPARK_WEIGHTD_MESH_SQ_WAIT_POLLS 64u
 
 static const char *weightd_mesh_dir = SPARK_WEIGHTD_MESH_DEFAULT_DIR;
 static uint64_t weightd_mesh_address_wait_ns = UINT64_C(120000000000);
 static uint64_t weightd_mesh_port_grace_ns = UINT64_C(10000000000);
+static uint64_t weightd_mesh_sq_wait_ns = UINT64_C(2000000);
 
 static void SparkWeightdMeshReadyPath(char *path, uint64_t bytes)
 {
@@ -157,9 +159,11 @@ typedef struct SparkWeightdMeshSendQueue
     volatile uint32_t *record;
     volatile uint64_t *doorbell;
     uint64_t ring_word;
+    uint32_t depth;
     uint32_t mask;
     uint32_t qpn;
     uint32_t produced;
+    uint32_t retired;
     uint32_t completed;
     uint32_t completion_queue;
     uint32_t combining_bytes;
@@ -255,6 +259,7 @@ typedef struct SparkWeightdMesh
     uint64_t stat_peer_resets;
     uint64_t stat_peer_reset_bits;
     uint64_t stat_lane_resets;
+    uint64_t stat_sq_full_waits;
     uint32_t lane_busy_logged[SPARK_WEIGHTD_MESH_MAX_LANES];
     uint64_t stat_logged_ns;
     uint64_t work_ns;
@@ -708,10 +713,25 @@ static void SparkWeightdMeshRebuildFastMaps(void)
     weightd_mesh.bf_all_unique = has_bf != 0u && unique != 0u ? 1u : 0u;
 }
 
+static inline void SparkWeightdMeshCpuRelax(void)
+{
+#if defined(__aarch64__)
+    __asm__ volatile ("yield");
+#elif defined(__x86_64__)
+    __builtin_ia32_pause();
+#else
+#error "SparkWeightdMeshCpuRelax requires aarch64 or x86_64"
+#endif
+}
+
+static uint32_t SparkWeightdMeshDrainCqLocked(uint64_t now_ns);
+
 static void SparkWeightdMeshSendQueueReset(uint32_t peer)
 {
     SparkWeightdMeshSendQueue *queue = &weightd_mesh.send_queues[peer];
     queue->produced = 0u;
+    queue->retired = 0u;
+    queue->completed = 0u;
     queue->ring_word = 0u;
     queue->bf_offset = 0u;
     memset(queue->wr_id,0xff,sizeof(queue->wr_id));
@@ -735,6 +755,7 @@ static SparkStatus SparkWeightdMeshSendQueueInit(uint32_t peer,struct ibv_qp *qp
     queue->buffer = (uint8_t *)view.sq.buf;
     queue->record = (volatile uint32_t *)view.dbrec;
     queue->doorbell = (volatile uint64_t *)view.bf.reg;
+    queue->depth = view.sq.wqe_cnt;
     queue->mask = view.sq.wqe_cnt - 1u;
     queue->qpn = qp->qp_num;
     queue->completion_queue = completion_queue;
@@ -768,17 +789,62 @@ static SparkStatus SparkWeightdMeshCompletionQueueInit(uint32_t which,struct ibv
     return SPARK_STATUS_OK;
 }
 
-static void SparkWeightdMeshSqWrite(uint32_t peer,uint64_t wr_id,uint32_t signaled,uint64_t local_address,uint32_t lkey,
+static uint32_t SparkWeightdMeshSqFree(const SparkWeightdMeshSendQueue *queue)
+{
+    uint32_t inflight = queue->produced - queue->retired;
+    return inflight < queue->depth ? queue->depth - inflight : 0u;
+}
+
+static SparkStatus SparkWeightdMeshSqEnsureRoom(uint32_t peer,uint32_t needed)
+{
+    SparkWeightdMeshSendQueue *queue = &weightd_mesh.send_queues[peer];
+    uint64_t deadline;
+    uint32_t repair_needed = 0u,polls = 0u;
+    if ( queue->buffer == 0 || needed == 0u || needed > queue->depth )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    if ( SparkWeightdMeshSqFree(queue) >= needed )
+        return SPARK_STATUS_OK;
+    weightd_mesh.stat_sq_full_waits++;
+    deadline = SparkMonotonicNs() + weightd_mesh_sq_wait_ns;
+    for (;;)
+    {
+        uint64_t now = SparkMonotonicNs();
+        repair_needed |= SparkWeightdMeshDrainCqLocked(now);
+        if ( SparkWeightdMeshSqFree(queue) >= needed )
+        {
+            if ( repair_needed != 0u )
+                __atomic_store_n(&weightd_mesh.repair_pending,1u,__ATOMIC_RELEASE);
+            return SPARK_STATUS_OK;
+        }
+        if ( ++polls >= SPARK_WEIGHTD_MESH_SQ_WAIT_POLLS && now >= deadline )
+            break;
+        SparkWeightdMeshCpuRelax();
+    }
+    if ( repair_needed != 0u )
+        __atomic_store_n(&weightd_mesh.repair_pending,1u,__ATOMIC_RELEASE);
+    SPARK_FAIL(SPARK_STATUS_BUSY);
+}
+
+static SparkStatus SparkWeightdMeshSqWrite(uint32_t peer,uint64_t wr_id,uint32_t signaled,uint64_t local_address,uint32_t lkey,
     uint32_t length,uint64_t remote_offset,const uint64_t *inline_word)
 {
     SparkWeightdMeshSendQueue *queue = &weightd_mesh.send_queues[peer];
-    uint32_t index = queue->produced & queue->mask;
-    struct mlx5_wqe_ctrl_seg *control = (struct mlx5_wqe_ctrl_seg *)(queue->buffer + (uint64_t)index * 64u);
-    struct mlx5_wqe_raddr_seg *remote = (struct mlx5_wqe_raddr_seg *)(control + 1);
-    const void *inline_src = inline_word != 0 ? (const void *)inline_word :
+    SparkStatus room = SparkWeightdMeshSqEnsureRoom(peer,1u);
+    uint32_t index;
+    struct mlx5_wqe_ctrl_seg *control;
+    struct mlx5_wqe_raddr_seg *remote;
+    const void *inline_src;
+    uint32_t inline_len;
+    uint8_t ds;
+    if ( room != SPARK_STATUS_OK )
+        return room;
+    index = queue->produced & queue->mask;
+    control = (struct mlx5_wqe_ctrl_seg *)(queue->buffer + (uint64_t)index * 64u);
+    remote = (struct mlx5_wqe_raddr_seg *)(control + 1);
+    inline_src = inline_word != 0 ? (const void *)inline_word :
         (length != 0u && length <= SPARK_WEIGHTD_MESH_INLINE_BYTES && local_address != 0u ? (const void *)(uintptr_t)local_address : 0);
-    uint32_t inline_len = inline_word != 0 ? (uint32_t)sizeof(*inline_word) : length;
-    uint8_t ds = inline_src != 0 ? (uint8_t)((36u + inline_len + 15u) >> 4u) : 3u;
+    inline_len = inline_word != 0 ? (uint32_t)sizeof(*inline_word) : length;
+    ds = inline_src != 0 ? (uint8_t)((36u + inline_len + 15u) >> 4u) : 3u;
     control->dci_stream_channel_id = 0u;
     mlx5dv_set_ctrl_seg(control,(uint16_t)queue->produced,MLX5_OPCODE_RDMA_WRITE,0u,queue->qpn,
         signaled != 0u ? MLX5_WQE_CTRL_CQ_UPDATE : 0u,ds,0u,0u);
@@ -796,6 +862,7 @@ static void SparkWeightdMeshSqWrite(uint32_t peer,uint64_t wr_id,uint32_t signal
     queue->wr_id[index] = wr_id;
     memcpy(&queue->ring_word,control,sizeof(queue->ring_word));
     queue->produced++;
+    return SPARK_STATUS_OK;
 }
 
 static void SparkWeightdMeshSqRingOrder(const uint8_t *order,uint32_t count)
@@ -961,17 +1028,6 @@ static pthread_mutex_t SparkWeightdMeshWireLock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t SparkWeightdMeshActivityCondition = PTHREAD_COND_INITIALIZER;
 static uint32_t SparkWeightdMeshWireWaiters;
 static __thread uint32_t SparkWeightdMeshPollingThread;
-
-static inline void SparkWeightdMeshCpuRelax(void)
-{
-#if defined(__aarch64__)
-    __asm__ volatile ("yield");
-#elif defined(__x86_64__)
-    __builtin_ia32_pause();
-#else
-#error "SparkWeightdMeshCpuRelax requires aarch64 or x86_64"
-#endif
-}
 
 static void SparkWeightdMeshWireAcquire(void)
 {
@@ -1579,8 +1635,6 @@ static void SparkWeightdMeshWireScanPeer(SparkWeightdMeshWirePlan *plan, uint32_
     if ( plan->repair[peer] != 0u )
         fprintf(stderr,"WD-QP-REPAIR rank=%u peer=%u — qp left RTS after errors; re-transitioning on the same record and asking the peer to resynchronize\n",weightd_mesh.local_rank,peer);
 }
-
-static uint32_t SparkWeightdMeshDrainCqLocked(uint64_t now_ns);
 
 static uint32_t SparkWeightdMeshWirePeerLocked(const SparkWeightdMeshWirePlan *plan, uint32_t peer)
 {
@@ -2356,7 +2410,10 @@ static uint32_t SparkWeightdMeshSendRoom(uint32_t physical_mask,uint32_t needed)
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_PEERS; peer++)
     {
         peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
-        if ( (physical_mask & (1u << peer_rank)) != 0u && weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed )
+        if ( (physical_mask & (1u << peer_rank)) == 0u )
+            continue;
+        if ( weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed ||
+             SparkWeightdMeshSqEnsureRoom(peer,needed) != SPARK_STATUS_OK )
             return(0u);
     }
     return(1u);
@@ -2368,20 +2425,30 @@ static void SparkWeightdMeshPostPeer(uint32_t record,uint32_t band,uint32_t peer
     SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[record];
     uint32_t peer_rank = peer < weightd_mesh.local_rank ? peer : peer + 1u;
     uint64_t base = SPARK_WEIGHTD_MESH_TRANSFER_ID | (transfer->generation << 16u) | ((uint64_t)record << 6u) | (uint64_t)(peer * 4u);
+    SparkStatus status = SPARK_STATUS_OK;
     if ( length != 0u && route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
-        SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,logical[peer_rank]) +
+        status = SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,logical[peer_rank]) +
                 (route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE ? SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot_base / SPARK_WEIGHTD_MESH_SLOT_BYTES) : 0u),
             SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey,(uint32_t)length,slot_base + offset,0);
     else if ( length != 0u )
-        SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer + slot_base + offset,
+        status = SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer + slot_base + offset,
             SparkWeightdMeshPeerMr(peer,weightd_mesh.recv_mr,weightd_mesh.pair_recv_mr)->lkey,(uint32_t)length,slot_base + offset,0);
+    if ( status != SPARK_STATUS_OK )
+    {
+        transfer->failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
+        return;
+    }
     if ( length != 0u )
     {
         transfer->chained |= 1u << peer;
         transfer->chained_writes[peer] = 1u;
         weightd_mesh.send_pending[peer]++;
     }
-    SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag);
+    if ( SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag) != SPARK_STATUS_OK )
+    {
+        transfer->failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
+        return;
+    }
     transfer->pending |= UINT64_C(1) << (peer * 4u + 3u);
     weightd_mesh.send_pending[peer]++;
 }
@@ -2395,18 +2462,21 @@ static void SparkWeightdMeshPostPairFirstPeer(uint32_t record,uint32_t band,uint
     const uint64_t group = SparkWeightdMeshPairFirstGroupBytes(bytes), pair = SparkWeightdMeshPairFirstPairBytes(bytes);
     const uint64_t half = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot);
     const uint32_t lkey = SparkWeightdMeshPeerMr(peer,weightd_mesh.staging_mr,weightd_mesh.pair_staging_mr)->lkey;
+    SparkStatus status = SPARK_STATUS_OK;
     if ( ((target ^ local) & 1u) == 0u && group != 0u )
     {
-        SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,target) + half,
+        status = SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,target) + half,
             lkey,(uint32_t)group,slot_base + SPARK_WEIGHTD_MESH_HALF_OFFSET(route.fields.half),0);
-        writes = 1u;
+        if ( status == SPARK_STATUS_OK )
+            writes = 1u;
     }
     else if ( target == (local ^ 1u) && pair != 0u )
-        for (segment = target & 1u; segment < ranks; segment += 2u)
+        for (segment = target & 1u; segment < ranks && status == SPARK_STATUS_OK; segment += 2u)
         {
-            SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,segment) + half,
+            status = SparkWeightdMeshSqWrite(peer,base | 2u,0u,(uint64_t)(uintptr_t)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,segment) + half,
                 lkey,(uint32_t)pair,SparkWeightdMeshPairFirstArea(band,segment ^ 1u,slot,route.fields.half),0);
-            writes++;
+            if ( status == SPARK_STATUS_OK )
+                writes++;
         }
     if ( writes != 0u )
     {
@@ -2414,7 +2484,12 @@ static void SparkWeightdMeshPostPairFirstPeer(uint32_t record,uint32_t band,uint
         transfer->chained_writes[peer] = (uint8_t)writes;
         weightd_mesh.send_pending[peer] += writes;
     }
-    SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag);
+    if ( status != SPARK_STATUS_OK ||
+         SparkWeightdMeshSqWrite(peer,base | 3u,1u,0u,0u,0u,slot_base + SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),tag) != SPARK_STATUS_OK )
+    {
+        transfer->failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
+        return;
+    }
     transfer->pending |= UINT64_C(1) << (peer * 4u + 3u);
     weightd_mesh.send_pending[peer]++;
 }
@@ -2559,8 +2634,13 @@ static uint32_t SparkWeightdMeshDrainCqQueueLocked(uint32_t which,uint64_t now_n
         peer = SparkWeightdMeshPeerByQpn(which,qpn);
         if ( peer < SPARK_WEIGHTD_MESH_PEERS )
         {
-            wr_id = weightd_mesh.send_queues[peer].wr_id[counter & weightd_mesh.send_queues[peer].mask];
-            weightd_mesh.send_queues[peer].completed = counter;
+            SparkWeightdMeshSendQueue *send_queue = &weightd_mesh.send_queues[peer];
+            uint32_t inflight = send_queue->produced - send_queue->retired;
+            uint32_t advance = (uint16_t)((uint16_t)(counter + 1u) - (uint16_t)send_queue->retired);
+            wr_id = send_queue->wr_id[counter & send_queue->mask];
+            send_queue->completed = counter;
+            if ( advance != 0u && advance <= inflight )
+                send_queue->retired += advance;
         }
         queue->consumed++;
         drained++;
@@ -2673,7 +2753,7 @@ static void SparkWeightdMeshRepairAndReport(void)
     if ( now - weightd_mesh.stat_logged_ns < SPARK_WEIGHTD_MESH_STATS_NS )
         return;
     weightd_mesh.stat_logged_ns = now;
-    fprintf(stderr,"WD-MESH-STATS trywire=%llu record_failures=%llu record_invalid=%llu wire_failures=%llu rewires=%llu unready=%llu repairs=%llu cq_ok=%llu cq_err=%llu ready=%u peer_resets=%llu peer_reset_bits=%llu lane_resets=%llu resyncs=%llu wire_generation=%llu degraded=0x%04x\n",
+    fprintf(stderr,"WD-MESH-STATS trywire=%llu record_failures=%llu record_invalid=%llu wire_failures=%llu rewires=%llu unready=%llu repairs=%llu cq_ok=%llu cq_err=%llu ready=%u peer_resets=%llu peer_reset_bits=%llu lane_resets=%llu resyncs=%llu wire_generation=%llu degraded=0x%04x sq_full_waits=%llu\n",
         (unsigned long long)weightd_mesh.stat_trywire,(unsigned long long)weightd_mesh.stat_record_failures,
         (unsigned long long)weightd_mesh.stat_record_invalid,(unsigned long long)weightd_mesh.stat_wire_failures,
         (unsigned long long)weightd_mesh.stat_rewires,(unsigned long long)weightd_mesh.stat_unready,
@@ -2681,7 +2761,8 @@ static void SparkWeightdMeshRepairAndReport(void)
         (unsigned long long)weightd_mesh.send_err,weightd_mesh.mesh_ready,
         (unsigned long long)weightd_mesh.stat_peer_resets,(unsigned long long)weightd_mesh.stat_peer_reset_bits,
         (unsigned long long)weightd_mesh.stat_lane_resets,(unsigned long long)weightd_mesh.stat_resyncs,
-        (unsigned long long)weightd_mesh.wire_generation,SparkWeightdMeshDegradedMask());
+        (unsigned long long)weightd_mesh.wire_generation,SparkWeightdMeshDegradedMask(),
+        (unsigned long long)weightd_mesh.stat_sq_full_waits);
     SparkWeightdMeshTimingReport();
 }
 
@@ -2799,9 +2880,9 @@ static void SparkWeightdMeshTransferStuck(uint32_t index,uint64_t seq)
         (unsigned long long)transfer->seq,(unsigned long long)transfer->pending,transfer->chained,transfer->failed);
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_PEERS; peer++)
         if ( (transfer->pending & (UINT64_C(0xf) << (peer * 4u))) != 0u )
-            fprintf(stderr,"WD-TRANSFER-PEER idx=%u peer=%u rank=%u qpn=%u produced=%u completed=%u send_pending=%u chained_writes=%u\n",index,peer,
+            fprintf(stderr,"WD-TRANSFER-PEER idx=%u peer=%u rank=%u qpn=%u produced=%u retired=%u completed=%u send_pending=%u chained_writes=%u\n",index,peer,
                 peer < weightd_mesh.local_rank ? peer : peer + 1u,weightd_mesh.send_queues[peer].qpn,weightd_mesh.send_queues[peer].produced & 0xffffu,
-                weightd_mesh.send_queues[peer].completed,weightd_mesh.send_pending[peer],transfer->chained_writes[peer]);
+                weightd_mesh.send_queues[peer].retired & 0xffffu,weightd_mesh.send_queues[peer].completed,weightd_mesh.send_pending[peer],transfer->chained_writes[peer]);
 }
 
 static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_t now_ns)
@@ -3053,7 +3134,8 @@ uint32_t SparkWeightdMeshBroadcast(
         uint32_t needed = seq_remote_offset != 0ull ? 2u : 1u;
         if ( peer >= 0 && (peer_rank_mask & (1u << rank)) != 0u &&
              (weightd_mesh.wired_boot_ns[peer] == 0u ||
-              weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed) )
+              weightd_mesh.send_pending[peer] > SPARK_WEIGHTD_MESH_SEND_CAPACITY - needed ||
+              SparkWeightdMeshSqEnsureRoom((uint32_t)peer,needed) != SPARK_STATUS_OK) )
         {
             pthread_mutex_unlock(&SparkWeightdMeshWireLock);
             return 0u;
@@ -3070,13 +3152,14 @@ uint32_t SparkWeightdMeshBroadcast(
         wr_id = ((uint64_t)weightd_mesh.wire_epoch[peer] << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)(uint32_t)peer;
         {
             const uint32_t chain_seq = seq_remote_offset != 0ull && weightd_mesh.seq_mr != 0 ? 1u : 0u;
-            SparkWeightdMeshSqWrite((uint32_t)peer,wr_id,chain_seq != 0u ? 0u : 1u,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer + source_offset,
-                SparkWeightdMeshPeerMr((uint32_t)peer,weightd_mesh.recv_mr,weightd_mesh.pair_recv_mr)->lkey,length,remote_offset,0);
+            if ( SparkWeightdMeshSqWrite((uint32_t)peer,wr_id,chain_seq != 0u ? 0u : 1u,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer + source_offset,
+                    SparkWeightdMeshPeerMr((uint32_t)peer,weightd_mesh.recv_mr,weightd_mesh.pair_recv_mr)->lkey,length,remote_offset,0) != SPARK_STATUS_OK )
+                continue;
             weightd_mesh.send_pending[peer]++;
             weightd_mesh.rpc_pending[peer]++;
-            if ( chain_seq != 0u )
+            if ( chain_seq != 0u &&
+                 SparkWeightdMeshSqWrite((uint32_t)peer,wr_id | SPARK_WEIGHTD_MESH_RPC_CHAINED,1u,0u,0u,0u,seq_remote_offset,&seq_value) == SPARK_STATUS_OK )
             {
-                SparkWeightdMeshSqWrite((uint32_t)peer,wr_id | SPARK_WEIGHTD_MESH_RPC_CHAINED,1u,0u,0u,0u,seq_remote_offset,&seq_value);
                 weightd_mesh.send_pending[peer]++;
                 weightd_mesh.rpc_pending[peer]++;
             }
@@ -3097,6 +3180,7 @@ SparkStatus SparkWeightdMeshPostWrite(
     uint64_t remote_offset)
 {
     int32_t peer;
+    SparkStatus status;
 
     if (weightd_mesh.mesh_ready == 0u)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -3119,8 +3203,13 @@ SparkStatus SparkWeightdMeshPostWrite(
         pthread_mutex_unlock(&SparkWeightdMeshWireLock);
         return SPARK_STATUS_BUSY;
     }
-    SparkWeightdMeshSqWrite((uint32_t)peer,((uint64_t)weightd_mesh.wire_epoch[peer] << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)(uint32_t)peer,
+    status = SparkWeightdMeshSqWrite((uint32_t)peer,((uint64_t)weightd_mesh.wire_epoch[peer] << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)(uint32_t)peer,
         1u,local_addr,lkey,length,remote_offset,0);
+    if ( status != SPARK_STATUS_OK )
+    {
+        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+        return status;
+    }
     SparkWeightdMeshSqRing(1u << (uint32_t)peer);
     weightd_mesh.send_pending[peer]++;
     SparkWeightdMeshWake();
