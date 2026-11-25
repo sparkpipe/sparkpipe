@@ -25,24 +25,25 @@ if REQUIRED_COMPUTE_CAPABILITY not in capabilities:
 if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_tp_mesh_fast_b1_cuda: an sm_121 device is present but nvcc is unavailable")
 
-binary = ROOT / "build" / "tp_mesh_fast_b1_cuda"
-binary.parent.mkdir(parents=True, exist_ok=True)
-subprocess.run(
-    [
-        NVCC,
-        "-std=c++17",
-        "-O3",
-        "-arch=sm_121a",
-        "-I" + str(ROOT),
-        "-I" + str(ROOT / "include"),
-        "-I" + str(ROOT / "src"),
-        "-I" + str(ROOT / "model-families" / "common" / "include"),
-        str(ROOT / "tests" / "cuda" / "tp_mesh_fast_b1_cuda.cu"),
-        "-lpthread",
-        "-o",
-        str(binary),
-    ],
-    cwd=ROOT,
-    check=True,
-)
-subprocess.run([str(binary)], check=True, timeout=600)
+for target in ("tp_mesh_fast_b1_cuda", "tp_mesh_prefill_collective_cuda"):
+    binary = ROOT / "build" / target
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            NVCC,
+            "-std=c++17",
+            "-O3",
+            "-arch=sm_121a",
+            "-I" + str(ROOT),
+            "-I" + str(ROOT / "include"),
+            "-I" + str(ROOT / "src"),
+            "-I" + str(ROOT / "model-families" / "common" / "include"),
+            str(ROOT / "tests" / "cuda" / f"{target}.cu"),
+            "-lpthread",
+            "-o",
+            str(binary),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+    subprocess.run([str(binary)], check=True, timeout=600)

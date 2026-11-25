@@ -672,7 +672,8 @@ static uint32_t StageRunnerSplitSum(const SparkStageRunnerState *state, uint32_t
 	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
 	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL && state->sum_share != 0 && state->device_collective_deferred != 0u &&
 		(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) == SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL &&
-		rows >= STAGE_RUNNER_SPLIT_SUM_ROWS && rows % state->tp_degree == 0u && elements / state->tp_degree <= state->sum_share_elements ? 1u : 0u;
+		rows >= STAGE_RUNNER_SPLIT_SUM_ROWS && rows % state->tp_degree == 0u && elements / state->tp_degree <= state->sum_share_elements &&
+		SparkTpMeshScatterPipelined(elements, state->tp_degree, SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) != 0u ? 1u : 0u;
 }
 
 static SparkStatus StageRunnerLoneRound(SparkStageRunnerState *state, void *stream_void, uint32_t operation, uint32_t stage,

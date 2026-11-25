@@ -485,11 +485,16 @@ static SparkStatus WeightStreamPollAll(SparkWeightStream *stream, WeightStreamCa
 	return status;
 }
 
+static uint32_t WeightStreamSchedulePeer(uint32_t rank, uint32_t ranks, uint32_t step)
+{
+	return (ranks & (ranks - 1u)) == 0u ? (rank ^ step) : ((rank + step) % ranks);
+}
+
 static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t send_offset, uint64_t send_pitch, uint64_t bytes, uint64_t landing_offset, uint32_t tag)
 {
 	const SparkWeightStreamConfig *config = &stream->config;
 	const uint32_t chunks = (uint32_t)((bytes + config->chunk_bytes - 1u) / config->chunk_bytes);
-	uint32_t next_chunk[SPARK_WEIGHT_STREAM_MAX_RANKS],expected[2] = {0u,0u},peer,moved;
+	uint32_t next_chunk[SPARK_WEIGHT_STREAM_MAX_RANKS],expected[2] = {0u,0u},peer,step,moved;
 	uint64_t start,mine;
 	WeightStreamCall call;
 	SparkStatus status;
@@ -503,9 +508,8 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 	mine = send_offset + (uint64_t)config->rank * send_pitch;
 	if ( mine != landing_offset + (uint64_t)config->rank * bytes )
 		memmove(config->region + landing_offset + (uint64_t)config->rank * bytes,config->region + mine,bytes);
-	for (peer=0u; peer<config->ranks && status == SPARK_STATUS_OK; peer++)
-		if ( peer != config->rank )
-			status = WeightStreamReady(stream,peer,tag);
+	for (step=1u; step<config->ranks && status == SPARK_STATUS_OK; step++)
+		status = WeightStreamReady(stream,WeightStreamSchedulePeer(config->rank,config->ranks,step),tag);
 	if ( status != SPARK_STATUS_OK )
 		return WeightStreamFail(stream,status);
 	start = SparkMonotonicNs();
@@ -515,10 +519,11 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 		do
 		{
 			moved = 0u;
-			for (peer=0u; peer<config->ranks && status == SPARK_STATUS_OK; peer++)
+			for (step=1u; step<config->ranks && status == SPARK_STATUS_OK; step++)
 			{
+				peer = WeightStreamSchedulePeer(config->rank,config->ranks,step);
 				const uint32_t link = WeightStreamLinkOf(stream,peer),chunk = next_chunk[peer];
-				if ( peer == config->rank || chunk >= chunks || (call.ready[link] & (1u << peer)) == 0u || stream->links[link].outstanding[peer] >= config->depth )
+				if ( chunk >= chunks || (call.ready[link] & (1u << peer)) == 0u || stream->links[link].outstanding[peer] >= config->depth )
 					continue;
 				status = WeightStreamWrite(stream,peer,send_offset + (uint64_t)peer * send_pitch + (uint64_t)chunk * config->chunk_bytes,
 					landing_offset + (uint64_t)config->rank * bytes + (uint64_t)chunk * config->chunk_bytes,WeightStreamChunkLength(bytes,config->chunk_bytes,chunk),
