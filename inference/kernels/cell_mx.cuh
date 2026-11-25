@@ -41,6 +41,13 @@ typedef struct LmCellMxCodes
 }
 LmCellMxCodes;
 
+static __device__ __forceinline__ uint32_t LmCellMxShared32(uint32_t address)
+{
+	uint32_t value;
+	asm volatile("ld.shared.u32 %0, [%1];\n" : "=r"(value) : "r"(address));
+	return(value);
+}
+
 static __device__ __forceinline__ uint32_t LmCellMxShared16(uint32_t address)
 {
 	uint32_t value;

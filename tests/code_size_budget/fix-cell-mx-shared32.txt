@@ -1,0 +1,2 @@
++7
+Restore LmCellMxShared32 inline helper in inference/kernels/cell_mx.cuh alongside LmCellMxShared16 (PR #2267 renamed LmCellMxShared32 to LmCellMxShared16 while PR #2271 added a caller in model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh).
