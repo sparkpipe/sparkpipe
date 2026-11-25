@@ -190,6 +190,7 @@ typedef cudaDeviceAttr SparkGpuDeviceAttribute;
 #define SPARK_GPU_COPY_DEFAULT cudaMemcpyDefault
 #define SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT cudaDevAttrMultiProcessorCount
 #define SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES 8
+#define SPARK_GPU_FUNCTION_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT 9
 static inline cudaError_t SparkGpuFuncSetAttribute(const void *, int, int) { return cudaSuccess; }
 #define SparkGpuGetDevice cudaGetDevice
 #define SparkGpuDeviceGetAttribute cudaDeviceGetAttribute

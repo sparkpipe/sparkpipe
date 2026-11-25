@@ -902,6 +902,11 @@ SparkGpuError SparkGpuMemGetInfo(size_t *free_bytes, size_t *total_bytes)
 
 SparkGpuError SparkGpuFuncSetAttribute(const void *function, SparkGpuFunctionAttribute attribute, int value)
 {
+	if ( attribute == SPARK_GPU_FUNCTION_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT && value >= -1 && value <= 100 )
+	{
+		GPU_TRY(GpuReady());
+		return(SPARK_GPU_SUCCESS);
+	}
 	if ( attribute != SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES || value < 0 )
 		GPU_REFUSE_IN("function_attribute",SPARK_STATUS_UNSUPPORTED,"the backend sets only a kernel's dynamic shared memory");
 	GPU_TRY(GpuReady());
