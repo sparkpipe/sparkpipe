@@ -3100,6 +3100,9 @@ static void TestScenarioDraftBatchProfitabilityGate(const SparkModelResidentDepl
 static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestRunLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root,const uint32_t *script,uint32_t prompt,uint32_t budget,
+	TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *verify_submissions,uint32_t *verify_rows,uint32_t *max_stride,uint32_t *continues);
+static void TestScenarioE6SpecOptimizations(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *long_deployment,const char *runtime_root);
 
 static void TestScenarioAdapterCacheModes(const char *runtime_root)
 {
@@ -3141,6 +3144,14 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioDraftBatchCancelSafety(&deployment,runtime_root);
 		TestScenarioDraftBatchProfitabilityGate(&deployment,runtime_root);
 		TestScenarioTreeVerify(&deployment,runtime_root);
+		{
+			SparkModelResidentDeployment long_verify;
+			char long_path[512];
+			TestLoadVariantDeployment(runtime_root,"e6-long-verify",TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH,long_path,sizeof(long_path),&long_verify);
+			TestScenarioE6SpecOptimizations(&deployment,&long_verify,runtime_root);
+			SparkModelResidentDeploymentReset(&long_verify);
+			(void)unlink(long_path);
+		}
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
 		SparkModelResidentDeploymentReset(&deployment);
@@ -3268,6 +3279,7 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 #define TEST_DRAFT_FIRST 5u
 #define TEST_DRAFT_TREE 6u
 #define TEST_DRAFT_HANG 7u
+#define TEST_DRAFT_TREE_ALT_CONF 8u
 
 typedef struct TestDraftServer
 {
@@ -3358,7 +3370,7 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 		if ( server->mode == TEST_DRAFT_UNAVAILABLE )
 			status = 4u;
 		else
-			nodes = 1u + depth + (server->mode == TEST_DRAFT_TREE ? depth : 0u);
+			nodes = 1u + depth + (server->mode == TEST_DRAFT_TREE || server->mode == TEST_DRAFT_TREE_ALT_CONF ? depth : 0u);
 		TestDraftPut32(&cursor,status);
 		TestDraftPut32(&cursor,nodes);
 		memcpy(cursor,&sequence,8u);
@@ -3370,11 +3382,14 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 			const uint32_t alternate = index > depth ? 1u : 0u;
 			const uint32_t level = alternate != 0u ? index - depth : index;
 			const uint64_t at = position + level;
-			const uint32_t trunk_wrong = server->mode == TEST_DRAFT_TREE && (position % 2u) != 0u ? 1u : 0u;
+			const uint32_t trunk_wrong = (server->mode == TEST_DRAFT_TREE && (position % 2u) != 0u) ||
+				(server->mode == TEST_DRAFT_TREE_ALT_CONF && (position % 3u) == 0u) ? 1u : 0u;
 			const uint32_t wrong = server->mode == TEST_DRAFT_WRONG || (server->mode == TEST_DRAFT_FIRST && index >= 2u) ||
-				(server->mode == TEST_DRAFT_TREE && index != 0u && alternate == trunk_wrong) ? 1u : 0u;
+				((server->mode == TEST_DRAFT_TREE || server->mode == TEST_DRAFT_TREE_ALT_CONF) && index != 0u && alternate == trunk_wrong) ? 1u : 0u;
 			const uint32_t token = index == 0u ? anchor : at < server->script_count ? server->script[at] + wrong : 7u;
-			const float score = index == 0u ? 1.0f : server->mode == TEST_DRAFT_LOW ? 0.1f : alternate != 0u ? 0.8f : 0.9f;
+			const float score = index == 0u ? 1.0f : server->mode == TEST_DRAFT_LOW ? 0.1f :
+				server->mode == TEST_DRAFT_TREE_ALT_CONF ? (alternate != 0u ? (level == 1u ? 0.25f : 0.85f) : 0.65f) :
+				alternate != 0u ? 0.8f : 0.9f;
 			TestDraftPut32(&cursor,token);
 			TestDraftPut32(&cursor,index == 0u ? UINT32_MAX : alternate != 0u && level == 1u ? 0u : index - 1u);
 			TestDraftPut32(&cursor,level);
@@ -4162,6 +4177,350 @@ static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deploymen
 	CHECK(view.speculative_tree_branch_accepted_count != 0u && view.speculative_accepted_token_count >= 40u,
 		"tree verify: when the drafter's first choice is wrong the frame accepts its alternate");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"tree verify: a rejected sibling never becomes a lane's input");
+}
+
+static void TestRunLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root,const uint32_t *script,uint32_t prompt,uint32_t budget,
+	TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *verify_submissions,uint32_t *verify_rows,uint32_t *max_stride,uint32_t *continues);
+
+typedef struct TestE6B16State
+{
+	const uint32_t *script;
+	uint32_t prompt;
+	uint32_t token_events[17];
+	uint32_t completed_events[17];
+	uint32_t error_events[17];
+	uint32_t mismatches;
+	uint32_t total_terminals;
+} TestE6B16State;
+
+static void TestE6B16Event(void *context,const SparkModelBatchEvent *event)
+{
+	TestE6B16State *s = (TestE6B16State *)context;
+	const uint64_t id = event->request_id;
+	if ( id == 0u || id > 16u )
+		return;
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
+	{
+		if ( event->token_id != s->script[s->prompt + s->token_events[id]] )
+			s->mismatches++;
+		s->token_events[id]++;
+	}
+	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
+	{
+		s->completed_events[id]++;
+		s->total_terminals++;
+	}
+	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED || event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
+	{
+		s->error_events[id]++;
+		s->total_terminals++;
+	}
+}
+
+static void TestScenarioE6SpecOptimizations(
+	const SparkModelResidentDeployment *deployment,
+	const SparkModelResidentDeployment *long_deployment,
+	const char *runtime_root)
+{
+	uint32_t script[512],weak_prompt[64],index,submissions,rows,tree_frames,branches,stride,continues;
+	SparkModelBatchEngineView view;
+	TestBatchState state;
+	TestDraftServer server;
+	SparkModelBatchEngine *engine;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	{
+		SparkModelResidentDeployment drafted = *deployment;
+		static char host[] = "127.0.0.1";
+		CHECK(TestDraftStart(&server,TEST_DRAFT_TREE_ALT_CONF,script,256u) != 0u,"e6 neural tree: stub draft server listens");
+		drafted.draft_server.host = host;
+		drafted.draft_server.port = server.port;
+		strcpy(drafted.draft_server.target_model,"test-target");
+		drafted.draft_server.depth = 4u;
+		drafted.draft_server.wait_ms = 50u;
+		drafted.draft_server.min_confidence = 0.35f;
+		MockResidentClientReset();
+		memset(&state,0,sizeof(state));
+		engine = TestConnectFlags(&drafted,&state,runtime_root,32u,8u,0u);
+		if ( engine != 0 )
+		{
+			MockResidentClientSetScript(script,256u);
+			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+			MockResidentClientSetStepDelay(2000u);
+			MockResidentClientSetVerifyRowCost(0u);
+			TestSubmitPrompt(engine,1u,990u,80u,script,44u);
+			TestDriveUntilTerminal(engine,&state,1u,4000u);
+			memset(&view,0,sizeof(view));
+			CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 neural tree: engine view");
+			MockResidentClientTakeVerifyStats(&submissions,&rows);
+			MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+			CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestLaneInputsFollowScript(1u,script,256u) != 0u,
+				"e6 neural tree: exact greedy stream with realistic min_confidence=0.35");
+			CHECK(tree_frames >= 10u && view.speculative_tree_branch_accepted_count >= 10u && view.speculative_accepted_token_count >= 40u,
+				"e6 neural tree: alternate branches below trunk min_confidence=0.35 are verified and accepted");
+			fprintf(stderr,"E6-BENCH neural_tree tree_frames=%u branches=%u branch_kept=%llu accepted=%llu drafted=%llu submissions=%u rows=%u\n",
+				tree_frames,branches,(unsigned long long)view.speculative_tree_branch_accepted_count,
+				(unsigned long long)view.speculative_accepted_token_count,(unsigned long long)view.speculative_draft_token_count,submissions,rows);
+			MockResidentClientSetVerifyRowCost(1u);
+			MockResidentClientSetStepDelay(0u);
+			SparkModelBatchEngineDestroy(engine);
+		}
+		TestDraftStop(&server);
+	}
+	{
+		uint32_t warmup[256],pos = 0u,rep;
+		const uint32_t prefix[8] = { 110u, 111u, 112u, 113u, 114u, 115u, 116u, 117u };
+		for (index=0u; index<40u; index++)
+			warmup[index] = 1000u + (index * 7u) % 97u;
+		for (index=40u; index<44u; index++)
+			warmup[index] = 2000u + index;
+		for (index=44u; index<256u; index++)
+			warmup[index] = warmup[(index - 44u) % 40u];
+		for (index=0u; index<8u; index++)
+			script[pos++] = prefix[index];
+		for (index=0u; index<10u; index++)
+			script[pos++] = 2100u + index;
+		for (rep=0u; rep<6u; rep++)
+		{
+			for (index=0u; index<8u; index++)
+				script[pos++] = prefix[index];
+			for (index=0u; index<8u; index++)
+				script[pos++] = 4100u + index;
+		}
+		for (index=0u; index<10u; index++)
+			script[pos++] = 9000u + index;
+		{
+			const uint32_t prompt = pos;
+			while ( pos < 256u )
+			{
+				for (index=0u; index<8u && pos<256u; index++)
+					script[pos++] = prefix[index];
+				for (index=0u; index<10u && pos<256u; index++)
+					script[pos++] = 2100u + index;
+			}
+			MockResidentClientReset();
+			memset(&state,0,sizeof(state));
+			engine = TestConnectFlags(long_deployment,&state,runtime_root,256u,8u,0u);
+			if ( engine != 0 )
+			{
+				uint64_t before_kept,before_acc,before_draft;
+				MockResidentClientSetScript(warmup,256u);
+				MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+				TestSubmitPrompt(engine,1u,991u,40u,warmup,44u);
+				TestDriveUntilTerminal(engine,&state,1u,4000u);
+				memset(&view,0,sizeof(view));
+				CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 lookup tree: warmup view");
+				before_kept = view.speculative_tree_branch_accepted_count;
+				before_acc = view.speculative_accepted_token_count;
+				before_draft = view.speculative_draft_token_count;
+				MockResidentClientTakeVerifyStats(&submissions,&rows);
+				MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+				MockResidentClientSetScript(script,256u);
+				TestSubmitPrompt(engine,2u,992u,80u,script,prompt);
+				TestDriveUntilTerminal(engine,&state,2u,4000u);
+				memset(&view,0,sizeof(view));
+				CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 lookup tree: engine view");
+				MockResidentClientTakeVerifyStats(&submissions,&rows);
+				MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+				CHECK(state.completed_events[2] == 1u && TestScriptedOutputMatches(&state,2u,script,prompt,80u) != 0u,
+					"e6 lookup tree: exact greedy stream with 6 duplicate recent occurrences above older diverging match");
+				CHECK(tree_frames != 0u && view.speculative_tree_branch_accepted_count > before_kept,
+					"e6 lookup tree: 7th ranked older occurrence beyond 6 duplicates is verified and accepted as a tree branch");
+				fprintf(stderr,"E6-BENCH lookup_tree tree_frames=%u branches=%u branch_kept=%llu accepted=%llu drafted=%llu submissions=%u rows=%u\n",
+					tree_frames,branches,(unsigned long long)(view.speculative_tree_branch_accepted_count - before_kept),
+					(unsigned long long)(view.speculative_accepted_token_count - before_acc),
+					(unsigned long long)(view.speculative_draft_token_count - before_draft),submissions,rows);
+				SparkModelBatchEngineDestroy(engine);
+			}
+		}
+	}
+	{
+		uint32_t prose[256],code[256],p;
+		for (index=0u; index<256u; index++)
+			prose[index] = 10000u + index * 13u;
+		for (p=0u; p<10u; p++)
+		{
+			const uint32_t base = p * 10u;
+			prose[base] = 501u;
+			prose[base + 1u] = 502u;
+			prose[base + 2u] = 503u;
+			prose[base + 3u] = 20000u + p * 7u;
+		}
+		for (p=0u; p<12u; p++)
+		{
+			const uint32_t base = 126u + p * 8u;
+			if ( base + 3u < 256u )
+			{
+				prose[base] = 501u;
+				prose[base + 1u] = 502u;
+				prose[base + 2u] = 503u;
+				prose[base + 3u] = 30000u + p * 7u;
+			}
+		}
+		for (index=0u; index<256u; index++)
+			code[index] = 40000u + index * 17u;
+		for (p=0u; p<4u; p++)
+		{
+			const uint32_t base = p * 16u;
+			for (index=0u; index<10u; index++)
+				code[base + index] = 600u + p * 20u + index;
+		}
+		for (p=0u; p<8u; p++)
+		{
+			const uint32_t base = 104u + p * 16u;
+			const uint32_t pat = p % 4u;
+			for (index=0u; index<10u && base + index < 256u; index++)
+				code[base + index] = 600u + pat * 20u + index;
+		}
+		MockResidentClientReset();
+		memset(&state,0,sizeof(state));
+		engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+		if ( engine != 0 )
+		{
+			uint32_t prose_subs,prose_rows,code_subs,code_rows;
+			uint64_t prose_drafted,prose_accepted,code_drafted,code_accepted;
+			MockResidentClientSetScript(prose,256u);
+			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+			MockResidentClientSetRowCost(800u);
+			TestSubmitPrompt(engine,1u,993u,96u,prose,124u);
+			TestDriveUntilTerminal(engine,&state,1u,4000u);
+			memset(&view,0,sizeof(view));
+			CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 short match: prose view");
+			MockResidentClientTakeVerifyStats(&prose_subs,&prose_rows);
+			prose_drafted = view.speculative_draft_token_count;
+			prose_accepted = view.speculative_accepted_token_count;
+			CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,prose,124u,96u) != 0u,
+				"e6 short match: noisy 3-gram prose exact greedy stream");
+			CHECK(prose_subs <= 4u && prose_drafted <= 8u,"e6 short match: noisy 3-gram prose self-limits verify overhead");
+			MockResidentClientSetScript(code,256u);
+			TestSubmitPrompt(engine,2u,994u,120u,code,100u);
+			TestDriveUntilTerminal(engine,&state,2u,4000u);
+			memset(&view,0,sizeof(view));
+			CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 short match: code view");
+			MockResidentClientTakeVerifyStats(&code_subs,&code_rows);
+			code_drafted = view.speculative_draft_token_count - prose_drafted;
+			code_accepted = view.speculative_accepted_token_count - prose_accepted;
+			CHECK(state.completed_events[2] == 1u && TestScriptedOutputMatches(&state,2u,code,100u,120u) != 0u,
+				"e6 short match: 5-token code matches exact greedy stream after noisy 3-gram prose");
+			CHECK(code_accepted >= 20u,"e6 short match: 5-token code class stays active after 3-gram prose class shuts off");
+			fprintf(stderr,"E6-BENCH prose_vs_code prose_subs=%u prose_drafted=%llu prose_accepted=%llu code_subs=%u code_drafted=%llu code_accepted=%llu\n",
+				prose_subs,(unsigned long long)prose_drafted,(unsigned long long)prose_accepted,
+				code_subs,(unsigned long long)code_drafted,(unsigned long long)code_accepted);
+			SparkModelBatchEngineDestroy(engine);
+		}
+	}
+	{
+		for (index=0u; index<512u; index++)
+			script[index] = 700u + (index % 4u);
+		TestRunLongVerify(long_deployment,runtime_root,script,48u,120u,&state,&view,&submissions,&rows,&stride,&continues);
+		CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,48u,120u) != 0u,
+			"e6 lz77 overlap: period-4 repeating pattern exact greedy stream");
+		CHECK(stride >= 16u && submissions <= 10u && view.speculative_accepted_token_count >= 100u &&
+			view.speculative_accepted_token_count == view.speculative_draft_token_count,
+			"e6 lz77 overlap: short-period repeat drafts wide overlapping frames beyond distance=4");
+		fprintf(stderr,"E6-BENCH lz77_period4 submissions=%u rows=%u stride=%u accepted=%llu drafted=%llu\n",
+			submissions,rows,stride,(unsigned long long)view.speculative_accepted_token_count,(unsigned long long)view.speculative_draft_token_count);
+	}
+	{
+		uint32_t shared;
+		for (index=0u; index<40u; index++)
+			script[index] = 1000u + (index * 7u) % 97u;
+		for (index=40u; index<44u; index++)
+			script[index] = 2000u + index;
+		for (index=44u; index<256u; index++)
+			script[index] = script[(index - 44u) % 40u];
+		for (index=0u; index<44u; index++)
+			weak_prompt[index] = 50000u + index * 19u;
+		for (index=0u; index<32u; index+=8u)
+		{
+			weak_prompt[index] = script[index];
+			weak_prompt[index + 1u] = script[index + 1u];
+			weak_prompt[index + 2u] = script[index + 2u];
+			weak_prompt[index + 3u] = 60000u + index;
+		}
+		weak_prompt[43] = script[43];
+		MockResidentClientReset();
+		memset(&state,0,sizeof(state));
+		engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+		if ( engine != 0 )
+		{
+			MockResidentClientSetScript(script,256u);
+			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+			MockResidentClientSetRowCost(400u);
+			for (index=1u; index<=2u; index++)
+				TestSubmitPrompt(engine,index,950u + index,80u,script,44u);
+			for (index=3u; index<=8u; index++)
+				TestSubmitPrompt(engine,index,950u + index,80u,weak_prompt,44u);
+			for (index=1u; index<=8u; index++)
+				TestDriveUntilTerminal(engine,&state,index,8000u);
+			memset(&view,0,sizeof(view));
+			CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 hetero b8: engine view");
+			MockResidentClientTakeVerifyStats(&submissions,&rows);
+			shared = MockResidentClientTakeVerifyShared();
+			for (index=1u; index<=8u; index++)
+				CHECK(state.completed_events[index] == 1u && state.error_events[index] == 0u && TestScriptedOutputMatches(&state,index,script,44u,80u) != 0u,
+					"e6 hetero b8: every lane emits exact greedy stream");
+			CHECK(shared != 0u && view.speculative_accepted_token_count >= 260u &&
+				view.speculative_accepted_token_count * 10u >= view.speculative_draft_token_count * 9u,
+				"e6 hetero b8: survival-ranked allocation achieves high accepted count and >=90% draft efficiency");
+			fprintf(stderr,"E6-BENCH hetero_b8 shared=%u submissions=%u rows=%u accepted=%llu drafted=%llu\n",
+				shared,submissions,rows,(unsigned long long)view.speculative_accepted_token_count,(unsigned long long)view.speculative_draft_token_count);
+			SparkModelBatchEngineDestroy(engine);
+		}
+	}
+	{
+		SparkModelResidentDeployment high = *deployment;
+		SparkModelBatchEngineConfiguration configuration;
+		TestE6B16State b16;
+		uint32_t shared,max_lanes,step,all_ok = 1u;
+		for (index=0u; index<40u; index++)
+			script[index] = 1000u + (index * 7u) % 97u;
+		for (index=40u; index<44u; index++)
+			script[index] = 2000u + index;
+		for (index=44u; index<256u; index++)
+			script[index] = script[(index - 44u) % 40u];
+		MockResidentClientReset();
+		memset(&b16,0,sizeof(b16));
+		b16.script = script;
+		b16.prompt = 44u;
+		high.runtime_limits.max_active_sequence_count = 16u;
+		high.runtime_limits.resident_sequence_capacity = 16u;
+		high.runtime_limits.max_input_row_count = 256u;
+		high.runtime_limits.kv_logical_page_capacity = 256u;
+		high.runtime_limits.kv_physical_page_capacity = 256u;
+		TestConfigure(&configuration,&high,0,runtime_root,256u,16u,0u);
+		configuration.event_function = TestE6B16Event;
+		configuration.event_context = &b16;
+		engine = 0;
+		CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK && engine != 0,"e6 batch b16: engine connects at 16 lanes");
+		if ( engine != 0 )
+		{
+			MockResidentClientSetScript(script,256u);
+			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+			for (index=1u; index<=16u; index++)
+				TestSubmitPrompt(engine,index,960u + index,60u,script,44u);
+			for (step=0u; step<12000u && b16.total_terminals < 16u; step++)
+			{
+				(void)SparkModelBatchEngineProgress(engine,8u);
+				(void)MockResidentClientDriveAll();
+				TestPause(engine);
+			}
+			memset(&view,0,sizeof(view));
+			CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"e6 batch b16: engine view");
+			MockResidentClientTakeVerifyStats(&submissions,&rows);
+			shared = MockResidentClientTakeVerifyShared();
+			max_lanes = MockResidentClientTakeMaxDecodeLanes();
+			for (index=1u; index<=16u; index++)
+				if ( b16.completed_events[index] != 1u || b16.error_events[index] != 0u || b16.token_events[index] != 60u )
+					all_ok = 0u;
+			CHECK(all_ok != 0u && b16.mismatches == 0u,"e6 batch b16: all 16 lanes complete with exact greedy output");
+			CHECK(max_lanes == 16u && shared != 0u && view.speculative_accepted_token_count >= 300u,
+				"e6 batch b16: sixteen concurrent lookup lanes share survival-ranked verify frames");
+			fprintf(stderr,"E6-BENCH batch_b16 max_lanes=%u shared=%u submissions=%u rows=%u accepted=%llu drafted=%llu\n",
+				max_lanes,shared,submissions,rows,(unsigned long long)view.speculative_accepted_token_count,(unsigned long long)view.speculative_draft_token_count);
+			SparkModelBatchEngineDestroy(engine);
+		}
+	}
 }
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {

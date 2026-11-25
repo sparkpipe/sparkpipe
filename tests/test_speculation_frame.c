@@ -7,9 +7,9 @@
 
 static void TestBuckets(void)
 {
-	assert(SparkSpeculationFrameClass(3u,0u) == 0u && SparkSpeculationFrameClass(7u,0u) == 0u);
-	assert(SparkSpeculationFrameClass(8u,0u) == 1u && SparkSpeculationFrameClass(31u,0u) == 2u);
-	assert(SparkSpeculationFrameClass(63u,0u) == 3u && SparkSpeculationFrameClass(64u,0u) == 4u);
+	assert(SparkSpeculationFrameClass(3u,0u) == 0u && SparkSpeculationFrameClass(4u,0u) == 1u && SparkSpeculationFrameClass(7u,0u) == 1u);
+	assert(SparkSpeculationFrameClass(8u,0u) == 2u && SparkSpeculationFrameClass(31u,0u) == 3u);
+	assert(SparkSpeculationFrameClass(63u,0u) == 4u && SparkSpeculationFrameClass(64u,0u) == 5u);
 	assert(SparkSpeculationFrameClass(64u,1u) == 2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES - 1u && SparkSpeculationFrameClass(3u,1u) == SPARK_SPECULATION_FRAME_MATCH_CLASSES);
 	assert(SparkSpeculationFrameModelClass(0u) == 2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES && SparkSpeculationFrameModelClass(1u) == SPARK_SPECULATION_FRAME_CLASSES - 1u);
 	assert(SparkSpeculationFrameClassIsModel(SparkSpeculationFrameModelClass(0u)) != 0u && SparkSpeculationFrameClassIsModel(SparkSpeculationFrameModelClass(1u)) != 0u);

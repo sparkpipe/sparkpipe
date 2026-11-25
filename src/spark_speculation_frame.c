@@ -24,7 +24,7 @@ static uint32_t SparkSpeculationFrameLog2Ceil(uint32_t value)
 
 uint32_t SparkSpeculationFrameClass(uint32_t match_length, uint32_t sampled)
 {
-	uint32_t match_class = match_length < 8u ? 0u : match_length < 16u ? 1u : match_length < 32u ? 2u : match_length < 64u ? 3u : 4u;
+	uint32_t match_class = match_length < 4u ? 0u : match_length < 8u ? 1u : match_length < 16u ? 2u : match_length < 32u ? 3u : match_length < 64u ? 4u : 5u;
 	return(match_class + (sampled != 0u ? SPARK_SPECULATION_FRAME_MATCH_CLASSES : 0u));
 }
 
