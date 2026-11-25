@@ -557,6 +557,7 @@ static void TestDependentLaunch(void)
 	static Fake fake;
 	static uint8_t slots[4][4096];
 	const uint32_t acquire = (1u << 29) | (5u << 16) | (0x5cu >> 2),pcas = (1u << 29) | (1u << 16) | (1u << 13) | (0x02b4u >> 2);
+	const uint32_t wait_idle = (1u << 29) | (1u << 16) | (1u << 13) | (0x0110u >> 2);
 	SparkNvrmProgram program;
 	SparkNvrmLaunchRequest request;
 	uint64_t bytes = 0u,output = 0x1000500000ull,start = 0u,copied = 0u;
@@ -597,8 +598,8 @@ static void TestDependentLaunch(void)
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) != first && fake.gpu.compute.latch == LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID),
 		"a dependent launch after a launch pushes no wait: its descriptor waits on the earlier latch, overlaps block launch, holds its membar, and invalidates "
 		"the data caches when it acquires the latch; eager latch ids stay below the programs' half");
-	CHECK(DependentLaunch(&fake,&program,&request,slots[2],0x1000702000ull,0u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
-		LATCH_FIELD(slots[2],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a plain launch after a launch keeps the front-end acquire");
+	CHECK(DependentLaunch(&fake,&program,&request,slots[2],0x1000702000ull,0u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == wait_idle &&
+		LATCH_FIELD(slots[2],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a plain launch after a launch orders with compute WAIT_FOR_IDLE");
 	CHECK(SparkNvrmCopy(&fake.gpu,&fake.gpu.compute,0x2000001000ull,0x3000002000ull,4096u,&copied,"dependent") == SPARK_STATUS_OK &&
 		fake.gpu.compute.latch == 0u,"a copy ends the latch chain");
 	CHECK(DependentLaunch(&fake,&program,&request,slots[3],0x1000703000ull,1u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
@@ -620,18 +621,18 @@ static void TestDependentLaunch(void)
 				break;
 			}
 			if ( LATCH_FIELD(slots[index % 4u],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) != expect_latch ||
-				(expect_latch == 0u && PushWord(&fake,(uint32_t)(start / 4u)) != acquire) )
+				(expect_latch == 0u && PushWord(&fake,(uint32_t)(start / 4u)) != wait_idle) )
 				pattern_holds = 0u;
 			latched += expect_latch;
 			acquired += 1u - expect_latch;
 		}
 		CHECK(pattern_holds != 0u && latched == 39u && acquired == 1u,
-			"a chain of dependent launches goes in segments of 32: each starts with a front-end acquire and its other 31 launches wait on latches");
+			"a chain of dependent launches goes in segments of 32: each starts with compute WAIT_FOR_IDLE and its other 31 launches wait on latches");
 		SparkNvrmLatchSegmentSet(1u);
 		fake.fence[0] = fake.gpu.compute.fence_value;
 		CHECK(DependentLaunch(&fake,&program,&request,slots[0],0x1000700000ull,1u,&start) == SPARK_STATUS_OK &&
-			LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u && PushWord(&fake,(uint32_t)(start / 4u)) == acquire,
-			"with segments of one launch, every dependent launch takes the front-end acquire");
+			LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u && PushWord(&fake,(uint32_t)(start / 4u)) == wait_idle,
+			"with segments of one launch, every dependent launch orders with compute WAIT_FOR_IDLE");
 		SparkNvrmLatchSegmentSet(0u);
 		CHECK(SparkNvrmLatchSegment() == SPARK_NVRM_LATCH_SEGMENT,"a segment of zero launches restores the default of 32");
 	}

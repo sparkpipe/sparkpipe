@@ -315,8 +315,7 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
 	LAUNCH_TRY(LaunchBuild(gpu,program,request,cluster,owner));
 	SparkNvrmLaunchWords(words,request->slot_address);
-	LAUNCH_TRY(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&words[1],1u,owner));
-	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&words[3],1u,owner));
+	return(SparkNvrmPushWords(channel,words,SPARK_NVRM_LAUNCH_WORDS,owner));
 }
 
 static uint32_t launch_latch;

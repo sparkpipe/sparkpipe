@@ -26,11 +26,11 @@
 #define REGISTER_THREADS 128u
 
 static int failures;
-static const char hosts[8];
+static const char hosts[16];
 static uint32_t variable_shadow;
 static uint32_t managed_shadow;
-static char made_files[64][REGISTER_FILE];
-static char made_directories[16][REGISTER_FILE];
+static char made_files[96][REGISTER_FILE];
+static char made_directories[32][REGISTER_FILE];
 static int made_file_count, made_directory_count;
 
 #define CHECK(condition, what) \
@@ -49,7 +49,7 @@ static int Says(const char *part)
 
 static void MakeDirectory(const char *path)
 {
-	if ( mkdir(path,0755) == 0 && made_directory_count < 16 )
+	if ( mkdir(path,0755) == 0 && made_directory_count < 32 )
 		snprintf(made_directories[made_directory_count++],REGISTER_FILE,"%s",path);
 }
 
@@ -65,7 +65,7 @@ static void PutFile(const char *directory, const char *name, const char *source)
 	if ( file != 0 )
 		fclose(file);
 	free(data);
-	if ( made_file_count < 64 )
+	if ( made_file_count < 96 )
 		snprintf(made_files[made_file_count++],REGISTER_FILE,"%s",path);
 }
 
@@ -87,7 +87,7 @@ static void PutBytes(const char *directory, const char *name, const void *data, 
 	CHECK(data != 0 && file != 0 && fwrite(data,1u,(size_t)bytes,file) == (size_t)bytes,"write a kernel directory file");
 	if ( file != 0 )
 		fclose(file);
-	if ( made_file_count < 64 )
+	if ( made_file_count < 96 )
 		snprintf(made_files[made_file_count++],REGISTER_FILE,"%s",path);
 }
 
@@ -359,6 +359,67 @@ static int Aborts(int which)
 	return(child > 0 && waitpid(child,&status,0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
 
+static void TestOverlay(const char *root)
+{
+	char overlay_dir[REGISTER_PATH],bad_abi_dir[REGISTER_PATH],empty_dir[REGISTER_PATH];
+	char module_path[REGISTER_PATH],directory[REGISTER_PATH];
+	SparkNvrmModule *module = 0;
+	uint32_t overlaid = 99u;
+	static const char bad_abi_manifest[] =
+		"nvcc sklc-4.0\n"
+		"flags --arch sm_121a\n"
+		"cubin 0000000000000000000000000000000000000000000000000000000000000000 64\n"
+		"kernel SparkNvrmFirstLight short SparkNvrmFirstLight registers 16 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+		"param SparkNvrmFirstLight 0 ptr align 8 bytes 8 offset 0\n"
+		"param SparkNvrmFirstLight 1 u32 align 4 bytes 4 offset 8\n"
+		"param SparkNvrmFirstLight 2 u32 align 4 bytes 4 offset 12\n";
+	snprintf(overlay_dir,sizeof(overlay_dir),"%s/skl_overlay",root);
+	snprintf(bad_abi_dir,sizeof(bad_abi_dir),"%s/skl_bad_abi",root);
+	snprintf(empty_dir,sizeof(empty_dir),"%s/skl_empty",root);
+	MakeDirectory(overlay_dir);
+	MakeDirectory(bad_abi_dir);
+	MakeDirectory(empty_dir);
+	PutFile(overlay_dir,"first.cubin",SPARK_NVRM_FIXTURE_CUBIN);
+	PutManifestOf(overlay_dir,"first.manifest","SparkNvrmFirstLight");
+	PutFile(bad_abi_dir,"bad.cubin",SPARK_NVRM_FIXTURE_CUBIN);
+	PutBytes(bad_abi_dir,"bad.manifest",bad_abi_manifest,sizeof(bad_abi_manifest) - 1u);
+	unsetenv("SPARKPIPE_KERNEL_PROVIDER");
+	unsetenv("SPARKPIPE_SKL_CUBIN_DIR");
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"overlay reload with no env is inactive and OK");
+	CHECK(SparkNvrmRegisteredOverlay(&hosts[0],&overlaid) == SPARK_STATUS_OK && overlaid == 0u,"base registration is not overlaid when unset");
+	setenv("SPARKPIPE_KERNEL_PROVIDER","bogus",1);
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_INVALID_ARGUMENT && Says("unknown SPARKPIPE_KERNEL_PROVIDER"),"unknown provider fails closed");
+	setenv("SPARKPIPE_KERNEL_PROVIDER","skl-overlay",1);
+	unsetenv("SPARKPIPE_SKL_CUBIN_DIR");
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_INVALID_ARGUMENT && Says("requires SPARKPIPE_SKL_CUBIN_DIR"),
+		"skl-overlay without SPARKPIPE_SKL_CUBIN_DIR fails closed");
+	setenv("SPARKPIPE_SKL_CUBIN_DIR",empty_dir,1);
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_NOT_FOUND && Says("holds no cubin"),"empty overlay directory fails closed");
+	setenv("SPARKPIPE_KERNEL_PROVIDER","default",1);
+	setenv("SPARKPIPE_SKL_CUBIN_DIR",bad_abi_dir,1);
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"default provider explicitly disables overlay");
+	setenv("SPARKPIPE_KERNEL_PROVIDER","skl-overlay",1);
+	setenv("SPARKPIPE_SKL_CUBIN_DIR",bad_abi_dir,1);
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"bad-abi overlay parses its own manifest");
+	ModulePaths(root,"overlay_bad.so",module_path,directory);
+	PutPair(directory,"a");
+	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_TARGET_MISMATCH && Says("ABI mismatch"),
+		"overlay kernel with mismatched parameter count fails closed on module scan");
+	setenv("SPARKPIPE_KERNEL_PROVIDER","skl-overlay",1);
+	setenv("SPARKPIPE_SKL_CUBIN_DIR",overlay_dir,1);
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"valid skl-overlay directory loads cleanly");
+	ModulePaths(root,"overlay_ok.so",module_path,directory);
+	PutPair(directory,"a");
+	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_OK,"module registers cleanly with matching skl-overlay");
+	CHECK(SparkNvrmRegisterFunction(module,&hosts[8],"SparkNvrmFirstLight") == SPARK_STATUS_OK &&
+		SparkNvrmRegisterFunction(module,&hosts[9],"SparkNvrmStreamFill") == SPARK_STATUS_OK,"register overlaid and base functions");
+	CHECK(SparkNvrmRegisteredOverlay(&hosts[8],&overlaid) == SPARK_STATUS_OK && overlaid == 1u,"matching kernel resolves to skl-overlay");
+	CHECK(SparkNvrmRegisteredOverlay(&hosts[9],&overlaid) == SPARK_STATUS_OK && overlaid == 0u,"non-matching kernel stays on base cubin");
+	unsetenv("SPARKPIPE_KERNEL_PROVIDER");
+	unsetenv("SPARKPIPE_SKL_CUBIN_DIR");
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"reset overlay to default after overlay tests");
+}
+
 static void TestLaunchEntries(void)
 {
 	int which,aborted = 0;
@@ -424,6 +485,7 @@ int main(int argc, char **argv)
 	}
 	TestRefusals(root);
 	TestModule(root);
+	TestOverlay(root);
 	TestFatBinary(argv[0]);
 	TestLaunchEntries();
 #ifdef SPARK_NVRM_REGISTER_GPU

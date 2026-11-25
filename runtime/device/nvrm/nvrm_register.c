@@ -23,6 +23,8 @@
 #define REGISTER_CUBIN_SUFFIX ".cubin"
 #define REGISTER_MANIFEST_SUFFIX ".manifest"
 #define REGISTER_OWNER "registered kernels"
+#define REGISTER_PROVIDER_ENV "SPARKPIPE_KERNEL_PROVIDER"
+#define REGISTER_OVERLAY_DIR_ENV "SPARKPIPE_SKL_CUBIN_DIR"
 
 typedef struct RegisterCubin
 {
@@ -34,8 +36,38 @@ typedef struct RegisterName
 {
 	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
+	uint32_t overlay_cubin;
+	uint32_t overlaid;
 	const char *file;
 } RegisterName;
+
+typedef struct RegisterOverlayName
+{
+	char name[SPARK_NVRM_SHORT_NAME_BYTES];
+	uint32_t cubin;
+	const char *file;
+	SparkNvrmParameter *parameters;
+	uint32_t parameter_count;
+	uint32_t parameter_bytes;
+	uint32_t max_threads;
+	uint32_t clustered;
+	uint32_t cluster[3];
+	uint32_t cluster_limit;
+} RegisterOverlayName;
+
+typedef struct RegisterOverlay
+{
+	uint32_t loaded;
+	uint32_t active;
+	RegisterCubin *cubins;
+	uint32_t cubin_count;
+	uint32_t cubin_capacity;
+	RegisterOverlayName *names;
+	uint32_t name_count;
+	uint32_t name_capacity;
+	SparkStatus status;
+	char failure[SPARK_NVRM_REGISTER_FAILURE_BYTES];
+} RegisterOverlay;
 
 struct SparkNvrmModule
 {
@@ -58,6 +90,7 @@ typedef struct RegisterEntry
 	SparkNvrmModule *module;
 	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
+	uint32_t overlaid;
 	uint32_t variable;
 	SparkDeviceKernel *kernel;
 	SparkStatus status;
@@ -74,6 +107,7 @@ static SparkNvrmModule *register_modules;
 static RegisterEntry **register_table;
 static uint32_t register_capacity;
 static uint32_t register_count;
+static RegisterOverlay register_overlay;
 
 static SparkStatus RegisterRefuse(SparkStatus code, const char *operation, const char *owner, const char *text)
 {
@@ -120,6 +154,64 @@ static int RegisterNameFileOrder(const void *left, const void *right)
 	return(name != 0 ? name : strcmp(((const RegisterName *)left)->file,((const RegisterName *)right)->file));
 }
 
+static int RegisterOverlayNameOrder(const void *left, const void *right)
+{
+	return(strcmp(((const RegisterOverlayName *)left)->name,((const RegisterOverlayName *)right)->name));
+}
+
+static int RegisterOverlayNameFileOrder(const void *left, const void *right)
+{
+	const int name = RegisterOverlayNameOrder(left,right);
+	return(name != 0 ? name : strcmp(((const RegisterOverlayName *)left)->file,((const RegisterOverlayName *)right)->file));
+}
+
+static SparkStatus RegisterOverlayFail(SparkStatus code, const char *text)
+{
+	register_overlay.status = code;
+	snprintf(register_overlay.failure,sizeof(register_overlay.failure),"%s",text);
+	fprintf(stderr,"nvrm: skl-overlay: %s\n",text);
+	return(RegisterRefuse(code,"kernel_register",REGISTER_OWNER,text));
+}
+
+static const RegisterOverlayName *RegisterOverlayFind(const char *short_name)
+{
+	RegisterOverlayName key;
+	if ( register_overlay.active == 0u || register_overlay.name_count == 0u )
+		return(0);
+	memcpy(key.name,short_name,sizeof(key.name));
+	return((const RegisterOverlayName *)bsearch(&key,register_overlay.names,register_overlay.name_count,sizeof(*register_overlay.names),
+		RegisterOverlayNameOrder));
+}
+
+static int RegisterOverlayAbiCheck(const SparkNvrmManifestKernel *base, const RegisterOverlayName *overlay, char *text, size_t capacity)
+{
+	const uint32_t base_bytes = SparkNvrmManifestParameterEnd(base);
+	uint32_t index;
+	if ( base->parameter_count != overlay->parameter_count || base_bytes != overlay->parameter_bytes )
+	{
+		snprintf(text,capacity,"skl-overlay kernel %.48s ABI mismatch: overlay has %u params in %u bytes, base expects %u in %u",base->name,
+			overlay->parameter_count,overlay->parameter_bytes,base->parameter_count,base_bytes);
+		return(0);
+	}
+	for (index = 0u; index < base->parameter_count; index++)
+		if ( base->parameters[index].offset != overlay->parameters[index].offset ||
+			base->parameters[index].bytes != overlay->parameters[index].bytes ||
+			base->parameters[index].align != overlay->parameters[index].align )
+		{
+			snprintf(text,capacity,"skl-overlay kernel %.48s param %u ABI mismatch: overlay %uB@%u(a%u), base %uB@%u(a%u)",base->name,index,
+				overlay->parameters[index].bytes,overlay->parameters[index].offset,overlay->parameters[index].align,
+				base->parameters[index].bytes,base->parameters[index].offset,base->parameters[index].align);
+			return(0);
+		}
+	if ( base->clustered != 0u && (overlay->clustered == 0u || memcmp(base->cluster,overlay->cluster,sizeof(base->cluster)) != 0 ||
+		(base->cluster_limit != 0u && (overlay->cluster_limit == 0u || overlay->cluster_limit > base->cluster_limit))) )
+	{
+		snprintf(text,capacity,"skl-overlay kernel %.48s cluster ABI mismatch with base kernel",base->name);
+		return(0);
+	}
+	return(1);
+}
+
 static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directory, const char *file)
 {
 	char path[REGISTER_PATH_BYTES],manifest_path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
@@ -152,15 +244,24 @@ static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directo
 	module->cubins[module->cubin_count].library = 0;
 	for (index = 0u; index < manifest.kernel_count; index++)
 	{
+		RegisterName *slot;
+		const RegisterOverlayName *overlay = RegisterOverlayFind(manifest.kernels[index].name);
+		if ( overlay != 0 && RegisterOverlayAbiCheck(&manifest.kernels[index],overlay,text,sizeof(text)) == 0 )
+		{
+			SparkNvrmManifestRelease(&manifest);
+			return(ModuleFail(module,SPARK_STATUS_TARGET_MISMATCH,text));
+		}
 		if ( RegisterGrow((void **)&module->names,&module->name_capacity,module->name_count,sizeof(*module->names)) != SPARK_STATUS_OK )
 		{
 			SparkNvrmManifestRelease(&manifest);
 			return(ModuleFail(module,SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the kernel registry"));
 		}
-		memcpy(module->names[module->name_count].name,manifest.kernels[index].name,sizeof(module->names[module->name_count].name));
-		module->names[module->name_count].cubin = module->cubin_count;
-		module->names[module->name_count].file = module->cubins[module->cubin_count].path;
-		module->name_count++;
+		slot = &module->names[module->name_count++];
+		memcpy(slot->name,manifest.kernels[index].name,sizeof(slot->name));
+		slot->cubin = module->cubin_count;
+		slot->overlay_cubin = overlay != 0 ? overlay->cubin : 0u;
+		slot->overlaid = overlay != 0 ? 1u : 0u;
+		slot->file = module->cubins[module->cubin_count].path;
 	}
 	module->cubin_count++;
 	SparkNvrmManifestRelease(&manifest);
@@ -229,18 +330,44 @@ static const char *RegisterBase(const char *path)
 	return(slash != 0 ? slash + 1 : path);
 }
 
-static SparkStatus RegisterSameKernel(SparkNvrmModule *module, const RegisterName *kept, const RegisterName *again)
+typedef struct RegisterParsedCubin
+{
+	uint32_t state;
+	SparkNvrmCubin cubin;
+} RegisterParsedCubin;
+
+static const SparkNvrmCubin *RegisterCachedCubin(const RegisterCubin *cubins, RegisterParsedCubin *cache, uint32_t index)
+{
+	if ( cache[index].state == 0u )
+		cache[index].state = RegisterCubinRead(cubins[index].path,&cache[index].cubin) == SPARK_STATUS_OK ? 1u : 2u;
+	return(cache[index].state == 1u ? &cache[index].cubin : 0);
+}
+
+static void RegisterCachedCubinsRelease(RegisterParsedCubin *cache, uint32_t count)
+{
+	uint32_t index;
+	if ( cache == 0 )
+		return;
+	for (index = 0u; index < count; index++)
+		if ( cache[index].state == 1u )
+			SparkNvrmCubinRelease(&cache[index].cubin);
+	free(cache);
+}
+
+static const char *RegisterSameCubinPair(const RegisterCubin *cubins, RegisterParsedCubin *cache, uint32_t first_idx, uint32_t second_idx,
+	const char *name)
+{
+	const SparkNvrmCubin *first = RegisterCachedCubin(cubins,cache,first_idx);
+	const SparkNvrmCubin *second = RegisterCachedCubin(cubins,cache,second_idx);
+	if ( first == 0 || second == 0 )
+		return("a cubin does not parse");
+	return(RegisterCopiesDiffer(first,SparkNvrmCubinKernelNamed(first,name),second,SparkNvrmCubinKernelNamed(second,name)));
+}
+
+static SparkStatus RegisterSameKernel(SparkNvrmModule *module, RegisterParsedCubin *cache, const RegisterName *kept, const RegisterName *again)
 {
 	char text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
-	SparkNvrmCubin first,second;
-	const char *differ;
-	if ( RegisterCubinRead(module->cubins[kept->cubin].path,&first) != SPARK_STATUS_OK ||
-		RegisterCubinRead(module->cubins[again->cubin].path,&second) != SPARK_STATUS_OK )
-		differ = "a cubin does not parse";
-	else
-		differ = RegisterCopiesDiffer(&first,SparkNvrmCubinKernelNamed(&first,kept->name),&second,SparkNvrmCubinKernelNamed(&second,again->name));
-	SparkNvrmCubinRelease(&first);
-	SparkNvrmCubinRelease(&second);
+	const char *differ = RegisterSameCubinPair(module->cubins,cache,kept->cubin,again->cubin,kept->name);
 	if ( differ == 0 )
 		return(SPARK_STATUS_OK);
 	snprintf(text,sizeof(text),"kernel %.64s is in two cubins of the module, %.32s and %.32s, and %s",kept->name,
@@ -248,13 +375,191 @@ static SparkStatus RegisterSameKernel(SparkNvrmModule *module, const RegisterNam
 	return(ModuleFail(module,SPARK_STATUS_DUPLICATE,text));
 }
 
+static SparkStatus RegisterOverlayCubinAdd(const char *directory, const char *file)
+{
+	char path[REGISTER_PATH_BYTES],manifest_path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
+	const size_t stem = strlen(file) - (sizeof(REGISTER_CUBIN_SUFFIX) - 1u);
+	SparkNvrmManifest manifest;
+	uint64_t bytes = 0u;
+	uint32_t index;
+	char *contents;
+	if ( snprintf(path,sizeof(path),"%s/%s",directory,file) >= (int)sizeof(path) ||
+		snprintf(manifest_path,sizeof(manifest_path),"%s/%.*s%s",directory,(int)stem,file,REGISTER_MANIFEST_SUFFIX) >= (int)sizeof(manifest_path) )
+		return(RegisterOverlayFail(SPARK_STATUS_INVALID_ARGUMENT,"an overlay kernel path is longer than 4096 bytes"));
+	if ( (contents = (char *)SparkNvrmReadFile(manifest_path,&bytes)) == 0 )
+	{
+		snprintf(text,sizeof(text),"the overlay cubin %.80s has no manifest beside it",file);
+		return(RegisterOverlayFail(SPARK_STATUS_NOT_FOUND,text));
+	}
+	if ( SparkNvrmManifestParse(contents,bytes,REGISTER_OWNER,&manifest) != SPARK_STATUS_OK )
+	{
+		free(contents);
+		snprintf(text,sizeof(text),"%.60s: %.90s",file,SparkDeviceLastError()->text);
+		return(RegisterOverlayFail(SPARK_STATUS_PARSE_ERROR,text));
+	}
+	free(contents);
+	if ( RegisterGrow((void **)&register_overlay.cubins,&register_overlay.cubin_capacity,register_overlay.cubin_count,
+		sizeof(*register_overlay.cubins)) != SPARK_STATUS_OK ||
+		(register_overlay.cubins[register_overlay.cubin_count].path = strdup(path)) == 0 )
+	{
+		SparkNvrmManifestRelease(&manifest);
+		return(RegisterOverlayFail(SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the overlay registry"));
+	}
+	register_overlay.cubins[register_overlay.cubin_count].library = 0;
+	for (index = 0u; index < manifest.kernel_count; index++)
+	{
+		const SparkNvrmManifestKernel *src = &manifest.kernels[index];
+		RegisterOverlayName *dst;
+		if ( RegisterGrow((void **)&register_overlay.names,&register_overlay.name_capacity,register_overlay.name_count,
+			sizeof(*register_overlay.names)) != SPARK_STATUS_OK )
+		{
+			SparkNvrmManifestRelease(&manifest);
+			return(RegisterOverlayFail(SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the overlay registry"));
+		}
+		dst = &register_overlay.names[register_overlay.name_count];
+		memset(dst,0,sizeof(*dst));
+		if ( src->parameter_count != 0u )
+		{
+			dst->parameters = (SparkNvrmParameter *)malloc((size_t)src->parameter_count * sizeof(*dst->parameters));
+			if ( dst->parameters == 0 )
+			{
+				SparkNvrmManifestRelease(&manifest);
+				return(RegisterOverlayFail(SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the overlay registry"));
+			}
+			memcpy(dst->parameters,src->parameters,(size_t)src->parameter_count * sizeof(*dst->parameters));
+		}
+		memcpy(dst->name,src->name,sizeof(dst->name));
+		dst->cubin = register_overlay.cubin_count;
+		dst->file = register_overlay.cubins[register_overlay.cubin_count].path;
+		dst->parameter_count = src->parameter_count;
+		dst->parameter_bytes = SparkNvrmManifestParameterEnd(src);
+		dst->max_threads = src->max_threads;
+		dst->clustered = src->clustered;
+		memcpy(dst->cluster,src->cluster,sizeof(dst->cluster));
+		dst->cluster_limit = src->cluster_limit;
+		register_overlay.name_count++;
+	}
+	register_overlay.cubin_count++;
+	SparkNvrmManifestRelease(&manifest);
+	return(SPARK_STATUS_OK);
+}
+
+static void RegisterOverlayClear(void)
+{
+	uint32_t index;
+	for (index = 0u; index < register_overlay.name_count; index++)
+		free(register_overlay.names[index].parameters);
+	free(register_overlay.names);
+	for (index = 0u; index < register_overlay.cubin_count; index++)
+	{
+		if ( register_overlay.cubins[index].library != 0 )
+			(void)SparkDeviceLibraryUnload(register_overlay.cubins[index].library);
+		free(register_overlay.cubins[index].path);
+	}
+	free(register_overlay.cubins);
+	memset(&register_overlay,0,sizeof(register_overlay));
+}
+
+static SparkStatus RegisterOverlayScan(const char *directory)
+{
+	char path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
+	SparkStatus status = SPARK_STATUS_OK;
+	RegisterParsedCubin *cache = 0;
+	struct dirent *entry;
+	uint32_t index,kept;
+	DIR *listing;
+	if ( (listing = opendir(directory)) == 0 )
+	{
+		snprintf(text,sizeof(text),"overlay directory %.100s cannot be opened",directory);
+		return(RegisterOverlayFail(SPARK_STATUS_NOT_FOUND,text));
+	}
+	while ( status == SPARK_STATUS_OK && (entry = readdir(listing)) != 0 )
+	{
+		if ( RegisterEnds(entry->d_name,REGISTER_CUBIN_SUFFIX) != 0u )
+			status = RegisterOverlayCubinAdd(directory,entry->d_name);
+		else if ( RegisterEnds(entry->d_name,REGISTER_MANIFEST_SUFFIX) != 0u )
+		{
+			const size_t stem = strlen(entry->d_name) - (sizeof(REGISTER_MANIFEST_SUFFIX) - 1u);
+			if ( snprintf(path,sizeof(path),"%s/%.*s%s",directory,(int)stem,entry->d_name,REGISTER_CUBIN_SUFFIX) >= (int)sizeof(path) )
+				status = RegisterOverlayFail(SPARK_STATUS_INVALID_ARGUMENT,"an overlay kernel path is longer than 4096 bytes");
+			else if ( access(path,R_OK) != 0 )
+			{
+				snprintf(text,sizeof(text),"the overlay manifest %.80s has no cubin beside it",entry->d_name);
+				status = RegisterOverlayFail(SPARK_STATUS_NOT_FOUND,text);
+			}
+		}
+	}
+	closedir(listing);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	if ( register_overlay.cubin_count == 0u )
+	{
+		snprintf(text,sizeof(text),"overlay directory %.100s holds no cubin",directory);
+		return(RegisterOverlayFail(SPARK_STATUS_NOT_FOUND,text));
+	}
+	qsort(register_overlay.names,register_overlay.name_count,sizeof(*register_overlay.names),RegisterOverlayNameFileOrder);
+	cache = (RegisterParsedCubin *)calloc(register_overlay.cubin_count,sizeof(*cache));
+	if ( cache == 0 )
+		return(RegisterOverlayFail(SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the overlay registry"));
+	for (index = 0u, kept = 0u; index < register_overlay.name_count; index++)
+	{
+		if ( kept != 0u && strcmp(register_overlay.names[kept - 1u].name,register_overlay.names[index].name) == 0 )
+		{
+			const char *differ = RegisterSameCubinPair(register_overlay.cubins,cache,register_overlay.names[kept - 1u].cubin,
+				register_overlay.names[index].cubin,register_overlay.names[kept - 1u].name);
+			if ( differ != 0 )
+			{
+				snprintf(text,sizeof(text),"overlay kernel %.64s is in two cubins, %.32s and %.32s, and %s",
+					register_overlay.names[kept - 1u].name,RegisterBase(register_overlay.cubins[register_overlay.names[kept - 1u].cubin].path),
+					RegisterBase(register_overlay.cubins[register_overlay.names[index].cubin].path),differ);
+				RegisterCachedCubinsRelease(cache,register_overlay.cubin_count);
+				return(RegisterOverlayFail(SPARK_STATUS_DUPLICATE,text));
+			}
+			free(register_overlay.names[index].parameters);
+			continue;
+		}
+		register_overlay.names[kept++] = register_overlay.names[index];
+	}
+	RegisterCachedCubinsRelease(cache,register_overlay.cubin_count);
+	register_overlay.name_count = kept;
+	register_overlay.active = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus RegisterOverlayEnsure(void)
+{
+	const char *provider,*directory;
+	if ( register_overlay.loaded != 0u )
+		return(register_overlay.status);
+	register_overlay.loaded = 1u;
+	register_overlay.status = SPARK_STATUS_OK;
+	provider = getenv(REGISTER_PROVIDER_ENV);
+	directory = getenv(REGISTER_OVERLAY_DIR_ENV);
+	if ( provider != 0 && provider[0] != '\0' )
+	{
+		if ( strcmp(provider,"default") == 0 )
+			return(SPARK_STATUS_OK);
+		if ( strcmp(provider,"skl-overlay") != 0 )
+			return(RegisterOverlayFail(SPARK_STATUS_INVALID_ARGUMENT,"unknown SPARKPIPE_KERNEL_PROVIDER; expected default or skl-overlay"));
+		if ( directory == 0 || directory[0] == '\0' )
+			return(RegisterOverlayFail(SPARK_STATUS_INVALID_ARGUMENT,"SPARKPIPE_KERNEL_PROVIDER=skl-overlay requires SPARKPIPE_SKL_CUBIN_DIR"));
+		return(RegisterOverlayScan(directory));
+	}
+	if ( directory != 0 && directory[0] != '\0' )
+		return(RegisterOverlayScan(directory));
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus RegisterScan(SparkNvrmModule *module)
 {
 	char directory[REGISTER_PATH_BYTES],path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
 	SparkStatus status = SPARK_STATUS_OK;
+	RegisterParsedCubin *cache = 0;
 	struct dirent *entry;
 	uint32_t index,kept;
 	DIR *listing;
+	if ( RegisterOverlayEnsure() != SPARK_STATUS_OK )
+		return(ModuleFail(module,register_overlay.status,register_overlay.failure));
 	if ( snprintf(directory,sizeof(directory),"%s%s",module->path,SPARK_NVRM_KERNEL_DIRECTORY_SUFFIX) >= (int)sizeof(directory) )
 		return(ModuleFail(module,SPARK_STATUS_INVALID_ARGUMENT,"the module path is longer than 4096 bytes"));
 	if ( (listing = opendir(directory)) == 0 )
@@ -291,13 +596,20 @@ static SparkStatus RegisterScan(SparkNvrmModule *module)
 	{
 		if ( kept != 0u && strcmp(module->names[kept - 1u].name,module->names[index].name) == 0 )
 		{
-			const SparkStatus same = RegisterSameKernel(module,&module->names[kept - 1u],&module->names[index]);
+			SparkStatus same;
+			if ( cache == 0 && (cache = (RegisterParsedCubin *)calloc(module->cubin_count,sizeof(*cache))) == 0 )
+				return(ModuleFail(module,SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the kernel registry"));
+			same = RegisterSameKernel(module,cache,&module->names[kept - 1u],&module->names[index]);
 			if ( same != SPARK_STATUS_OK )
+			{
+				RegisterCachedCubinsRelease(cache,module->cubin_count);
 				return(same);
+			}
 			continue;
 		}
 		module->names[kept++] = module->names[index];
 	}
+	RegisterCachedCubinsRelease(cache,module->cubin_count);
 	module->name_count = kept;
 	return(SPARK_STATUS_OK);
 }
@@ -442,7 +754,10 @@ SparkStatus SparkNvrmRegisterFunction(SparkNvrmModule *module, const void *host,
 		key.cubin = 0u;
 		found = (const RegisterName *)bsearch(&key,module->names,module->name_count,sizeof(*module->names),RegisterNameOrder);
 		if ( found != 0 )
-			entry->cubin = found->cubin;
+		{
+			entry->overlaid = found->overlaid;
+			entry->cubin = found->overlaid != 0u ? found->overlay_cubin : found->cubin;
+		}
 		else
 		{
 			snprintf(text,sizeof(text),"kernel %.64s is registered but no cubin of %.60s lists it",name,module->path);
@@ -504,7 +819,7 @@ static SparkStatus RegisterResolve(RegisterEntry *entry)
 	}
 	if ( entry->status != SPARK_STATUS_OK )
 		return(RegisterRefuse(entry->status,"kernel_launch",REGISTER_OWNER,entry->failure));
-	cubin = &entry->module->cubins[entry->cubin];
+	cubin = entry->overlaid != 0u ? &register_overlay.cubins[entry->cubin] : &entry->module->cubins[entry->cubin];
 	if ( cubin->library == 0 && SparkDeviceLibraryLoad(&cubin->library,cubin->path,REGISTER_OWNER) != SPARK_STATUS_OK )
 		SPARK_FAIL(SparkDeviceLastError()->status);
 	if ( SparkDeviceKernelCreate(&entry->kernel,cubin->library,entry->name) != SPARK_STATUS_OK )
@@ -523,6 +838,64 @@ SparkStatus SparkNvrmRegisteredKernel(const void *host, SparkDeviceKernel **kern
 	else if ( entry->kernel == 0 )
 		status = RegisterResolve(entry);
 	*kernel = status == SPARK_STATUS_OK ? entry->kernel : 0;
+	pthread_mutex_unlock(&register_mutex);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmRegisteredResolve(const void *host, const char **name, SparkDeviceKernel **kernel)
+{
+	RegisterEntry *entry;
+	SparkStatus status = SPARK_STATUS_OK;
+	pthread_mutex_lock(&register_mutex);
+	entry = RegisterFind(host);
+	if ( entry == 0 )
+	{
+		*name = 0;
+		*kernel = 0;
+		status = RegisterRefuse(SPARK_STATUS_NOT_FOUND,"kernel_launch",REGISTER_OWNER,"no module registered a kernel or variable at that host address");
+	}
+	else
+	{
+		*name = entry->name;
+		if ( entry->kernel == 0 )
+			status = RegisterResolve(entry);
+		*kernel = status == SPARK_STATUS_OK ? entry->kernel : 0;
+	}
+	pthread_mutex_unlock(&register_mutex);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmRegisteredOverlay(const void *host, uint32_t *overlaid)
+{
+	const RegisterEntry *entry;
+	if ( overlaid == 0 )
+		return(RegisterRefuse(SPARK_STATUS_INVALID_ARGUMENT,"kernel_register",REGISTER_OWNER,"an overlay query needs an output"));
+	pthread_mutex_lock(&register_mutex);
+	entry = RegisterFind(host);
+	*overlaid = entry != 0 ? entry->overlaid : 0u;
+	pthread_mutex_unlock(&register_mutex);
+	if ( entry == 0 )
+		return(RegisterRefuse(SPARK_STATUS_NOT_FOUND,"kernel_launch",REGISTER_OWNER,"no module registered a kernel or variable at that host address"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmOverlayReload(void)
+{
+	SparkStatus status;
+	uint32_t slot;
+	pthread_mutex_lock(&register_mutex);
+	for (slot = 0u; slot < register_capacity; slot++)
+		if ( register_table[slot] != 0 && register_table[slot]->overlaid != 0u && register_table[slot]->kernel != 0 )
+		{
+			(void)SparkDeviceKernelDestroy(register_table[slot]->kernel);
+			register_table[slot]->kernel = 0;
+		}
+	RegisterOverlayClear();
+	status = RegisterOverlayEnsure();
 	pthread_mutex_unlock(&register_mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
@@ -572,12 +945,21 @@ SparkStatus SparkNvrmRegisteredRelease(void)
 {
 	SparkStatus status = SPARK_STATUS_OK;
 	SparkNvrmModule *module;
+	uint32_t index;
 	pthread_mutex_lock(&register_mutex);
 	for (module = register_modules; module != 0; module = module->next)
 	{
 		const SparkStatus released = RegisterReleaseModule(module);
 		status = status == SPARK_STATUS_OK ? released : status;
 	}
+	for (index = 0u; index < register_overlay.cubin_count; index++)
+		if ( register_overlay.cubins[index].library != 0 )
+		{
+			if ( SparkDeviceLibraryUnload(register_overlay.cubins[index].library) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+				status = SparkDeviceLastError()->status;
+			else
+				register_overlay.cubins[index].library = 0;
+		}
 	pthread_mutex_unlock(&register_mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
