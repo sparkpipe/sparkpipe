@@ -39,13 +39,17 @@ void LmLatentWarpSplitKernel(
 	static_assert(LATENT == 16u * LM_WARP_LANES && ROPE == 64u, "one warp covers the latent with two 16-byte loads per lane and the rope with eight lanes");
 	__shared__ float warp_max[LM_LATENT_WARP_WARPS][HEADS];
 	__shared__ float warp_sum[LM_LATENT_WARP_WARPS][HEADS];
+	__shared__ float warp_scale[LM_LATENT_WARP_WARPS][HEADS];
+	__shared__ float head_max[HEADS];
 	__shared__ float warp_acc[LM_LATENT_WARP_WARPS][HEADS][LATENT];
-	const uint32_t row = blockIdx.x, partition = blockIdx.y, sequence = sequence_of_row[row];
+	LmDependentWait();
+	LmDependentRelease();
+	const uint32_t row = blockIdx.x, partition = blockIdx.y, sequence = __ldg(sequence_of_row + row);
+	const uint32_t max_pos = row_position != 0 ? __ldg(row_position + row) : 0xffffffffu;
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES;
 	float q_latent[HEADS][16], q_rope[HEADS][8], acc[HEADS][16], run_max[HEADS], run_sum[HEADS];
 	uint32_t head, i, position_count, first_position, last_position, step;
 	uint64_t partial_base;
-	LmDependentRelease();
 	if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
 	{
 		if (threadIdx.x == 0u)
@@ -57,33 +61,33 @@ void LmLatentWarpSplitKernel(
 	{
 		const uint16_t *ql = query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * 16u;
 		const uint16_t *qr = query_rope_bf16 + ((uint64_t)row * HEADS + head) * ROPE + (lane % 8u) * 8u;
-		LmLatentWarpUnpack(*(const uint4 *)ql, q_latent[head]);
-		LmLatentWarpUnpack(*(const uint4 *)(ql + 8u), q_latent[head] + 8u);
-		LmLatentWarpUnpack(*(const uint4 *)qr, q_rope[head]);
+		LmLatentWarpUnpack(__ldg((const uint4 *)ql), q_latent[head]);
+		LmLatentWarpUnpack(__ldg((const uint4 *)(ql + 8u)), q_latent[head] + 8u);
+		LmLatentWarpUnpack(__ldg((const uint4 *)qr), q_rope[head]);
 		run_max[head] = -INFINITY;
 		run_sum[head] = 0.0f;
 		#pragma unroll
 		for (i = 0u; i < 16u; ++i)
 			acc[head][i] = 0.0f;
 	}
-	position_count = selected_positions != 0 ? selected_count : context_length[sequence];
-	if (ROW_INVARIANT && selected_positions == 0 && row_position != 0 && row_position[row] + 1u < position_count)
-		position_count = row_position[row] + 1u;
+	position_count = selected_positions != 0 ? selected_count : __ldg(context_length + sequence);
+	if (ROW_INVARIANT && selected_positions == 0 && row_position != 0 && max_pos + 1u < position_count)
+		position_count = max_pos + 1u;
 	first_position = partition * LM_LATENT_WARP_SPAN(position_count);
 	last_position = first_position + LM_LATENT_WARP_SPAN(position_count) < position_count ? first_position + LM_LATENT_WARP_SPAN(position_count) : position_count;
 	for (step = first_position + warp; step < last_position; step += LM_LATENT_WARP_WARPS)
 	{
-		uint32_t position = selected_positions != 0 ? selected_positions[(row * selected_count) + step] : step;
+		uint32_t position = selected_positions != 0 ? __ldg(selected_positions + (row * selected_count) + step) : step;
 		const uint8_t *slot;
 		float key[16], rope[8], score[HEADS];
-		if (row_position != 0 && position > row_position[row])
+		if (row_position != 0 && position > max_pos)
 			continue;
 		slot = LmKvSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
 		if (slot == 0)
 			break;
-		LmLatentWarpUnpack(((const uint4 *)slot)[2u * lane], key);
-		LmLatentWarpUnpack(((const uint4 *)slot)[2u * lane + 1u], key + 8u);
-		LmLatentWarpUnpack(((const uint4 *)(slot + LATENT * sizeof(uint16_t)))[lane % 8u], rope);
+		LmLatentWarpUnpack(__ldg(((const uint4 *)slot) + 2u * lane), key);
+		LmLatentWarpUnpack(__ldg(((const uint4 *)slot) + 2u * lane + 1u), key + 8u);
+		LmLatentWarpUnpack(__ldg(((const uint4 *)(slot + LATENT * sizeof(uint16_t))) + (lane % 8u)), rope);
 		#pragma unroll
 		for (head = 0u; head < HEADS; ++head)
 		{
@@ -105,45 +109,56 @@ void LmLatentWarpSplitKernel(
 		#pragma unroll
 		for (head = 0u; head < HEADS; ++head)
 		{
-			float previous = run_max[head], scaled_previous, weight;
+			float previous = run_max[head], scaled_previous, weight, vw;
 			run_max[head] = fmaxf(previous, score[head]);
 			scaled_previous = __expf(previous - run_max[head]);
 			weight = __expf(score[head] - run_max[head]);
 			run_sum[head] = run_sum[head] * scaled_previous + weight;
+			vw = SparkMathAttentionValueWeight(weight);
 			#pragma unroll
 			for (i = 0u; i < 16u; ++i)
-				acc[head][i] = acc[head][i] * scaled_previous + SparkMathAttentionValueWeight(weight) * key[i];
+				acc[head][i] = acc[head][i] * scaled_previous + vw * key[i];
 		}
 	}
 	#pragma unroll
 	for (head = 0u; head < HEADS; ++head)
 	{
-		warp_max[warp][head] = run_max[head];
-		warp_sum[warp][head] = run_sum[head];
+		if (lane == 0u)
+		{
+			warp_max[warp][head] = run_max[head];
+			warp_sum[warp][head] = run_sum[head];
+		}
 		#pragma unroll
 		for (i = 0u; i < 16u; ++i)
 			warp_acc[warp][head][lane * 16u + i] = acc[head][i];
 	}
 	__syncthreads();
+	if (threadIdx.x < HEADS)
+	{
+		const uint32_t h = threadIdx.x;
+		float gmax = -INFINITY;
+		#pragma unroll
+		for (uint32_t w = 0u; w < LM_LATENT_WARP_WARPS; ++w)
+			gmax = fmaxf(gmax, warp_max[w][h]);
+		head_max[h] = gmax;
+		#pragma unroll
+		for (uint32_t w = 0u; w < LM_LATENT_WARP_WARPS; ++w)
+			warp_scale[w][h] = warp_max[w][h] == -INFINITY ? 0.0f : __expf(warp_max[w][h] - gmax);
+	}
+	__syncthreads();
 	for (i = threadIdx.x; i < HEADS * (LATENT + 2u); i += LM_LATENT_WARP_THREADS)
 	{
 		uint32_t w, element;
-		float global_max = -INFINITY, value = 0.0f;
+		float value = 0.0f;
 		head = i / (LATENT + 2u);
 		element = i % (LATENT + 2u);
-		#pragma unroll
-		for (w = 0u; w < LM_LATENT_WARP_WARPS; ++w)
-			global_max = fmaxf(global_max, warp_max[w][head]);
 		if (element == 0u)
-			value = global_max;
+			value = head_max[head];
 		else
 		{
 			#pragma unroll
 			for (w = 0u; w < LM_LATENT_WARP_WARPS; ++w)
-			{
-				float scale = warp_max[w][head] == -INFINITY ? 0.0f : __expf(warp_max[w][head] - global_max);
-				value += scale * (element == 1u ? warp_sum[w][head] : warp_acc[w][head][element - 2u]);
-			}
+				value += warp_scale[w][head] * (element == 1u ? warp_sum[w][head] : warp_acc[w][head][element - 2u]);
 		}
 		partial_base = (((uint64_t)row * HEADS + head) * partitions + partition) * (LATENT + 2u);
 		partials[partial_base + element] = value;
@@ -153,7 +168,7 @@ void LmLatentWarpSplitKernel(
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT, uint32_t HEADS>
 static inline SparkGpuError LmLatentWarpSplitShape(const uint16_t *query_latent_bf16, const uint16_t *query_rope_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, SparkGpuStream stream)
 {
-	LM_LAUNCH((LmLatentWarpSplitKernel<Geometry, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), LM_LATENT_WARP_THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
+	LM_LAUNCH_DEPENDENT((LmLatentWarpSplitKernel<Geometry, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), LM_LATENT_WARP_THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
 	if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS)
 		return SparkGpuPeekAtLastError();
 	LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<LM_ROPE_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_ROPE_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);

@@ -8,6 +8,7 @@
 
 static __device__ __forceinline__ float LmActivationWarpMax(float value)
 {
+#pragma unroll
 	for (uint32_t offset=16u; offset!=0u; offset>>=1u)
 		value = fmaxf(value,__shfl_down_sync(0xffffffffu,value,offset));
 	return(value);
@@ -15,7 +16,11 @@ static __device__ __forceinline__ float LmActivationWarpMax(float value)
 
 static __device__ __forceinline__ float LmActivationFp8Scale(float amax, float floor = 1e-4f)
 {
-	return(exp2f(ceilf(log2f(fmaxf(amax,floor) / LM_E4M3_MAX))));
+	const float ratio = fmaxf(amax,floor) / LM_E4M3_MAX;
+	const uint32_t bits = __float_as_uint(ratio);
+	if ( bits >= 0x00800000u && bits < 0x7f000000u )
+		return(__uint_as_float((bits + 0x007fffffu) & 0xff800000u));
+	return(exp2f(ceilf(log2f(ratio))));
 }
 
 template<uint32_t ACTIVATION_CODEC>
@@ -26,18 +31,36 @@ static __device__ __forceinline__ float LmActivationFp8Qdq(float value, float sc
 }
 
 template<uint32_t ACTIVATION_CODEC>
+static __device__ __forceinline__ float LmActivationFp8QdqInv(float value, float scale, float inv_scale)
+{
+	static_assert(ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_FP8_E4M3_UE8M0,"unsupported FP8 activation codec");
+	return(LmE4m3ToFloat(LmFloatToE4m3(value * inv_scale)) * scale);
+}
+
+template<uint32_t ACTIVATION_CODEC>
 static __device__ void LmActivationFp8QdqFloatRow(float *row, uint32_t width)
 {
 	uint32_t warp = threadIdx.x / 32u,lane = threadIdx.x % 32u,base,element;
-	float amax,scale;
+	float amax,scale,inv_scale;
 	for (base=warp * 128u; base<width; base+=(blockDim.x / 32u) * 128u)
 	{
+		float cached[4];
 		amax = 0.0f;
-		for (element=base + lane; element<base + 128u; element+=32u)
-			amax = fmaxf(amax,fabsf(row[element]));
+#pragma unroll
+		for (uint32_t i=0u; i<4u; ++i)
+		{
+			element = base + lane + i * 32u;
+			cached[i] = row[element];
+			amax = fmaxf(amax,fabsf(cached[i]));
+		}
 		scale = LmActivationFp8Scale(__shfl_sync(0xffffffffu,LmActivationWarpMax(amax),0));
-		for (element=base + lane; element<base + 128u; element+=32u)
-			row[element] = LmActivationFp8Qdq<ACTIVATION_CODEC>(row[element],scale);
+		inv_scale = 1.0f / scale;
+#pragma unroll
+		for (uint32_t i=0u; i<4u; ++i)
+		{
+			element = base + lane + i * 32u;
+			row[element] = LmActivationFp8QdqInv<ACTIVATION_CODEC>(cached[i],scale,inv_scale);
+		}
 	}
 }
 
@@ -60,15 +83,16 @@ static __device__ void LmActivationStageFp8Qdq(
 	const uint16_t *source = (const uint16_t *)source_bf16;
 	uint16_t *tile = (uint16_t *)tile_bf16;
 	uint32_t warp = threadIdx.x / 32u,lane = threadIdx.x % 32u,local_row,packed_row,source_row,element,offset;
-	float amax,scale,value;
+	float amax,scale,inv_scale,value;
 	if ( warp < producer_warp_base || warp >= producer_warp_base + producer_warp_count )
 		return;
+	const uint32_t group_base = (k_base / 128u) * 128u;
 	for (local_row=warp - producer_warp_base; local_row<TILE_ROWS; local_row+=producer_warp_count)
 	{
 		packed_row = row_base + local_row;
 		if ( packed_row >= row_limit )
 			continue;
-		source_row = source_row_map != 0 ? source_row_map[packed_row] : packed_row;
+		source_row = source_row_map != 0 ? __ldg(source_row_map + packed_row) : packed_row;
 		if ( source_row >= source_row_count )
 		{
 			LmFrameErrorReport(frame_error,
@@ -76,15 +100,39 @@ static __device__ void LmActivationStageFp8Qdq(
 				0u,packed_row,source_row,row_base,source_row_count);
 			continue;
 		}
+		const uint16_t *src_row = source + (uint64_t)source_row * input_dimension;
+		float cached[4];
 		amax = 0.0f;
-		for (element=lane; element<128u; element+=32u)
-			amax = fmaxf(amax,fabsf(LmBf16ToFloat(source[(uint64_t)source_row * input_dimension + (k_base / 128u) * 128u + element])));
-		scale = LmActivationFp8Scale(__shfl_sync(0xffffffffu,LmActivationWarpMax(amax),0));
-		for (element=lane; element<TILE_K; element+=32u)
+#pragma unroll
+		for (uint32_t i=0u; i<4u; ++i)
 		{
-			value = LmBf16ToFloat(source[(uint64_t)source_row * input_dimension + k_base + element]);
-			offset = SWIZZLED ? LmSwizzledOffset(local_row,element * 2u,TILE_K * 2u,LmSwizzleSpanFor(TILE_K * 2u)) / 2u : local_row * TILE_K + element;
-			tile[offset] = LmFloatToBf16(LmActivationFp8Qdq<ACTIVATION_CODEC>(value,scale));
+			cached[i] = LmBf16ToFloat(__ldg(src_row + group_base + lane + i * 32u));
+			amax = fmaxf(amax,fabsf(cached[i]));
+		}
+		scale = LmActivationFp8Scale(__shfl_sync(0xffffffffu,LmActivationWarpMax(amax),0));
+		inv_scale = 1.0f / scale;
+		if constexpr ( TILE_K == 128u )
+		{
+#pragma unroll
+			for (uint32_t i=0u; i<4u; ++i)
+			{
+				element = lane + i * 32u;
+				offset = SWIZZLED ? LmSwizzledOffset(local_row,element * 2u,TILE_K * 2u,LmSwizzleSpanFor(TILE_K * 2u)) / 2u : local_row * TILE_K + element;
+				tile[offset] = LmFloatToBf16(LmActivationFp8QdqInv<ACTIVATION_CODEC>(cached[i],scale,inv_scale));
+			}
+		}
+		else
+		{
+			const uint32_t tile_sub = (k_base - group_base) / 32u;
+#pragma unroll
+			for (uint32_t i=0u; i<TILE_K / 32u; ++i)
+			{
+				const uint32_t idx = tile_sub + i;
+				element = lane + i * 32u;
+				value = idx == 0u ? cached[0] : (idx == 1u ? cached[1] : (idx == 2u ? cached[2] : cached[3]));
+				offset = SWIZZLED ? LmSwizzledOffset(local_row,element * 2u,TILE_K * 2u,LmSwizzleSpanFor(TILE_K * 2u)) / 2u : local_row * TILE_K + element;
+				tile[offset] = LmFloatToBf16(LmActivationFp8QdqInv<ACTIVATION_CODEC>(value,scale,inv_scale));
+			}
 		}
 	}
 }

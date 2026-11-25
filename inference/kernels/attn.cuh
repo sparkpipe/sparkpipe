@@ -51,10 +51,22 @@ static __device__ __forceinline__ void LmRopePairRounded(float *low, float *high
 template<LmRopePairing PAIRING, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle, float scale = 1.0f)
 {
-	uint32_t low_offset,high_offset;
 	float low,high;
-	low_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? (index * 2u) : index;
-	high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
+	if constexpr ( PAIRING == LM_ROPE_INTERLEAVED )
+	{
+		if ( (((uintptr_t)(rows_bf16 + base)) & 3u) == 0u )
+		{
+			uint32_t *pair_ptr = (uint32_t *)(rows_bf16 + base) + index;
+			const uint32_t packed = *pair_ptr;
+			low = __uint_as_float(packed << 16u);
+			high = __uint_as_float(packed & 0xffff0000u);
+			LmRopePairRounded<ROUNDING>(&low,&high,angle,scale);
+			*pair_ptr = (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
+			return;
+		}
+	}
+	uint32_t low_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? (index * 2u) : index;
+	uint32_t high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
 	low = LmBf16ToFloat(rows_bf16[base + low_offset]);
 	high = LmBf16ToFloat(rows_bf16[base + high_offset]);
 	LmRopePairRounded<ROUNDING>(&low,&high,angle,scale);
@@ -66,31 +78,38 @@ template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, bool TABL
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta, const float *__restrict__ inv_freq_table = 0)
 {
+	LmDependentWait();
 	uint64_t base = ((uint64_t)blockIdx.x * row_stride) + rope_offset;
 	uint32_t half = rope_dim / 2u,index;
-	float position = (float)positions[blockIdx.x];
+	float position = (float)__ldg(positions + blockIdx.x);
 	for (index = threadIdx.x; index < half; index += THREADS)
 		if constexpr ( TABLE )
-			LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,position * inv_freq_table[index]);
+			LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,position * __ldg(inv_freq_table + index));
 		else
 			LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,
 				position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopeOffsetPerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
 {
+	LmDependentWait();
 	uint32_t row = blockIdx.x,head = blockIdx.y,half = rope_dimension / 2u,index;
 	uint64_t base;
 	float position;
 	if ( head >= head_count )
+	{
+		LmDependentRelease();
 		return;
+	}
 	base = (((uint64_t)row * head_count) + head) * head_dimension + rope_offset;
-	position = (float)positions[row];
+	position = (float)__ldg(positions + row);
 	for (index = threadIdx.x; index < half; index += THREADS)
 		LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,
 			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
@@ -99,56 +118,67 @@ static __device__ __forceinline__ void LmAttentionDecodeBody(const uint16_t *__r
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[LATENT + ROPE];
 	float accumulator[(LATENT + THREADS - 1u) / THREADS];
+	LmDependentWait();
 	uint32_t row = blockIdx.x,head = blockIdx.y,index,step,positions;
-	uint32_t sequence = sequence_of_row[row];
+	uint32_t sequence = __ldg(sequence_of_row + row);
 	uint64_t query_base = ((uint64_t)row * heads + head) * (LATENT + ROPE);
 	float running_max = -INFINITY,running_sum = 0.0f;
-	const uint32_t fork = fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
-	const uint32_t offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
+	const uint32_t fork = fork_positions != 0 ? __ldg(fork_positions + row) : 0xffffffffu;
+	const uint32_t offset = slot_offsets != 0 ? __ldg(slot_offsets + row) : 0u;
+	const uint32_t max_pos = row_position != 0 ? __ldg(row_position + row) : 0xffffffffu;
 	if ( !LmKvCheckSequence(cache,row,sequence) )
+	{
+		LmDependentRelease();
 		return;
+	}
 	for (index = 0u; index < (LATENT + THREADS - 1u) / THREADS; ++index)
 		accumulator[index] = 0.0f;
 	for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
-		shared_query[index] = LmBf16ToFloat(query_latent_bf16[query_base + index]);
+		shared_query[index] = LmBf16ToFloat(__ldg(query_latent_bf16 + query_base + index));
 	__syncthreads();
-	positions = selected_positions != 0 ? selected_count : context_length[sequence];
+	positions = selected_positions != 0 ? selected_count : __ldg(context_length + sequence);
 	for (step = 0u; step < positions; ++step)
 	{
 		uint32_t position = selected_positions != 0
-			? selected_positions[(row * selected_count) + step] : step;
-		if ( row_position != 0 && position > row_position[row] )
+			? __ldg(selected_positions + (row * selected_count) + step) : step;
+		if ( row_position != 0 && position > max_pos )
 			continue;
 		if ( position >= fork )
 			position += offset;
 		const uint8_t *slot = LmKvSlotRequired<Geometry>(
 			cache,sequence,position,row,LM_KV_ACCESS_READ);
-		float score = 0.0f,scaled,previous;
+		float score = 0.0f,scaled,previous,current_prob,value_weight;
 		if ( slot == 0 )
+		{
+			LmDependentRelease();
 			return;
+		}
 		for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
-			score += shared_query[index] * LmBf16ToFloat(((const uint16_t *)slot)[index]);
+			score += shared_query[index] * LmBf16ToFloat(__ldg(((const uint16_t *)slot) + index));
 		score = LmBlockSum<THREADS>(score,reduction) * qk_scale;
 		previous = running_max;
 		running_max = fmaxf(running_max,score);
 		scaled = __expf(previous - running_max);
-		running_sum = (running_sum * scaled) + __expf(score - running_max);
+		current_prob = __expf(score - running_max);
+		running_sum = (running_sum * scaled) + current_prob;
+		value_weight = SparkMathAttentionValueWeight(current_prob);
 		for (index = 0u; index < (LATENT + THREADS - 1u) / THREADS; ++index)
 		{
 			uint32_t element = (index * THREADS) + threadIdx.x;
 			if ( element < LATENT )
 				accumulator[index] = (accumulator[index] * scaled)
-					+ (SparkMathAttentionValueWeight(__expf(score - running_max))
-						* LmBf16ToFloat(((const uint16_t *)slot)[element]));
+					+ (value_weight * LmBf16ToFloat(__ldg(((const uint16_t *)slot) + element)));
 		}
 	}
+	const float denom = fmaxf(running_sum,1.0e-20f);
 	for (index = 0u; index < (LATENT + THREADS - 1u) / THREADS; ++index)
 	{
 		uint32_t element = (index * THREADS) + threadIdx.x;
 		if ( element < LATENT )
 			output_bf16[(((uint64_t)row * heads) + head) * LATENT + element] =
-				LmFloatToBf16(accumulator[index] / fmaxf(running_sum,1.0e-20f));
+				LmFloatToBf16(accumulator[index] / denom);
 	}
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
@@ -242,14 +272,19 @@ void LmLatentAttentionDecodeKernel(
     uint32_t step = 0u;
     uint32_t phase = 0u;
     uint32_t position_count;
-    uint32_t sequence = sequence_of_row[row];
+    LmDependentWait();
+    uint32_t sequence = __ldg(sequence_of_row + row);
+    const uint32_t max_pos = row_position != 0 ? __ldg(row_position + row) : 0xffffffffu;
     uint64_t latent_base = ((uint64_t)row * heads + head) * LATENT;
     uint64_t rope_base = ((uint64_t)row * heads + head) * ROPE;
     float running_max = -INFINITY;
     float running_sum = 0.0f;
 
     if (!LmKvCheckSequence(cache, row, sequence))
+    {
+        LmDependentRelease();
         return;
+    }
 
     #pragma unroll
     for (index = 0u; index < 8u; ++index)
@@ -261,15 +296,15 @@ void LmLatentAttentionDecodeKernel(
     {
         const uint32_t element = (index * THREADS) + threadIdx.x;
         query_reg[index] = element < LATENT
-            ? LmBf16ToFloat(query_latent_bf16[latent_base + element])
+            ? LmBf16ToFloat(__ldg(query_latent_bf16 + latent_base + element))
             : (element < LATENT + ROPE
-                ? LmBf16ToFloat(query_rope_bf16[rope_base + element - LATENT])
+                ? LmBf16ToFloat(__ldg(query_rope_bf16 + rope_base + element - LATENT))
                 : 0.0f);
     }
 
     position_count = selected_positions != 0
         ? selected_count
-        : context_length[sequence];
+        : __ldg(context_length + sequence);
     while (step < position_count)
     {
         const uint8_t *slots[LM_LATENT_ATTN_SPLIT_GROUP];
@@ -280,12 +315,12 @@ void LmLatentAttentionDecodeKernel(
         while (count < LM_LATENT_ATTN_SPLIT_GROUP && step < position_count)
         {
             uint32_t position = selected_positions != 0
-                ? selected_positions[(row * selected_count) + step]
+                ? __ldg(selected_positions + (row * selected_count) + step)
                 : step;
             const uint8_t *slot;
 
             ++step;
-            if (row_position != 0 && position > row_position[row])
+            if (row_position != 0 && position > max_pos)
             {
                 continue;
             }
@@ -300,6 +335,7 @@ void LmLatentAttentionDecodeKernel(
         }
         if (missing != 0u)
         {
+            LmDependentRelease();
             return;
         }
         if (count == 0u)
@@ -314,7 +350,7 @@ void LmLatentAttentionDecodeKernel(
             {
                 const uint32_t element = (value * THREADS) + threadIdx.x;
                 values[group][value] = group < count && element < LATENT + ROPE
-                    ? ((const uint16_t *)slots[group])[element]
+                    ? __ldg(((const uint16_t *)slots[group]) + element)
                     : (uint16_t)0u;
             }
         }
@@ -379,6 +415,7 @@ void LmLatentAttentionDecodeKernel(
                 LmFloatToBf16(accumulator[index] / denom);
         }
     }
+    LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
@@ -404,6 +441,7 @@ void LmLatentAttentionDecodeSplitKernel(
     __shared__ float group_reduction[2u][LM_LATENT_ATTN_SPLIT_GROUP][THREADS / LM_WARP_LANES];
     float query_reg[kValues];
     float accumulator[8];
+    LmDependentWait();
     uint32_t row = blockIdx.x;
     uint32_t head = blockIdx.y;
     uint32_t partition = blockIdx.z;
@@ -414,7 +452,8 @@ void LmLatentAttentionDecodeSplitKernel(
     uint32_t first_position;
     uint32_t last_position;
     uint32_t partition_span;
-    uint32_t sequence = sequence_of_row[row];
+    uint32_t sequence = __ldg(sequence_of_row + row);
+    const uint32_t max_pos = row_position != 0 ? __ldg(row_position + row) : 0xffffffffu;
     uint64_t latent_base = ((uint64_t)row * heads + head) * LATENT;
     uint64_t rope_base = ((uint64_t)row * heads + head) * ROPE;
     uint64_t partial_base;
@@ -422,9 +461,13 @@ void LmLatentAttentionDecodeSplitKernel(
     float running_sum = 0.0f;
 
     if (!LmKvCheckSequence(cache, row, sequence))
+    {
+        LmDependentRelease();
         return;
+    }
     if (partition >= partitions)
     {
+        LmDependentRelease();
         return;
     }
 
@@ -438,19 +481,19 @@ void LmLatentAttentionDecodeSplitKernel(
     {
         const uint32_t element = (index * THREADS) + threadIdx.x;
         query_reg[index] = element < LATENT
-            ? LmBf16ToFloat(query_latent_bf16[latent_base + element])
+            ? LmBf16ToFloat(__ldg(query_latent_bf16 + latent_base + element))
             : (element < LATENT + ROPE
-                ? LmBf16ToFloat(query_rope_bf16[rope_base + element - LATENT])
+                ? LmBf16ToFloat(__ldg(query_rope_bf16 + rope_base + element - LATENT))
                 : 0.0f);
     }
 
     position_count = selected_positions != 0
         ? selected_count
-        : context_length[sequence];
+        : __ldg(context_length + sequence);
     if (ROW_INVARIANT && selected_positions == 0 && row_position != 0 &&
-        row_position[row] + 1u < position_count)
+        max_pos + 1u < position_count)
     {
-        position_count = row_position[row] + 1u;
+        position_count = max_pos + 1u;
     }
     partition_span = (position_count + partitions - 1u) / partitions;
     first_position = partition * partition_span;
@@ -472,6 +515,7 @@ void LmLatentAttentionDecodeSplitKernel(
         {
             partials[partial_base + 2u + index] = 0.0f;
         }
+        LmDependentRelease();
         return;
     }
     step = first_position;
@@ -485,12 +529,12 @@ void LmLatentAttentionDecodeSplitKernel(
         while (count < LM_LATENT_ATTN_SPLIT_GROUP && step < last_position)
         {
             uint32_t position = selected_positions != 0
-                ? selected_positions[(row * selected_count) + step]
+                ? __ldg(selected_positions + (row * selected_count) + step)
                 : step;
             const uint8_t *slot;
 
             ++step;
-            if (row_position != 0 && position > row_position[row])
+            if (row_position != 0 && position > max_pos)
             {
                 continue;
             }
@@ -511,7 +555,7 @@ void LmLatentAttentionDecodeSplitKernel(
             {
                 index = threadIdx.x + value * THREADS;
                 values[group][value] = group < count && index < LATENT + ROPE
-                    ? ((const uint16_t *)slots[group])[index]
+                    ? __ldg(((const uint16_t *)slots[group]) + index)
                     : (uint16_t)0u;
             }
         }
@@ -535,6 +579,7 @@ void LmLatentAttentionDecodeSplitKernel(
             float scaled_previous;
             float scaled_current;
             float previous_max;
+            float weight;
 
             if (group >= count)
             {
@@ -546,6 +591,7 @@ void LmLatentAttentionDecodeSplitKernel(
             scaled_previous = __expf(previous_max - running_max);
             scaled_current = __expf(score - running_max);
             running_sum = (running_sum * scaled_previous) + scaled_current;
+            weight = SparkMathAttentionValueWeight(scaled_current);
             #pragma unroll
             for (index = 0u; index < 8u; ++index)
             {
@@ -555,8 +601,7 @@ void LmLatentAttentionDecodeSplitKernel(
                 {
                     accumulator[index] =
                         (accumulator[index] * scaled_previous) +
-                        (SparkMathAttentionValueWeight(scaled_current) *
-                            LmBf16ToFloat(values[group][index]));
+                        (weight * LmBf16ToFloat(values[group][index]));
                 }
             }
         }
@@ -570,6 +615,7 @@ void LmLatentAttentionDecodeSplitKernel(
         partials[partial_base] = running_max;
         partials[partial_base + 1u] = running_sum;
     }
+    #pragma unroll
     for (index = 0u; index < 8u; ++index)
     {
         uint32_t element = (index * THREADS) + threadIdx.x;
@@ -579,6 +625,7 @@ void LmLatentAttentionDecodeSplitKernel(
             partials[partial_base + 2u + element] = accumulator[index];
         }
     }
+    LmDependentRelease();
 }
 
 template<uint32_t THREADS, uint32_t LATENT>
@@ -681,11 +728,14 @@ static __device__ __forceinline__ void LmLatentHeadsWalk(LmKvView cache, const u
     uint32_t step, unroll, failed = 0u;
     for (step = begin; step < last && failed == 0u; step += LM_LATENT_HEADS_UNROLL * LM_LATENT_HEADS_WARPS)
     {
+        #pragma unroll
         for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
             slot[unroll] = LmLatentHeadsSlot<Geometry>(cache, selected_positions, selected_count, row_position, row, sequence, step + unroll * LM_LATENT_HEADS_WARPS, last, &failed);
+        #pragma unroll
         for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
             if (slot[unroll] != 0)
                 LmLatentVecLoad<PER_LANE>((const uint16_t *)slot[unroll] + lane * PER_LANE, value[unroll]);
+        #pragma unroll
         for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
             if (slot[unroll] != 0)
                 LmLatentOnlineStep<HEADS, PER_LANE>(query, value[unroll], qk_scale, running_max, running_sum, accumulator);
@@ -712,22 +762,28 @@ void LmLatentAttentionHeadsKernel(
     __shared__ float warp_max[LM_LATENT_HEADS_WARPS][HEADS];
     __shared__ float warp_sum[LM_LATENT_HEADS_WARPS][HEADS];
     __shared__ float merged[HEADS][LATENT];
+    LmDependentWait();
     uint32_t row = blockIdx.x, partition = blockIdx.y, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u;
-    uint32_t sequence = sequence_of_row[row], head, index, position_count, span, first, last;
+    uint32_t sequence = __ldg(sequence_of_row + row), head, index, position_count, span, first, last;
     float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE];
     float running_max[HEADS], running_sum[HEADS], global_max[HEADS], global_sum[HEADS];
     uint64_t base;
     if (!LmKvCheckSequence(cache, row, sequence))
+    {
+        LmDependentRelease();
         return;
+    }
+    #pragma unroll
     for (head = 0u; head < HEADS; ++head)
     {
         running_max[head] = -INFINITY;
         running_sum[head] = 0.0f;
         LmLatentVecLoad<PER_LANE>(query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * PER_LANE, query[head]);
+        #pragma unroll
         for (index = 0u; index < PER_LANE; ++index)
             accumulator[head][index] = 0.0f;
     }
-    position_count = selected_positions != 0 ? selected_count : context_length[sequence];
+    position_count = selected_positions != 0 ? selected_count : __ldg(context_length + sequence);
     span = (position_count + partitions - 1u) / partitions;
     first = partition * span;
     last = first + span < position_count ? first + span : position_count;
@@ -749,6 +805,7 @@ void LmLatentAttentionHeadsKernel(
             }
         }
     }
+    LmDependentRelease();
 }
 
 static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
@@ -759,10 +816,10 @@ static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
 static inline SparkGpuError LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, SparkGpuStream stream)
 {
-    LM_LAUNCH((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, partitions), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position);
+    LM_LAUNCH_DEPENDENT((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, partitions), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position);
     if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS || partitions == 1u)
         return SparkGpuPeekAtLastError();
-    LM_LAUNCH((LmLatentAttentionDecodeSplitCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
+    LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
     return SparkGpuPeekAtLastError();
 }
 
@@ -845,7 +902,7 @@ static inline SparkGpuError LmLatentAttentionDecodeSplitLaunch(
     }
     if (partitions == 1u)
     {
-        LM_LAUNCH(
+        LM_LAUNCH_DEPENDENT(
             (LmLatentAttentionDecodeKernel<Geometry, THREADS, LATENT, ROPE>),
             dim3(rows, heads),
             THREADS,
@@ -864,7 +921,7 @@ static inline SparkGpuError LmLatentAttentionDecodeSplitLaunch(
             row_position);
         return SparkGpuPeekAtLastError();
     }
-    LM_LAUNCH(
+    LM_LAUNCH_DEPENDENT(
         (LmLatentAttentionDecodeSplitKernel<
             Geometry, THREADS, LATENT, ROPE, ROW_INVARIANT>),
         dim3(rows, heads, partitions),
@@ -887,7 +944,7 @@ static inline SparkGpuError LmLatentAttentionDecodeSplitLaunch(
     {
         return SparkGpuPeekAtLastError();
     }
-    LM_LAUNCH(
+    LM_LAUNCH_DEPENDENT(
         (LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>),
         dim3(rows, heads),
         THREADS,
@@ -905,28 +962,39 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, uint32_t index_heads, float *__restrict__ scores)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	LmDependentWait();
 	uint32_t row = blockIdx.x,position = blockIdx.y;
-	uint32_t sequence = sequence_of_row[row],head,index;
+	uint32_t sequence = __ldg(sequence_of_row + row),head,index;
 	const uint8_t *slot;
 	float total = 0.0f;
 	if ( !LmKvCheckSequence(cache,row,sequence,position) )
+	{
+		LmDependentRelease();
 		return;
-	if ( position >= context_length[sequence] )
+	}
+	if ( position >= __ldg(context_length + sequence) )
+	{
+		LmDependentRelease();
 		return;
+	}
 	slot = LmKvSlotRequired<Geometry>(
 		cache,sequence,position,row,LM_KV_ACCESS_READ);
 	if ( slot == 0 )
+	{
+		LmDependentRelease();
 		return;
+	}
 	for (head = 0u; head < index_heads; ++head)
 	{
 		float partial = 0.0f;
 		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
-			partial += LmBf16ToFloat(index_query_bf16[(((uint64_t)row * index_heads) + head) * INDEX_DIM + index])
-				* LmBf16ToFloat(((const uint16_t *)slot)[index]);
+			partial += LmBf16ToFloat(__ldg(index_query_bf16 + (((uint64_t)row * index_heads) + head) * INDEX_DIM + index))
+				* LmBf16ToFloat(__ldg(((const uint16_t *)slot) + index));
 		total += LmBlockSum<THREADS>(partial,reduction);
 	}
 	if ( threadIdx.x == 0u )
 		scores[((uint64_t)row * gridDim.y) + position] = total;
+	LmDependentRelease();
 }
 
 static __device__ __forceinline__ float LmYarnFrequency(uint32_t index, uint32_t rope_dimension, float theta, float scale_factor, float original_positions, float low_band, float high_band)
@@ -944,13 +1012,15 @@ template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopeYarnKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta, float scale_factor, float original_positions, float low_band, float high_band)
 {
+	LmDependentWait();
 	uint64_t base = ((uint64_t)blockIdx.x * row_stride) + rope_offset;
 	uint32_t half = rope_dim / 2u,index;
-	float position = (float)positions[blockIdx.x];
+	float position = (float)__ldg(positions + blockIdx.x);
 	for (index = threadIdx.x; index < half; index += THREADS)
 		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,position *
 			LmYarnFrequency(index,rope_dim,theta,scale_factor,
 				original_positions,low_band,high_band));
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
@@ -958,8 +1028,10 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSparseSummaryBuildKernel(LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ dirty_block, uint32_t block_positions, uint16_t *__restrict__ summary_bf16, uint32_t blocks_per_sequence)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
-	uint32_t row = blockIdx.x,block = dirty_block != 0 ? dirty_block[row] : blockIdx.y;
-	uint32_t sequence = sequence_of_row[row],position,index;
+	LmDependentWait();
+	uint32_t row = blockIdx.x,block = dirty_block != 0 ? __ldg(dirty_block + row) : blockIdx.y;
+	uint32_t sequence = __ldg(sequence_of_row + row),position,index;
+	const uint32_t ctx_len = __ldg(context_length + sequence);
 	for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
 	{
 		float best = 0.0f;
@@ -967,18 +1039,22 @@ void LmSparseSummaryBuildKernel(LmKvView cache, const uint32_t *__restrict__ seq
 		{
 			uint32_t absolute_position = (block * block_positions) + position;
 			const uint8_t *slot;
-			if ( absolute_position >= context_length[sequence] )
+			if ( absolute_position >= ctx_len )
 				continue;
 			slot = LmKvSlotRequired<Geometry>(
 				cache,sequence,absolute_position,row,LM_KV_ACCESS_READ);
 			if ( slot == 0 )
+			{
+				LmDependentRelease();
 				return;
-			best = fmaxf(best,fabsf(LmBf16ToFloat(((const uint16_t *)slot)[index])));
+			}
+			best = fmaxf(best,fabsf(LmBf16ToFloat(__ldg(((const uint16_t *)slot) + index))));
 		}
 		summary_bf16[(((uint64_t)sequence * blocks_per_sequence) + block) * INDEX_DIM + index] =
 			LmFloatToBf16(best);
 	}
 	(void)reduction;
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS, uint32_t INDEX_DIM>
@@ -986,27 +1062,30 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSparseSummaryScoreKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ summary_bf16, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ block_count, uint32_t index_heads, uint32_t blocks_per_sequence, float *__restrict__ block_score)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	LmDependentWait();
 	uint32_t row = blockIdx.x,block = blockIdx.y;
-	uint32_t sequence = sequence_of_row[row],head,index;
+	uint32_t sequence = __ldg(sequence_of_row + row),head,index;
 	float total = 0.0f;
-	if ( block >= block_count[sequence] )
+	if ( block >= __ldg(block_count + sequence) )
 	{
 		if ( threadIdx.x == 0u )
 			block_score[(row * blocks_per_sequence) + block] = -INFINITY;
+		LmDependentRelease();
 		return;
 	}
 	for (head = 0u; head < index_heads; ++head)
 	{
 		float partial = 0.0f;
 		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
-			partial += fabsf(LmBf16ToFloat(index_query_bf16[
-				(((uint64_t)row * index_heads) + head) * INDEX_DIM + index]))
-				* LmBf16ToFloat(summary_bf16[
-				(((uint64_t)sequence * blocks_per_sequence) + block) * INDEX_DIM + index]);
+			partial += fabsf(LmBf16ToFloat(__ldg(index_query_bf16 +
+				(((uint64_t)row * index_heads) + head) * INDEX_DIM + index)))
+				* LmBf16ToFloat(__ldg(summary_bf16 +
+				(((uint64_t)sequence * blocks_per_sequence) + block) * INDEX_DIM + index));
 		total += LmBlockSum<THREADS>(partial,reduction);
 	}
 	if ( threadIdx.x == 0u )
 		block_score[(row * blocks_per_sequence) + block] = total;
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
@@ -1014,32 +1093,37 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmSparseRefineKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_block, uint32_t block_positions, uint32_t index_heads, float *__restrict__ scores, uint32_t *__restrict__ positions_out)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	LmDependentWait();
 	uint32_t row = blockIdx.x,slot_index = blockIdx.y;
-	uint32_t block = selected_block[(row * gridDim.y) + (slot_index / block_positions)];
+	uint32_t block = __ldg(selected_block + (row * gridDim.y) + (slot_index / block_positions));
 	uint32_t position = (block * block_positions) + (slot_index % block_positions);
-	uint32_t sequence = sequence_of_row[row],head,index;
+	uint32_t sequence = __ldg(sequence_of_row + row),head,index;
 	const uint8_t *slot;
 	float total = 0.0f;
-	if ( position >= context_length[sequence] )
+	if ( position >= __ldg(context_length + sequence) )
 	{
 		if ( threadIdx.x == 0u )
 		{
 			scores[(row * gridDim.y) + slot_index] = -INFINITY;
 			positions_out[(row * gridDim.y) + slot_index] = position;
 		}
+		LmDependentRelease();
 		return;
 	}
 	slot = LmKvSlotRequired<Geometry>(
 		cache,sequence,position,row,LM_KV_ACCESS_READ);
 	if ( slot == 0 )
+	{
+		LmDependentRelease();
 		return;
+	}
 	for (head = 0u; head < index_heads; ++head)
 	{
 		float partial = 0.0f;
 		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
-			partial += LmBf16ToFloat(index_query_bf16[
-				(((uint64_t)row * index_heads) + head) * INDEX_DIM + index])
-				* LmBf16ToFloat(((const uint16_t *)slot)[index]);
+			partial += LmBf16ToFloat(__ldg(index_query_bf16 +
+				(((uint64_t)row * index_heads) + head) * INDEX_DIM + index))
+				* LmBf16ToFloat(__ldg(((const uint16_t *)slot) + index));
 		total += LmBlockSum<THREADS>(partial,reduction);
 	}
 	if ( threadIdx.x == 0u )
@@ -1047,5 +1131,6 @@ void LmSparseRefineKernel(const uint16_t *__restrict__ index_query_bf16, LmKvVie
 		scores[(row * gridDim.y) + slot_index] = total;
 		positions_out[(row * gridDim.y) + slot_index] = position;
 	}
+	LmDependentRelease();
 }
 
