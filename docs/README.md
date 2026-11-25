@@ -154,6 +154,9 @@ current authority.
 - [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md):
   the mega-PR against the product: what an engineer saves after it, what the
   site promises that is not built, and what to do first.
+- [`CODE_AUDIT_2026-11-25.md`](CODE_AUDIT_2026-11-25.md): audit of the code
+  merged on 24 and 25 November: what to fix first, kernel exactness, node
+  memory, the RDMA send queue, the engine drafter, the site copy and CI.
 - [`PREFILL_ANTICIPATION.md`](PREFILL_ANTICIPATION.md): audit of the context
   packs, the anticipator and the cache controls; where prefill time goes in
   agent sessions; and the proposed design and build order for keeping and
