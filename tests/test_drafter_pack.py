@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "drafter_pack.py"
-DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1, "I64": 8}
+DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1, "I64": 8, "BOOL": 1}
 FAILURES = []
 
 
@@ -373,6 +373,59 @@ def test_glm53flash(scratch):
                  "--revision", "dflash2-test", "--out", scratch / "o11")
     check(result.returncode == 1 and "layer 2 is past num_hidden_layers = 2" in result.stderr,
           f"glm53flashdflash2: layer_count refuses out-of-range layer: {result.stderr}")
+def test_axk2(scratch):
+    checkpoint, out = scratch / "axk2", scratch / "axk2-out"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({
+        "architectures": ["DSparkDraftModel"], "aux_hidden_state_layer_ids": [2, 30, 58],
+        "block_size": 5, "draft_vocab_size": 16, "markov_rank": 4, "mask_token_id": 30,
+        "transformer_layer_config": {"num_hidden_layers": 2, "hidden_size": 8, "vocab_size": 32}}))
+    d2t_bytes = struct.pack("<16q", *range(16))
+    sources = write_safetensors(checkpoint / "model.safetensors", {
+        "embed_tokens.weight": ("BF16", [32, 8], None),
+        "lm_head.weight": ("BF16", [16, 8], None),
+        "d2t": ("I64", [16], d2t_bytes),
+        "t2d": ("BOOL", [32], None),
+        "fc.weight": ("BF16", [8, 24], None), "hidden_norm.weight": ("BF16", [8], None),
+        "norm.weight": ("BF16", [8], None), "layers.0.self_attn.q_proj.weight": ("BF16", [8, 8], None),
+        "layers.1.mlp.down_proj.weight": ("BF16", [8, 16], None),
+        "markov_head.markov_w1.weight": ("BF16", [32, 4], None),
+        "markov_head.markov_w2.weight": ("BF16", [16, 4], None),
+        "confidence_head.proj.weight": ("BF16", [1, 12], None), "confidence_head.proj.bias": ("BF16", [1], None)})
+    result = run("--drafter", "axk2dspark", "--checkpoint", checkpoint, "--revision", "0b278334dfce", "--out", out)
+    check(result.returncode == 0, f"axk2dspark packs: {result.stderr}")
+    _, _, manifest, payloads = read_pack(out / "axk2dspark.bf16.tp1.rank0.sp")
+    check(manifest["format"]["drafter"] == "axk2dspark" and
+          set(payloads) == {name for name in sources if name not in ("embed_tokens.weight", "lm_head.weight", "t2d")} |
+          {"target.embed", "target.head"}, f"axk2dspark: packed names {sorted(payloads)}")
+    check(manifest["tensors"]["d2t"]["kind"] == "i64" and payloads["d2t"] == d2t_bytes,
+          "axk2dspark: d2t packed as i64 byte for byte")
+    for name, blob in payloads.items():
+        check(blob == sources[manifest["tensors"][name]["source"]], f"axk2dspark: {name} byte for byte")
+    receipt = json.loads((out / "axk2dspark.bf16.tp1.rank0.sp.receipt.json").read_text())
+    check(list(receipt["skipped"]) == ["t2d"] and len(receipt["sources"]) == 1,
+          "axk2dspark: skips t2d and records the self-contained checkpoint")
+    result = run("--drafter", "axk2dspark", "--checkpoint", checkpoint, "--target", checkpoint / "model.safetensors",
+                 "--revision", "0b278334dfce", "--out", scratch / "o11")
+    check(result.returncode == 1 and "takes no --target" in result.stderr, "axk2dspark: a --target refuses")
+    deep = scratch / "axk2-deep"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text((checkpoint / "config.json").read_text())
+    write_safetensors(deep / "model.safetensors", {"embed_tokens.weight": ("BF16", [32, 8], None),
+                                                   "lm_head.weight": ("BF16", [16, 8], None),
+                                                   "layers.2.input_layernorm.weight": ("BF16", [8], None)})
+    result = run("--drafter", "axk2dspark", "--checkpoint", deep, "--revision", "0b278334dfce", "--out", scratch / "o12")
+    check(result.returncode == 1 and "layer 2 is past transformer_layer_config.num_hidden_layers = 2" in result.stderr,
+          f"axk2dspark: nested layer_count refuses out-of-range layer: {result.stderr}")
+    bad_i64 = scratch / "axk2-i64"
+    bad_i64.mkdir(parents=True)
+    (bad_i64 / "config.json").write_text((checkpoint / "config.json").read_text())
+    write_safetensors(bad_i64 / "model.safetensors", {"embed_tokens.weight": ("BF16", [32, 8], None),
+                                                      "lm_head.weight": ("BF16", [16, 8], None),
+                                                      "norm.weight": ("I64", [8], None)})
+    result = run("--drafter", "axk2dspark", "--checkpoint", bad_i64, "--revision", "0b278334dfce", "--out", scratch / "o13")
+    check(result.returncode == 1 and "dtype I64 is not one this drafter packs" in result.stderr,
+          f"axk2dspark: non-d2t I64 refuses: {result.stderr}")
 
 
 def main():
@@ -385,6 +438,7 @@ def main():
         test_qwen38max(scratch)
         test_kexaone2(scratch)
         test_glm53flash(scratch)
+        test_axk2(scratch)
     for failure in FAILURES:
         print(f"FAIL {failure}")
     if FAILURES:

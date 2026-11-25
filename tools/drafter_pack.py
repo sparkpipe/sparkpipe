@@ -6,9 +6,9 @@
 
 NAME is one of DRAFTERS: k31dspark (Kimi K3.1 Pro's DSpark), dsv41dspark (the DSpark built into DeepSeek V4.1
 1017's checkpoint), qwen27bdspine (Qwen3.8-27B's DSpine b16), glm53dspark (GLM-5.3's RedHat AI DSpark),
-qwen38maxdspark (Qwen3.8-Max's RadixArk DSpark), kexaone2dspark (K-EXAONE 2.0's official DSpark) and
-glm53flashdflash2 (GLM-5.3-Flash's DFlash2). For dsv41dspark the target tensors live in the
-checkpoint's own files, so it takes no --target.
+qwen38maxdspark (Qwen3.8-Max's RadixArk DSpark), kexaone2dspark (K-EXAONE 2.0's official DSpark),
+glm53flashdflash2 (GLM-5.3-Flash's DFlash2) and axk2dspark (A.X-K2's official DSpark). For dsv41dspark
+and axk2dspark the target tensors live in the checkpoint's own files, so they take no --target.
 
 Every tensor of the drafter's files and of the target files is either packed, byte for byte, or left out by a named
 rule; any other tensor, a dtype the rule does not name, a layer past the config's count, a missing target tensor, or a
@@ -157,6 +157,21 @@ DRAFTERS = {
                  r"^model\.visual\.": "target vision weights sharing the norm shard"},
         "target_from_checkpoint": False,
     },
+    "axk2dspark": {
+        "arm": "axk2dspark.bf16.tp1",
+        "config": "config.json",
+        "architectures": ["DSparkDraftModel"],
+        "layer_count": "transformer_layer_config.num_hidden_layers",
+        "layer_pattern": r"^layers\.(\d+)\.",
+        "include": [r"^fc\.weight$", r"^hidden_norm\.weight$", r"^norm\.weight$", r"^layers\.\d+\.",
+                    r"^markov_head\.markov_w[12]\.weight$", r"^confidence_head\.proj\.(weight|bias)$", r"^d2t$"],
+        "dtypes": ["BF16"],
+        "index_maps": r"^d2t$",
+        "target": {"target.embed": "embed_tokens.weight",
+                   "target.head": "lm_head.weight"},
+        "skip": {r"^t2d$": "target-to-draft boolean mask used only at training; inference maps draft ids via d2t"},
+        "target_from_checkpoint": True,
+    },
 }
 
 
@@ -300,6 +315,8 @@ def plan(spec: dict, checkpoint: Path, targets: list) -> tuple:
             raise PackFailure(f"{name}: layer {layer.group(1)} is past {spec['layer_count']} = {layer_count}")
         if tensor["dtype"] == "I8" and spec.get("packed_4bit") and re.search(spec["packed_4bit"], name):
             kind = "mxfp4_e2m1"
+        elif tensor["dtype"] == "I64" and spec.get("index_maps") and re.search(spec["index_maps"], name):
+            kind = "i64"
         elif tensor["dtype"] in spec["dtypes"] and tensor["dtype"] in KINDS:
             kind = KINDS[tensor["dtype"]]
         else:
