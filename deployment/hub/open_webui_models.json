@@ -52,6 +52,11 @@
       "description": "GLM 5.3 Flash at 8-bit precision (the publisher's FP8 release). 128K context. Switching to it takes about 15 s."
     },
     {
+      "id": "sage-s2.1-flash",
+      "name": "Sage S2.1 Flash",
+      "description": "InternLM Sage S2.1 Flash FP8. 128K context. Switching to it takes about 15 s."
+    },
+    {
       "id": "deepseek-v4.1-flash",
       "name": "DeepSeek V4.1 Flash",
       "description": "DeepSeek V4.1 Flash. 1M context. Switching to it takes about 25 s."
@@ -87,6 +92,16 @@
       "description": "Ling 3.0 Flash fine-tuned for finance. 256K context. Switching to it takes about 20 s."
     },
     {
+      "id": "ling-3.1-flash",
+      "name": "Ling 3.1 Flash",
+      "description": "Ling 3.1 Flash FP8. 256K context. Switching to it takes about 25 s."
+    },
+    {
+      "id": "ling-3.2-air",
+      "name": "Ling 3.2 Air",
+      "description": "Ling 3.2 Air FP8, compact and fast. 256K context. Switching to it takes about 10 s."
+    },
+    {
       "id": "laguna-s-2.1",
       "name": "Laguna S 2.1",
       "description": "Laguna S 2.1. 32K context. Switching to it takes about 20 s."
@@ -100,6 +115,11 @@
       "id": "hy4-preview",
       "name": "Hunyuan HY4 Preview",
       "description": "Hunyuan HY4 preview. 32K context; reads long inputs slowly. Switching to it takes about 30 s."
+    },
+    {
+      "id": "hy4-fp8",
+      "name": "Hunyuan HY4 FP8",
+      "description": "Hunyuan HY4 FP8 release. 1M context. Switching to it takes about 30 s."
     },
     {
       "id": "qwen3.8-27b",

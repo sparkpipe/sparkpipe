@@ -63,6 +63,22 @@ model_list:
   model_info:
     max_input_tokens: 131072
     max_output_tokens: 131072
+- model_name: sage-s2.1-flash
+  litellm_params:
+    model: hosted_vllm/sage-s2.1-flash
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 131072
+    max_output_tokens: 131072
+- model_name: sage-s2.1-flash-bulk
+  litellm_params:
+    model: hosted_vllm/sage-s2.1-flash-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 131072
+    max_output_tokens: 131072
 - model_name: kimi-k3
   litellm_params:
     model: hosted_vllm/kimi-k3
@@ -223,6 +239,22 @@ model_list:
   model_info:
     max_input_tokens: 32768
     max_output_tokens: 32768
+- model_name: hy4-fp8
+  litellm_params:
+    model: hosted_vllm/hy4-fp8
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 1048576
+    max_output_tokens: 32768
+- model_name: hy4-fp8-bulk
+  litellm_params:
+    model: hosted_vllm/hy4-fp8-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 1048576
+    max_output_tokens: 32768
 - model_name: ling-3.0-flash
   litellm_params:
     model: hosted_vllm/ling-3.0-flash
@@ -234,6 +266,38 @@ model_list:
 - model_name: ling-3.0-flash-bulk
   litellm_params:
     model: hosted_vllm/ling-3.0-flash-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 32768
+- model_name: ling-3.2-air
+  litellm_params:
+    model: hosted_vllm/ling-3.2-air
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 32768
+- model_name: ling-3.2-air-bulk
+  litellm_params:
+    model: hosted_vllm/ling-3.2-air-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 32768
+- model_name: ling-3.1-flash
+  litellm_params:
+    model: hosted_vllm/ling-3.1-flash
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 32768
+- model_name: ling-3.1-flash-bulk
+  litellm_params:
+    model: hosted_vllm/ling-3.1-flash-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:

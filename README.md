@@ -670,16 +670,20 @@ model's cached prefixes come back from the KV snapshot store.
 | `glm-5.3-fp8` | GLM 5.3 Full, FP8 variant | `glm52` | 1M | yes |
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | yes |
 | `glm-5.3-flash-fp8` | GLM 5.3 Flash, FP8 variant | `glm5_next` | 128K | yes |
+| `sage-s2.1-flash` | Sage S2.1 Flash FP8 | `glm5_next` | 128K | yes |
 | `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
 | `kimi-k3.1-pro` | Kimi K3.1 Pro | `k3` | 1M | yes |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | yes |
 | `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | yes |
 | `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | yes |
 | `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | yes |
+| `hy4-fp8` | Hunyuan HY4 FP8 | `hy4` | 1M | yes |
 | `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | yes |
 | `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | yes |
 | `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | yes |
 | `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | yes |
+| `ling-3.1-flash` | Ling 3.1 Flash FP8 | `ling` | 256K | yes |
+| `ling-3.2-air` | Ling 3.2 Air FP8 | `ling` | 256K | yes |
 | `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | yes |
 | `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K | yes |
 | `a.x-k2` | A.X K2 | `axk2` | 256K | yes |
