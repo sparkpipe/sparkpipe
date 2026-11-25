@@ -36,6 +36,7 @@
 #define SPARK_WEIGHTD_MESH_DORMANT_AFTER_NS UINT64_C(20000000)
 #define SPARK_WEIGHTD_MESH_DORMANT_POLL_NS 200000L
 #define SPARK_WEIGHTD_MESH_FULL_SCAN_NS UINT64_C(1000000)
+#define SPARK_WEIGHTD_MESH_ACTIVE_FULL_SCAN_NS UINT64_C(25000000)
 #define SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS 100000u
 #define SPARK_WEIGHTD_MESH_STUCK_LOG_NS UINT64_C(1000000000)
 #define SPARK_WEIGHTD_MESH_REPAIR_INTERVAL_NS UINT64_C(10000000)
@@ -265,6 +266,7 @@ typedef struct SparkWeightdMesh
     uint64_t work_ns;
     uint64_t full_scan_ns;
     uint32_t lane_activity[SPARK_WEIGHTD_MESH_MAX_LANES];
+    uint32_t configured_lane_mask;
     SparkWeightdMeshTopology lane_topology[SPARK_WEIGHTD_MESH_MAX_LANES];
     uint32_t mesh_active;
     uint32_t mesh_ready;
@@ -666,6 +668,17 @@ static SparkStatus SparkWeightdMeshReadPeerRecord(
     return SPARK_STATUS_OK;
 }
 
+static inline void SparkWeightdMeshDmaStoreBarrier(void)
+{
+#if defined(__aarch64__)
+    __asm__ volatile ("dmb oshst" ::: "memory");
+#elif defined(__x86_64__)
+    __asm__ volatile ("sfence" ::: "memory");
+#else
+#error "SparkWeightdMeshDmaStoreBarrier requires aarch64 or x86_64"
+#endif
+}
+
 static inline void SparkWeightdMeshStoreBarrier(void)
 {
 #if defined(__aarch64__)
@@ -680,7 +693,7 @@ static inline void SparkWeightdMeshStoreBarrier(void)
 static inline void SparkWeightdMeshLoadBarrier(void)
 {
 #if defined(__aarch64__)
-    __asm__ volatile ("dsb ld" ::: "memory");
+    __asm__ volatile ("dmb ishld" ::: "memory");
 #elif defined(__x86_64__)
     __asm__ volatile ("lfence" ::: "memory");
 #else
@@ -872,7 +885,7 @@ static void SparkWeightdMeshSqRingOrder(const uint8_t *order,uint32_t count)
     weightd_mesh.ring_count = count;
     if ( count == 0u )
         return;
-    SparkWeightdMeshStoreBarrier();
+    SparkWeightdMeshDmaStoreBarrier();
     for (i=0u; i<count; i++)
     {
         peer = order[i];
@@ -1027,6 +1040,7 @@ static SparkStatus SparkWeightdMeshTransitionQp(
 static pthread_mutex_t SparkWeightdMeshWireLock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t SparkWeightdMeshActivityCondition = PTHREAD_COND_INITIALIZER;
 static uint32_t SparkWeightdMeshWireWaiters;
+static uint32_t SparkWeightdMeshDoorbellRunning;
 static __thread uint32_t SparkWeightdMeshPollingThread;
 
 static void SparkWeightdMeshWireAcquire(void)
@@ -1188,6 +1202,7 @@ SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     weightd_mesh.lane_busy_logged[lane] = 0u;
     SparkWeightdMeshLaneResetLocked(lane);
     weightd_mesh.lane_topology[lane] = *topology;
+    weightd_mesh.configured_lane_mask |= 1u << lane;
     SparkWeightdMeshAdvertiseLane(lane);
     SparkWeightdMeshChanged();
 done:
@@ -2802,7 +2817,9 @@ void SparkWeightdMeshPoll(void)
             (void)SparkWeightdMeshWriteRecord(&own_record);
         }
     }
-    SparkWeightdMeshDrainCq();
+    if ( __atomic_load_n(&SparkWeightdMeshDoorbellRunning,__ATOMIC_ACQUIRE) == 0u ||
+         __atomic_load_n(&weightd_mesh.activity_owners,__ATOMIC_RELAXED) == 0u )
+        SparkWeightdMeshDrainCq();
     SparkWeightdMeshRepairAndReport();
     if (weightd_mesh.send_ok - weightd_mesh.send_logged >= 2048ull)
     {
@@ -2932,6 +2949,9 @@ static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_
             SparkWeightdMeshDoorbellStuck(index,"invalid",cell[0],cell[1],cell[2],now_ns);
             break;
         }
+        __builtin_prefetch((const uint8_t *)weightd_mesh.recv_buffer +
+            ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + cell[2]) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
+            SPARK_WEIGHTD_MESH_TAIL_OFFSET(route.fields.half),0,0);
         if ( weightd_mesh.publish_seq[record] != cell[0] )
         {
             weightd_mesh.publish_seq[record] = cell[0];
@@ -2955,22 +2975,31 @@ static uint32_t SparkWeightdMeshDoorbellFullScan(uint64_t now_ns)
 
 static uint32_t SparkWeightdMeshDoorbellSweep(uint64_t now_ns)
 {
-    uint32_t lane, band, rank, cell, work = 0u;
-    if ( now_ns - weightd_mesh.full_scan_ns >= SPARK_WEIGHTD_MESH_FULL_SCAN_NS )
+    uint32_t lane, band, rank, cell, work = 0u, mask = weightd_mesh.configured_lane_mask;
+    const uint64_t scan_interval = weightd_mesh.activity_owners != 0u ?
+        SPARK_WEIGHTD_MESH_ACTIVE_FULL_SCAN_NS : SPARK_WEIGHTD_MESH_FULL_SCAN_NS;
+    if ( weightd_mesh.activity_owners == 0u && now_ns - weightd_mesh.full_scan_ns >= scan_interval )
         return(SparkWeightdMeshDoorbellFullScan(now_ns));
-    for ( lane = 0u; lane < SPARK_WEIGHTD_MESH_MAX_LANES; lane++ )
+    while ( mask != 0u )
     {
+        lane = (uint32_t)__builtin_ctz(mask);
+        mask &= mask - 1u;
         if ( weightd_mesh.lane_topology[lane].rank_count == 0u )
             continue;
         rank = weightd_mesh.lane_topology[lane].local_rank;
         for ( band = 2u * lane; band < 2u * lane + 2u; band++ )
         {
+            uint32_t posted;
             cell = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + rank;
             work += SparkWeightdMeshWaitRequestsPollRange(now_ns,cell,cell + 1u);
-            work += SparkWeightdMeshDoorbellCell(band,rank,now_ns);
-            work += SparkWeightdMeshWaitRequestsPollRange(now_ns,cell,cell + 1u);
+            posted = SparkWeightdMeshDoorbellCell(band,rank,now_ns);
+            work += posted;
+            if ( posted != 0u )
+                work += SparkWeightdMeshWaitRequestsPollRange(now_ns,cell,cell + 1u);
         }
     }
+    if ( work == 0u && now_ns - weightd_mesh.full_scan_ns >= scan_interval )
+        return(SparkWeightdMeshDoorbellFullScan(now_ns));
     return(work);
 }
 
@@ -3047,6 +3076,7 @@ static void SparkWeightdMeshPinFastCores(int32_t doorbell_cpu)
 void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu)
 {
     SparkWeightdMeshPollingThread = 1u;
+    __atomic_store_n(&SparkWeightdMeshDoorbellRunning,1u,__ATOMIC_RELEASE);
     SparkWeightdMeshPinFastCores(doorbell_cpu);
     for (;;)
     {

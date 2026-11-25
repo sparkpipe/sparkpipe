@@ -1,0 +1,2 @@
++174
+E14 big-core RDMA and collective latency optimizations: weightd_mesh.c active-doorbell lock-contention guard, configured-lane bitmask sweep, deferred full-scan, and lighter ARM64 dmb barriers; model_residentd.c Linux big-core CPU affinity pinning (reserving top-binned core for weightd doorbell) and TCP_QUICKACK re-arming across residentd/client sockets; mesh_fast_kernels.cuh PDL publish chaining and expanded 49152-element streaming AllReduce threshold; dsv41_flash_stage.cuh unreachable wide BF16 weight elimination and disjoint-phase scratch overlay arena shrink.

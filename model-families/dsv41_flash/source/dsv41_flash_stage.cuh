@@ -3923,11 +3923,20 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 	const uint32_t recorded = D41_RECORDED_ROWS(state);
 	const uint64_t destination = D41DestinationStride(recorded, D41_LOCAL_HEADS) * sizeof(float), scored = state->select_rows;
 	const uint64_t exchanged = D41_WHOLE ? 0u : D41_TP;
+	const uint64_t spread_only = D41_WHOLE ? 0u : 1u;
 	const uint64_t engram_rows = (r * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
+	const uint64_t fused_rows = r < D41FusedOutputRows ? r : (uint64_t)D41FusedOutputRows;
+	const uint64_t whole_group_a = r * D41_GROUP_WIDTH;
+	const uint64_t whole_group_b = fused_rows * D41_LOCAL_HEADS * D41_HEAD_DIM;
+	const uint64_t group_input_bytes = (D41_WHOLE ? (whole_group_a > whole_group_b ? whole_group_a : whole_group_b) :
+		r * 2u * D41_LOCAL_HEADS * D41_HEAD_DIM) * 2u;
+	const uint64_t q_gathered_bytes = D41_ROWS ? r * D41_INDEX_PACK * 2u :
+		D41_WHOLE ? D41_TP * r * D41_INDEX_PACK * 2u :
+		D41_TP * r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u;
 	(void)lane;
 	const uint64_t sparse = D41_ROWS && !D41_ENGRAM_DISK && D41_OWN_ROWS_MIN <= r ? 1u : 0u;
 	const uint64_t own_max = (r + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
-	const CudaStageSlice plan[] =
+	const CudaStageSlice persistent[] =
 	{
 		{ (void **)&state->streams, r * D41K_HC * D41_HIDDEN * 2u },
 		{ (void **)&state->streams_whole, D41_OWN_ROWS_MIN <= r ? r * D41K_HC * D41_HIDDEN * 2u : 0u },
@@ -3950,9 +3959,6 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->mx.codes, D41_MX_MIN_ROWS <= r ? r * D41_MX_WIDTH : 0u },
 		{ (void **)&state->mx.scales, D41_MX_MIN_ROWS <= r ? r * D41_MX_WIDTH / D41_FP8_BLOCK : 0u },
 		{ (void **)&state->x, r * D41_HIDDEN * 2u }, { (void **)&state->xq, r * D41_HIDDEN * 2u },
-		{ (void **)&state->q_latent, r * D41_QLORA * 2u }, { (void **)&state->qrq, r * D41_QLORA * 2u },
-		{ (void **)&state->q_local, r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
-		{ (void **)&state->q_gathered, D41_ROWS ? r * D41_INDEX_PACK * 2u : D41_TP * r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->kv, r * D41_HEAD_DIM * 2u }, { (void **)&state->window_kv, r * D41_HEAD_DIM * 2u },
 		{ (void **)&state->mixes, r * LmHcSinkhornShape<D41K_HC>::kPartials * 4u },
 		{ (void **)&state->mix_counters, r * 4u }, { (void **)&state->route_counters, 4u },
@@ -3961,63 +3967,102 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->pre_head, r * D41K_HC * 4u }, { (void **)&state->pre_init, r * D41K_HC * 4u },
 		{ (void **)&state->c_kv, r * D41_HEAD_DIM * 4u }, { (void **)&state->c_score, r * D41_HEAD_DIM * 4u },
 		{ (void **)&state->c_latent, r * D41_HEAD_DIM * 2u }, { (void **)&state->c_latent_store, r * D41_HEAD_DIM * 2u },
-		{ (void **)&state->idx_key, r * D41_INDEX_DIM * 2u },
-		{ (void **)&state->idx_pack_local, r * D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM * 2u },
-		{ (void **)&state->idx_query, r * D41_INDEX_HEADS * D41_INDEX_DIM * 2u }, { (void **)&state->idx_w_full, r * D41_INDEX_HEADS * 2u },
 		{ (void **)&state->emit_row, r * 4u }, { (void **)&state->bound_ratio2, r * 4u }, { (void **)&state->bound_ratio1, r * 4u },
 		{ (void **)&state->rope_sc_full, r * D41K_ROPE_PAIRS * sizeof(float2) }, { (void **)&state->rope_sc_compress, r * D41K_ROPE_PAIRS * sizeof(float2) },
 		{ (void **)&state->length_ratio2, s * 4u }, { (void **)&state->length_ratio1, s * 4u },
 		{ (void **)&state->fork_ratio2, r * 4u }, { (void **)&state->offset_ratio2, r * 4u },
 		{ (void **)&state->row_lane, r * 4u }, { (void **)&state->row_ordinal, r * 4u }, { (void **)&state->tail_row_begin, 2u * 4u },
-		{ (void **)&state->local_scores, scored * state->local_score_stride * 4u },
-		{ (void **)&state->topk_values, state->topk_entries * 4u }, { (void **)&state->topk_positions, state->topk_entries * 4u },
-		{ (void **)&state->local_selected, r * D41_INDEX_TOPK * 4u }, { (void **)&state->selected, r * D41_INDEX_TOPK * 4u },
-		{ (void **)&state->candidates, r * D41_INDEX_TOPK * 8u }, { (void **)&state->candidates_gathered, D41_TP * r * D41_INDEX_TOPK * 8u },
-		{ (void **)&state->block_scores, scored * state->local_block_stride * 4u },
-		{ (void **)&state->block_local_selected, r * state->local_block_keep * 4u },
-		{ (void **)&state->block_candidates, r * state->local_block_keep * 8u },
-		{ (void **)&state->block_gathered, (uint64_t)D41_TP * D41_SELECTION_CHUNK * state->local_block_keep * 8u },
-		{ (void **)&state->block_selected, (uint64_t)D41_SELECTION_CHUNK * state->global_block_keep * 4u },
+		{ (void **)&state->selected, r * D41_INDEX_TOPK * 4u },
 		{ (void **)&state->block_mask, r * state->local_block_stride },
 		{ (void **)&state->verify_window, (uint64_t)D41_LAYERS * D41_VERIFY_ROWS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->verify_c_kv, (uint64_t)D41_PAIR_CACHES * D41_VERIFY_ROWS * D41_HEAD_DIM * 4u },
 		{ (void **)&state->verify_c_score, (uint64_t)D41_PAIR_CACHES * D41_VERIFY_ROWS * D41_HEAD_DIM * 4u },
-		{ (void **)&state->records_send, exchanged * destination }, { (void **)&state->records_received, (D41_WHOLE ? 1u : D41_TP) * destination },
 		{ (void **)&state->landing, exchanged * SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(state->max_positions, 1u) * D41_HIDDEN * 2u },
-		{ (void **)&state->ring_send, (D41_WHOLE ? 0u : 1u) * (uint64_t)D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
+		{ (void **)&state->ring_send, spread_only * (uint64_t)D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
 		{ (void **)&state->ring_landing, exchanged * D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
 		{ (void **)&state->gather_plan, (3u * s + 1u) * 4u },
-		{ (void **)&state->split_selected, r * D41_INDEX_TOPK * 4u }, { (void **)&state->split_offsets, r * (D41_TP + 1u) * 4u },
+		{ (void **)&state->split_selected, spread_only * r * D41_INDEX_TOPK * 4u },
+		{ (void **)&state->split_offsets, spread_only * r * (D41_TP + 1u) * 4u },
 		{ (void **)&state->attn_merged, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->attn_gathered, exchanged * r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
-		{ (void **)&state->wo_a_group, (D41_WHOLE ? 1u : 0u) * r * D41_GROUP_ROWS * 2u },
-		{ (void **)&state->group_input, r * 2u * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
-		{ (void **)&state->wo_a_out, r * D41_WO_A_ROWS * 2u }, { (void **)&state->partial, r * D41_HIDDEN * 2u },
-		{ (void **)&state->router_logits, r * D41_EXPERTS * 4u }, { (void **)&state->route_weight, routes * 4u },
-		{ (void **)&state->packed_weight, routes * 4u }, { (void **)&state->route_expert, routes * 4u },
-		{ (void **)&state->route_global, state->moe_whole != 0u ? routes * 4u : 0u },
-		{ (void **)&state->group_row_offset, (D41_EXPERTS + 1u) * 4u }, { (void **)&state->route_packed_row, routes * 4u },
-		{ (void **)&state->route_source_token, routes * 4u }, { (void **)&state->tile_prefix_up, (D41_EXPERTS + 1u) * 4u },
-		{ (void **)&state->tile_prefix_down, (D41_EXPERTS + 1u) * 4u },
-		{ (void **)&state->expert_gate_up, state->moe_whole != 0u ? 0u : routes * 2u * D41_EXPERT_SLICE * 2u },
+		{ (void **)&state->partial, r * D41_HIDDEN * 2u },
 		{ (void **)&state->expert_act, routes * D41_MOE_INTER * 2u },
-		{ (void **)&state->expert_slice, routes * (state->moe_whole != 0u ? D41_HIDDEN : D41_HIDDEN_SLICE) * 2u },
-		{ (void **)&state->moe_send, D41_TP * r * D41_MOE_ROW_ELEMENTS * 2u }, { (void **)&state->moe_received, D41_TP * r * D41_MOE_ROW_ELEMENTS * 2u },
-		{ (void **)&state->moe_final, r * (state->moe_whole != 0u ? D41_HIDDEN : D41_HIDDEN_SLICE) * 2u },
+		{ (void **)&state->moe_send, D41_TP * r * D41_MOE_ROW_ELEMENTS * 2u },
+		{ (void **)&state->moe_received, D41_TP * r * D41_MOE_ROW_ELEMENTS * 2u },
 		{ (void **)&state->moe_gathered, state->moe_whole != 0u ? D41_TP * (r < D41_OWN_ROWS_MIN ? r : D41_OWN_ROWS_MIN) * D41_HIDDEN * 2u :
 			D41_TP * r * D41_HIDDEN_SLICE * 2u },
-		{ (void **)&state->shared_gate, r * D41_MOE_INTER * 2u }, { (void **)&state->shared_up, r * D41_MOE_INTER * 2u },
-		{ (void **)&state->shared_act, r * D41_MOE_INTER * 2u }, { (void **)&state->shared_out, r * D41_HIDDEN * 2u },
 		{ (void **)&state->engram_ids, (D41_ENGRAM_DISK ? 0u : 1u) * r * D41_ENGRAM_COLUMNS * 8u },
-		{ (void **)&state->engram_ids_next, (D41_ENGRAM_DISK ? 0u : 1u) * r * D41_ENGRAM_COLUMNS * 8u }, { (void **)&state->engram_embed, engram_rows * D41_HIDDEN * 2u },
-		{ (void **)&state->engram_slot, sparse * 2u * r * D41_ENGRAM_COLUMNS * 4u }, { (void **)&state->engram_counts, sparse * 2u * D41_TP * D41_TP * 4u },
-		{ (void **)&state->engram_send, sparse * D41_TP * own_max * D41_ENGRAM_COLUMNS * D41K_ENGRAM_RECORD_BYTES },
-		{ (void **)&state->engram_received, sparse * D41_TP * own_max * D41_ENGRAM_COLUMNS * D41K_ENGRAM_RECORD_BYTES },
-		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u }, { (void **)&state->engram_kv_local, r * D41_ENGRAM_KV_LOCAL * 2u },
-		{ (void **)&state->engram_kv_gathered, r * D41_ENGRAM_KV_ROWS * 2u },
+		{ (void **)&state->engram_ids_next, (D41_ENGRAM_DISK ? 0u : 1u) * r * D41_ENGRAM_COLUMNS * 8u },
+		{ (void **)&state->engram_slot, sparse * 2u * r * D41_ENGRAM_COLUMNS * 4u },
+		{ (void **)&state->engram_counts, sparse * 2u * D41_TP * D41_TP * 4u },
 		{ (void **)&state->recurrent, s * state->recurrent_bytes },
 	};
-	return CudaStagePlace(plan, base);
+	const CudaStageSlice engram_scratch[] =
+	{
+		{ (void **)&state->engram_embed, engram_rows * D41_HIDDEN * 2u },
+		{ (void **)&state->engram_send, sparse * D41_TP * own_max * D41_ENGRAM_COLUMNS * D41K_ENGRAM_RECORD_BYTES },
+		{ (void **)&state->engram_received, sparse * D41_TP * own_max * D41_ENGRAM_COLUMNS * D41K_ENGRAM_RECORD_BYTES },
+		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u },
+		{ (void **)&state->engram_kv_local, r * D41_ENGRAM_KV_LOCAL * 2u },
+		{ (void **)&state->engram_kv_gathered, r * D41_ENGRAM_KV_ROWS * 2u },
+	};
+	const CudaStageSlice attn_scratch[] =
+	{
+		{ (void **)&state->q_latent, r * D41_QLORA * 2u },
+		{ (void **)&state->qrq, r * D41_QLORA * 2u },
+		{ (void **)&state->q_local, r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
+		{ (void **)&state->q_gathered, q_gathered_bytes },
+		{ (void **)&state->idx_key, r * D41_INDEX_DIM * 2u },
+		{ (void **)&state->idx_pack_local, r * D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM * 2u },
+		{ (void **)&state->idx_query, r * D41_INDEX_HEADS * D41_INDEX_DIM * 2u },
+		{ (void **)&state->idx_w_full, r * D41_INDEX_HEADS * 2u },
+		{ (void **)&state->local_scores, scored * state->local_score_stride * 4u },
+		{ (void **)&state->topk_values, state->topk_entries * 4u },
+		{ (void **)&state->topk_positions, state->topk_entries * 4u },
+		{ (void **)&state->local_selected, r * D41_INDEX_TOPK * 4u },
+		{ (void **)&state->candidates, r * D41_INDEX_TOPK * 8u },
+		{ (void **)&state->candidates_gathered, exchanged * r * D41_INDEX_TOPK * 8u },
+		{ (void **)&state->block_scores, scored * state->local_block_stride * 4u },
+		{ (void **)&state->block_local_selected, r * state->local_block_keep * 4u },
+		{ (void **)&state->block_candidates, spread_only * r * state->local_block_keep * 8u },
+		{ (void **)&state->block_gathered, exchanged * D41_SELECTION_CHUNK * state->local_block_keep * 8u },
+		{ (void **)&state->block_selected, spread_only * D41_SELECTION_CHUNK * state->global_block_keep * 4u },
+		{ (void **)&state->records_send, exchanged * destination },
+		{ (void **)&state->records_received, (D41_WHOLE ? 1u : D41_TP) * destination },
+		{ (void **)&state->wo_a_group, (D41_WHOLE ? 1u : 0u) * r * D41_GROUP_ROWS * 2u },
+		{ (void **)&state->group_input, group_input_bytes },
+		{ (void **)&state->wo_a_out, r * D41_WO_A_ROWS * 2u },
+	};
+	const CudaStageSlice moe_scratch[] =
+	{
+		{ (void **)&state->router_logits, r * D41_EXPERTS * 4u },
+		{ (void **)&state->route_weight, routes * 4u },
+		{ (void **)&state->packed_weight, routes * 4u },
+		{ (void **)&state->route_expert, routes * 4u },
+		{ (void **)&state->route_global, state->moe_whole != 0u ? routes * 4u : 0u },
+		{ (void **)&state->group_row_offset, (D41_EXPERTS + 1u) * 4u },
+		{ (void **)&state->route_packed_row, routes * 4u },
+		{ (void **)&state->route_source_token, routes * 4u },
+		{ (void **)&state->tile_prefix_up, (D41_EXPERTS + 1u) * 4u },
+		{ (void **)&state->tile_prefix_down, (D41_EXPERTS + 1u) * 4u },
+		{ (void **)&state->expert_gate_up, state->moe_whole != 0u ? 0u : routes * 2u * D41_EXPERT_SLICE * 2u },
+		{ (void **)&state->expert_slice, routes * (state->moe_whole != 0u ? D41_HIDDEN : D41_HIDDEN_SLICE) * 2u },
+		{ (void **)&state->moe_final, r * (state->moe_whole != 0u ? D41_HIDDEN : D41_HIDDEN_SLICE) * 2u },
+		{ (void **)&state->shared_gate, r * D41_MOE_INTER * 2u },
+		{ (void **)&state->shared_up, r * D41_MOE_INTER * 2u },
+		{ (void **)&state->shared_act, r * D41_MOE_INTER * 2u },
+		{ (void **)&state->shared_out, r * D41_HIDDEN * 2u },
+	};
+	const uint64_t align = CUDA_STAGE_SLICE_ALIGNMENT;
+	const uint64_t prefix = (CudaStagePlace(persistent, base) + align - 1u) & ~(align - 1u);
+	uint8_t *overlay = base != 0 ? base + prefix : 0;
+	const uint64_t engram_bytes = CudaStagePlace(engram_scratch, overlay);
+	const uint64_t attn_bytes = CudaStagePlace(attn_scratch, overlay);
+	const uint64_t moe_bytes = CudaStagePlace(moe_scratch, overlay);
+	uint64_t peak = engram_bytes > attn_bytes ? engram_bytes : attn_bytes;
+	if ( moe_bytes > peak )
+		peak = moe_bytes;
+	return prefix + peak;
 }
 
 static SparkStatus D41ReadFile(const char *path, uint64_t offset, void *target, uint64_t bytes)
@@ -4491,6 +4536,8 @@ static SparkStatus D41Fp8SliceAt(D41ModelState *state, const D41PackEntry *entry
 	uint32_t rows, uint32_t column_first, uint32_t columns, uint32_t widen, uint64_t *cursor, D41Fp8Linear *out)
 {
 	const uint32_t whole_rows = column_first == 0u && entry != 0 && columns == entry->columns ? 1u : 0u;
+	const uint32_t need_wide = widen != 0u &&
+		!(columns % LM_MX_TILE_K == 0u && columns <= D41_MX_WIDTH && D41_MX_MIN_ROWS <= LM_SKINNY_ROWS_WIDE) ? 1u : 0u;
 	if ( entry == 0 || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || entry->rows % D41_FP8_BLOCK != 0u ||
 		entry->columns % D41_FP8_BLOCK != 0u || rows == 0u || columns == 0u || row_first % D41_FP8_BLOCK != 0u ||
 		column_first % D41_FP8_BLOCK != 0u || columns % D41_FP8_BLOCK != 0u || row_first > entry->rows || rows > entry->rows - row_first ||
@@ -4499,12 +4546,12 @@ static SparkStatus D41Fp8SliceAt(D41ModelState *state, const D41PackEntry *entry
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	const uint64_t scale_bytes = (((uint64_t)rows * (columns / D41_FP8_BLOCK)) + 255u) & ~255ull;
 	const uint64_t weight_bytes = whole_rows != 0u ? 0u : (((uint64_t)rows * columns) + 255u) & ~255ull;
-	const uint64_t wide_bytes = widen != 0u ? (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull : 0u;
+	const uint64_t wide_bytes = need_wide != 0u ? (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull : 0u;
 	if ( state->fp8_side != 0 )
 	{
 		uint8_t *row_scale = state->fp8_side + *cursor;
 		uint8_t *weight = whole_rows != 0u ? (uint8_t *)0 : row_scale + scale_bytes;
-		uint16_t *wide = widen != 0u ? (uint16_t *)(row_scale + scale_bytes + weight_bytes) : (uint16_t *)0;
+		uint16_t *wide = need_wide != 0u ? (uint16_t *)(row_scale + scale_bytes + weight_bytes) : (uint16_t *)0;
 		LM_LAUNCH((D41Fp8SliceKernel), rows, D41_THREADS, 0, 0, (const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, wide, entry->columns,
 			row_first, column_first, columns);
 		out->scale = row_scale;
