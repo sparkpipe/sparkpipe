@@ -1,5 +1,6 @@
 #pragma once
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/kernel_math.cuh"
@@ -46,44 +47,69 @@ typedef struct LmMxGemmGroups
 }
 LmMxGemmGroups;
 
+static __device__ __forceinline__ void LmMxQuantizeOctet(const uint16_t *source, uint8_t *codes, uint8_t *scales, uint64_t octet, uint32_t live, uint64_t src_offset)
+{
+	const uint4 raw = live != 0u ? __ldg((const uint4 *)(source + src_offset)) : make_uint4(0u,0u,0u,0u);
+	const uint32_t words[4] = { raw.x, raw.y, raw.z, raw.w };
+	float value[8],amax = 0.0f,scale;
+	uint32_t low,high,e;
+#pragma unroll
+	for (e = 0u; e < 4u; e++)
+	{
+		value[2u * e] = __uint_as_float(words[e] << 16u);
+		value[2u * e + 1u] = __uint_as_float(words[e] & 0xffff0000u);
+		amax = fmaxf(amax,fmaxf(fabsf(value[2u * e]),fabsf(value[2u * e + 1u])));
+	}
+	amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,1u));
+	amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,2u));
+	scale = SparkMathFp8QdqScale(fmaxf(0.0f,amax));
+	const uint32_t scale_bits = __float_as_uint(scale);
+	const float inv_scale = __uint_as_float(0x7f000000u - scale_bits);
+	const uint32_t p0 = (uint32_t)LmFloatPairToE4m3(value[0] * inv_scale,value[1] * inv_scale);
+	const uint32_t p1 = (uint32_t)LmFloatPairToE4m3(value[2] * inv_scale,value[3] * inv_scale);
+	const uint32_t p2 = (uint32_t)LmFloatPairToE4m3(value[4] * inv_scale,value[5] * inv_scale);
+	const uint32_t p3 = (uint32_t)LmFloatPairToE4m3(value[6] * inv_scale,value[7] * inv_scale);
+	low = p0 | (p1 << 16u);
+	high = p2 | (p3 << 16u);
+	if ( live != 0u )
+	{
+		*(uint2 *)(codes + octet * 8u) = make_uint2(low,high);
+		if ( (octet & 3u) == 0u )
+			scales[octet >> 2u] = (uint8_t)((scale_bits >> 23u) & 0xffu);
+	}
+}
+
 __global__ __launch_bounds__(LM_MX_THREADS) void LmMxQuantizeKernel(const uint16_t *__restrict__ source, uint8_t *__restrict__ codes,
 	uint8_t *__restrict__ scales, uint64_t octets, uint64_t row_octets, uint64_t row_stride)
 {
+	LmDependentWait();
 	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
 	for (uint64_t base = (uint64_t)blockIdx.x * blockDim.x + (threadIdx.x & ~31u); base < octets; base += stride)
 	{
 		const uint64_t octet = base + (threadIdx.x & 31u);
 		const uint32_t live = octet < octets ? 1u : 0u;
 		const uint64_t row = row_stride != 0u ? octet / row_octets : 0u;
-		const uint4 raw = live != 0u ? *(const uint4 *)(source + row * row_stride + (octet - row * row_octets) * 8u) : make_uint4(0u,0u,0u,0u);
-		const uint32_t words[4] = { raw.x, raw.y, raw.z, raw.w };
-		float value[8],amax = 0.0f,scale;
-		uint32_t low = 0u,high = 0u,e;
-#pragma unroll
-		for (e = 0u; e < 4u; e++)
+		const uint64_t src_offset = row_stride != 0u ? row * row_stride + (octet - row * row_octets) * 8u : octet * 8u;
+		LmMxQuantizeOctet(source,codes,scales,octet,live,src_offset);
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(LM_MX_THREADS) void LmMxQuantizeRowsKernel(const uint16_t *__restrict__ source, uint8_t *__restrict__ codes,
+	uint8_t *__restrict__ scales, uint32_t rows, uint32_t row_octets, uint64_t row_stride)
+{
+	LmDependentWait();
+	for (uint32_t row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		const uint64_t row_base = (uint64_t)row * row_octets;
+		for (uint32_t col_base = blockIdx.x * blockDim.x + (threadIdx.x & ~31u); col_base < row_octets; col_base += gridDim.x * blockDim.x)
 		{
-			value[2u * e] = __uint_as_float(words[e] << 16u);
-			value[2u * e + 1u] = __uint_as_float(words[e] & 0xffff0000u);
-			amax = fmaxf(amax,fmaxf(fabsf(value[2u * e]),fabsf(value[2u * e + 1u])));
-		}
-		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,1u));
-		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,2u));
-		scale = SparkMathFp8QdqScale(fmaxf(0.0f,amax));
-		const uint32_t scale_bits = __float_as_uint(scale);
-		const float inv_scale = __uint_as_float(0x7f000000u - scale_bits);
-		const uint32_t p0 = (uint32_t)LmFloatPairToE4m3(value[0] * inv_scale,value[1] * inv_scale);
-		const uint32_t p1 = (uint32_t)LmFloatPairToE4m3(value[2] * inv_scale,value[3] * inv_scale);
-		const uint32_t p2 = (uint32_t)LmFloatPairToE4m3(value[4] * inv_scale,value[5] * inv_scale);
-		const uint32_t p3 = (uint32_t)LmFloatPairToE4m3(value[6] * inv_scale,value[7] * inv_scale);
-		low = p0 | (p1 << 16u);
-		high = p2 | (p3 << 16u);
-		if ( live != 0u )
-		{
-			*(uint2 *)(codes + octet * 8u) = make_uint2(low,high);
-			if ( (octet & 3u) == 0u )
-				scales[octet >> 2u] = (uint8_t)((scale_bits >> 23u) & 0xffu);
+			const uint32_t col = col_base + (threadIdx.x & 31u);
+			const uint32_t live = col < row_octets ? 1u : 0u;
+			LmMxQuantizeOctet(source,codes,scales,row_base + col,live,(uint64_t)row * row_stride + (uint64_t)col * 8u);
 		}
 	}
+	LmDependentRelease();
 }
 
 static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *scales, uint64_t elements, SparkGpuStream stream)
@@ -93,21 +119,22 @@ static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *sca
 		((uintptr_t)codes & 7u) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	blocks = (elements / 8u + LM_MX_THREADS - 1u) / LM_MX_THREADS;
-	LM_LAUNCH((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,elements / 8u,
-		elements / 8u,0u);
+	LM_LAUNCH_DEPENDENT((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,
+		elements / 8u,elements / 8u,0u);
 	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t LmMxQuantizeRows(const uint16_t *source, uint64_t row_stride, uint8_t *codes, uint8_t *scales, uint32_t rows, uint32_t width, SparkGpuStream stream)
 {
-	const uint64_t octets = (uint64_t)rows * width / 8u;
-	uint64_t blocks;
+	const uint32_t row_octets = width / 8u;
+	uint32_t blocks_x;
 	if ( source == 0 || codes == 0 || scales == 0 || rows == 0u || width == 0u || width % LM_MX_BLOCK != 0u || row_stride < width || row_stride % 8u != 0u ||
 		((uintptr_t)source & 15u) != 0u || ((uintptr_t)codes & 7u) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	blocks = (octets + LM_MX_THREADS - 1u) / LM_MX_THREADS;
-	LM_LAUNCH((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,octets,
-		width / 8u,row_stride);
+	if ( row_stride == width )
+		return(LmMxQuantize(source,codes,scales,(uint64_t)rows * width,stream));
+	blocks_x = (row_octets + LM_MX_THREADS - 1u) / LM_MX_THREADS;
+	LM_LAUNCH_DEPENDENT((LmMxQuantizeRowsKernel),dim3(blocks_x,LmLaunchGridRows(rows)),LM_MX_THREADS,0,stream,source,codes,scales,rows,row_octets,row_stride);
 	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
@@ -117,9 +144,34 @@ static __device__ __forceinline__ void LmMxMatrix4(uint32_t address, uint32_t va
 		: "=r"(value[0]), "=r"(value[1]), "=r"(value[2]), "=r"(value[3]) : "r"(address));
 }
 
+static __device__ __forceinline__ void LmMxMatrix2(uint32_t address, uint32_t value[2])
+{
+	asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
+		: "=r"(value[0]), "=r"(value[1]) : "r"(address));
+}
+
+template<uint32_t BYTE_A, uint32_t BYTE_B>
+static __device__ __forceinline__ void LmMxMmaBlockImm(float out[4], const uint32_t a[4], const uint32_t b[2], uint32_t scale_a, uint32_t scale_b)
+{
+	static_assert(BYTE_A < 4u && BYTE_B < 4u,"a scale word holds four 32-wide blocks");
+#if LM_BLOCK_SCALED_MMA_PTX
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
+		".block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
+		"{%14}, {%15,%16}, {%17}, {%18,%19};\n"
+		: "=f"(out[0]), "=f"(out[1]), "=f"(out[2]), "=f"(out[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+		  "r"(b[0]), "r"(b[1]), "f"(0.0f), "f"(0.0f), "f"(0.0f), "f"(0.0f),
+		  "r"(scale_a), "n"(BYTE_A), "n"(0),
+		  "r"(scale_b), "n"(BYTE_B), "n"(0));
+#else
+	LmMmaMxf8Block(out,a,b,scale_a,(uint16_t)BYTE_A,scale_b,(uint16_t)BYTE_B);
+#endif
+}
+
 static __device__ __forceinline__ void LmMxCopy16(uint32_t destination, const void *source, uint32_t bytes)
 {
-	asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
 }
 
 static __device__ __forceinline__ void LmMxCommit(void)
@@ -156,23 +208,26 @@ static __host__ __device__ constexpr uint32_t LmMxSharedBytes(void)
 	return(LmMxStages<TILE_M,TILE_N>() * LmMxStageBytes<TILE_M,TILE_N>() + (TILE_M + TILE_N) * 8u);
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M>
-__global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_constant__ LmMxGemmArguments args, const __grid_constant__ LmMxGemmGroups groups)
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N = LM_MX_WARPS / WARPS_M, uint32_t MIN_BLOCKS = 1u>
+__global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGemmKernel(const __grid_constant__ LmMxGemmArguments args,
+	const __grid_constant__ LmMxGemmGroups groups)
 {
 	constexpr uint32_t STAGES = LmMxStages<TILE_M,TILE_N>();
-	constexpr uint32_t WARPS_N = LM_MX_WARPS / WARPS_M;
+	constexpr uint32_t THREADS = WARPS_M * WARPS_N * 32u;
+	constexpr uint32_t ROW_STEP = THREADS / 8u;
 	constexpr uint32_t WARP_M = TILE_M / WARPS_M;
 	constexpr uint32_t WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u;
 	constexpr uint32_t NF = WARP_N / 8u;
 	constexpr uint32_t STAGE_BYTES = LmMxStageBytes<TILE_M,TILE_N>();
 	constexpr uint32_t A_BYTES = TILE_M * LM_MX_TILE_K;
-	constexpr uint32_t A_PER_THREAD = TILE_M * (LM_MX_TILE_K / 16u) / LM_MX_THREADS;
-	constexpr uint32_t B_PER_THREAD = TILE_N * (LM_MX_TILE_K / 16u) / LM_MX_THREADS;
+	constexpr uint32_t A_PER_THREAD = TILE_M * (LM_MX_TILE_K / 16u) / THREADS;
+	constexpr uint32_t B_PER_THREAD = TILE_N * (LM_MX_TILE_K / 16u) / THREADS;
 	static_assert(STAGES == 3u && LmMxSharedBytes<TILE_M,TILE_N>() <= LM_MX_SHARED_LIMIT,"three stages plus scale scratch fit in SM shared memory");
-	static_assert(WARPS_M * WARPS_N == LM_MX_WARPS && MF >= 1u && NF >= 2u && NF % 2u == 0u && WARP_M % 16u == 0u,"the tile is not a whole number of fragments per warp");
-	static_assert(TILE_M * (LM_MX_TILE_K / 16u) % LM_MX_THREADS == 0u && TILE_N * (LM_MX_TILE_K / 16u) % LM_MX_THREADS == 0u,"a stage must divide across the block");
-	static_assert(TILE_M + TILE_N <= LM_MX_THREADS,"scale scratch loads one word per thread");
+	static_assert(MF >= 1u && NF >= 1u && (NF == 1u || NF % 2u == 0u) && WARP_M % 16u == 0u && WARP_N % 8u == 0u,
+		"the tile is not a whole number of fragments per warp");
+	static_assert(TILE_M * (LM_MX_TILE_K / 16u) % THREADS == 0u && TILE_N * (LM_MX_TILE_K / 16u) % THREADS == 0u,"a stage must divide across the block");
+	static_assert(TILE_M + TILE_N <= THREADS,"scale scratch loads one word per thread");
 	extern __shared__ __align__(128) uint8_t lm_mx_shared[];
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(lm_mx_shared);
 	uint32_t *s_scratch = (uint32_t *)(lm_mx_shared + STAGES * STAGE_BYTES);
@@ -184,8 +239,8 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 	const uint32_t group_tiles = row_tiles * neuron_tiles,total_tiles = group_tiles * groups.count;
 	const uint32_t k_tiles = args.input_dimension / LM_MX_TILE_K;
 	const uint32_t col0 = threadIdx.x & 7u,row0 = threadIdx.x >> 3u;
-	const uint64_t rstride = 32ull * args.input_dimension;
-
+	const uint64_t rstride = (uint64_t)ROW_STEP * args.input_dimension;
+	LmDependentWait();
 	for (uint32_t whole = blockIdx.x; whole < total_tiles; whole += gridDim.x)
 	{
 		const uint32_t member = whole / group_tiles,tile = whole % group_tiles;
@@ -205,10 +260,10 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 		uint32_t a_reg[2][MF][4],b_reg[2][NF][2],scale_a[MF],scale_b[NF];
 #pragma unroll
 		for (uint32_t q = 0u; q < A_PER_THREAD; q++)
-			ab_mask |= (row_base + row0 + q * 32u < args.rows ? 1u : 0u) << q;
+			ab_mask |= (row_base + row0 + q * ROW_STEP < args.rows ? 1u : 0u) << q;
 #pragma unroll
 		for (uint32_t q = 0u; q < B_PER_THREAD; q++)
-			ab_mask |= (neuron_base + row0 + q * 32u < args.output_dimension ? 1u : 0u) << (q + 8u);
+			ab_mask |= (neuron_base + row0 + q * ROW_STEP < args.output_dimension ? 1u : 0u) << (q + 8u);
 		if ( threadIdx.x < TILE_M )
 		{
 			const uint32_t src = row_base + threadIdx.x < args.rows ? row_base + threadIdx.x : args.rows - 1u;
@@ -245,7 +300,7 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 			for (uint32_t q = 0u; q < A_PER_THREAD; q++)
 			{
 				const uint32_t valid = (ab_mask >> q) & 1u;
-				LmMxCopy16(st + LmMxSwizzle(row0 + q * 32u,col0),valid != 0u ? a_base + q * rstride : a_group,valid << 4u);
+				LmMxCopy16(st + LmMxSwizzle(row0 + q * ROW_STEP,col0),valid != 0u ? a_base + q * rstride : a_group,valid << 4u);
 			}
 			a_base += LM_MX_TILE_K;
 		};
@@ -256,7 +311,7 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 			for (uint32_t q = 0u; q < B_PER_THREAD; q++)
 			{
 				const uint32_t valid = (ab_mask >> (q + 8u)) & 1u;
-				LmMxCopy16(st + LmMxSwizzle(row0 + q * 32u,col0),valid != 0u ? b_base + q * rstride : w_group,valid << 4u);
+				LmMxCopy16(st + LmMxSwizzle(row0 + q * ROW_STEP,col0),valid != 0u ? b_base + q * rstride : w_group,valid << 4u);
 			}
 			b_base += LM_MX_TILE_K;
 		};
@@ -265,13 +320,18 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 #pragma unroll
 			for (i = 0u; i < MF; i++)
 				LmMxMatrix4(stage_s + LmMxSwizzle(warp_m * WARP_M + i * 16u + ((lane >> 3u) & 1u) * 8u + (lane & 7u),step * 2u + (lane >> 4u)),a_reg[buf][i]);
-#pragma unroll
-			for (j = 0u; j < NF; j += 2u)
+			if constexpr ( NF == 1u )
+				LmMxMatrix2(stage_s + A_BYTES + LmMxSwizzle(warp_n * WARP_N + (lane & 7u),step * 2u + ((lane >> 3u) & 1u)),b_reg[buf][0]);
+			else
 			{
-				uint32_t value[4];
-				LmMxMatrix4(stage_s + A_BYTES + LmMxSwizzle(warp_n * WARP_N + j * 8u + (lane >> 4u) * 8u + (lane & 7u),step * 2u + ((lane >> 3u) & 1u)),value);
-				b_reg[buf][j][0] = value[0]; b_reg[buf][j][1] = value[1];
-				b_reg[buf][j + 1u][0] = value[2]; b_reg[buf][j + 1u][1] = value[3];
+#pragma unroll
+				for (j = 0u; j < NF; j += 2u)
+				{
+					uint32_t value[4];
+					LmMxMatrix4(stage_s + A_BYTES + LmMxSwizzle(warp_n * WARP_N + j * 8u + (lane >> 4u) * 8u + (lane & 7u),step * 2u + ((lane >> 3u) & 1u)),value);
+					b_reg[buf][j][0] = value[0]; b_reg[buf][j][1] = value[1];
+					b_reg[buf][j + 1u][0] = value[2]; b_reg[buf][j + 1u][1] = value[3];
+				}
 			}
 		};
 		auto advance = [](uint32_t &off) { off += STAGE_BYTES; if ( off == STAGES * STAGE_BYTES ) off = 0u; };
@@ -322,7 +382,7 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 					for (j = 0u; j < NF; j++)
 					{
 						float partial[4];
-						LmMmaMxf8Block(partial,a_reg[0][i],b_reg[0][j],scale_a[i],0u,scale_b[j],0u);
+						LmMxMmaBlockImm<0u,0u>(partial,a_reg[0][i],b_reg[0][j],scale_a[i],scale_b[j]);
 #pragma unroll
 						for (e = 0u; e < 4u; e++)
 							total[i][j][e] += partial[e];
@@ -353,7 +413,7 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 					for (j = 0u; j < NF; j++)
 					{
 						float partial[4];
-						LmMmaMxf8Block(partial,a_reg[1][i],b_reg[1][j],scale_a[i],1u,scale_b[j],1u);
+						LmMxMmaBlockImm<1u,1u>(partial,a_reg[1][i],b_reg[1][j],scale_a[i],scale_b[j]);
 #pragma unroll
 						for (e = 0u; e < 4u; e++)
 							total[i][j][e] += partial[e];
@@ -387,11 +447,12 @@ __global__ __launch_bounds__(LM_MX_THREADS,1) void LmMxGemmKernel(const __grid_c
 					const uint32_t column = neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
 					if ( row < args.rows && column < args.output_dimension )
 						*(uint32_t *)(args.output_bf16 + (uint64_t)row * args.output_row_stride + groups.output_column_offset[member] + column) =
-							(uint32_t)LmFloatToBf16(total[i][j][e]) | ((uint32_t)LmFloatToBf16(total[i][j][e + 1u]) << 16u);
+							LmPackBf16Pair(total[i][j][e],total[i][j][e + 1u]);
 				}
 		if ( whole + gridDim.x < total_tiles )
 			__syncthreads();
 	}
+	LmDependentRelease();
 }
 
 static int32_t LmMxGemmValidate(const LmMxGemmArguments *args, uint32_t multiprocessors)
@@ -409,22 +470,25 @@ static int32_t LmMxGemmValidate(const LmMxGemmArguments *args, uint32_t multipro
 	return(LM_LAUNCH_OK);
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M>
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N = LM_MX_WARPS / WARPS_M, uint32_t MIN_BLOCKS = 1u>
 static int32_t LmMxGemmLaunchGroups(const LmMxGemmArguments *args, const LmMxGemmGroups *groups, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	static std::atomic<uint64_t> granted(0u);
+	constexpr uint32_t THREADS = WARPS_M * WARPS_N * 32u;
 	const uint32_t shared = LmMxSharedBytes<TILE_M,TILE_N>();
 	const uint64_t tiles = (uint64_t)((args->rows + TILE_M - 1u) / TILE_M) * ((args->output_dimension + TILE_N - 1u) / TILE_N) * groups->count;
 	int device = 0;
 	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_MX_MAX_DEVICES )
 		return(LM_LAUNCH_ERR_ATTRIBUTE);
-	if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
+	if ( shared > 49152u && (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
 	{
-		if ( SparkGpuFuncSetAttribute((const void *)LmMxGemmKernel<TILE_M,TILE_N,WARPS_M>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)LM_MX_SHARED_LIMIT) != SPARK_GPU_SUCCESS )
+		if ( SparkGpuFuncSetAttribute((const void *)LmMxGemmKernel<TILE_M,TILE_N,WARPS_M,WARPS_N,MIN_BLOCKS>,
+			SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)LM_MX_SHARED_LIMIT) != SPARK_GPU_SUCCESS )
 			return(LM_LAUNCH_ERR_ATTRIBUTE);
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
-	LM_LAUNCH((LmMxGemmKernel<TILE_M,TILE_N,WARPS_M>),(uint32_t)(tiles < multiprocessors ? tiles : multiprocessors),LM_MX_THREADS,shared,stream,*args,*groups);
+	LM_LAUNCH_DEPENDENT((LmMxGemmKernel<TILE_M,TILE_N,WARPS_M,WARPS_N,MIN_BLOCKS>),(uint32_t)(tiles < multiprocessors ? tiles : multiprocessors),THREADS,shared,
+		stream,*args,*groups);
 	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
@@ -441,11 +505,39 @@ static LmMxGemmGroups LmMxGemmSingle(const LmMxGemmArguments *args)
 	return(groups);
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M>
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N = LM_MX_WARPS / WARPS_M, uint32_t MIN_BLOCKS = 1u>
 static int32_t LmMxGemmLaunchTile(const LmMxGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	const LmMxGemmGroups groups = LmMxGemmSingle(args);
-	return(LmMxGemmLaunchGroups<TILE_M,TILE_N,WARPS_M>(args,&groups,multiprocessors,stream));
+	return(LmMxGemmLaunchGroups<TILE_M,TILE_N,WARPS_M,WARPS_N,MIN_BLOCKS>(args,&groups,multiprocessors,stream));
+}
+
+static int32_t LmMxGemmDispatch(const LmMxGemmArguments *args, const LmMxGemmGroups *groups, uint32_t multiprocessors, uint32_t grid, SparkGpuStream stream)
+{
+	const uint64_t n128 = (uint64_t)((args->output_dimension + 127u) / 128u) * groups->count;
+	const uint64_t n64 = (uint64_t)((args->output_dimension + 63u) / 64u) * groups->count;
+	const uint64_t sms = multiprocessors;
+	if ( args->rows <= 16u )
+	{
+		if ( n64 < 2u * sms )
+			return(LmMxGemmLaunchGroups<16u,32u,1u,4u,4u>(args,groups,grid,stream));
+		return(LmMxGemmLaunchGroups<16u,64u,1u,4u,3u>(args,groups,grid,stream));
+	}
+	if ( args->rows <= 32u )
+	{
+		if ( n64 < 2u * sms )
+			return(LmMxGemmLaunchGroups<32u,32u,2u,2u,4u>(args,groups,grid,stream));
+		return(LmMxGemmLaunchGroups<32u,64u,2u,4u,2u>(args,groups,grid,stream));
+	}
+	if ( (uint64_t)((args->rows + 127u) / 128u) * n128 >= 2u * sms )
+		return(LmMxGemmLaunchGroups<128u,128u,2u,4u,1u>(args,groups,grid,stream));
+	if ( (uint64_t)((args->rows + 63u) / 64u) * n128 >= 2u * sms )
+		return(LmMxGemmLaunchGroups<64u,128u,2u,4u,1u>(args,groups,grid,stream));
+	if ( (uint64_t)((args->rows + 63u) / 64u) * n64 >= sms )
+		return(LmMxGemmLaunchGroups<64u,64u,2u,4u,2u>(args,groups,grid,stream));
+	if ( args->rows <= 64u )
+		return(LmMxGemmLaunchGroups<32u,32u,2u,2u,4u>(args,groups,grid,stream));
+	return(LmMxGemmLaunchGroups<64u,64u,2u,4u,2u>(args,groups,grid,stream));
 }
 
 static int32_t LmMxGemmDenseGrid(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
@@ -453,7 +545,7 @@ static int32_t LmMxGemmDenseGrid(const uint8_t *activation, const uint8_t *activ
 	uint32_t multiprocessors, uint32_t grid_limit, SparkGpuStream stream)
 {
 	LmMxGemmArguments args;
-	uint64_t neuron_tiles;
+	LmMxGemmGroups groups;
 	int32_t status;
 	memset(&args,0,sizeof(args));
 	args.activation = activation;
@@ -471,13 +563,8 @@ static int32_t LmMxGemmDenseGrid(const uint8_t *activation, const uint8_t *activ
 		return(status);
 	if ( grid_limit == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
-	const uint32_t grid = grid_limit < multiprocessors ? grid_limit : UINT32_MAX;
-	neuron_tiles = (output_dimension + 127u) / 128u;
-	if ( (uint64_t)((rows + 127u) / 128u) * neuron_tiles >= 2u * (uint64_t)multiprocessors )
-		return(LmMxGemmLaunchTile<128u,128u,2u>(&args,grid,stream));
-	if ( (uint64_t)((rows + 63u) / 64u) * neuron_tiles >= (uint64_t)multiprocessors )
-		return(LmMxGemmLaunchTile<64u,128u,2u>(&args,grid,stream));
-	return(LmMxGemmLaunchTile<32u,128u,2u>(&args,grid,stream));
+	groups = LmMxGemmSingle(&args);
+	return(LmMxGemmDispatch(&args,&groups,multiprocessors,grid_limit < multiprocessors ? grid_limit : UINT32_MAX,stream));
 }
 
 static int32_t LmMxGemmDense(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
@@ -494,7 +581,6 @@ static int32_t LmMxGemmGrouped(const uint8_t *const *activation, const uint8_t *
 {
 	LmMxGemmArguments args;
 	LmMxGemmGroups groups;
-	uint64_t tiles;
 	if ( count == 0u || count > LM_MX_MAX_GROUPS || activation == 0 || activation_scale == 0 || weight == 0 || weight_scale == 0 || output_column_offset == 0 )
 		return(LM_LAUNCH_ERR_SHAPE);
 	memset(&groups,0,sizeof(groups));
@@ -522,10 +608,5 @@ static int32_t LmMxGemmGrouped(const uint8_t *const *activation, const uint8_t *
 		groups.output_column_offset[member] = args.output_column_offset;
 	}
 	groups.count = count;
-	tiles = (uint64_t)((output_dimension + 127u) / 128u) * count;
-	if ( (uint64_t)((rows + 127u) / 128u) * tiles >= 2u * (uint64_t)multiprocessors )
-		return(LmMxGemmLaunchGroups<128u,128u,2u>(&args,&groups,UINT32_MAX,stream));
-	if ( (uint64_t)((rows + 63u) / 64u) * tiles >= (uint64_t)multiprocessors )
-		return(LmMxGemmLaunchGroups<64u,128u,2u>(&args,&groups,UINT32_MAX,stream));
-	return(LmMxGemmLaunchGroups<32u,128u,2u>(&args,&groups,UINT32_MAX,stream));
+	return(LmMxGemmDispatch(&args,&groups,multiprocessors,UINT32_MAX,stream));
 }

@@ -163,7 +163,10 @@ typedef int32_t (*ProbeLaunch)(const LmMxGemmArguments *, uint32_t, cudaStream_t
 
 static void ProbeGemm(uint32_t rows, uint32_t input, uint32_t output, uint32_t seed, cudaStream_t stream)
 {
-	static const ProbeLaunch launches[] = { LmMxGemmLaunchTile<128u,128u,2u>, LmMxGemmLaunchTile<64u,128u,2u>, LmMxGemmLaunchTile<32u,128u,2u> };
+	static const ProbeLaunch launches[] = {
+		LmMxGemmLaunchTile<128u,128u,2u>, LmMxGemmLaunchTile<64u,128u,2u>, LmMxGemmLaunchTile<32u,128u,2u>,
+		LmMxGemmLaunchTile<64u,64u,2u,4u,2u>, LmMxGemmLaunchTile<32u,64u,2u,4u,2u>,
+		LmMxGemmLaunchTile<32u,32u,2u,2u,4u>, LmMxGemmLaunchTile<16u,64u,1u,4u,3u>, LmMxGemmLaunchTile<16u,32u,1u,4u,4u> };
 	const uint64_t a_count = (uint64_t)rows * input,w_count = (uint64_t)output * input,out_count = (uint64_t)rows * output;
 	std::vector<uint8_t> a(a_count),a_scale(a_count / 32u),w(w_count),w_scale(w_count / 32u);
 	std::vector<uint16_t> result(out_count),other(out_count);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/launch.h"
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/mma.cuh"
@@ -16,6 +17,7 @@
 #define LM_INDEX_SCORE_BLOCK_POSITIONS (LM_INDEX_SCORE_BLOCK_TILES * LM_INDEX_SCORE_TILE_POSITIONS)
 #define LM_INDEX_SCORE_SHARED_ROWS 8u
 #define LM_INDEX_SCORE_SHARED_MIN_ROWS 64u
+#define LM_INDEX_SCORE_SLOTS_MIN_ROWS 8u
 #define LM_INDEX_SCORE_STAGED_KEYS 128u
 #define LM_INDEX_SCORE_STAGED_ROWS 64u
 #define LM_INDEX_SCORE_STAGED_PAD 16u
@@ -121,11 +123,14 @@ static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_
 	uint32_t head_tile,entry;
 	if constexpr ( ROUND_BF16 )
 	{
+#pragma unroll
 		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+#pragma unroll
 			for (entry = 0u; entry < 4u; entry++)
 				accumulator[head_tile][entry] = fmaxf(LmIndexScoreRoundBf16(accumulator[head_tile][entry]), 0.0f);
 		low = 0.0f;
 		high = 0.0f;
+#pragma unroll
 		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 		{
 			low = __fadd_rn(low, LmIndexScoreRoundBf16(__fmul_rn(weight[2u * head_tile], accumulator[head_tile][0])));
@@ -136,13 +141,16 @@ static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_
 	}
 	else
 	{
+#pragma unroll
 		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+#pragma unroll
 			for (entry = 0u; entry < 4u; entry++)
 				accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
 		low = __fmul_rn(weight[0], accumulator[0][0]);
 		high = __fmul_rn(weight[0], accumulator[0][1]);
 		low = __fmaf_rn(weight[1], accumulator[0][2], low);
 		high = __fmaf_rn(weight[1], accumulator[0][3], high);
+#pragma unroll
 		for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
 		{
 			low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
@@ -151,6 +159,7 @@ static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_
 			high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
 		}
 	}
+#pragma unroll
 	for (entry = 4u; entry < LM_WARP_LANES; entry <<= 1u)
 	{
 		low += __shfl_xor_sync(0xffffffffu,low,(int)entry);
@@ -158,19 +167,27 @@ static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_
 	}
 	if ( group == 0u )
 	{
+		const float s0 = valid != 0u && written < bound ? (ROUND_BF16 ? LmIndexScoreRoundBf16(low * qk_scale) : low * qk_scale) : -INFINITY;
+		const float s1 = valid != 0u && written + 1u < bound ? (ROUND_BF16 ? LmIndexScoreRoundBf16(high * qk_scale) : high * qk_scale) : -INFINITY;
+		float *dst = scores + (uint64_t)row * score_stride + written;
+#ifdef __CUDACC__
+		if ( written + 1u < score_stride && (((uintptr_t)dst & 7u) == 0u) )
+		{
+			*(float2 *)dst = make_float2(s0, s1);
+			return;
+		}
+#endif
 		if ( written < score_stride )
-			scores[(uint64_t)row * score_stride + written] = valid != 0u && written < bound ?
-				(ROUND_BF16 ? LmIndexScoreRoundBf16(low * qk_scale) : low * qk_scale) : -INFINITY;
+			dst[0] = s0;
 		if ( written + 1u < score_stride )
-			scores[(uint64_t)row * score_stride + written + 1u] = valid != 0u && written + 1u < bound ?
-				(ROUND_BF16 ? LmIndexScoreRoundBf16(high * qk_scale) : high * qk_scale) : -INFINITY;
+			dst[1] = s1;
 	}
 }
 
 #ifdef __CUDACC__
 static __device__ __forceinline__ void LmIndexScoreCopy16(uint32_t shared, const void *source, uint32_t bytes)
 {
-	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
 }
 
 static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uint32_t value[4])
@@ -179,12 +196,67 @@ static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uin
 		: "=r"(value[0]), "=r"(value[1]), "=r"(value[2]), "=r"(value[3]) : "r"(address));
 }
 
+template<uint32_t HEAD_TILES, uint32_t STEPS, uint32_t PITCH, bool ROUND_BF16>
+static __device__ __forceinline__ void LmIndexScoreStagedTilePair(const uint32_t a[HEAD_TILES][STEPS][4], const float weight[2u * HEAD_TILES],
+	uint32_t base, uint32_t tile, uint32_t first0, uint32_t valid, uint32_t bound, uint32_t pair, uint32_t group, uint32_t row, uint32_t score_stride,
+	float qk_scale, float *__restrict__ scores)
+{
+	const uint32_t first1 = first0 + LM_INDEX_SCORE_TILE_POSITIONS;
+	const uint32_t do1 = first1 < score_stride ? 1u : 0u;
+	float acc0[HEAD_TILES][4] = {};
+	float acc1[HEAD_TILES][4] = {};
+	if ( valid != 0u && first0 < bound )
+	{
+		const uint32_t addr0 = base + tile * LM_INDEX_SCORE_TILE_POSITIONS * PITCH;
+		const uint32_t addr1 = addr0 + LM_INDEX_SCORE_TILE_POSITIONS * PITCH;
+		const uint32_t compute1 = do1 != 0u && first1 < bound ? 1u : 0u;
+		uint32_t v0[4], v1[4];
+		LmIndexScoreMatrix4(addr0, v0);
+		if ( compute1 != 0u )
+			LmIndexScoreMatrix4(addr1, v1);
+#pragma unroll
+		for (uint32_t step = 0u; step < STEPS; step += 2u)
+		{
+			const uint32_t lo0[2] = { v0[0], v0[1] }, hi0[2] = { v0[2], v0[3] };
+			const uint32_t lo1[2] = { v1[0], v1[1] }, hi1[2] = { v1[2], v1[3] };
+			if ( step + 2u < STEPS )
+			{
+				LmIndexScoreMatrix4(addr0 + (step + 2u) * 32u, v0);
+				if ( compute1 != 0u )
+					LmIndexScoreMatrix4(addr1 + (step + 2u) * 32u, v1);
+			}
+#pragma unroll
+			for (uint32_t ht = 0u; ht < HEAD_TILES; ht++)
+				LmMmaBf16(acc0[ht], a[ht][step], lo0);
+			if ( compute1 != 0u )
+			{
+#pragma unroll
+				for (uint32_t ht = 0u; ht < HEAD_TILES; ht++)
+					LmMmaBf16(acc1[ht], a[ht][step], lo1);
+			}
+#pragma unroll
+			for (uint32_t ht = 0u; ht < HEAD_TILES; ht++)
+				LmMmaBf16(acc0[ht], a[ht][step + 1u], hi0);
+			if ( compute1 != 0u )
+			{
+#pragma unroll
+				for (uint32_t ht = 0u; ht < HEAD_TILES; ht++)
+					LmMmaBf16(acc1[ht], a[ht][step + 1u], hi1);
+			}
+		}
+	}
+	LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(acc0, weight, valid, bound, first0 + pair * 2u, group, row, score_stride, qk_scale, scores);
+	if ( do1 != 0u )
+		LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(acc1, weight, valid, bound, first1 + pair * 2u, group, row, score_stride, qk_scale, scores);
+}
+
 #endif
 
 template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK, bool ROUND_BF16 = false, class Weight = uint16_t, uint32_t BLOCK_TILES = LM_INDEX_SCORE_BLOCK_TILES>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores, const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, uint32_t dense_limit = 0u)
 {
+	LmDependentWait();
 	const LmKvView &index_cache = LmIndexScorePages(index_view);
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
 	constexpr uint32_t BLOCK_POSITIONS = BLOCK_TILES * LM_INDEX_SCORE_TILE_POSITIONS;
@@ -200,7 +272,10 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	float weight[2u * HEAD_TILES];
 	uint32_t sequence,bound,tile,step,head_tile,valid;
 	if ( scores == 0 || row >= rows )
+	{
+		LmDependentRelease();
 		return;
+	}
 	valid = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
 	sequence = valid != 0u ? sequence_of_row[row] : 0xffffffffu;
 	bound = 0u;
@@ -217,7 +292,10 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 		if ( row_position != 0 && row_position[row] + 1u < bound )
 			bound = row_position[row] + 1u;
 		if ( dense_limit != 0u && bound <= dense_limit )
+		{
+			LmDependentRelease();
 			return;
+		}
 		bound = LmIndexScoreKeys(index_view, bound);
 		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			for (step = 0u; step < steps; step++)
@@ -237,28 +315,51 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	}
 	const uint32_t fork = valid != 0u && fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
 	const uint32_t offset = valid != 0u && slot_offsets != 0 ? slot_offsets[row] : 0u;
-	for (tile = warp / ROWS_PER_BLOCK; tile < BLOCK_TILES; tile += tile_stride)
+	const uint32_t tile0 = warp / ROWS_PER_BLOCK;
+	const uint32_t first0 = blockIdx.x * BLOCK_POSITIONS + tile0 * LM_INDEX_SCORE_TILE_POSITIONS;
+	const uint8_t *next_slot = (valid != 0u && tile0 < BLOCK_TILES && first0 < score_stride && first0 + group < bound) ?
+		LmIndexScoreSlot<Geometry>(index_view, sequence, first0 + group, row, fork, offset) : 0;
+#ifdef __CUDACC__
+	if ( pair == 0u && next_slot != 0 )
+		LmPrefetchL2(next_slot, INDEX_DIM * (uint32_t)sizeof(uint16_t));
+#endif
+	for (tile = tile0; tile < BLOCK_TILES; tile += tile_stride)
 	{
 		const uint32_t first = blockIdx.x * BLOCK_POSITIONS + tile * LM_INDEX_SCORE_TILE_POSITIONS;
-		const uint32_t mine = first + group;
 		const uint32_t written = first + pair * 2u;
+		const uint8_t *slot = next_slot;
+		const uint32_t ahead_tile = tile + tile_stride;
+		const uint32_t ahead_first = blockIdx.x * BLOCK_POSITIONS + ahead_tile * LM_INDEX_SCORE_TILE_POSITIONS;
 		float accumulator[HEAD_TILES][4] = {};
 		if ( first >= score_stride )
 			break;
+		next_slot = (valid != 0u && ahead_tile < BLOCK_TILES && ahead_first < score_stride && ahead_first + group < bound) ?
+			LmIndexScoreSlot<Geometry>(index_view, sequence, ahead_first + group, row, fork, offset) : 0;
+#ifdef __CUDACC__
+		if ( pair == 0u && next_slot != 0 )
+			LmPrefetchL2(next_slot, INDEX_DIM * (uint32_t)sizeof(uint16_t));
+#endif
 		if ( valid != 0u && first < bound )
 		{
-			const uint8_t *slot = mine < bound ? LmIndexScoreSlot<Geometry>(index_view,sequence,mine,row,fork,offset) : 0;
+#pragma unroll
 			for (step = 0u; step < steps; step++)
 			{
 				uint32_t b[2];
+#ifdef __CUDACC__
+				b[0] = slot != 0 ? __ldg((const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t))) : 0u;
+				b[1] = slot != 0 ? __ldg((const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t))) : 0u;
+#else
 				b[0] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t)) : 0u;
 				b[1] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t)) : 0u;
+#endif
+#pragma unroll
 				for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 					LmMmaBf16(accumulator[head_tile],a[head_tile][step],b);
 			}
 		}
 		LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
 	}
+	LmDependentRelease();
 }
 
 #ifdef __CUDACC__
@@ -273,16 +374,18 @@ template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, bool ROUND_BF
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, LmIndexScorePackedView index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
+	LmDependentWait();
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
 	constexpr uint32_t STEPS = INDEX_DIM / 16u;
 	constexpr uint32_t KEY_BYTES = INDEX_DIM * (uint32_t)sizeof(uint16_t);
 	constexpr uint32_t PITCH = KEY_BYTES + LM_INDEX_SCORE_STAGED_PAD;
 	constexpr uint32_t TILES = LM_INDEX_SCORE_STAGED_KEYS / LM_INDEX_SCORE_TILE_POSITIONS;
 	constexpr uint32_t ROWS_PER_WARP = LM_INDEX_SCORE_STAGED_ROWS / LM_INDEX_SCORE_WARPS;
+	constexpr uint32_t ROW_PIECES = KEY_BYTES / 16u;
 	static_assert(INDEX_HEADS % 16u == 0u && HEAD_TILES >= 2u, "whole 16-head operand tiles, at least two");
-	static_assert(INDEX_DIM % 16u == 0u && KEY_BYTES % 16u == 0u, "whole 16-wide k steps and 16-byte key chunks");
-	static_assert(LM_INDEX_SCORE_STAGED_ROWS % LM_INDEX_SCORE_WARPS == 0u, "every warp gets the same number of rows");
-	extern __shared__ __align__(16) uint8_t staged[];
+	static_assert(INDEX_DIM % 16u == 0u && STEPS % 2u == 0u && KEY_BYTES % 16u == 0u, "whole 16-wide k steps and 16-byte key chunks");
+	static_assert(LM_INDEX_SCORE_STAGED_ROWS % LM_INDEX_SCORE_WARPS == 0u && TILES % 2u == 0u, "every warp gets the same number of rows and tile pairs");
+	extern __shared__ __align__(128) uint8_t staged[];
 	__shared__ uint32_t block_bound;
 	const LmKvView &index_cache = index_view.pages;
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES,warp = threadIdx.x / LM_WARP_LANES;
@@ -292,7 +395,10 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 	const uint32_t configured = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
 	uint32_t local,tile,step,head_tile;
 	if ( scores == 0 )
+	{
+		LmDependentRelease();
 		return;
+	}
 	if ( threadIdx.x == 0u )
 		block_bound = 0u;
 	__syncthreads();
@@ -308,13 +414,19 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 		}
 	}
 	__syncthreads();
-	for (uint32_t chunk = threadIdx.x; chunk < LM_INDEX_SCORE_STAGED_KEYS * (KEY_BYTES / 16u); chunk += LM_INDEX_SCORE_THREADS)
+	const uint32_t staged_s = (uint32_t)__cvta_generic_to_shared(staged);
+	const uint32_t matrix_lane = (lane & 7u) * PITCH + (lane >> 3u) * 16u;
+	if ( block_bound > key_first )
 	{
-		const uint32_t key = chunk / (KEY_BYTES / 16u),part = chunk % (KEY_BYTES / 16u);
-		uint4 value = make_uint4(0u,0u,0u,0u);
-		if ( key_first + key < block_bound && key_first + key < score_stride )
-			value = *(const uint4 *)(LmIndexScoreSlot<Geometry>(index_view,0u,key_first + key,row_first) + part * 16u);
-		*(uint4 *)(staged + key * PITCH + part * 16u) = value;
+		for (uint32_t chunk = threadIdx.x; chunk < LM_INDEX_SCORE_STAGED_KEYS * ROW_PIECES; chunk += LM_INDEX_SCORE_THREADS)
+		{
+			const uint32_t key = chunk / ROW_PIECES,part = chunk % ROW_PIECES;
+			const uint32_t valid_k = key_first + key < block_bound && key_first + key < score_stride ? 1u : 0u;
+			const uint8_t *src = valid_k != 0u ? LmIndexScoreSlot<Geometry>(index_view,0u,key_first + key,row_first) + part * 16u : (const uint8_t *)index_query_bf16;
+			LmIndexScoreCopy16(staged_s + key * PITCH + part * 16u, src, valid_k != 0u ? 16u : 0u);
+		}
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 	}
 	__syncthreads();
 	for (local = 0u; local < ROWS_PER_WARP; local++)
@@ -351,10 +463,10 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 				{
 					const uint16_t *top = query + (uint64_t)(head_tile * 16u + group) * INDEX_DIM + step * 16u + pair * 2u;
 					const uint16_t *bottom = top + 8u * INDEX_DIM;
-					a[head_tile][step][0] = *(const uint32_t *)top;
-					a[head_tile][step][1] = *(const uint32_t *)bottom;
-					a[head_tile][step][2] = *(const uint32_t *)(top + 8u);
-					a[head_tile][step][3] = *(const uint32_t *)(bottom + 8u);
+					a[head_tile][step][0] = __ldg((const uint32_t *)top);
+					a[head_tile][step][1] = __ldg((const uint32_t *)bottom);
+					a[head_tile][step][2] = __ldg((const uint32_t *)(top + 8u));
+					a[head_tile][step][3] = __ldg((const uint32_t *)(bottom + 8u));
 				}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			{
@@ -362,12 +474,9 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 				weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
 			}
 		}
-		for (tile = 0u; tile < TILES; tile++)
+		for (tile = 0u; tile < TILES; tile += 2u)
 		{
 			const uint32_t first = key_first + tile * LM_INDEX_SCORE_TILE_POSITIONS;
-			const uint32_t mine = first + group;
-			const uint32_t written = first + pair * 2u;
-			float accumulator[HEAD_TILES][4] = {};
 			if ( first >= score_stride )
 				break;
 			if ( valid != 0u && first >= bound )
@@ -375,21 +484,189 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 				LmIndexScoreFillRow(scores,row,first,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
 				break;
 			}
-			if ( valid != 0u && first < bound )
-			{
-				const uint8_t *slot = mine < bound ? staged + (tile * LM_INDEX_SCORE_TILE_POSITIONS + group) * PITCH : 0;
-				for (step = 0u; step < STEPS; step++)
-				{
-					uint32_t b[2];
-					b[0] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t)) : 0u;
-					b[1] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t)) : 0u;
-					for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-						LmMmaBf16(accumulator[head_tile],a[head_tile][step],b);
-				}
-			}
-			LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
+			LmIndexScoreStagedTilePair<HEAD_TILES,STEPS,PITCH,ROUND_BF16>(a, weight, staged_s + matrix_lane, tile, first, valid, bound, pair, group, row,
+				score_stride, qk_scale, scores);
 		}
 	}
+	LmDependentRelease();
+}
+
+template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, bool ROUND_BF16 = false, class Weight = uint16_t>
+__global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
+void LmWeightedSparseScorePagedStagedKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view,
+	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows,
+	uint32_t score_stride, float qk_scale, float *__restrict__ scores)
+{
+	LmDependentWait();
+	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
+	constexpr uint32_t STEPS = INDEX_DIM / 16u;
+	constexpr uint32_t KEY_BYTES = INDEX_DIM * (uint32_t)sizeof(uint16_t);
+	constexpr uint32_t PITCH = KEY_BYTES + LM_INDEX_SCORE_STAGED_PAD;
+	constexpr uint32_t TILES = LM_INDEX_SCORE_STAGED_KEYS / LM_INDEX_SCORE_TILE_POSITIONS;
+	constexpr uint32_t ROWS_PER_WARP = LM_INDEX_SCORE_STAGED_ROWS / LM_INDEX_SCORE_WARPS;
+	constexpr uint32_t ROW_PIECES = KEY_BYTES / 16u;
+	static_assert(INDEX_HEADS % 16u == 0u && HEAD_TILES >= 2u, "whole 16-head operand tiles, at least two");
+	static_assert(INDEX_DIM % 16u == 0u && STEPS % 2u == 0u && KEY_BYTES % 16u == 0u, "whole 16-wide k steps and 16-byte key chunks");
+	static_assert(LM_INDEX_SCORE_STAGED_ROWS % LM_INDEX_SCORE_WARPS == 0u && TILES % 2u == 0u, "every warp gets the same number of rows and tile pairs");
+	extern __shared__ __align__(128) uint8_t staged[];
+	__shared__ const uint8_t *block_slots[LM_INDEX_SCORE_STAGED_KEYS];
+	__shared__ uint32_t block_sequence, block_bound, block_mixed;
+	const LmKvView &index_cache = LmIndexScorePages(index_view);
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t group = lane / 4u, pair = lane % 4u;
+	const uint32_t key_first = blockIdx.x * LM_INDEX_SCORE_STAGED_KEYS;
+	const uint32_t row_first = blockIdx.y * LM_INDEX_SCORE_STAGED_ROWS;
+	const uint32_t configured = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
+	uint32_t local, tile, step, head_tile;
+	if ( scores == 0 )
+	{
+		LmDependentRelease();
+		return;
+	}
+	if ( threadIdx.x == 0u )
+	{
+		block_sequence = 0xffffffffu;
+		block_bound = 0u;
+		block_mixed = 0u;
+	}
+	__syncthreads();
+	if ( threadIdx.x < LM_INDEX_SCORE_STAGED_ROWS && configured != 0u && row_first + threadIdx.x < rows )
+	{
+		const uint32_t row = row_first + threadIdx.x, sequence = sequence_of_row[row];
+		if ( sequence < index_cache.sequence_count )
+		{
+			uint32_t bound = context_length[sequence];
+			if ( row_position != 0 && row_position[row] + 1u < bound )
+				bound = row_position[row] + 1u;
+			(void)atomicCAS(&block_sequence, 0xffffffffu, sequence);
+			atomicMax(&block_bound, LmIndexScoreKeys(index_view, bound));
+		}
+	}
+	__syncthreads();
+	if ( threadIdx.x < LM_INDEX_SCORE_STAGED_ROWS && configured != 0u && row_first + threadIdx.x < rows )
+	{
+		const uint32_t row = row_first + threadIdx.x, sequence = sequence_of_row[row];
+		if ( sequence < index_cache.sequence_count && sequence != block_sequence )
+			block_mixed = 1u;
+	}
+	__syncthreads();
+	const uint32_t shared_slots = block_mixed == 0u && block_sequence != 0xffffffffu && block_bound > key_first ? 1u : 0u;
+	const uint32_t staged_s = (uint32_t)__cvta_generic_to_shared(staged);
+	const uint32_t matrix_lane = (lane & 7u) * PITCH + (lane >> 3u) * 16u;
+	if ( shared_slots != 0u )
+	{
+		if ( threadIdx.x < LM_INDEX_SCORE_STAGED_KEYS )
+		{
+			const uint32_t position = key_first + threadIdx.x;
+			block_slots[threadIdx.x] = position < block_bound && position < score_stride ?
+				LmIndexScoreSlot<Geometry>(index_view, block_sequence, position, row_first) : 0;
+		}
+		__syncthreads();
+		for (uint32_t chunk = threadIdx.x; chunk < LM_INDEX_SCORE_STAGED_KEYS * ROW_PIECES; chunk += LM_INDEX_SCORE_THREADS)
+		{
+			const uint32_t key = chunk / ROW_PIECES, part = chunk % ROW_PIECES;
+			const uint8_t *source = block_slots[key];
+			LmIndexScoreCopy16(staged_s + key * PITCH + part * 16u, source != 0 ? source + part * 16u : (const uint8_t *)index_query_bf16,
+				source != 0 ? 16u : 0u);
+		}
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		__syncthreads();
+	}
+	for (local = 0u; local < ROWS_PER_WARP; local++)
+	{
+		const uint32_t row = row_first + warp * ROWS_PER_WARP + local;
+		uint32_t a[HEAD_TILES][STEPS][4];
+		float weight[2u * HEAD_TILES];
+		uint32_t sequence, bound, valid;
+		if ( row >= rows )
+			break;
+		valid = configured;
+		sequence = valid != 0u ? sequence_of_row[row] : 0xffffffffu;
+		bound = 0u;
+		if ( valid == 0u || sequence >= index_cache.sequence_count )
+		{
+			if ( lane == 0u && blockIdx.x == 0u )
+				LmKvReportRequiredAccessFailure(index_cache, valid == 0u ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0u, 0xffffffffu);
+			valid = 0u;
+		}
+		else
+		{
+			const uint16_t *query = index_query_bf16 + (uint64_t)row * INDEX_HEADS * INDEX_DIM;
+			bound = context_length[sequence];
+			if ( row_position != 0 && row_position[row] + 1u < bound )
+				bound = row_position[row] + 1u;
+			bound = LmIndexScoreKeys(index_view, bound);
+			if ( bound <= key_first )
+			{
+				LmIndexScoreFillRow(scores, row, key_first, key_first + LM_INDEX_SCORE_STAGED_KEYS, score_stride);
+				continue;
+			}
+			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+				for (step = 0u; step < STEPS; step++)
+				{
+					const uint16_t *top = query + (uint64_t)(head_tile * 16u + group) * INDEX_DIM + step * 16u + pair * 2u;
+					const uint16_t *bottom = top + 8u * INDEX_DIM;
+					a[head_tile][step][0] = __ldg((const uint32_t *)top);
+					a[head_tile][step][1] = __ldg((const uint32_t *)bottom);
+					a[head_tile][step][2] = __ldg((const uint32_t *)(top + 8u));
+					a[head_tile][step][3] = __ldg((const uint32_t *)(bottom + 8u));
+				}
+			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+			{
+				weight[2u * head_tile] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
+				weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
+			}
+		}
+		if ( shared_slots != 0u )
+		{
+			for (tile = 0u; tile < TILES; tile += 2u)
+			{
+				const uint32_t first = key_first + tile * LM_INDEX_SCORE_TILE_POSITIONS;
+				if ( first >= score_stride )
+					break;
+				if ( valid != 0u && first >= bound )
+				{
+					LmIndexScoreFillRow(scores, row, first, key_first + LM_INDEX_SCORE_STAGED_KEYS, score_stride);
+					break;
+				}
+				LmIndexScoreStagedTilePair<HEAD_TILES,STEPS,PITCH,ROUND_BF16>(a, weight, staged_s + matrix_lane, tile, first, valid, bound, pair, group, row,
+					score_stride, qk_scale, scores);
+			}
+		}
+		else
+		{
+			for (tile = 0u; tile < TILES; tile++)
+			{
+				const uint32_t first = key_first + tile * LM_INDEX_SCORE_TILE_POSITIONS;
+				const uint32_t mine = first + group, written = first + pair * 2u;
+				float accumulator[HEAD_TILES][4] = {};
+				if ( first >= score_stride )
+					break;
+				if ( valid != 0u && first >= bound )
+				{
+					LmIndexScoreFillRow(scores, row, first, key_first + LM_INDEX_SCORE_STAGED_KEYS, score_stride);
+					break;
+				}
+				if ( valid != 0u && first < bound )
+				{
+					const uint8_t *slot = mine < bound ? LmIndexScoreSlot<Geometry>(index_view, sequence, mine, row) : 0;
+#pragma unroll
+					for (step = 0u; step < STEPS; step++)
+					{
+						uint32_t b[2];
+						b[0] = slot != 0 ? __ldg((const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t))) : 0u;
+						b[1] = slot != 0 ? __ldg((const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t))) : 0u;
+#pragma unroll
+						for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+							LmMmaBf16(accumulator[head_tile], a[head_tile][step], b);
+					}
+				}
+				LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator, weight, valid, bound, written, group, row, score_stride, qk_scale, scores);
+			}
+		}
+	}
+	LmDependentRelease();
 }
 
 struct LmIndexScoreFp8Keys
@@ -403,6 +680,7 @@ template<uint32_t INDEX_DIM>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmIndexKeysFp8Kernel(const uint16_t *__restrict__ keys_bf16, uint32_t count, uint8_t *__restrict__ keys_fp8, float *__restrict__ key_scales)
 {
+	LmDependentWait();
 	constexpr uint32_t PER_LANE = INDEX_DIM / LM_WARP_LANES;
 	static_assert(INDEX_DIM % (4u * LM_WARP_LANES) == 0u, "whole four-byte groups a lane");
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES;
@@ -410,20 +688,34 @@ void LmIndexKeysFp8Kernel(const uint16_t *__restrict__ keys_bf16, uint32_t count
 	float values[PER_LANE],amax = 0.0f,scale;
 	uint32_t index,offset;
 	if ( key >= count )
-		return;
-	for (index = 0u; index < PER_LANE; index++)
 	{
-		values[index] = LmBf16ToFloat(keys_bf16[key * INDEX_DIM + lane * PER_LANE + index]);
-		amax = fmaxf(amax,fabsf(values[index]));
+		LmDependentRelease();
+		return;
 	}
+	const uint16_t *src = keys_bf16 + key * INDEX_DIM + lane * PER_LANE;
+#pragma unroll
+	for (index = 0u; index < PER_LANE; index += 4u)
+	{
+		const uint2 raw = __ldg((const uint2 *)(src + index));
+		values[index] = __uint_as_float(raw.x << 16u);
+		values[index + 1u] = __uint_as_float(raw.x & 0xffff0000u);
+		values[index + 2u] = __uint_as_float(raw.y << 16u);
+		values[index + 3u] = __uint_as_float(raw.y & 0xffff0000u);
+		amax = fmaxf(amax,fmaxf(fabsf(values[index]),fabsf(values[index + 1u])));
+		amax = fmaxf(amax,fmaxf(fabsf(values[index + 2u]),fabsf(values[index + 3u])));
+	}
+#pragma unroll
 	for (offset = LM_WARP_LANES / 2u; offset != 0u; offset >>= 1u)
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,(int)offset));
 	scale = LmActivationFp8Scale(amax,LM_INDEX_FP8_KEY_FLOOR);
+	const float inv_scale = __uint_as_float(0x7f000000u - __float_as_uint(scale));
+#pragma unroll
 	for (index = 0u; index < PER_LANE; index += 4u)
-		*(uint32_t *)(keys_fp8 + key * INDEX_DIM + lane * PER_LANE + index) = (uint32_t)LmFloatPairToE4m3(values[index] / scale,values[index + 1u] / scale) |
-			((uint32_t)LmFloatPairToE4m3(values[index + 2u] / scale,values[index + 3u] / scale) << 16u);
+		*(uint32_t *)(keys_fp8 + key * INDEX_DIM + lane * PER_LANE + index) = (uint32_t)LmFloatPairToE4m3(values[index] * inv_scale,values[index + 1u] * inv_scale) |
+			((uint32_t)LmFloatPairToE4m3(values[index + 2u] * inv_scale,values[index + 3u] * inv_scale) << 16u);
 	if ( lane == 0u )
 		key_scales[key] = scale;
+	LmDependentRelease();
 }
 
 template<uint32_t INDEX_HEADS, uint32_t INDEX_DIM>
@@ -431,6 +723,7 @@ __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmIndexQueryFp8Kernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ head_weight_bf16, uint32_t rows, float weight_scale,
 	uint8_t *__restrict__ query_fp8, float *__restrict__ head_weight)
 {
+	LmDependentWait();
 	constexpr uint32_t PER_LANE = INDEX_DIM / LM_WARP_LANES;
 	static_assert(INDEX_DIM % (4u * LM_WARP_LANES) == 0u, "whole four-byte groups a lane");
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES;
@@ -438,22 +731,84 @@ void LmIndexQueryFp8Kernel(const uint16_t *__restrict__ query_bf16, const uint16
 	float values[PER_LANE],amax = 0.0f,scale;
 	uint32_t index,offset;
 	if ( pair >= (uint64_t)rows * INDEX_HEADS )
-		return;
-	for (index = 0u; index < PER_LANE; index++)
 	{
-		values[index] = LmBf16ToFloat(query_bf16[pair * INDEX_DIM + lane * PER_LANE + index]);
-		amax = fmaxf(amax,fabsf(values[index]));
+		LmDependentRelease();
+		return;
 	}
+	const uint16_t *src = query_bf16 + pair * INDEX_DIM + lane * PER_LANE;
+#pragma unroll
+	for (index = 0u; index < PER_LANE; index += 4u)
+	{
+		const uint2 raw = __ldg((const uint2 *)(src + index));
+		values[index] = __uint_as_float(raw.x << 16u);
+		values[index + 1u] = __uint_as_float(raw.x & 0xffff0000u);
+		values[index + 2u] = __uint_as_float(raw.y << 16u);
+		values[index + 3u] = __uint_as_float(raw.y & 0xffff0000u);
+		amax = fmaxf(amax,fmaxf(fabsf(values[index]),fabsf(values[index + 1u])));
+		amax = fmaxf(amax,fmaxf(fabsf(values[index + 2u]),fabsf(values[index + 3u])));
+	}
+#pragma unroll
 	for (offset = LM_WARP_LANES / 2u; offset != 0u; offset >>= 1u)
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,(int)offset));
 	scale = LmActivationFp8Scale(amax,LM_INDEX_FP8_QUERY_FLOOR);
+	const float inv_scale = __uint_as_float(0x7f000000u - __float_as_uint(scale));
+#pragma unroll
 	for (index = 0u; index < PER_LANE; index++)
-		values[index] = fminf(fmaxf(values[index] / scale,-LM_E4M3_MAX),LM_E4M3_MAX);
+		values[index] = fminf(fmaxf(values[index] * inv_scale,-LM_E4M3_MAX),LM_E4M3_MAX);
+#pragma unroll
 	for (index = 0u; index < PER_LANE; index += 4u)
 		*(uint32_t *)(query_fp8 + pair * INDEX_DIM + lane * PER_LANE + index) = (uint32_t)LmFloatPairToE4m3(values[index],values[index + 1u]) |
 			((uint32_t)LmFloatPairToE4m3(values[index + 2u],values[index + 3u]) << 16u);
 	if ( lane == 0u )
 		head_weight[pair] = LmBf16ToFloat(head_weight_bf16[pair]) * scale * weight_scale;
+	LmDependentRelease();
+}
+
+template<uint32_t HEAD_TILES>
+static __device__ __forceinline__ void LmIndexScoreFp8Store(float accumulator[HEAD_TILES][4], const float weight[2u * HEAD_TILES],
+	const float *staged_scales, uint32_t tile, uint32_t valid, uint32_t bound, uint32_t written, uint32_t pair, uint32_t group, uint32_t row,
+	uint32_t score_stride, float *__restrict__ scores)
+{
+	float low,high;
+	uint32_t head_tile,entry;
+#pragma unroll
+	for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+#pragma unroll
+		for (entry = 0u; entry < 4u; entry++)
+			accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
+	low = __fmul_rn(weight[0], accumulator[0][0]);
+	high = __fmul_rn(weight[0], accumulator[0][1]);
+	low = __fmaf_rn(weight[1], accumulator[0][2], low);
+	high = __fmaf_rn(weight[1], accumulator[0][3], high);
+#pragma unroll
+	for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
+	{
+		low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
+		high = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][1], high);
+		low = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2], low);
+		high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
+	}
+#pragma unroll
+	for (entry = 4u; entry < LM_WARP_LANES; entry <<= 1u)
+	{
+		low += __shfl_xor_sync(0xffffffffu,low,(int)entry);
+		high += __shfl_xor_sync(0xffffffffu,high,(int)entry);
+	}
+	if ( group == 0u )
+	{
+		const float s0 = valid != 0u && written < bound ? low * staged_scales[tile * LM_INDEX_SCORE_TILE_POSITIONS + pair * 2u] : -INFINITY;
+		const float s1 = valid != 0u && written + 1u < bound ? high * staged_scales[tile * LM_INDEX_SCORE_TILE_POSITIONS + pair * 2u + 1u] : -INFINITY;
+		float *dst = scores + (uint64_t)row * score_stride + written;
+		if ( written + 1u < score_stride && (((uintptr_t)dst & 7u) == 0u) )
+		{
+			*(float2 *)dst = make_float2(s0, s1);
+			return;
+		}
+		if ( written < score_stride )
+			dst[0] = s0;
+		if ( written + 1u < score_stride )
+			dst[1] = s1;
+	}
 }
 
 template<uint32_t INDEX_HEADS, uint32_t INDEX_DIM>
@@ -462,15 +817,17 @@ void LmWeightedSparseScoreFp8Kernel(const uint8_t *__restrict__ query_fp8, const
 	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows,
 	uint32_t score_stride, float *__restrict__ scores)
 {
+	LmDependentWait();
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
 	constexpr uint32_t STEPS = INDEX_DIM / 32u;
 	constexpr uint32_t PITCH = INDEX_DIM + LM_INDEX_SCORE_STAGED_PAD;
 	constexpr uint32_t TILES = LM_INDEX_SCORE_STAGED_KEYS / LM_INDEX_SCORE_TILE_POSITIONS;
 	constexpr uint32_t ROWS_PER_WARP = LM_INDEX_SCORE_STAGED_ROWS / LM_INDEX_SCORE_WARPS;
+	constexpr uint32_t ROW_PIECES = INDEX_DIM / 16u;
 	static_assert(INDEX_HEADS % 16u == 0u && HEAD_TILES >= 2u, "whole 16-head operand tiles, at least two");
-	static_assert(INDEX_DIM % 32u == 0u && INDEX_DIM % 16u == 0u, "whole 32-wide k steps and 16-byte key chunks");
-	static_assert(LM_INDEX_SCORE_STAGED_ROWS % LM_INDEX_SCORE_WARPS == 0u, "every warp gets the same number of rows");
-	__shared__ __align__(16) uint8_t staged[LM_INDEX_SCORE_STAGED_KEYS * PITCH];
+	static_assert(INDEX_DIM % 64u == 0u && STEPS % 2u == 0u, "whole 64-byte k step pairs");
+	static_assert(LM_INDEX_SCORE_STAGED_ROWS % LM_INDEX_SCORE_WARPS == 0u && TILES % 2u == 0u, "every warp gets the same number of rows and tile pairs");
+	__shared__ __align__(128) uint8_t staged[LM_INDEX_SCORE_STAGED_KEYS * PITCH];
 	__shared__ float staged_scales[LM_INDEX_SCORE_STAGED_KEYS];
 	__shared__ uint32_t block_bound;
 	const LmKvView &index_cache = keys.pages;
@@ -480,9 +837,12 @@ void LmWeightedSparseScoreFp8Kernel(const uint8_t *__restrict__ query_fp8, const
 	const uint32_t row_first = blockIdx.y * LM_INDEX_SCORE_STAGED_ROWS;
 	const uint32_t configured = sequence_of_row != 0 && context_length != 0 && query_fp8 != 0 && head_weight != 0 && keys.values != 0 && keys.scales != 0 &&
 		LmKvViewIsConfigured(index_cache) ? 1u : 0u;
-	uint32_t local,tile,step,head_tile,entry;
+	uint32_t local,tile,step,head_tile;
 	if ( scores == 0 )
+	{
+		LmDependentRelease();
 		return;
+	}
 	if ( threadIdx.x == 0u )
 		block_bound = 0u;
 	__syncthreads();
@@ -498,16 +858,27 @@ void LmWeightedSparseScoreFp8Kernel(const uint8_t *__restrict__ query_fp8, const
 		}
 	}
 	__syncthreads();
-	for (uint32_t chunk = threadIdx.x; chunk < LM_INDEX_SCORE_STAGED_KEYS * (INDEX_DIM / 16u); chunk += LM_INDEX_SCORE_THREADS)
+	const uint32_t staged_s = (uint32_t)__cvta_generic_to_shared(staged);
+	const uint32_t matrix_lane = (lane & 7u) * PITCH + (lane >> 3u) * 16u;
+	if ( block_bound > key_first )
 	{
-		const uint32_t key = chunk / (INDEX_DIM / 16u),part = chunk % (INDEX_DIM / 16u);
-		uint4 value = make_uint4(0u,0u,0u,0u);
-		if ( key_first + key < block_bound && key_first + key < score_stride )
-			value = *(const uint4 *)(keys.values + (uint64_t)(key_first + key) * INDEX_DIM + part * 16u);
-		*(uint4 *)(staged + key * PITCH + part * 16u) = value;
+		for (uint32_t chunk = threadIdx.x; chunk < LM_INDEX_SCORE_STAGED_KEYS * ROW_PIECES; chunk += LM_INDEX_SCORE_THREADS)
+		{
+			const uint32_t key = chunk / ROW_PIECES,part = chunk % ROW_PIECES;
+			const uint32_t valid_k = key_first + key < block_bound && key_first + key < score_stride ? 1u : 0u;
+			const uint8_t *src = valid_k != 0u ? keys.values + (uint64_t)(key_first + key) * INDEX_DIM + part * 16u : query_fp8;
+			LmIndexScoreCopy16(staged_s + key * PITCH + part * 16u, src, valid_k != 0u ? 16u : 0u);
+		}
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+		for (uint32_t key = threadIdx.x; key < LM_INDEX_SCORE_STAGED_KEYS; key += LM_INDEX_SCORE_THREADS)
+			staged_scales[key] = key_first + key < block_bound && key_first + key < score_stride ? __ldg(keys.scales + key_first + key) : 0.0f;
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 	}
-	for (uint32_t key = threadIdx.x; key < LM_INDEX_SCORE_STAGED_KEYS; key += LM_INDEX_SCORE_THREADS)
-		staged_scales[key] = key_first + key < block_bound && key_first + key < score_stride ? keys.scales[key_first + key] : 0.0f;
+	else
+	{
+		for (uint32_t key = threadIdx.x; key < LM_INDEX_SCORE_STAGED_KEYS; key += LM_INDEX_SCORE_THREADS)
+			staged_scales[key] = 0.0f;
+	}
 	__syncthreads();
 	for (local = 0u; local < ROWS_PER_WARP; local++)
 	{
@@ -542,73 +913,70 @@ void LmWeightedSparseScoreFp8Kernel(const uint8_t *__restrict__ query_fp8, const
 				{
 					const uint8_t *top = query + (uint64_t)(head_tile * 16u + group) * INDEX_DIM + step * 32u + pair * 4u;
 					const uint8_t *bottom = top + 8u * INDEX_DIM;
-					a[head_tile][step][0] = *(const uint32_t *)top;
-					a[head_tile][step][1] = *(const uint32_t *)bottom;
-					a[head_tile][step][2] = *(const uint32_t *)(top + 16u);
-					a[head_tile][step][3] = *(const uint32_t *)(bottom + 16u);
+					a[head_tile][step][0] = __ldg((const uint32_t *)top);
+					a[head_tile][step][1] = __ldg((const uint32_t *)bottom);
+					a[head_tile][step][2] = __ldg((const uint32_t *)(top + 16u));
+					a[head_tile][step][3] = __ldg((const uint32_t *)(bottom + 16u));
 				}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			{
-				weight[2u * head_tile] = head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group];
-				weight[2u * head_tile + 1u] = head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u];
+				weight[2u * head_tile] = __ldg(head_weight + (uint64_t)row * INDEX_HEADS + head_tile * 16u + group);
+				weight[2u * head_tile + 1u] = __ldg(head_weight + (uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u);
 			}
 		}
-		for (tile = 0u; tile < TILES; tile++)
+		for (tile = 0u; tile < TILES; tile += 2u)
 		{
-			const uint32_t first = key_first + tile * LM_INDEX_SCORE_TILE_POSITIONS;
-			const uint32_t mine = first + group;
-			const uint32_t written = first + pair * 2u;
-			float accumulator[HEAD_TILES][4] = {};
-			float low,high;
-			if ( first >= score_stride )
+			const uint32_t first0 = key_first + tile * LM_INDEX_SCORE_TILE_POSITIONS;
+			const uint32_t first1 = first0 + LM_INDEX_SCORE_TILE_POSITIONS;
+			const uint32_t do1 = first1 < score_stride ? 1u : 0u;
+			float acc0[HEAD_TILES][4] = {}, acc1[HEAD_TILES][4] = {};
+			if ( first0 >= score_stride )
 				break;
-			if ( valid != 0u && first >= bound )
+			if ( valid != 0u && first0 >= bound )
 			{
-				LmIndexScoreFillRow(scores,row,first,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
+				LmIndexScoreFillRow(scores,row,first0,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
 				break;
 			}
-			if ( valid != 0u && first < bound )
+			if ( valid != 0u && first0 < bound )
 			{
-				const uint8_t *slot = mine < bound ? staged + (tile * LM_INDEX_SCORE_TILE_POSITIONS + group) * PITCH : 0;
-				for (step = 0u; step < STEPS; step++)
+				const uint32_t addr0 = staged_s + matrix_lane + tile * LM_INDEX_SCORE_TILE_POSITIONS * PITCH;
+				const uint32_t addr1 = addr0 + LM_INDEX_SCORE_TILE_POSITIONS * PITCH;
+				const uint32_t compute1 = do1 != 0u && first1 < bound ? 1u : 0u;
+#pragma unroll
+				for (step = 0u; step < STEPS; step += 2u)
 				{
-					uint32_t b[2];
-					b[0] = slot != 0 ? *(const uint32_t *)(slot + step * 32u + pair * 4u) : 0u;
-					b[1] = slot != 0 ? *(const uint32_t *)(slot + step * 32u + 16u + pair * 4u) : 0u;
+					uint32_t v0[4], v1[4];
+					LmIndexScoreMatrix4(addr0 + step * 32u, v0);
+					if ( compute1 != 0u )
+						LmIndexScoreMatrix4(addr1 + step * 32u, v1);
+					const uint32_t lo0[2] = { v0[0], v0[1] }, hi0[2] = { v0[2], v0[3] };
+					const uint32_t lo1[2] = { v1[0], v1[1] }, hi1[2] = { v1[2], v1[3] };
+#pragma unroll
 					for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-						LmMmaE4m3(accumulator[head_tile],a[head_tile][step],b);
+						LmMmaE4m3(acc0[head_tile],a[head_tile][step],lo0);
+					if ( compute1 != 0u )
+					{
+#pragma unroll
+						for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+							LmMmaE4m3(acc1[head_tile],a[head_tile][step],lo1);
+					}
+#pragma unroll
+					for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+						LmMmaE4m3(acc0[head_tile],a[head_tile][step + 1u],hi0);
+					if ( compute1 != 0u )
+					{
+#pragma unroll
+						for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+							LmMmaE4m3(acc1[head_tile],a[head_tile][step + 1u],hi1);
+					}
 				}
 			}
-			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-				for (entry = 0u; entry < 4u; entry++)
-					accumulator[head_tile][entry] = fmaxf(accumulator[head_tile][entry], 0.0f);
-			low = __fmul_rn(weight[0], accumulator[0][0]);
-			high = __fmul_rn(weight[0], accumulator[0][1]);
-			low = __fmaf_rn(weight[1], accumulator[0][2], low);
-			high = __fmaf_rn(weight[1], accumulator[0][3], high);
-			for (head_tile = 1u; head_tile < HEAD_TILES; head_tile++)
-			{
-				low = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][0], low);
-				high = __fmaf_rn(weight[2u * head_tile], accumulator[head_tile][1], high);
-				low = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][2], low);
-				high = __fmaf_rn(weight[2u * head_tile + 1u], accumulator[head_tile][3], high);
-			}
-			for (entry = 4u; entry < LM_WARP_LANES; entry <<= 1u)
-			{
-				low += __shfl_xor_sync(0xffffffffu,low,(int)entry);
-				high += __shfl_xor_sync(0xffffffffu,high,(int)entry);
-			}
-			if ( group == 0u )
-			{
-				if ( written < score_stride )
-					scores[(uint64_t)row * score_stride + written] = valid != 0u && written < bound ? low * staged_scales[tile * LM_INDEX_SCORE_TILE_POSITIONS + pair * 2u] :
-						-INFINITY;
-				if ( written + 1u < score_stride )
-					scores[(uint64_t)row * score_stride + written + 1u] = valid != 0u && written + 1u < bound ?
-						high * staged_scales[tile * LM_INDEX_SCORE_TILE_POSITIONS + pair * 2u + 1u] : -INFINITY;
-			}
+			LmIndexScoreFp8Store<HEAD_TILES>(acc0,weight,staged_scales,tile,valid,bound,first0 + pair * 2u,pair,group,row,score_stride,scores);
+			if ( do1 != 0u )
+				LmIndexScoreFp8Store<HEAD_TILES>(acc1,weight,staged_scales,tile + 1u,valid,bound,first1 + pair * 2u,pair,group,row,score_stride,scores);
 		}
 	}
+	LmDependentRelease();
 }
 
 template<uint32_t INDEX_DIM>
@@ -619,7 +987,7 @@ static inline SparkGpuError LmIndexKeysFp8Launch(const uint16_t *keys_bf16, uint
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( count == 0u )
 		return(SPARK_GPU_SUCCESS);
-	LM_LAUNCH((LmIndexKeysFp8Kernel<INDEX_DIM>), (count + warps - 1u) / warps, LM_INDEX_SCORE_THREADS, 0, stream, keys_bf16, count, keys_fp8, key_scales);
+	LM_LAUNCH_DEPENDENT((LmIndexKeysFp8Kernel<INDEX_DIM>), (count + warps - 1u) / warps, LM_INDEX_SCORE_THREADS, 0, stream, keys_bf16, count, keys_fp8, key_scales);
 	return(SparkGpuPeekAtLastError());
 }
 
@@ -633,7 +1001,7 @@ static inline SparkGpuError LmIndexQueryFp8Launch(const uint16_t *query_bf16, co
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( rows == 0u )
 		return(SPARK_GPU_SUCCESS);
-	LM_LAUNCH((LmIndexQueryFp8Kernel<INDEX_HEADS,INDEX_DIM>), (uint32_t)((pairs + warps - 1u) / warps), LM_INDEX_SCORE_THREADS, 0, stream, query_bf16,
+	LM_LAUNCH_DEPENDENT((LmIndexQueryFp8Kernel<INDEX_HEADS,INDEX_DIM>), (uint32_t)((pairs + warps - 1u) / warps), LM_INDEX_SCORE_THREADS, 0, stream, query_bf16,
 		head_weight_bf16, rows, weight_scale, query_fp8, head_weight);
 	return(SparkGpuPeekAtLastError());
 }
@@ -645,7 +1013,7 @@ static inline SparkGpuError LmWeightedSparseScoreFp8Launch(const uint8_t *query_
 {
 	if ( rows == 0u || score_stride == 0u )
 		return(SPARK_GPU_SUCCESS);
-	LM_LAUNCH((LmWeightedSparseScoreFp8Kernel<INDEX_HEADS,INDEX_DIM>), dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
+	LM_LAUNCH_DEPENDENT((LmWeightedSparseScoreFp8Kernel<INDEX_HEADS,INDEX_DIM>), dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
 		(rows + LM_INDEX_SCORE_STAGED_ROWS - 1u) / LM_INDEX_SCORE_STAGED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream, query_fp8, head_weight, keys,
 		sequence_of_row, context_length, row_position, rows, score_stride, scores);
 	return(SparkGpuPeekAtLastError());
@@ -669,8 +1037,8 @@ static __device__ __forceinline__ void LmIndexScoreKeyFragments(const uint8_t *s
 	uint32_t step;
 	for (step = 0u; step < STEPS; step++)
 	{
-		b[step][0] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t)) : 0u;
-		b[step][1] = slot != 0 ? *(const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t)) : 0u;
+		b[step][0] = slot != 0 ? __ldg((const uint32_t *)(slot + (step * 16u + pair * 2u) * sizeof(uint16_t))) : 0u;
+		b[step][1] = slot != 0 ? __ldg((const uint32_t *)(slot + (step * 16u + pair * 2u + 8u) * sizeof(uint16_t))) : 0u;
 	}
 }
 
@@ -678,6 +1046,7 @@ template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, 
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
 {
+	LmDependentWait();
 	constexpr uint32_t PITCH = INDEX_DIM * 2u + LM_INDEX_SCORE_STAGE_PAD, STAGE_BYTES = LM_INDEX_SCORE_STAGE_POSITIONS * PITCH;
 	constexpr uint32_t CHUNKS = LM_INDEX_SCORE_BLOCK_POSITIONS / LM_INDEX_SCORE_STAGE_POSITIONS;
 	constexpr uint32_t CHUNK_TILES = LM_INDEX_SCORE_STAGE_POSITIONS / LM_INDEX_SCORE_TILE_POSITIONS;
@@ -691,7 +1060,7 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 		LM_INDEX_SCORE_STAGE_POSITIONS * ROW_PIECES % LM_INDEX_SCORE_THREADS == 0u && LM_INDEX_SCORE_STAGES >= 2u,
 		"staged keys: k steps in pairs, whole stages a block, whole 16-byte copies a thread");
 	static_assert(INDEX_HEADS % 16u == 0u && HEAD_TILES >= 2u, "whole 16-head operand tiles, at least two");
-	static_assert(INDEX_DIM % 16u == 0u, "whole 16-wide k steps");
+	static_assert(INDEX_DIM % 16u == 0u && CHUNK_TILES % 2u == 0u, "whole 16-wide k steps and tile pairs");
 	static_assert(LM_INDEX_SCORE_THREADS == LM_INDEX_SCORE_BLOCK_POSITIONS, "one thread finds each position's slot");
 	const uint32_t lane = threadIdx.x % LM_WARP_LANES,warp = threadIdx.x / LM_WARP_LANES;
 	const uint32_t group = lane / 4u,pair = lane % 4u;
@@ -731,10 +1100,10 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 				{
 					const uint16_t *top = query + (uint64_t)(head_tile * 16u + group) * INDEX_DIM + step * 16u + pair * 2u;
 					const uint16_t *bottom = top + 8u * INDEX_DIM;
-					a[head_tile][step][0] = *(const uint32_t *)top;
-					a[head_tile][step][1] = *(const uint32_t *)bottom;
-					a[head_tile][step][2] = *(const uint32_t *)(top + 8u);
-					a[head_tile][step][3] = *(const uint32_t *)(bottom + 8u);
+					a[head_tile][step][0] = __ldg((const uint32_t *)top);
+					a[head_tile][step][1] = __ldg((const uint32_t *)bottom);
+					a[head_tile][step][2] = __ldg((const uint32_t *)(top + 8u));
+					a[head_tile][step][3] = __ldg((const uint32_t *)(bottom + 8u));
 				}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			{
@@ -792,34 +1161,24 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 				continue;
 			const uint32_t base = staged_s + (chunk % LM_INDEX_SCORE_STAGES) * STAGE_BYTES + matrix_lane;
 			#pragma unroll
-			for ( tile = 0u; tile < CHUNK_TILES; tile++ )
+			for ( tile = 0u; tile < CHUNK_TILES; tile += 2u )
 			{
-				const uint32_t first = block_first + (chunk * CHUNK_TILES + tile) * LM_INDEX_SCORE_TILE_POSITIONS, written = first + pair * 2u;
-				float accumulator[HEAD_TILES][4] = {};
+				const uint32_t first = block_first + (chunk * CHUNK_TILES + tile) * LM_INDEX_SCORE_TILE_POSITIONS;
 				if ( first >= score_stride )
 					break;
-				if ( valid != 0u && first < bound )
-				{
-					#pragma unroll
-					for ( step = 0u; step < STEPS; step += 2u )
-					{
-						uint32_t value[4];
-						LmIndexScoreMatrix4(base + tile * LM_INDEX_SCORE_TILE_POSITIONS * PITCH + step * 32u, value);
-						const uint32_t low_b[2] = { value[0], value[1] }, high_b[2] = { value[2], value[3] };
-						for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-							LmMmaBf16(accumulator[head_tile],a[head_tile][step],low_b);
-						for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
-							LmMmaBf16(accumulator[head_tile],a[head_tile][step + 1u],high_b);
-					}
-				}
-				LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
+				LmIndexScoreStagedTilePair<HEAD_TILES,STEPS,PITCH,ROUND_BF16>(a, weight, base, tile, first, valid, bound, pair, group, row,
+					score_stride, qk_scale, scores);
 			}
 		}
 		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		LmDependentRelease();
 		return;
 	}
 	if ( live == 0u )
+	{
+		LmDependentRelease();
 		return;
+	}
 	LmIndexScoreKeyFragments<STEPS>(valid != 0u && block_first + group < bound && block_first < score_stride ? (shared_slots != 0u ? block_slots[group] :
 		LmIndexScoreSlot<Geometry>(index_view,sequence,block_first + group,row)) : 0,pair,next);
 	for (tile = 0u; tile < LM_INDEX_SCORE_BLOCK_TILES; tile++)
@@ -843,6 +1202,7 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 					LmMmaBf16(accumulator[head_tile],a[head_tile][step],b[step]);
 		LmIndexScoreStore<HEAD_TILES,ROUND_BF16>(accumulator,weight,valid,bound,written,group,row,score_stride,qk_scale,scores);
 	}
+	LmDependentRelease();
 }
 
 #endif
@@ -858,21 +1218,35 @@ static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_qu
 	{
 		if ( fork_positions != 0 )
 			return(SPARK_GPU_ERROR_INVALID_VALUE);
-		LM_LAUNCH((LmWeightedSparseScoreStagedKernel<Geometry,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
+		LM_LAUNCH_DEPENDENT((LmWeightedSparseScoreStagedKernel<Geometry,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>),
+			dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
 			(rows + LM_INDEX_SCORE_STAGED_ROWS - 1u) / LM_INDEX_SCORE_STAGED_ROWS), LM_INDEX_SCORE_THREADS,
 			LM_INDEX_SCORE_STAGED_KEYS * (INDEX_DIM * (uint32_t)sizeof(uint16_t) + LM_INDEX_SCORE_STAGED_PAD), stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 		return(SparkGpuPeekAtLastError());
 	}
-	if ( fork_positions == 0 && LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
-		LM_LAUNCH((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
+	if ( fork_positions == 0 && (rows >= 128u || (rows >= LM_INDEX_SCORE_SHARED_MIN_ROWS && score_stride >= 65536u)) )
+		LM_LAUNCH_DEPENDENT((LmWeightedSparseScorePagedStagedKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>),
+			dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
+			(rows + LM_INDEX_SCORE_STAGED_ROWS - 1u) / LM_INDEX_SCORE_STAGED_ROWS), LM_INDEX_SCORE_THREADS,
+			LM_INDEX_SCORE_STAGED_KEYS * (INDEX_DIM * (uint32_t)sizeof(uint16_t) + LM_INDEX_SCORE_STAGED_PAD), stream,
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+	else if ( fork_positions == 0 && rows >= LM_INDEX_SCORE_SLOTS_MIN_ROWS )
+		LM_LAUNCH_DEPENDENT((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>),
+			dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	else if ( rows <= 4u && score_stride >= LM_INDEX_SCORE_BLOCK_POSITIONS )
-		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight,LM_INDEX_SCORE_WARPS>), dim3((score_stride + LM_INDEX_SCORE_WARPS * LM_INDEX_SCORE_TILE_POSITIONS - 1u) / (LM_INDEX_SCORE_WARPS * LM_INDEX_SCORE_TILE_POSITIONS),rows), LM_INDEX_SCORE_THREADS, 0, stream,
+		LM_LAUNCH_DEPENDENT((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight,LM_INDEX_SCORE_WARPS * 2u>),
+			dim3((score_stride + LM_INDEX_SCORE_WARPS * 2u * LM_INDEX_SCORE_TILE_POSITIONS - 1u) / (LM_INDEX_SCORE_WARPS * 2u * LM_INDEX_SCORE_TILE_POSITIONS),rows),
+			LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets,dense_limit);
 	else
-#endif
-		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
+		LM_LAUNCH_DEPENDENT((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows),
+			LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets,dense_limit);
+#else
+	LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
+		index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets,dense_limit);
+#endif
 	return(SparkGpuPeekAtLastError());
 }
