@@ -1570,6 +1570,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	uint32_t request_stops[API_MAX_STOP_TOKENS];
 	uint32_t request_stop_count = 0;
 	uint32_t chat_request = 0;
+	uint32_t chat_suffix_offset = 0;
 	bool chat_thinking = false;
 	memset(&doc,0,sizeof(doc));
 	uint32_t *prompt = 0, prompt_len = 0, max_tokens = 32;
@@ -1620,8 +1621,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	{
 		char *chat_text = 0;
 		uint32_t chat_bytes = 0u;
-		SparkChatTemplateOutcome chat_outcome = SparkChatTemplateRender(ChatTemplate,
-			&doc, root, chat_thinking, &chat_text, &chat_bytes);
+		SparkChatTemplateOutcome chat_outcome = SparkChatTemplateRenderWithSuffix(ChatTemplate,
+			&doc, root, chat_thinking, &chat_text, &chat_bytes, &chat_suffix_offset);
 		if (chat_outcome == SPARK_CHAT_TEMPLATE_RENDERED)
 		{
 			prompt_text = chat_text;
@@ -1746,6 +1747,43 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		encoding.token_ids = prompt + prefix_count;
 		encode_status = SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text,
 			prompt_text_bytes, 0u, &workspace, &encoding);
+		if (encode_status == SPARK_STATUS_OK && chat_request != 0u && options.cache_point_count == 0u &&
+			chat_suffix_offset < prompt_text_bytes)
+		{
+			const SparkModelServingAdapterDescriptor *adapter =
+				S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+			const uint32_t suffix_bytes = prompt_text_bytes - chat_suffix_offset;
+			if (adapter != 0 && adapter->cache_checkpoint_token_count != 0u &&
+				adapter->cache_block_token_count != 0u && suffix_bytes > 0u && suffix_bytes <= 256u)
+			{
+				uint32_t suffix_ids[256];
+				SparkTokenizerEncoding suffix_encoding;
+				SparkTokenizerEncodingReset(&suffix_encoding);
+				suffix_encoding.token_capacity = 256u;
+				suffix_encoding.token_ids = suffix_ids;
+				if (SparkTokenizerSidecarEncodeText(&Sidecar, prompt_text + chat_suffix_offset,
+						suffix_bytes, 0u, &workspace, &suffix_encoding) == SPARK_STATUS_OK &&
+					suffix_encoding.token_count > 0u &&
+					encoding.token_count > suffix_encoding.token_count + 2u)
+				{
+					const uint32_t body_end = encoding.token_count - suffix_encoding.token_count;
+					const uint32_t exact_tail = memcmp(encoding.token_ids + body_end, suffix_ids,
+						(size_t)suffix_encoding.token_count * sizeof(uint32_t)) == 0 ? 1u : 0u;
+					const uint32_t margin = exact_tail != 0u ? 1u : 2u;
+					const uint32_t min_body = 4u * adapter->cache_block_token_count;
+					if (body_end >= min_body && body_end > margin)
+					{
+						const uint32_t aligned = ((body_end - margin) / adapter->cache_block_token_count) *
+							adapter->cache_block_token_count;
+						if (aligned != 0u && aligned + prefix_count < encoding.token_count + prefix_count - 1u)
+						{
+							options.cache_points[0] = aligned + prefix_count;
+							options.cache_point_count = 1u;
+						}
+					}
+				}
+			}
+		}
 		SparkTokenizerWorkspaceDestroy(&workspace);
 		free(prompt_text);
 		if (encode_status != SPARK_STATUS_OK)

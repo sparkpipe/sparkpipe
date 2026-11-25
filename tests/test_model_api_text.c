@@ -29,6 +29,9 @@
 #ifndef TEST_MODEL_SERVING_ADAPTER_PATH
 #define TEST_MODEL_SERVING_ADAPTER_PATH ""
 #endif
+#ifndef TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH
+#define TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH ""
+#endif
 #ifndef TEST_MODEL_RESIDENT_TRANSPORT_PATH
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
@@ -53,6 +56,7 @@ static const char TestApiChatTemplateNonSpecialStopJson[] =
 	"\"assistant_thinking\":null,\"turn_suffix\":\"\",\"generation\":\"<|assistant|>\\n\","
 	"\"generation_thinking\":null,\"stop_markers\":[\"<think>\"]}";
 static const char *TestApiChatTemplate = TestApiChatTemplateJson;
+static const char *TestApiServingAdapter = TEST_MODEL_SERVING_ADAPTER_PATH;
 static uint32_t TestApiEosToken = 0u;
 
 static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
@@ -179,8 +183,8 @@ static void TestApiWriteDeployment(const char *path,
 	stage_indices[1] = 2u;
 	stage_indices[2] = 1u;
 	memset(&fixture,0,sizeof(fixture));
-	fixture.adapter_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
-	fixture.driver_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
+	fixture.adapter_shared_object_path = TestApiServingAdapter;
+	fixture.driver_shared_object_path = TestApiServingAdapter;
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
@@ -1619,6 +1623,102 @@ static void TestApiIdleWake(TestApiStack *stack)
 		(unsigned long long)(elapsed_ns / 1000u));
 }
 
+static void TestApiRecurrentChatWarmPrefix(void)
+{
+	TestApiStack stack;
+	char response_cold[65536];
+	char response_exact[65536];
+	char response_ext[65536];
+	uint32_t cold_tokens[32], exact_tokens[32];
+	uint32_t cold_count, exact_count;
+	const char *body_cold =
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"abcdefghijklmno pqrstu\"}],\"max_tokens\":4,\"temperature\":0,\"speculation\":false}";
+	const char *body_ext =
+		"{\"messages\":[{\"role\":\"user\",\"content\":\"abcdefghijklmno pqrstu xy\"}],\"max_tokens\":4,\"temperature\":0,\"speculation\":false}";
+	char *log_data = 0;
+	const char *measurements;
+	const char *field;
+	struct timespec delay = {0,2000000};
+	unsigned attempt;
+	uint32_t cold_prompt_tokens = 0u, exact_cached = 0u, ext_cached = 0u;
+	TestApiServingAdapter = TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH;
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
+	TestApiStartStack(&stack,"build/test_tokenizer_sidecar_api_hf.json");
+	stack.api_stderr_path = "build/test_model_api_text_recurrent_chat_stderr.log";
+	unlink(stack.api_stderr_path);
+	TestApiStartApi(&stack);
+
+	TestApiHttpCall(stack.api_port,"POST","/v1/chat/completions",body_cold,response_cold,sizeof(response_cold));
+	assert(TestApiResponseStatus(response_cold) == 200);
+	cold_count = TestApiScanTokenArray(TestApiResponseJsonBody(response_cold),cold_tokens,32u);
+	assert(cold_count == 4u);
+	for (attempt = 0u; attempt < 500u; attempt++)
+	{
+		log_data = TestApiReadFile(stack.api_stderr_path);
+		if (log_data != 0 && TestApiMeasurementCount(log_data) >= 1u)
+			break;
+		free(log_data);
+		log_data = 0;
+		nanosleep(&delay,0);
+	}
+	assert(log_data != 0 && TestApiMeasurementCount(log_data) == 1u);
+	measurements = TestApiLastMeasurements(log_data);
+	field = strstr(measurements,"\"prompt_tokens\":");
+	assert(field != 0);
+	cold_prompt_tokens = (uint32_t)strtoul(field + 16,0,10);
+	assert(cold_prompt_tokens > 24u);
+	free(log_data);
+	log_data = 0;
+
+	TestApiHttpCall(stack.api_port,"POST","/v1/chat/completions",body_cold,response_exact,sizeof(response_exact));
+	assert(TestApiResponseStatus(response_exact) == 200);
+	exact_count = TestApiScanTokenArray(TestApiResponseJsonBody(response_exact),exact_tokens,32u);
+	assert(exact_count == cold_count && memcmp(cold_tokens,exact_tokens,(size_t)cold_count * sizeof(uint32_t)) == 0);
+	for (attempt = 0u; attempt < 500u; attempt++)
+	{
+		log_data = TestApiReadFile(stack.api_stderr_path);
+		if (log_data != 0 && TestApiMeasurementCount(log_data) >= 2u)
+			break;
+		free(log_data);
+		log_data = 0;
+		nanosleep(&delay,0);
+	}
+	assert(log_data != 0 && TestApiMeasurementCount(log_data) == 2u);
+	measurements = TestApiLastMeasurements(log_data);
+	field = strstr(measurements,"\"cached_prompt_tokens\":");
+	assert(field != 0);
+	exact_cached = (uint32_t)strtoul(field + 23,0,10);
+	assert(exact_cached == cold_prompt_tokens - 1u);
+	free(log_data);
+	log_data = 0;
+
+	TestApiHttpCall(stack.api_port,"POST","/v1/chat/completions",body_ext,response_ext,sizeof(response_ext));
+	assert(TestApiResponseStatus(response_ext) == 200);
+	for (attempt = 0u; attempt < 500u; attempt++)
+	{
+		log_data = TestApiReadFile(stack.api_stderr_path);
+		if (log_data != 0 && TestApiMeasurementCount(log_data) >= 3u)
+			break;
+		free(log_data);
+		log_data = 0;
+		nanosleep(&delay,0);
+	}
+	assert(log_data != 0 && TestApiMeasurementCount(log_data) == 3u);
+	measurements = TestApiLastMeasurements(log_data);
+	field = strstr(measurements,"\"cached_prompt_tokens\":");
+	assert(field != 0);
+	ext_cached = (uint32_t)strtoul(field + 23,0,10);
+	assert(ext_cached >= 20u && ext_cached > 12u);
+	free(log_data);
+
+	TestApiStopStack(&stack);
+	TestApiServingAdapter = TEST_MODEL_SERVING_ADAPTER_PATH;
+	printf("test_model_api_text: recurrent chat warm prefix extension OK (prompt=%u exact_cached=%u ext_cached=%u > checkpoint=12)\n",
+		cold_prompt_tokens,exact_cached,ext_cached);
+}
+
 int main(void)
 {
 	TestApiStack stack;
@@ -1683,6 +1783,7 @@ int main(void)
 	TestApiRefusedStartup("build/test_tokenizer_sidecar_api_hf.json",
 		"chat_template stop marker that is not a special token");
 	TestApiChatTemplate = TestApiChatTemplateJson;
+	TestApiRecurrentChatWarmPrefix();
 	printf("test_model_api_text: ALL OK\n");
 	return 0;
 }
