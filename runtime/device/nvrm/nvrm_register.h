@@ -28,6 +28,9 @@ SparkStatus SparkNvrmRegisterFunction(SparkNvrmModule *module, const void *host,
 SparkStatus SparkNvrmRegisterVariable(SparkNvrmModule *module, const void *host, const char *name, uint64_t bytes, uint32_t managed);
 SparkStatus SparkNvrmRegisteredName(const void *host, const char **name);
 SparkStatus SparkNvrmRegisteredKernel(const void *host, SparkDeviceKernel **kernel);
+SparkStatus SparkNvrmRegisteredResolve(const void *host, const char **name, SparkDeviceKernel **kernel);
+SparkStatus SparkNvrmRegisteredOverlay(const void *host, uint32_t *overlaid);
+SparkStatus SparkNvrmOverlayReload(void);
 SparkStatus SparkNvrmRegisteredVariable(const void *host);
 SparkStatus SparkNvrmRegisteredRelease(void);
 SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes, uint32_t *shared_bytes);

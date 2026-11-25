@@ -169,6 +169,17 @@ SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkNvrmPushWords(SparkNvrmChannel *channel, const uint32_t *words, uint32_t count, const char *owner)
+{
+	const uint64_t bytes = sizeof(uint32_t) * (uint64_t)count;
+	if ( count == 0u || words == 0 )
+		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"push words needs at least one word");
+	SUBMIT_TRY(SubmitSpace(channel,bytes,owner));
+	memcpy(channel->push.cpu + channel->push_used,words,(size_t)bytes);
+	channel->push_used += bytes;
+	return(SPARK_STATUS_OK);
+}
+
 static uint32_t SubmitExecute(SparkNvrmSemaphoreOperation operation)
 {
 	uint32_t execute = (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_PAYLOAD_SIZE,NVC56F_SEM_EXECUTE_PAYLOAD_SIZE_64BIT);
@@ -235,6 +246,12 @@ static SparkStatus SubmitOrder(SparkNvrmChannel *channel, SparkNvrmEngine engine
 {
 	if ( SubmitOrdered(channel->last_engine,engine) != 0u )
 		return(SPARK_STATUS_OK);
+	if ( channel->last_engine == SPARK_NVRM_ENGINE_COMPUTE && engine == SPARK_NVRM_ENGINE_COMPUTE )
+	{
+		uint32_t words[SPARK_NVRM_WAIT_IDLE_WORDS];
+		SparkNvrmWaitIdleWords(words);
+		return(SparkNvrmPushWords(channel,words,SPARK_NVRM_WAIT_IDLE_WORDS,owner));
+	}
 	return(SparkNvrmSemaphoreAcquire(channel,channel->fence.address,channel->fence_value,owner));
 }
 

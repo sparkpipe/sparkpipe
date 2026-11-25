@@ -37,11 +37,31 @@ static uint64_t QmdMask(uint32_t width)
 
 static void QmdStore(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, uint64_t value)
 {
-	uint32_t bit;
-	for (bit = low; bit <= high; bit++)
+	const uint32_t first = low >> 5u,last = high >> 5u,shift = low & 31u,width = high - low + 1u;
+	if ( first == last )
 	{
-		const uint32_t word = bit / 32u,shift = bit % 32u;
-		qmd->word[word] = (qmd->word[word] & ~(1u << shift)) | ((uint32_t)((value >> (bit - low)) & 1u) << shift);
+		const uint32_t mask = (width == 32u ? UINT32_MAX : ((1u << width) - 1u)) << shift;
+		qmd->word[first] = (qmd->word[first] & ~mask) | (((uint32_t)value << shift) & mask);
+		return;
+	}
+	{
+		const uint32_t low_bits = 32u - shift;
+		const uint32_t low_mask = UINT32_MAX << shift;
+		uint32_t remaining = width - low_bits;
+		uint64_t rest = value >> low_bits;
+		uint32_t word = first + 1u;
+		qmd->word[first] = (qmd->word[first] & ~low_mask) | ((uint32_t)value << shift);
+		while ( remaining >= 32u )
+		{
+			qmd->word[word++] = (uint32_t)rest;
+			rest >>= 32u;
+			remaining -= 32u;
+		}
+		if ( remaining != 0u )
+		{
+			const uint32_t high_mask = (1u << remaining) - 1u;
+			qmd->word[word] = (qmd->word[word] & ~high_mask) | ((uint32_t)rest & high_mask);
+		}
 	}
 }
 
@@ -78,12 +98,26 @@ SparkStatus SparkNvrmQmdWrite(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, ui
 
 uint64_t SparkNvrmQmdRead(const SparkNvrmQmd *qmd, uint32_t high, uint32_t low)
 {
-	uint64_t value = 0u;
-	uint32_t bit;
+	uint32_t first,last,shift,width;
+	uint64_t value;
 	if ( qmd == 0 || high < low || high >= QMD_BITS || high - low >= 64u )
 		return(0u);
-	for (bit = high + 1u; bit > low; bit--)
-		value = (value << 1) | ((qmd->word[(bit - 1u) / 32u] >> ((bit - 1u) % 32u)) & 1u);
+	first = low >> 5u;
+	last = high >> 5u;
+	shift = low & 31u;
+	width = high - low + 1u;
+	if ( first == last )
+		return((qmd->word[first] >> shift) & (width == 32u ? UINT32_MAX : ((1u << width) - 1u)));
+	value = qmd->word[first] >> shift;
+	{
+		uint32_t taken = 32u - shift,word = first + 1u;
+		while ( word < last )
+		{
+			value |= (uint64_t)qmd->word[word++] << taken;
+			taken += 32u;
+		}
+		value |= (uint64_t)(qmd->word[last] & ((width - taken) == 32u ? UINT32_MAX : ((1u << (width - taken)) - 1u))) << taken;
+	}
 	return(value);
 }
 
@@ -279,9 +313,7 @@ static uint32_t Bank0Reciprocal(uint32_t size)
 
 static void Bank0Word(uint8_t *bank, uint32_t word, uint32_t value)
 {
-	uint32_t index;
-	for (index = 0u; index < 4u; index++)
-		bank[word * 4u + index] = (uint8_t)(value >> (8u * index));
+	memcpy(bank + (size_t)word * sizeof(value),&value,sizeof(value));
 }
 
 _Static_assert(SPARK_NVRM_BANK0_WORD_BLOCK_X > BANK0_WINDOW_WORD_LOCAL + 1u && SPARK_NVRM_BANK0_WORD_GRID_Z < BANK0_WORD_LAST,
@@ -353,15 +385,30 @@ SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t sha
 	parameters = bank_address + kernel->parameter_offset;
 	Bank0Word(bank,SPARK_NVRM_BANK0_WORD_PARAMETERS,(uint32_t)parameters);
 	Bank0Word(bank,SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u,(uint32_t)(parameters >> 32));
-	for (index = 0u; index < 3u; index++)
+	if ( shape == single )
 	{
-		Bank0Word(bank,bank0_dimension_words[index],block[index]);
-		Bank0Word(bank,bank0_dimension_words[3u + index],grid[index]);
-		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_DIM + index,shape[index]);
-		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL + index,Bank0Reciprocal(shape[index]));
-		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT + index,grid[index] / shape[index]);
+		for (index = 0u; index < 3u; index++)
+		{
+			Bank0Word(bank,bank0_dimension_words[index],block[index]);
+			Bank0Word(bank,bank0_dimension_words[3u + index],grid[index]);
+			Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_DIM + index,1u);
+			Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL + index,0x3f800000u);
+			Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT + index,grid[index]);
+		}
+		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS,1u);
 	}
-	Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS,shape[0] * shape[1] * shape[2]);
+	else
+	{
+		for (index = 0u; index < 3u; index++)
+		{
+			Bank0Word(bank,bank0_dimension_words[index],block[index]);
+			Bank0Word(bank,bank0_dimension_words[3u + index],grid[index]);
+			Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_DIM + index,shape[index]);
+			Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL + index,Bank0Reciprocal(shape[index]));
+			Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT + index,grid[index] / shape[index]);
+		}
+		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS,shape[0] * shape[1] * shape[2]);
+	}
 	if ( argument_bytes != 0u )
 		memcpy(bank + kernel->parameter_offset,arguments,argument_bytes);
 	return(SPARK_STATUS_OK);

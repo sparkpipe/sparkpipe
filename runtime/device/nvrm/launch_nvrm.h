@@ -29,10 +29,26 @@ static inline void LmLayoutParameter(SparkDeviceParameter *layout, uint32_t &off
 }
 
 template<typename Parameter>
-static inline void LmPackParameter(uint8_t *packed, SparkDeviceParameter *layout, uint32_t &offset, uint32_t &index, const Parameter &value)
+static inline void LmPackValue(uint8_t *packed, const SparkDeviceParameter *layout, uint32_t &index, const Parameter &value)
 {
-	LmLayoutParameter<Parameter>(layout,offset,index);
-	memcpy(packed + layout[index - 1u].offset,&value,sizeof(Parameter));
+	memcpy(packed + layout[index++].offset,&value,sizeof(Parameter));
+}
+
+template<typename... Parameters>
+struct LmParameterTable
+{
+	SparkDeviceParameter items[sizeof...(Parameters) + 1u];
+	uint32_t bytes;
+};
+
+template<typename... Parameters>
+static inline LmParameterTable<Parameters...> LmBuildParameterTable(void)
+{
+	LmParameterTable<Parameters...> table = {};
+	uint32_t offset = 0u,index = 0u;
+	(LmLayoutParameter<Parameters>(table.items,offset,index), ...);
+	table.bytes = offset;
+	return(table);
 }
 
 template<typename... Arguments>
@@ -44,13 +60,13 @@ template<bool Dependent, typename... Parameters>
 static SparkGpuError LmLaunchDirect(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream,
 	typename LmParameterOf<Parameters>::Type... arguments)
 {
+	static const LmParameterTable<Parameters...> table = LmBuildParameterTable<Parameters...>();
 	alignas(16) uint8_t packed[LmParameterBytes<Parameters...>() + 1u];
-	SparkDeviceParameter layout[sizeof...(Parameters) + 1u];
 	const uint32_t shape[6] = {grid.x, grid.y, grid.z, block.x, block.y, block.z};
-	uint32_t offset = 0u,index = 0u;
-	(LmPackParameter<Parameters>(packed,layout,offset,index,arguments), ...);
-	return(Dependent ? SparkNvrmLaunchDependent((const void *)kernel,shape,shape + 3,shared,stream,packed,layout,(uint32_t)sizeof...(Parameters),offset)
-		: SparkNvrmLaunchPacked((const void *)kernel,shape,shape + 3,shared,stream,packed,layout,(uint32_t)sizeof...(Parameters),offset));
+	uint32_t index = 0u;
+	(LmPackValue<Parameters>(packed,table.items,index,arguments), ...);
+	return(Dependent ? SparkNvrmLaunchDependent((const void *)kernel,shape,shape + 3,shared,stream,packed,table.items,(uint32_t)sizeof...(Parameters),table.bytes)
+		: SparkNvrmLaunchPacked((const void *)kernel,shape,shape + 3,shared,stream,packed,table.items,(uint32_t)sizeof...(Parameters),table.bytes));
 }
 
 template<bool Dependent, size_t ArgCount, typename DirectCall, typename Fallback, typename... Parameters,
@@ -116,12 +132,12 @@ template<typename... Parameters>
 static SparkGpuError LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, uint32_t cluster,
 	uint32_t dependent, typename LmParameterOf<Parameters>::Type... arguments)
 {
+	static const LmParameterTable<Parameters...> table = LmBuildParameterTable<Parameters...>();
 	alignas(16) uint8_t packed[LmParameterBytes<Parameters...>() + 1u];
-	SparkDeviceParameter layout[sizeof...(Parameters) + 1u];
 	const uint32_t shape[6] = {grid.x, grid.y, grid.z, block.x, block.y, block.z};
-	uint32_t offset = 0u,index = 0u;
-	(LmPackParameter<Parameters>(packed,layout,offset,index,arguments), ...);
-	return(SparkNvrmLaunchCluster((const void *)kernel,shape,shape + 3,cluster,dependent,shared,stream,packed,layout,(uint32_t)sizeof...(Parameters),offset));
+	uint32_t index = 0u;
+	(LmPackValue<Parameters>(packed,table.items,index,arguments), ...);
+	return(SparkNvrmLaunchCluster((const void *)kernel,shape,shape + 3,cluster,dependent,shared,stream,packed,table.items,(uint32_t)sizeof...(Parameters),table.bytes));
 }
 #endif
 

@@ -156,22 +156,20 @@ SparkGpuError SparkNvrmGpuRelease(void)
 static SparkGpuError GpuLayoutAgrees(const SparkDeviceKernel *kernel, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes,
 	const char *name)
 {
-	SparkDeviceKernelInfo info;
+	const SparkDeviceKernelInfo *info = &kernel->info;
 	char text[256];
 	uint32_t index;
-	if ( SparkDeviceKernelGetInfo(kernel,&info) != SPARK_STATUS_OK )
-		GPU_FAIL(SparkDeviceLastError()->status);
-	if ( info.parameter_count != count || info.parameter_bytes != bytes )
+	if ( info->parameter_count != count || info->parameter_bytes != bytes )
 	{
-		snprintf(text,sizeof(text),"%.48s: the host passes %u parameters in %u bytes, the kernel takes %u in %u",name,count,bytes,info.parameter_count,
-			info.parameter_bytes);
+		snprintf(text,sizeof(text),"%.48s: the host passes %u parameters in %u bytes, the kernel takes %u in %u",name,count,bytes,info->parameter_count,
+			info->parameter_bytes);
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,text);
 	}
 	for (index = 0u; index < count; index++)
-		if ( info.parameters[index].offset != layout[index].offset || info.parameters[index].bytes != layout[index].bytes )
+		if ( info->parameters[index].offset != layout[index].offset || info->parameters[index].bytes != layout[index].bytes )
 		{
 			snprintf(text,sizeof(text),"%.48s: parameter %u is %u bytes at %u on the host, %u bytes at %u in the kernel",name,index,layout[index].bytes,
-				layout[index].offset,info.parameters[index].bytes,info.parameters[index].offset);
+				layout[index].offset,info->parameters[index].bytes,info->parameters[index].offset);
 			GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,text);
 		}
 	return(SPARK_GPU_SUCCESS);
@@ -186,9 +184,12 @@ static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], con
 	SparkGpuError error;
 	if ( grid == 0 || block == 0 || (count != 0u && (layout == 0 || parameters == 0)) || shared_bytes > UINT32_MAX )
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a hosted launch needs its grid, its block, its parameters and at most 4 GiB of shared memory");
-	GPU_TRY(SparkNvrmRegisteredName(function,&name));
-	GPU_TRY(GpuReady());
-	if ( SparkNvrmRegisteredKernel(function,&kernel) != SPARK_STATUS_OK )
+	if ( SparkDeviceGetProperties() == 0 )
+	{
+		GPU_TRY(SparkNvrmRegisteredName(function,&name));
+		GPU_TRY(GpuReady());
+	}
+	if ( SparkNvrmRegisteredResolve(function,&name,&kernel) != SPARK_STATUS_OK )
 		GPU_FAIL(SparkDeviceLastError()->status);
 	if ( (error = GpuLayoutAgrees(kernel,layout,count,bytes,name)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(error);

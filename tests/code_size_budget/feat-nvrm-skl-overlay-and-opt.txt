@@ -1,0 +1,2 @@
++555
+Zero-NVIDIA NVRM runtime DRY skl-overlay drop-in cubin provider (SPARKPIPE_KERNEL_PROVIDER=skl-overlay and SPARKPIPE_SKL_CUBIN_DIR with fail-closed ABI verification and zero overhead when unset), parsed-cubin dedup cache during registration, word-level QMD/bank0 packing, single-lock launch resolution, compute WAIT_FOR_IDLE pushbuffer batching, and double-buffered NVRM Device Program replay with fast in-place constant patching.

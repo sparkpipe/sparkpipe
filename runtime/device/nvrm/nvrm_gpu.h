@@ -14,7 +14,7 @@ extern "C" {
 #define SPARK_NVRM_BIG_PAGE_BYTES (64u << 10)
 #define SPARK_NVRM_HUGE_OBJECT_LIMIT (4ull << 30)
 #define SPARK_NVRM_MODULE_PARAMETERS "/proc/driver/nvidia/params"
-#define SPARK_NVRM_CHANNEL_ENTRIES 1024u
+#define SPARK_NVRM_CHANNEL_ENTRIES 4096u
 #define SPARK_NVRM_PUSH_BYTES (1u << 20)
 #define SPARK_NVRM_LOCAL_RETIRED 16u
 #define SPARK_NVRM_WAIT_TIMEOUT_NS 10000000000ull
@@ -249,6 +249,7 @@ uint32_t SparkNvrmMethodHeader(uint32_t subchannel, uint32_t method, uint32_t co
 void SparkNvrmWaitIdleWords(uint32_t *words);
 void SparkNvrmSemaphoreWords(uint32_t *words, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation);
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner);
+SparkStatus SparkNvrmPushWords(SparkNvrmChannel *channel, const uint32_t *words, uint32_t count, const char *owner);
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmSubmitSegment(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t words, uint64_t done_address,
 	uint64_t done_value, const char *owner);
