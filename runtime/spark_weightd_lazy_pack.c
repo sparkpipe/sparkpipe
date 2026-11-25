@@ -70,6 +70,107 @@ SparkStatus SparkWeightdLazyPackTakeMeshMapping(SparkWeightdLazyPack *pack,void 
 	return(SPARK_STATUS_OK);
 }
 
+#define LAZY_SPINE_VMM_CHUNK_BYTES (UINT64_C(256) << 20)
+
+static SparkStatus lazy_spine_vmm_release(SparkWeightdLazyPack *pack)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	const SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)pack->spine_allocation;
+	uint32_t index;
+	if ( pack->spine_chunks != 0 )
+	{
+		for ( index = 0u; index < pack->spine_chunk_count; index++ )
+		{
+			if ( pack->spine_chunks[index] == 0u )
+				continue;
+			if ( SparkDeviceMemoryUnmap(base + (SparkDeviceAddress)index * pack->spine_chunk_bytes,pack->spine_chunk_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+				status = SPARK_STATUS_IO_ERROR;
+			if ( SparkDeviceMemoryRelease(pack->spine_chunks[index]) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+				status = SPARK_STATUS_IO_ERROR;
+			pack->spine_chunks[index] = 0u;
+		}
+		free(pack->spine_chunks);
+		pack->spine_chunks = 0;
+	}
+	if ( pack->spine_reserved_bytes != 0u && base != 0u )
+	{
+		if ( SparkDeviceAddressRelease(base,pack->spine_reserved_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+			status = SPARK_STATUS_IO_ERROR;
+	}
+	pack->spine_allocation = 0;
+	pack->spine = 0;
+	pack->spine_allocation_bytes = 0u;
+	pack->spine_chunk_bytes = 0u;
+	pack->spine_reserved_bytes = 0u;
+	pack->spine_chunk_count = 0u;
+	SPARK_RETURN(status);
+}
+
+static SparkStatus lazy_spine_vmm_ensure(void *context,uint64_t offset,uint64_t bytes)
+{
+	SparkWeightdLazyPack *pack = context;
+	const SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)pack->spine_allocation;
+	uint32_t first,last,index;
+	if ( bytes == 0u )
+		return(SPARK_STATUS_OK);
+	first = (uint32_t)(offset / pack->spine_chunk_bytes);
+	last = (uint32_t)((offset + bytes - 1u) / pack->spine_chunk_bytes);
+	for ( index = first; index <= last && index < pack->spine_chunk_count; index++ )
+	{
+		SparkDeviceMemoryHandle handle = 0u;
+		SparkStatus status;
+		if ( pack->spine_chunks[index] != 0u )
+			continue;
+		status = SparkDeviceMemoryCreate(&handle,pack->spine_chunk_bytes,"private weight spine");
+		if ( status != SPARK_STATUS_OK )
+			SPARK_FAIL(status);
+		status = SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * pack->spine_chunk_bytes,pack->spine_chunk_bytes,handle,0u,
+			SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE);
+		if ( status != SPARK_STATUS_OK )
+		{
+			(void)SparkDeviceMemoryRelease(handle);
+			SPARK_FAIL(status);
+		}
+		pack->spine_chunks[index] = handle;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus lazy_spine_vmm_reserve(SparkWeightdLazyPack *pack,uint64_t bytes)
+{
+	uint64_t granularity = 0u,chunk,count,reserved;
+	SparkDeviceAddress base = 0u;
+	SparkStatus status;
+	if ( bytes < LAZY_SPINE_VMM_CHUNK_BYTES )
+		return(SPARK_STATUS_UNSUPPORTED);
+	status = SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( granularity == 0u || granularity > LAZY_SPINE_VMM_CHUNK_BYTES )
+		return(SPARK_STATUS_UNSUPPORTED);
+	chunk = ((LAZY_SPINE_VMM_CHUNK_BYTES + granularity - 1u) / granularity) * granularity;
+	count = (bytes + chunk - 1u) / chunk;
+	if ( count == 0u || count > UINT32_MAX || count > UINT64_MAX / chunk )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	reserved = count * chunk;
+	status = SparkDeviceAddressReserve(&base,reserved,"private weight spine");
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	pack->spine_chunks = calloc((size_t)count,sizeof(*pack->spine_chunks));
+	if ( pack->spine_chunks == 0 )
+	{
+		(void)SparkDeviceAddressRelease(base,reserved);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	pack->spine_allocation = (void *)(uintptr_t)base;
+	pack->spine = pack->spine_allocation;
+	pack->spine_allocation_bytes = reserved;
+	pack->spine_reserved_bytes = reserved;
+	pack->spine_chunk_bytes = chunk;
+	pack->spine_chunk_count = (uint32_t)count;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 {
 	SparkStatus status;
@@ -78,7 +179,13 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 	status = SparkWeightdLazyPackUnmap(pack);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( pack->spine_allocation != 0 )
+	if ( pack->spine_chunks != 0 )
+	{
+		status = lazy_spine_vmm_release(pack);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	else if ( pack->spine_allocation != 0 )
 	{
 		if ( SparkGpuFree(pack->spine_allocation) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -120,6 +227,23 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	status = SparkWeightdNodeMemoryAdmit(SPARK_WEIGHTD_MEMINFO_PATH,bytes + 255u,"private weight spine",request->identity.model);
+	if ( status == SPARK_STATUS_OK )
+	{
+		const SparkStatus vmm = lazy_spine_vmm_reserve(pack,bytes);
+		if ( vmm == SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"WD-SPINE-PRIVATE spans=%u bytes=%llu vmm_chunks=%u chunk_bytes=%llu\n",pack->manifest.spine_count,
+				(unsigned long long)pack->spine_allocation_bytes,pack->spine_chunk_count,(unsigned long long)pack->spine_chunk_bytes);
+			status = SparkWeightdSpineLoadEnsured(request->pack_path,fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,
+				pack->spine,bytes,lazy_spine_vmm_ensure,pack);
+			if ( status == SPARK_STATUS_OK )
+				status = lazy_spine_vmm_ensure(pack,0u,bytes);
+			SparkWeightdNodeMemoryUnlock(lock_fd);
+			SPARK_RETURN(status);
+		}
+		if ( vmm != SPARK_STATUS_UNSUPPORTED )
+			status = vmm;
+	}
 	if ( status == SPARK_STATUS_OK && SparkGpuMalloc(&pack->spine_allocation,(size_t)(bytes + 255u)) != SPARK_GPU_SUCCESS )
 	{
 		pack->spine_allocation = 0;
