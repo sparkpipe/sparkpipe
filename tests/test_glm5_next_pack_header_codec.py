@@ -177,6 +177,14 @@ def main():
                         result = stop.code
                 assert (result == 0) == passes, (entry_index, extra, result)
             path.unlink()
+    assert pack.MODEL_REVISIONS["glm53_flash"] == pack.REVISION
+    assert pack.MODEL_REVISIONS["sage21_flash"] == pack.SAGE21_FLASH_REVISION
+    conv_source = type("ConvSource", (), {
+        "meta": lambda self, name: ("F32", (16, 1, 4), "fixture"),
+    })()
+    conv_builder = pack.Packer(conv_source, 4, 1, 0, 1, False, False, False)
+    conv_item = conv_builder.add_kda_conv(pack.K_KDA_Q_CONV, 0, "model.language_model.layers.0.self_attn.q_conv1d.weight")
+    assert conv_item.entry.rows == 4 and conv_item.entry.columns == 4 and conv_item.entry.payload_bytes == 32
     print("PASS header expert codec: bf16/fp8/nvfp4 source-driven, explicit match, "
           "mixed and mismatched codecs refused, no-expert pack needs an explicit codec, "
           "pack_verify refuses a stale header unless the exact value is accepted, --expert-layers "

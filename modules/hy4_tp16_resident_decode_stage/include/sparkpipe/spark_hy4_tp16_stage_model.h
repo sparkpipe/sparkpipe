@@ -59,9 +59,15 @@ struct Hy4Geometry
 	static constexpr float kHcMagnitude = 2.0f;
 	static constexpr uint32_t kPageSlots = SPARK_HY4_TP16_STAGE_PAGE_SLOTS;
 	static bool IndexerLayer(uint32_t layer) { return layer == 0u || layer % 4u == 1u; }
+#ifdef HY4_FP8
+	static const char *Tag(void) { return "sparkpipe_hy4_fp8"; }
+	static const char *Name(void) { return "hy4-fp8"; }
+	static const char *ReportTag(void) { return "HY4_FP8-STATE"; }
+#else
 	static const char *Tag(void) { return "sparkpipe_hy4"; }
 	static const char *Name(void) { return "hy4-preview"; }
 	static const char *ReportTag(void) { return "HY4-STATE"; }
+#endif
 };
 #endif
 

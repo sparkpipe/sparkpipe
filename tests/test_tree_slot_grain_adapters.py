@@ -64,6 +64,15 @@ ADAPTERS = (
         1,
     ),
     (
+        "hy4_fp8",
+        "modules/hy4_tp16_resident_decode_stage/source/spark_hy4_tp16_stage_serving.c",
+        ["modules/hy4_tp16_resident_decode_stage/include"],
+        [f'-DHY4_TP16_CONTRACT_SHA256="{SHA}"', "-DHY4_FP8=1"],
+        "SparkHy4Tp16StageModel",
+        16,
+        1,
+    ),
+    (
         "mimo26_pro",
         "modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_serving.c",
         ["modules/mimo26_pro_tp16_resident_decode_stage/include"],
@@ -124,6 +133,24 @@ ADAPTERS = (
         4,
     ),
     (
+        "sage21_flash",
+        "modules/glm53_flash_tp16_resident_decode_stage/source/spark_glm53_flash_tp16_stage_serving.c",
+        ["modules/glm53_flash_tp16_resident_decode_stage/include", "model-families/glm5_next/include"],
+        [
+            f'-DGLM53_FLASH_TP16_CONTRACT_SHA256="{SHA}"',
+            "-DGLM53_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3",
+            '-DGLM53_FLASH_ADAPTER_ID="sage21_flash-tp16"',
+            '-DGLM53_FLASH_MODULE_TAG="sage21_flash_stage"',
+            '-DGLM53_FLASH_MODEL_ID="internlm/Sage-S2.1-Flash-FP8"',
+            '-DGLM53_FLASH_MODEL_REVISION="716e6436905650b7be93e1b7dedfb0bb95afd3a3"',
+            "-DSAGE21_FLASH=1",
+            '-DGLM53_FLASH_PROGRAM="sage21_flash"',
+        ],
+        "SparkGlm53FlashTp16StageModel",
+        64,
+        4,
+    ),
+    (
         "qwen38_flash",
         "modules/qwen38_flash_resident_decode_stage/source/spark_qwen38_flash_stage_serving.c",
         ["modules/qwen38_flash_resident_decode_stage/include"],
@@ -142,6 +169,24 @@ ADAPTERS = (
         "modules/ling3_resident_decode_stage/source/spark_ling3_stage_serving.c",
         ["modules/ling3_resident_decode_stage/include", "model-families/ling/include"],
         [f'-DLING3_CONTRACT_SHA256="{SHA}"'],
+        "SparkLing3StageModel",
+        0,
+        0,
+    ),
+    (
+        "ling31_flash",
+        "modules/ling3_resident_decode_stage/source/spark_ling3_stage_serving.c",
+        ["modules/ling3_resident_decode_stage/include", "model-families/ling/include"],
+        [f'-DLING3_CONTRACT_SHA256="{SHA}"', "-DLING31_FLASH=1"],
+        "SparkLing3StageModel",
+        0,
+        0,
+    ),
+    (
+        "ling32_air",
+        "modules/ling3_resident_decode_stage/source/spark_ling3_stage_serving.c",
+        ["modules/ling3_resident_decode_stage/include", "model-families/ling/include"],
+        [f'-DLING3_CONTRACT_SHA256="{SHA}"', "-DLING32_AIR=1"],
         "SparkLing3StageModel",
         0,
         0,
@@ -318,7 +363,9 @@ def main() -> None:
             ]
             subprocess.run(cmd, cwd=ROOT, check=True)
             subprocess.run([str(binary)], cwd=ROOT, check=True)
-    print(f"PASS test_tree_slot_grain_adapters: verified 11 tree-enabled adapters and 3 non-tree adapters")
+    tree_count = sum(1 for entry in ADAPTERS if entry[5] != 0)
+    non_tree_count = len(ADAPTERS) - tree_count
+    print(f"PASS test_tree_slot_grain_adapters: verified {tree_count} tree-enabled adapters and {non_tree_count} non-tree adapters")
 
 
 if __name__ == "__main__":

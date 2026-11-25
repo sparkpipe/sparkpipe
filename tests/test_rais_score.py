@@ -701,6 +701,8 @@ class TestRaisDivisorReconstitution(unittest.TestCase):
             ("hy4_fp8", "hy4-fp8"),
             ("ling31_flash", "ling-3.1-flash"),
             ("ling32_air", "ling-3.2-air"),
+            ("sage21_flash", "sage-s2.1-flash"),
+            ("sage_s21_flash", "sage-s2.1-flash"),
         ):
             self.assertEqual(rais_score.resolve_model_name(alias), canonical)
             spec = rais_score.MODEL_SPECS[canonical]
@@ -713,12 +715,14 @@ class TestRaisDivisorReconstitution(unittest.TestCase):
             sample_valid_record("ling-3.0-flash", scale=1.0),
             sample_valid_record("ling-3.1-flash", scale=0.85),
             sample_valid_record("ling-3.2-air", scale=1.15),
+            sample_valid_record("glm-5.3-flash", scale=1.0),
+            sample_valid_record("sage-s2.1-flash", scale=1.02),
         ]
         rec = rais_score.reconstitute_basket(
             overlap,
             "16x-gb10-1x100g",
-            prev_weights={"hy4-preview": 0.5, "ling-3.0-flash": 0.5},
-            new_weights={"hy4-fp8": 0.4, "ling-3.1-flash": 0.35, "ling-3.2-air": 0.25},
+            prev_weights={"hy4-preview": 0.4, "ling-3.0-flash": 0.3, "glm-5.3-flash": 0.3},
+            new_weights={"hy4-fp8": 0.3, "ling-3.1-flash": 0.25, "ling-3.2-air": 0.2, "sage-s2.1-flash": 0.25},
         )
         self.assertAlmostEqual(rec["index_before"], rec["index_after"], places=4)
 

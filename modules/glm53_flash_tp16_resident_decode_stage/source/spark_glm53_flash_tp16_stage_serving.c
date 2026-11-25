@@ -17,6 +17,10 @@
 #error "GLM53_FLASH_MODEL_ID and GLM53_FLASH_MODEL_REVISION must name the checkpoint this build's packs come from"
 #endif
 
+#ifndef GLM53_FLASH_PROGRAM
+#define GLM53_FLASH_PROGRAM "glm53_flash"
+#endif
+
 #define SPARK_GLM53_FLASH_TP16_ADAPTER_ID GLM53_FLASH_ADAPTER_ID
 #define SPARK_GLM53_FLASH_TP16_MODEL_ID GLM53_FLASH_MODEL_ID
 #define SPARK_GLM53_FLASH_TP16_MODEL_REVISION GLM53_FLASH_MODEL_REVISION
@@ -61,7 +65,7 @@ static const SparkStageServingModel Glm53FlashTp16StageServing =
 	.adapter_id = SPARK_GLM53_FLASH_TP16_ADAPTER_ID,
 	.model_id = SPARK_GLM53_FLASH_TP16_MODEL_ID,
 	.model_revision = SPARK_GLM53_FLASH_TP16_MODEL_REVISION,
-	.program = "glm53_flash",
+	.program = GLM53_FLASH_PROGRAM,
 	.contract_sha256 = GLM53_FLASH_TP16_CONTRACT_SHA256,
 	.module_tag = GLM53_FLASH_MODULE_TAG,
 	.runner_model = SparkGlm53FlashTp16StageModel,

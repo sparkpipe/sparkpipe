@@ -40,6 +40,18 @@ struct Glm53FlashGeometry
 	static const char *WeightdRevision(void) { return "84c6a6aa9497188e15a635ba793b0f95a79b1033"; }
 	static const char *ReportTag(void) { return "GLM53_FLASH-STATE"; }
 };
+
+template<uint32_t TP, uint32_t EXPERT_CODEC>
+struct Sage21FlashGeometry
+{
+	static constexpr uint32_t kTpDegree = TP;
+	static constexpr uint32_t kExpertCodec = EXPERT_CODEC;
+	static constexpr uint32_t kVerifyRows = SPARK_GLM53_FLASH_TP16_VERIFY_ROWS;
+	static const char *Tag(void) { return "sparkpipe_sage21_flash"; }
+	static const char *WeightdModel(void) { return "glm5_next_stage"; }
+	static const char *WeightdRevision(void) { return "716e6436905650b7be93e1b7dedfb0bb95afd3a3"; }
+	static const char *ReportTag(void) { return "SAGE21_FLASH-STATE"; }
+};
 #endif
 
 #endif
