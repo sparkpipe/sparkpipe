@@ -127,6 +127,9 @@ SparkGpuError SparkGpuFuncSetAttribute(const void *function, SparkGpuFunctionAtt
 SparkGpuError SparkGpuFuncGetAttributes(SparkGpuFunctionAttributes *attributes, const void *function);
 SparkGpuError SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(int *blocks, const void *function, int block_threads, size_t shared_bytes);
 
+typedef struct SparkNvrmArgumentCapture { uint8_t *packed; const SparkDeviceParameter *layout; uint32_t count,bytes,captured,dependent,grid[3],block[3]; size_t shared; SparkGpuStream stream; SparkGpuError error; } SparkNvrmArgumentCapture;
+SparkNvrmArgumentCapture *SparkNvrmCaptureSet(SparkNvrmArgumentCapture *capture);
+SparkGpuError SparkNvrmLaunchPointers(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t dependent, size_t shared_bytes, SparkGpuStream stream, void **arguments);
 SparkGpuError SparkNvrmGpuDefaultStream(SparkGpuStream *stream);
 SparkGpuError SparkNvrmGpuRelease(void);
 SparkGpuError SparkNvrmLaunchPacked(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
@@ -141,58 +144,15 @@ SparkStatus SparkNvrmVideoMemoryInfo(uint64_t *free_bytes, uint64_t *total_bytes
 #ifdef __cplusplus
 }
 
-static inline SparkGpuError SparkGpuEventCreate(SparkGpuEvent *event, unsigned int flags)
-{
-	return(SparkGpuEventCreateWithFlags(event,flags));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuMalloc(T **pointer, size_t bytes)
-{
-	return(SparkGpuMalloc((void **)pointer,bytes));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuMallocManaged(T **pointer, size_t bytes, unsigned int flags = SPARK_GPU_MEM_ATTACH_GLOBAL)
-{
-	return(SparkGpuMallocManaged((void **)pointer,bytes,flags));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuMallocHost(T **pointer, size_t bytes)
-{
-	return(SparkGpuMallocHost((void **)pointer,bytes));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuHostAlloc(T **pointer, size_t bytes, unsigned int flags)
-{
-	return(SparkGpuHostAlloc((void **)pointer,bytes,flags));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuHostGetDevicePointer(T **device_pointer, void *host_pointer, unsigned int flags)
-{
-	return(SparkGpuHostGetDevicePointer((void **)device_pointer,host_pointer,flags));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuFuncSetAttribute(T *function, SparkGpuFunctionAttribute attribute, int value)
-{
-	return(SparkGpuFuncSetAttribute((const void *)function,attribute,value));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuFuncGetAttributes(SparkGpuFunctionAttributes *attributes, T *function)
-{
-	return(SparkGpuFuncGetAttributes(attributes,(const void *)function));
-}
-
-template<typename T>
-static inline SparkGpuError SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(int *blocks, T function, int block_threads, size_t shared_bytes)
-{
-	return(SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(blocks,(const void *)function,block_threads,shared_bytes));
-}
+static inline SparkGpuError SparkGpuEventCreate(SparkGpuEvent *event, unsigned int flags) { return(SparkGpuEventCreateWithFlags(event,flags)); }
+template<typename T> static inline SparkGpuError SparkGpuMalloc(T **pointer, size_t bytes) { return(SparkGpuMalloc((void **)pointer,bytes)); }
+template<typename T> static inline SparkGpuError SparkGpuMallocManaged(T **pointer, size_t bytes, unsigned int flags = SPARK_GPU_MEM_ATTACH_GLOBAL) { return(SparkGpuMallocManaged((void **)pointer,bytes,flags)); }
+template<typename T> static inline SparkGpuError SparkGpuMallocHost(T **pointer, size_t bytes) { return(SparkGpuMallocHost((void **)pointer,bytes)); }
+template<typename T> static inline SparkGpuError SparkGpuHostAlloc(T **pointer, size_t bytes, unsigned int flags) { return(SparkGpuHostAlloc((void **)pointer,bytes,flags)); }
+template<typename T> static inline SparkGpuError SparkGpuHostGetDevicePointer(T **device_pointer, void *host_pointer, unsigned int flags) { return(SparkGpuHostGetDevicePointer((void **)device_pointer,host_pointer,flags)); }
+template<typename T> static inline SparkGpuError SparkGpuFuncSetAttribute(T *function, SparkGpuFunctionAttribute attribute, int value) { return(SparkGpuFuncSetAttribute((const void *)function,attribute,value)); }
+template<typename T> static inline SparkGpuError SparkGpuFuncGetAttributes(SparkGpuFunctionAttributes *attributes, T *function) { return(SparkGpuFuncGetAttributes(attributes,(const void *)function)); }
+template<typename T> static inline SparkGpuError SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(int *blocks, T function, int block_threads, size_t shared_bytes) { return(SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(blocks,(const void *)function,block_threads,shared_bytes)); }
 #endif
 
 #endif

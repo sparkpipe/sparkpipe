@@ -15,6 +15,7 @@
 #include "runtime/device/nvrm/nvrm_manifest.h"
 #include "runtime/device/nvrm/nvrm_names.h"
 #include "runtime/device/nvrm/nvrm_register.h"
+#include "runtime/device/nvrm/spark_gpu_nvrm.h"
 
 #define REGISTER_PATH_BYTES 4096u
 #define REGISTER_TABLE_START 1024u
@@ -716,33 +717,21 @@ void __cudaRegisterFunction(void **handle, const char *host, char *device, const
 	void *block, void *grid, int *warp)
 {
 	const RegisterBinary *binary = (const RegisterBinary *)(const void *)handle;
-	(void)device;
-	(void)thread_limit;
-	(void)thread;
-	(void)group;
-	(void)block;
-	(void)grid;
-	(void)warp;
+	(void)device; (void)thread_limit; (void)thread; (void)group; (void)block; (void)grid; (void)warp;
 	(void)SparkNvrmRegisterFunction(binary != 0 ? binary->module : 0,host,name);
 }
 
 void __cudaRegisterVar(void **handle, char *host, char *device, const char *name, int external, size_t bytes, int constant, int global)
 {
 	const RegisterBinary *binary = (const RegisterBinary *)(const void *)handle;
-	(void)device;
-	(void)external;
-	(void)constant;
-	(void)global;
+	(void)device; (void)external; (void)constant; (void)global;
 	(void)SparkNvrmRegisterVariable(binary != 0 ? binary->module : 0,host,name,bytes,0u);
 }
 
 void __cudaRegisterManagedVar(void **handle, void **host, char *device, const char *name, int external, size_t bytes, int constant, int global)
 {
 	const RegisterBinary *binary = (const RegisterBinary *)(const void *)handle;
-	(void)device;
-	(void)external;
-	(void)constant;
-	(void)global;
+	(void)device; (void)external; (void)constant; (void)global;
 	(void)SparkNvrmRegisterVariable(binary != 0 ? binary->module : 0,host,name,bytes,1u);
 }
 
@@ -753,28 +742,67 @@ char __cudaInitModule(void **handle)
 	return(0);
 }
 
+static _Thread_local SparkNvrmArgumentCapture *register_capture;
+
+SparkNvrmArgumentCapture *SparkNvrmCaptureSet(SparkNvrmArgumentCapture *capture)
+{
+	SparkNvrmArgumentCapture *previous = register_capture;
+	register_capture = capture;
+	return(previous);
+}
+
+static int RegisterCaptureArgs(const void *function, void **arguments)
+{
+	SparkNvrmArgumentCapture *capture = register_capture;
+	uint32_t index;
+	if ( capture == 0 )
+		return(0);
+	if ( capture->layout == 0 )
+	{
+		capture->error = SparkNvrmLaunchPointers(function,capture->grid,capture->block,capture->dependent,capture->shared,capture->stream,arguments);
+		capture->captured = 1u;
+		return(1);
+	}
+	if ( capture->count != 0u && arguments == 0 )
+		return(0);
+	for (index = 0u; index < capture->count; index++)
+		memcpy(capture->packed + capture->layout[index].offset,arguments[index],capture->layout[index].bytes);
+	capture->captured = 1u;
+	return(1);
+}
+
 unsigned __cudaPushCallConfiguration(SparkNvrmDim grid, SparkNvrmDim block, size_t shared, void *stream)
 {
-	(void)grid;
-	(void)block;
-	(void)shared;
-	(void)stream;
+	(void)grid; (void)block; (void)shared; (void)stream;
+	if ( register_capture != 0 )
+		return(0u);
 	RegisterAbort("a <<<>>> launch configuration reached the hosted runtime",0);
 	return(1u);
 }
 
 int __cudaPopCallConfiguration(SparkNvrmDim *grid, SparkNvrmDim *block, size_t *shared, void *stream)
 {
-	(void)grid;
-	(void)block;
-	(void)shared;
-	(void)stream;
+	if ( register_capture != 0 )
+	{
+		const SparkNvrmDim one = {1u, 1u, 1u};
+		if ( grid != 0 ) *grid = one;
+		if ( block != 0 ) *block = one;
+		if ( shared != 0 ) *shared = 0u;
+		if ( stream != 0 ) *(void **)stream = 0;
+		return(0);
+	}
+	(void)grid; (void)block; (void)shared; (void)stream;
 	RegisterAbort("a <<<>>> launch reached the hosted runtime",0);
 	return(1);
 }
 
 int __cudaGetKernel(void **kernel, const void *function)
 {
+	if ( register_capture != 0 )
+	{
+		if ( kernel != 0 ) *kernel = (void *)(uintptr_t)function;
+		return(0);
+	}
 	(void)kernel;
 	RegisterAbort("a <<<>>> kernel lookup reached the hosted runtime",function);
 	return(1);
@@ -782,11 +810,9 @@ int __cudaGetKernel(void **kernel, const void *function)
 
 int __cudaLaunchKernel(void *kernel, SparkNvrmDim grid, SparkNvrmDim block, void **arguments, size_t shared, void *stream)
 {
-	(void)grid;
-	(void)block;
-	(void)arguments;
-	(void)shared;
-	(void)stream;
+	(void)grid; (void)block; (void)shared; (void)stream;
+	if ( RegisterCaptureArgs(kernel,arguments) )
+		return(0);
 	RegisterAbort("a <<<>>> kernel launch reached the hosted runtime",kernel);
 	return(1);
 }
@@ -798,11 +824,9 @@ int __cudaLaunchKernel_ptsz(void *kernel, SparkNvrmDim grid, SparkNvrmDim block,
 
 int cudaLaunchKernel(const void *function, SparkNvrmDim grid, SparkNvrmDim block, void **arguments, size_t shared, void *stream)
 {
-	(void)grid;
-	(void)block;
-	(void)arguments;
-	(void)shared;
-	(void)stream;
+	(void)grid; (void)block; (void)shared; (void)stream;
+	if ( RegisterCaptureArgs(function,arguments) )
+		return(0);
 	RegisterAbort("a runtime-API kernel launch reached the hosted runtime",function);
 	return(1);
 }

@@ -63,11 +63,38 @@ __global__ void ArgumentStep(uint32_t *output, float base)
 	(void)base;
 }
 
+template<uint32_t Step>
+__global__ void ArgumentOverloaded(uint32_t a)
+{
+	(void)a;
+}
+
+template<uint32_t Step>
+__global__ void ArgumentOverloaded(uint32_t a, uint64_t b)
+{
+	(void)a;
+	(void)b;
+}
+
+template<uint32_t Step>
+__global__ void ArgumentDefaults(uint32_t first, ArgumentShape shape, const float *table = 0, float scale = 1.5f, uint32_t mask = 0xffffffffu, bool flag = true)
+{
+	(void)first;
+	(void)shape;
+	(void)table;
+	(void)scale;
+	(void)mask;
+	(void)flag;
+}
+
+static uint32_t argument_dependent;
+
 extern "C" SparkGpuError SparkNvrmLaunchPacked(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes,
 	SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
 {
 	(void)stream;
 	memset(&argument_record,0,sizeof(argument_record));
+	argument_dependent = 0u;
 	argument_record.function = function;
 	memcpy(argument_record.grid,grid,sizeof(argument_record.grid));
 	memcpy(argument_record.block,block,sizeof(argument_record.block));
@@ -81,6 +108,27 @@ extern "C" SparkGpuError SparkNvrmLaunchPacked(const void *function, const uint3
 	}
 	argument_record.launches++;
 	return(SPARK_GPU_SUCCESS);
+}
+
+extern "C" SparkGpuError SparkNvrmLaunchDependent(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes,
+	SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
+{
+	const SparkGpuError error = SparkNvrmLaunchPacked(function,grid,block,shared_bytes,stream,parameters,layout,count,bytes);
+	argument_dependent = 1u;
+	return(error);
+}
+
+extern "C" SparkGpuError SparkNvrmLaunchPointers(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t dependent, size_t shared_bytes,
+	SparkGpuStream stream, void **arguments)
+{
+	SparkDeviceParameter layout[2] = {{0u, 4u, 4u}, {8u, 8u, 8u}};
+	uint8_t packed[16];
+	memset(packed,0,sizeof(packed));
+	memcpy(packed,arguments[0],4u);
+	memcpy(packed + 8u,arguments[1],8u);
+	return(dependent != 0u
+		? SparkNvrmLaunchDependent(function,grid,block,shared_bytes,stream,packed,layout,2u,16u)
+		: SparkNvrmLaunchPacked(function,grid,block,shared_bytes,stream,packed,layout,2u,16u));
 }
 
 static void Check(int condition, const char *what)
@@ -151,10 +199,43 @@ static void TestTemplate(void)
 	Check(PackedAt<float>(1u,8u,7.0f),"an int argument converts to a float parameter");
 }
 
+static void TestDefaults(void)
+{
+	ArgumentBits bits;
+	ArgumentShape shape;
+	memset(&bits,0,sizeof(bits));
+	memset(&shape,0,sizeof(shape));
+	bits.low = 11u;
+	shape.rows = 9u;
+	shape.lanes = 4u;
+	shape.flag = 2u;
+	shape.weight = 0.75;
+	LM_LAUNCH((ArgumentDefaults<3u>),dim3(4u,5u),dim3(128u),64u,(SparkGpuStream)0,bits.low,shape);
+	Check(argument_record.launches == 1u && argument_dependent == 0u && argument_record.function == (const void *)ArgumentDefaults<3u>,
+		"a defaulted kernel launch reaches the packed entry with its template-id");
+	Check(argument_record.grid[0] == 4u && argument_record.grid[1] == 5u && argument_record.block[0] == 128u && argument_record.shared == 64u,
+		"a defaulted kernel launch preserves its grid, block and shared memory");
+	Check(argument_record.count == 6u && argument_record.bytes == 41u,"six parameters with four defaults laid out in 41 bytes");
+	Check(PackedAt<uint32_t>(0u,0u,11u),"bit-field argument arrives before defaulted parameters");
+	Check(ShapeAt(1u,8u,&shape),"struct argument arrives by value before defaulted parameters");
+	Check(PackedAt<const float *>(2u,24u,(const float *)0),"default null pointer arrives at offset 24");
+	Check(PackedAt<float>(3u,32u,1.5f),"non-zero default float arrives at offset 32");
+	Check(PackedAt<uint32_t>(4u,36u,0xffffffffu),"non-zero default uint32_t arrives at offset 36");
+	Check(PackedAt<bool>(5u,40u,true),"non-zero default bool arrives at offset 40");
+	Check(LM_LAUNCH_DEPENDENT((ArgumentDefaults<3u>),2u,32u,0u,(SparkGpuStream)0,5u,shape,0,2.25f,0x55u,false) == SPARK_GPU_SUCCESS && argument_dependent == 1u,
+		"a dependent launch reaches SparkNvrmLaunchDependent");
+	Check(PackedAt<uint32_t>(0u,0u,5u) && PackedAt<float>(3u,32u,2.25f) && PackedAt<uint32_t>(4u,36u,0x55u) && PackedAt<bool>(5u,40u,false),
+		"dependent launch packs explicit arguments at their offsets");
+	LM_LAUNCH((ArgumentOverloaded<2u>),1u,32u,0u,(SparkGpuStream)0,7u,9ull);
+	Check(argument_record.launches == 1u && argument_record.count == 2u && PackedAt<uint32_t>(0u,0u,7u) && PackedAt<uint64_t>(1u,8u,9ull),
+		"an overloaded template kernel resolves by its argument count");
+}
+
 int main(void)
 {
 	TestConversions();
 	TestTemplate();
+	TestDefaults();
 	if ( argument_failures != 0u )
 	{
 		printf("FAIL (%u)\n",argument_failures);

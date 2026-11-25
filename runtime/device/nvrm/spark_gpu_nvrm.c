@@ -218,14 +218,36 @@ static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], con
 
 SparkGpuError SparkNvrmLaunchPacked(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
 	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
-{
-	return(GpuLaunch(function,grid,block,0u,0u,shared_bytes,stream,parameters,layout,count,bytes));
-}
+{ return(GpuLaunch(function,grid,block,0u,0u,shared_bytes,stream,parameters,layout,count,bytes)); }
 
 SparkGpuError SparkNvrmLaunchDependent(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
 	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
+{ return(GpuLaunch(function,grid,block,0u,1u,shared_bytes,stream,parameters,layout,count,bytes)); }
+
+SparkGpuError SparkNvrmLaunchPointers(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t dependent, size_t shared_bytes,
+	SparkGpuStream stream, void **arguments)
 {
-	return(GpuLaunch(function,grid,block,0u,1u,shared_bytes,stream,parameters,layout,count,bytes));
+	SparkDeviceKernel *kernel = 0;
+	SparkDeviceKernelInfo info;
+	const char *name = 0;
+	uint8_t stack[4096],*packed = stack;
+	uint32_t index;
+	SparkGpuError error;
+	GPU_TRY(SparkNvrmRegisteredName(function,&name));
+	GPU_TRY(GpuReady());
+	if ( SparkNvrmRegisteredKernel(function,&kernel) != SPARK_STATUS_OK || SparkDeviceKernelGetInfo(kernel,&info) != SPARK_STATUS_OK )
+		GPU_FAIL(SparkDeviceLastError()->status);
+	if ( info.parameter_count != 0u && arguments == 0 )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a hosted launch needs its arguments");
+	if ( info.parameter_bytes > sizeof(stack) && (packed = (uint8_t *)malloc(info.parameter_bytes)) == 0 )
+		GPU_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory packing kernel arguments");
+	if ( info.parameter_bytes != 0u )
+		memset(packed,0,info.parameter_bytes);
+	for (index = 0u; index < info.parameter_count; index++)
+		memcpy(packed + info.parameters[index].offset,arguments[index],info.parameters[index].bytes);
+	error = GpuLaunch(function,grid,block,0u,dependent,shared_bytes,stream,packed,info.parameters,info.parameter_count,info.parameter_bytes);
+	if ( packed != stack ) free(packed);
+	return(error);
 }
 
 SparkGpuError SparkNvrmLaunchCluster(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, uint32_t dependent,
@@ -717,61 +739,14 @@ static SparkGpuError GpuNoCommandLists(const char *operation)
 	GPU_REFUSE_IN(operation,SPARK_STATUS_UNSUPPORTED,"stream capture and graphs need command lists, which the backend does not record yet");
 }
 
-SparkGpuError SparkGpuStreamBeginCapture(SparkGpuStream stream, SparkGpuCaptureMode mode)
-{
-	(void)stream;
-	(void)mode;
-	return(GpuNoCommandLists("capture_begin"));
-}
-
-SparkGpuError SparkGpuStreamEndCapture(SparkGpuStream stream, SparkGpuGraph *graph)
-{
-	(void)stream;
-	(void)graph;
-	return(GpuNoCommandLists("capture_end"));
-}
-
-SparkGpuError SparkGpuGraphInstantiate(SparkGpuGraphExec *exec, SparkGpuGraph graph, unsigned long long flags)
-{
-	(void)exec;
-	(void)graph;
-	(void)flags;
-	return(GpuNoCommandLists("graph_instantiate"));
-}
-
-SparkGpuError SparkGpuGraphUpload(SparkGpuGraphExec exec, SparkGpuStream stream)
-{
-	(void)exec;
-	(void)stream;
-	return(GpuNoCommandLists("graph_upload"));
-}
-
-SparkGpuError SparkGpuGraphLaunch(SparkGpuGraphExec exec, SparkGpuStream stream)
-{
-	(void)exec;
-	(void)stream;
-	return(GpuNoCommandLists("graph_launch"));
-}
-
-SparkGpuError SparkGpuGraphGetNodes(SparkGpuGraph graph, SparkGpuGraphNode *nodes, size_t *count)
-{
-	(void)graph;
-	(void)nodes;
-	(void)count;
-	return(GpuNoCommandLists("graph_nodes"));
-}
-
-SparkGpuError SparkGpuGraphExecDestroy(SparkGpuGraphExec exec)
-{
-	(void)exec;
-	return(GpuNoCommandLists("graph_exec_destroy"));
-}
-
-SparkGpuError SparkGpuGraphDestroy(SparkGpuGraph graph)
-{
-	(void)graph;
-	return(GpuNoCommandLists("graph_destroy"));
-}
+SparkGpuError SparkGpuStreamBeginCapture(SparkGpuStream stream, SparkGpuCaptureMode mode) { (void)stream; (void)mode; return(GpuNoCommandLists("capture_begin")); }
+SparkGpuError SparkGpuStreamEndCapture(SparkGpuStream stream, SparkGpuGraph *graph) { (void)stream; (void)graph; return(GpuNoCommandLists("capture_end")); }
+SparkGpuError SparkGpuGraphInstantiate(SparkGpuGraphExec *exec, SparkGpuGraph graph, unsigned long long flags) { (void)exec; (void)graph; (void)flags; return(GpuNoCommandLists("graph_instantiate")); }
+SparkGpuError SparkGpuGraphUpload(SparkGpuGraphExec exec, SparkGpuStream stream) { (void)exec; (void)stream; return(GpuNoCommandLists("graph_upload")); }
+SparkGpuError SparkGpuGraphLaunch(SparkGpuGraphExec exec, SparkGpuStream stream) { (void)exec; (void)stream; return(GpuNoCommandLists("graph_launch")); }
+SparkGpuError SparkGpuGraphGetNodes(SparkGpuGraph graph, SparkGpuGraphNode *nodes, size_t *count) { (void)graph; (void)nodes; (void)count; return(GpuNoCommandLists("graph_nodes")); }
+SparkGpuError SparkGpuGraphExecDestroy(SparkGpuGraphExec exec) { (void)exec; return(GpuNoCommandLists("graph_exec_destroy")); }
+SparkGpuError SparkGpuGraphDestroy(SparkGpuGraph graph) { (void)graph; return(GpuNoCommandLists("graph_destroy")); }
 
 SparkGpuError SparkGpuLaunchHostFunc(SparkGpuStream stream, SparkGpuHostFunction function, void *context)
 {
