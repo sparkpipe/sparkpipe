@@ -22,6 +22,7 @@
 #define SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES 4u
 #define SPARK_DRAFT_BRIDGE_NS_PER_MS UINT64_C(1000000)
 #define SPARK_DRAFT_BRIDGE_DISCONNECTED_FD (-1)
+#define SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES 65536u
 
 #define SPARK_DRAFT_BRIDGE_PHASE_IDLE 0u
 #define SPARK_DRAFT_BRIDGE_PHASE_CONNECT 1u
@@ -44,8 +45,11 @@ struct SparkDraftBridge
     char target_model[SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES];
     uint8_t *request_buffer;
     uint8_t *response_buffer;
+    uint8_t *rx_buffer;
     uint64_t request_buffer_bytes;
     uint64_t response_buffer_bytes;
+    uint64_t rx_head;
+    uint64_t rx_tail;
     uint32_t port;
     uint32_t tap_row_bytes;
     uint32_t max_committed_tokens;
@@ -69,6 +73,7 @@ struct SparkDraftBridge
     uint32_t server_status;
     uint32_t stale;
     uint32_t phase;
+    uint32_t batch_cork;
 };
 
 static void SparkDraftBridgePutU32Le(
@@ -146,6 +151,8 @@ static void SparkDraftBridgeDropConnection(
         (void)close(bridge->socket_fd);
         bridge->socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
     }
+    bridge->rx_head = 0u;
+    bridge->rx_tail = 0u;
     SparkDraftBridgeFreeAddresses(bridge);
 }
 
@@ -159,6 +166,7 @@ static void SparkDraftBridgeResetPipeline(
     bridge->response_bytes = 0u;
     bridge->response_expected = 0u;
     bridge->sent_any = 0u;
+    bridge->batch_cork = 0u;
     bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
 }
 
@@ -177,6 +185,22 @@ static uint64_t SparkDraftBridgeDeadline(
         (uint64_t)timeout_ms * SPARK_DRAFT_BRIDGE_NS_PER_MS;
 }
 
+static void SparkDraftBridgeQuickAck(
+    int socket_fd)
+{
+#ifdef TCP_QUICKACK
+    int enabled = 1;
+    (void)setsockopt(
+        socket_fd,
+        IPPROTO_TCP,
+        TCP_QUICKACK,
+        &enabled,
+        (socklen_t)sizeof(enabled));
+#else
+    (void)socket_fd;
+#endif
+}
+
 static SparkStatus SparkDraftBridgeConfigureSocket(
     int socket_fd)
 {
@@ -192,6 +216,7 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
     {
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    SparkDraftBridgeQuickAck(socket_fd);
 #ifdef SO_NOSIGPIPE
     enabled = 1;
     if (setsockopt(
@@ -378,14 +403,48 @@ static SparkStatus SparkDraftBridgeReceive(
     SparkDraftBridge *bridge)
 {
     ssize_t got;
+    uint64_t need;
+    uint64_t avail;
+    uint64_t take;
 
     while (bridge->response_bytes < bridge->response_expected)
     {
-        got = recv(
-            bridge->socket_fd,
-            bridge->response_buffer + bridge->response_bytes,
-            (size_t)(bridge->response_expected - bridge->response_bytes),
-            0);
+        need = bridge->response_expected - bridge->response_bytes;
+        avail = bridge->rx_tail - bridge->rx_head;
+        if (avail != 0u)
+        {
+            take = avail < need ? avail : need;
+            memcpy(
+                bridge->response_buffer + bridge->response_bytes,
+                bridge->rx_buffer + bridge->rx_head,
+                (size_t)take);
+            bridge->response_bytes += take;
+            bridge->rx_head += take;
+            if (bridge->rx_head == bridge->rx_tail)
+            {
+                bridge->rx_head = 0u;
+                bridge->rx_tail = 0u;
+            }
+            continue;
+        }
+        bridge->rx_head = 0u;
+        bridge->rx_tail = 0u;
+        if (need >= SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES || bridge->rx_buffer == 0)
+        {
+            got = recv(
+                bridge->socket_fd,
+                bridge->response_buffer + bridge->response_bytes,
+                (size_t)need,
+                0);
+        }
+        else
+        {
+            got = recv(
+                bridge->socket_fd,
+                bridge->rx_buffer,
+                SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES,
+                0);
+        }
         if (got < 0 && errno == EINTR)
         {
             continue;
@@ -398,7 +457,15 @@ static SparkStatus SparkDraftBridgeReceive(
         {
             return SparkDraftBridgeFailTransport(bridge);
         }
-        bridge->response_bytes += (uint64_t)got;
+        SparkDraftBridgeQuickAck(bridge->socket_fd);
+        if (need >= SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES || bridge->rx_buffer == 0)
+        {
+            bridge->response_bytes += (uint64_t)got;
+        }
+        else
+        {
+            bridge->rx_tail = (uint64_t)got;
+        }
     }
     return SPARK_STATUS_OK;
 }
@@ -590,10 +657,12 @@ SparkStatus SparkDraftBridgeInitialize(
         (uint64_t)SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES;
     bridge->request_buffer = (uint8_t *)malloc((size_t)request_bytes);
     bridge->response_buffer = (uint8_t *)malloc((size_t)response_bytes);
-    if (bridge->request_buffer == 0 || bridge->response_buffer == 0)
+    bridge->rx_buffer = (uint8_t *)malloc(SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES);
+    if (bridge->request_buffer == 0 || bridge->response_buffer == 0 || bridge->rx_buffer == 0)
     {
         free(bridge->request_buffer);
         free(bridge->response_buffer);
+        free(bridge->rx_buffer);
         free(bridge);
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
@@ -613,6 +682,7 @@ void SparkDraftBridgeDestroy(
     SparkDraftBridgeDropConnection(bridge);
     free(bridge->request_buffer);
     free(bridge->response_buffer);
+    free(bridge->rx_buffer);
     free(bridge);
 }
 
@@ -829,12 +899,14 @@ static SparkStatus SparkDraftBridgeSubmitTree(
             status = SPARK_STATUS_OK;
         }
         if (status == SPARK_STATUS_OK &&
-            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND &&
+            bridge->batch_cork == 0u)
         {
             status = SparkDraftBridgeSend(bridge);
         }
     }
-    else if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_CONNECT)
+    else if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_CONNECT &&
+             bridge->batch_cork == 0u)
     {
         status = SparkDraftBridgeSend(bridge);
     }
@@ -842,6 +914,41 @@ static SparkStatus SparkDraftBridgeSubmitTree(
     {
         status = SPARK_STATUS_OK;
     }
+    if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
+    {
+        bridge->inflight_count = 1u;
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_FAILED;
+    }
+    return SPARK_STATUS_OK;
+}
+
+void SparkDraftBridgeBeginBatch(
+    SparkDraftBridge *bridge)
+{
+    if (bridge != 0)
+    {
+        bridge->batch_cork = 1u;
+    }
+}
+
+SparkStatus SparkDraftBridgeFlushBatch(
+    SparkDraftBridge *bridge)
+{
+    SparkStatus status;
+
+    if (bridge == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    bridge->batch_cork = 0u;
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_FAILED ||
+        bridge->inflight_count == 0u ||
+        bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_CONNECT ||
+        bridge->request_sent >= bridge->request_bytes)
+    {
+        return SPARK_STATUS_OK;
+    }
+    status = SparkDraftBridgeSend(bridge);
     if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
     {
         bridge->inflight_count = 1u;
@@ -953,6 +1060,7 @@ SparkStatus SparkDraftBridgeReply(
         SparkDraftBridgeResetPipeline(bridge);
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    bridge->batch_cork = 0u;
     status = SparkDraftBridgeAdvance(bridge);
     if (status != SPARK_STATUS_OK)
     {

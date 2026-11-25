@@ -115,6 +115,10 @@ SparkStatus SparkDraftBridgeEnqueueTree(
     uint32_t max_depth,
     const SparkRowSampling *sampling,
     uint32_t node_capacity);
+void SparkDraftBridgeBeginBatch(
+    SparkDraftBridge *bridge);
+SparkStatus SparkDraftBridgeFlushBatch(
+    SparkDraftBridge *bridge);
 SparkStatus SparkDraftBridgeReply(
     SparkDraftBridge *bridge,
     SparkDraftBridgeNode *nodes_out,
