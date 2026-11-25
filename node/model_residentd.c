@@ -3676,12 +3676,9 @@ static uint32_t SparkModelResidentdCpuCapacity(uint32_t cpu)
 
 static void SparkModelResidentdPinBigCores(void)
 {
-	const char *env = getenv("SPARK_RESIDENTD_CPU_AFFINITY");
 	long configured = sysconf(_SC_NPROCESSORS_CONF);
 	uint32_t cpu, cpus, highest = 0u, lowest = UINT32_MAX, capacity, count = 0u, exclude_top = 1u;
 	cpu_set_t current, set;
-	if ( env != 0 && (strcmp(env,"0") == 0 || strcmp(env,"off") == 0 || strcmp(env,"false") == 0) )
-		return;
 	cpus = configured > 0 && configured < CPU_SETSIZE ? (uint32_t)configured : 0u;
 	if ( cpus < 2u || sched_getaffinity(0,sizeof(current),&current) != 0 )
 		return;
