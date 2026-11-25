@@ -188,7 +188,11 @@ python3 tools/drafter_pack.py --drafter k31dspark \
 
 - **Drafters:** `k31dspark` (Kimi K3.1 Pro's DSpark), `dsv41dspark` (DeepSeek
   V4.1 1017's DSpark, whose target tensors are in its own files, so no
-  `--target`) and `qwen27bdspine` (Qwen3.8-27B's DSpine b16).
+  `--target`), `qwen27bdspine` (Qwen3.8-27B's DSpine b16), `glm53dspark`
+  (GLM-5.3's RedHat AI DSpark), `qwen38maxdspark` (Qwen3.8-Max's RadixArk
+  DSpark), `glm53flashdflash2` (GLM-5.3-Flash's DFlash2), `kexaone2dspark`
+  (K-EXAONE 2.0's official DSpark) and `axk2dspark` (A.X-K2's official DSpark,
+  whose target tensors live in its own checkpoint, so no `--target`).
 - **Contents:** every drafter tensor byte for byte under its checkpoint name,
   with its dtype as the kind (`bf16`, `f32`, `fp8`, `e8m0`, and `mxfp4_e2m1`
   for the DSpark's packed experts), and the target's embedding, head and final
@@ -431,16 +435,21 @@ name in the root's config, and the two user units. The lane's `hub_start` and
 (`DRAFTD_SERVER`, `DRAFTD_ENGINE_*`, `DRAFTD_WEIGHTD_UNIT`), and
 `tests/test_model_swap_hub_services.py` keeps them equal to the record.
 
-One engine draft server (`sparkpipe-draftd-engine`) serves all three lanes
-from one root, `/srv/workspace/sparkpipe/draftd-engine`, with one weightd
+One engine draft server (`sparkpipe-draftd-engine`) serves all eight engine
+lanes from one root, `/srv/workspace/sparkpipe/draftd-engine`, with one weightd
 (`sparkpipe-weightd-hub`). Its config, `deployment/hub/draftd_engine.json`,
-lists the three lanes:
+lists the eight lanes:
 
 | Lane | Draft and tap ports | Module and pack | Context cap |
 | --- | --- | --- | --- |
 | `kimi-k3.1-pro` | 7722, 7721 | `k31_dspark_draft_stage.so`, `k31dspark.bf16.tp1` | 12 GiB |
 | `qwen3.8-27b` | 7732, 7731 | `qwen38_dspine_draft_stage.so`, `qwen27bdspine.bf16.tp1` | 8 GiB |
 | `deepseek-v4.1-flash` | 7712, 7711 | `dsv41_dspark_draft_stage.so`, `dsv41dspark.mxfp4.tp1` | 1 GiB |
+| `glm-5.3` | 7742, 7741 | `glm53_dspark_draft_stage.so`, `glm53dspark.bf16.tp1` | 8 GiB |
+| `qwen3.8-max` | 7752, 7751 | `qwen38_max_dspark_draft_stage.so`, `qwen38maxdspark.bf16.tp1` | 6 GiB |
+| `glm-5.3-flash` | 7762, 7761 | `glm53_flash_dflash2_draft_stage.so`, `glm53flashdflash2.bf16.tp1` | 8 GiB |
+| `k-exaone-2.0` | 7772, 7771 | `kexaone2_dspark_draft_stage.so`, `kexaone2dspark.bf16.tp1` | 8 GiB |
+| `a.x-k2` | 7782, 7781 | `axk2_dspark_draft_stage.so`, `axk2dspark.bf16.tp1` | 4 GiB |
 
 An engine lane opens its draft and tap ports when it is activated and closes
 them when it is deactivated, so a lane still served by `block_draftd.py`
@@ -450,6 +459,13 @@ for the scratch on the 32 GB card:
 - Qwen3.8-27B: 8 GiB, the 51 windows `block_draftd.py` keeps; the module
   then peaks at 18,180 MiB.
 - DeepSeek V4.1 Flash: 1 GiB, more than its 1,024 windows of 393,216 bytes.
+- GLM-5.3: 8 GiB (85 2,048-position windows) beside the 6.31 GB pack.
+- Qwen3.8-Max: 6 GiB (38 8,192-position windows) beside the 14.73 GB pack.
+- GLM-5.3-Flash: 8 GiB (204 2,056-column windows) beside the 4.88 GB pack.
+- K-EXAONE 2.0: 8 GiB (409 1,024-position full-attention pages) beside the
+  8.84 GB pack.
+- A.X-K2: 4 GiB (reaches its 256-sequence cap at 2.63 GiB for 128-position
+  windows) beside the 6.84 GB pack.
 
 With `DRAFTD_SERVER=engine`, `tools/hub_draftd.sh`:
 - `start`: starts weightd and the engine draft server if they are not

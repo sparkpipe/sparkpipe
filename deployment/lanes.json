@@ -18,7 +18,37 @@
       "state_budget_bytes": 12884901888,
       "memory_max": "28G",
       "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7742,
+        "target_model": "glm-5.3",
+        "depth": 8,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-glm53",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/glm-5.3-dspark-redhatai",
+        "window": 2040,
+        "context_bytes": 8589934592,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-glm53.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "glm-5.3",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o2,o20,o39,o58,o75",
+        "rank": 15,
+        "stream": "10.10.250.2:7741"
+      }
     },
     "glm-5.3-flash": {
       "launcher": "stage_lane",
@@ -34,7 +64,37 @@
       "state_budget_bytes": 12884901888,
       "memory_max": "24G",
       "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7762,
+        "target_model": "glm-5.3-flash",
+        "depth": 7,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-glm53f",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/glm-5.3-flash-dflash2-incoai-6cc6c481eee9",
+        "window": 2048,
+        "context_bytes": 8589934592,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-glm53f.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "glm-5.3-flash",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o5,o14,o24,o33,o42",
+        "rank": 15,
+        "stream": "10.10.250.2:7761"
+      }
     },
     "kimi-k3": {
       "launcher": "k3_lane",
@@ -251,7 +311,37 @@
       "memory_max": "16G",
       "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
       "text_prompt_prefix_token_ids": [],
-      "state_memory_bytes": 5000000000
+      "state_memory_bytes": 5000000000,
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7752,
+        "target_model": "qwen3.8-max",
+        "depth": 7,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-q38max",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/qwen3.8-max-dspark-radixark",
+        "window": 8185,
+        "context_bytes": 6442450944,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-q38max.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "qwen3.8-max",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o4,o20,o36,o56,o72,o88",
+        "rank": 15,
+        "stream": "10.10.250.2:7751"
+      }
     },
     "qwen3.8-flash": {
       "launcher": "stage_lane",
@@ -429,7 +519,37 @@
       "state_budget_bytes": 4294967296,
       "memory_max": "24G",
       "tokenizer_sha256": "f0bbfdc01fe00c3c5ee17aeff418f6e7f271deae5f5c5badc5c0cf7294aa1714",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7772,
+        "target_model": "k-exaone-2.0",
+        "depth": 7,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-kexaone2",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/k-exaone-2.0-dspark-official",
+        "window": 4096,
+        "context_bytes": 8589934592,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-kexaone2.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "k-exaone-2.0",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o2,o20,o38,o56,o74",
+        "rank": 15,
+        "stream": "10.10.250.2:7771"
+      }
     },
     "a.x-k2": {
       "launcher": "stage_lane",
@@ -444,7 +564,37 @@
       "state_budget_bytes": 12884901888,
       "memory_max": "28G",
       "tokenizer_sha256": "899c0b89971cd5c2a944361bf7193db7616eb6d761c982800d80afbaaacf0fd4",
-      "text_prompt_prefix_token_ids": []
+      "text_prompt_prefix_token_ids": [],
+      "draft_server": {
+        "host": "127.0.0.1",
+        "port": 7782,
+        "target_model": "a.x-k2",
+        "depth": 5,
+        "wait_ms": 30,
+        "min_confidence": 0.05
+      },
+      "draftd": {
+        "unit": "sparkpipe-draftd-axk2",
+        "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
+        "drafter": "/srv/workspace/sparkpipe/drafter-weights/ax-k2-dspark-official",
+        "window": 123,
+        "context_bytes": 4294967296,
+        "restart": "on-failure",
+        "log": "/srv/workspace/sparkpipe/logs/draftd-axk2.log",
+        "lifecycle": "model",
+        "server": "engine",
+        "engine": {
+          "root": "/srv/workspace/sparkpipe/draftd-engine",
+          "lane": "a.x-k2",
+          "unit": "sparkpipe-draftd-engine",
+          "weightd_unit": "sparkpipe-weightd-hub"
+        }
+      },
+      "taps": {
+        "entries": "o2,o30,o58",
+        "rank": 15,
+        "stream": "10.10.250.2:7781"
+      }
     },
     "solar-open-2": {
       "launcher": "stage_lane",

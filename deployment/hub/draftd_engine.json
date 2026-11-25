@@ -67,6 +67,116 @@
     "context_bytes": 1073741824,
     "wait_ms": 30
    }
+  },
+  {
+   "name": "glm-5.3",
+   "host": "127.0.0.1",
+   "draft_port": 7742,
+   "target_model": "glm-5.3",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7741,
+    "model_tag": "glm53_full_bf16_tp16_stage",
+    "hidden": 6144,
+    "entries": "o2,o20,o39,o58,o75"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/glm53_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/glm53dspark.bf16.tp1.rank0.sp",
+    "model": "glm53dspark",
+    "revision": "198b3ced9d2d",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "qwen3.8-max",
+   "host": "127.0.0.1",
+   "draft_port": 7752,
+   "target_model": "qwen3.8-max",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7751,
+    "model_tag": "qwen38_max_stage",
+    "hidden": 8192,
+    "entries": "o4,o20,o36,o56,o72,o88"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/qwen38_max_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/qwen38maxdspark.bf16.tp1.rank0.sp",
+    "model": "qwen38maxdspark",
+    "revision": "faaee89a1b84",
+    "context_bytes": 6442450944,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "glm-5.3-flash",
+   "host": "127.0.0.1",
+   "draft_port": 7762,
+   "target_model": "glm-5.3-flash",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7761,
+    "model_tag": "glm53_flash_bf16_stage",
+    "hidden": 4096,
+    "entries": "o5,o14,o24,o33,o42"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/glm53_flash_dflash2_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/glm53flashdflash2.bf16.tp1.rank0.sp",
+    "model": "glm53flashdflash2",
+    "revision": "6cc6c481eee9",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "k-exaone-2.0",
+   "host": "127.0.0.1",
+   "draft_port": 7772,
+   "target_model": "k-exaone-2.0",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7771,
+    "model_tag": "kexaone2_stage",
+    "hidden": 6144,
+    "entries": "o2,o20,o38,o56,o74"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/kexaone2_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/kexaone2dspark.bf16.tp1.rank0.sp",
+    "model": "kexaone2dspark",
+    "revision": "e42409dbd652",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "a.x-k2",
+   "host": "127.0.0.1",
+   "draft_port": 7782,
+   "target_model": "a.x-k2",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7781,
+    "model_tag": "axk2_tp16_stage",
+    "hidden": 7168,
+    "entries": "o2,o30,o58"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/axk2_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/axk2dspark.bf16.tp1.rank0.sp",
+    "model": "axk2dspark",
+    "revision": "0b278334dfce",
+    "context_bytes": 4294967296,
+    "wait_ms": 30
+   }
   }
  ]
 }
