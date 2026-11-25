@@ -154,6 +154,10 @@ current authority.
 - [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md):
   the mega-PR against the product: what an engineer saves after it, what the
   site promises that is not built, and what to do first.
+- [`MERGE_WAVE_AUDIT_2026-11-25.md`](MERGE_WAVE_AUDIT_2026-11-25.md): audit of
+  the 113 pull requests merged on 24 and 25 November 2026 and the releases
+  rolled from them: receipts, reply changes between builds, ranks out of
+  step, memory headroom, CI, and what to do first.
 - [`PREFILL_ANTICIPATION.md`](PREFILL_ANTICIPATION.md): audit of the context
   packs, the anticipator and the cache controls; where prefill time goes in
   agent sessions; and the proposed design and build order for keeping and
