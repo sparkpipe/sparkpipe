@@ -1,0 +1,2 @@
++869
+GB10 (sm_121a) shared prefill attention and sparse indexer optimizations: 8-warp zero-spill attention_block.cuh removing LmAttentionBlockPartialKernel<192,128> from kernel_spill_audit PENDING, single-pass 11-bit radix and SMEM sampled merge in index_select.cuh, 9-warp async TMA with register+SMEM query caching in attn_shard_prefill.cuh, single-pass 32KB mask union and vectorized softmax in attn_prefill.cuh, 2-block/SM ValueExpand and 64-row fused GatherPrefill in attn_expanded_prefill.cuh, and PDL + SPARK_FAIL wiring across all five headers.
