@@ -1,0 +1,2 @@
++6
+Guard CUDA-only cp.async and extern __shared__ LmSkinnySharedBf16Kernel/Launch/dispatch behind #if defined(__CUDACC__) so host-CUDA C++ tests (test_skinny_grouped_host.py, test_skinny_mxfp4_host.py, test_skinny_scale_host.py) compile cleanly with g++ under lm_host_threads.cuh while keeping CUDA/NVRM device code identical.
