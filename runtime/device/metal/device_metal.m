@@ -97,6 +97,7 @@ typedef struct MetalQueue
 	void *commands;
 	void *open;
 	void *compute;
+	void *last_pipeline;
 	void *spans;
 	uint32_t open_operations;
 	uint64_t open_sequence;
@@ -589,6 +590,7 @@ static void MetalEndCompute(MetalQueue *queue)
 		[(__bridge id<MTLComputeCommandEncoder>)queue->compute endEncoding];
 		MetalReleaseObject(&queue->compute);
 	}
+	queue->last_pipeline = 0;
 }
 
 static SparkStatus MetalCommit(MetalQueue *queue, const MetalMark *mark, const char *operation)
@@ -1048,7 +1050,11 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_launch",kernel->name,0,"cannot create a Metal compute encoder");
 		else
 		{
-			[encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel->backend];
+			if ( metal->last_pipeline != kernel->backend )
+			{
+				[encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel->backend];
+				metal->last_pipeline = kernel->backend;
+			}
 			if ( launch->constant_bytes != 0u )
 				[encoder setBytes:launch->constants length:launch->constant_bytes atIndex:0];
 			for ( index = 0u; status == SPARK_STATUS_OK && index < launch->binding_count; index++ )

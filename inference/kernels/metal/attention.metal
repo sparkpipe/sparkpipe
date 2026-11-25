@@ -321,6 +321,205 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		dst[0] = (shared_out[0][base_d] + shared_out[1][base_d]) + (shared_out[2][base_d] + shared_out[3][base_d]);
 }
 
+template <uint D, uint G>
+kernel void spark_attention_decode_gqa(constant SparkAttentionParams &p [[buffer(0)]], device const ushort *query [[buffer(1)]],
+	device const ushort *pool [[buffer(2)]], device const uint *page_table [[buffer(3)]], device const uint *sequence_of_row [[buffer(4)]],
+	device const uint *positions [[buffer(5)]], device float *partial [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+	device const uint *row_keys [[buffer(8)]], device const uint *slot_offsets [[buffer(9)]],
+	uint3 group [[threadgroup_position_in_grid]], uint3 grid [[threadgroups_per_grid]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
+{
+	constexpr uint HALF_SIMDS = SPARK_ATTENTION_SIMDS / 2u;
+	constexpr uint VFULL8 = D / 256u;
+	threadgroup float shared_score[G][SPARK_ATTENTION_DECODE_PARTITION_KEYS];
+	threadgroup uint shared_slot[SPARK_ATTENTION_DECODE_PARTITION_KEYS];
+	threadgroup float shared_max[G][SPARK_ATTENTION_SIMDS];
+	threadgroup float shared_sum[G][4];
+	threadgroup float shared_out[HALF_SIMDS][D];
+	const uint linear = group.y * grid.x + group.x;
+	const uint part = linear / grid.y, gblock = linear % grid.y, row = group.z;
+	const uint head0 = gblock * G;
+	const uint kv_head = (p.first_head + head0) / p.group, sequence = sequence_of_row[row], length = positions[row] + 1u;
+	const uint lowest = SparkAttentionFirstKey(p, positions[row]);
+	const uint key_part = p.window_partitions != 0u ? part + lowest / p.partition_keys : part;
+	const uint begin = max(key_part * p.partition_keys, lowest);
+	const uint end = min(length, key_part * p.partition_keys + p.partition_keys);
+	const uint count_keys = end > begin ? end - begin : 0u;
+	const ulong slot_stride = (ulong)p.kv_heads * (D + D);
+	const uint fork_pos = p.tree != 0u ? row_keys[row] : 0u;
+	const uint slot_off = p.tree != 0u ? slot_offsets[row] : 0u;
+	{
+		float4 q0[G], q1[G];
+		float lmax[G];
+		for ( uint g = 0u; g < G; g++ )
+		{
+			device const ushort *qp = query + (ulong)row * p.query_stride + (head0 + g) * D;
+			if constexpr ( VFULL8 == 1u )
+				SparkUnpack8(*(device const uint4 *)(qp + lane * 8u), q0[g], q1[g]);
+			else
+			{
+				q0[g] = SparkUnpack4(*(device const uint2 *)(qp + lane * 4u));
+				q1[g] = float4(0.0f);
+			}
+			lmax[g] = -INFINITY;
+		}
+		uint cached_page_idx = 0xffffffffu, cached_page = 0u;
+		for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
+		{
+			const uint stored = p.tree != 0u && key >= fork_pos ? key + slot_off : key;
+			const uint page_idx = stored / p.page_slots;
+			uint page;
+			if ( page_idx == cached_page_idx )
+				page = cached_page;
+			else
+			{
+				if ( !SparkKvPage(page_table, p.pages_per_sequence, p.page_slots, p.pool_pages, sequence, stored, error, row, page) )
+				{
+					if ( lane == 0u )
+						for ( uint g = 0u; g < G; g++ )
+							shared_score[g][key - begin] = -INFINITY;
+					continue;
+				}
+				cached_page_idx = page_idx;
+				cached_page = page;
+			}
+			const uint slot_idx = page * p.page_slots + stored % p.page_slots;
+			device const ushort *kp = pool + (ulong)slot_idx * slot_stride + kv_head * D;
+			float4 kl, kh;
+			if constexpr ( VFULL8 == 1u )
+				SparkUnpack8(*(device const uint4 *)(kp + lane * 8u), kl, kh);
+			else
+			{
+				kl = SparkUnpack4(*(device const uint2 *)(kp + lane * 4u));
+				kh = float4(0.0f);
+			}
+			if ( lane == 0u )
+				shared_slot[key - begin] = slot_idx;
+			for ( uint g = 0u; g < G; g++ )
+			{
+				const float d = VFULL8 == 1u ? dot(q0[g], kl) + dot(q1[g], kh) : dot(q0[g], kl);
+				const float score = simd_sum(d) * p.scale;
+				if ( lane == 0u )
+					shared_score[g][key - begin] = score;
+				lmax[g] = max(lmax[g], score);
+			}
+		}
+		if ( lane == 0u )
+			for ( uint g = 0u; g < G; g++ )
+				shared_max[g][simd] = lmax[g];
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	float pmax[G];
+	const uint tid = simd * 32u + lane;
+	for ( uint g = 0u; g < G; g++ )
+	{
+		float m = -INFINITY;
+		for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
+			m = max(m, shared_max[g][s]);
+		pmax[g] = m;
+		if ( simd < 4u )
+		{
+			float w = 0.0f;
+			if ( tid < count_keys )
+			{
+				const float sc = shared_score[g][tid];
+				w = sc == -INFINITY ? 0.0f : exp(sc - m);
+				shared_score[g][tid] = w == 0.0f ? 0.0f : SparkMathAttentionValueWeight(w);
+			}
+			const float ssum = simd_sum(w);
+			if ( lane == 0u )
+				shared_sum[g][simd] = ssum;
+		}
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	float4 acc0[G], acc1[G];
+	for ( uint g = 0u; g < G; g++ )
+	{
+		acc0[g] = float4(0.0f);
+		acc1[g] = float4(0.0f);
+	}
+	const uint v_head_off = p.kv_heads * D + kv_head * D;
+	for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
+	{
+		const uint kidx = key - begin;
+		float vw[G];
+		bool any_nz = false;
+		for ( uint g = 0u; g < G; g++ )
+		{
+			vw[g] = shared_score[g][kidx];
+			any_nz = any_nz || (vw[g] != 0.0f);
+		}
+		if ( !any_nz )
+			continue;
+		device const ushort *vp = pool + (ulong)shared_slot[kidx] * slot_stride + v_head_off;
+		float4 vl, vh;
+		if constexpr ( VFULL8 == 1u )
+			SparkUnpack8(*(device const uint4 *)(vp + lane * 8u), vl, vh);
+		else
+		{
+			vl = SparkUnpack4(*(device const uint2 *)(vp + lane * 4u));
+			vh = float4(0.0f);
+		}
+		for ( uint g = 0u; g < G; g++ )
+			if ( vw[g] != 0.0f )
+			{
+				const float4 vw4 = float4(vw[g]);
+				acc0[g] = fma(vw4, vl, acc0[g]);
+				if constexpr ( VFULL8 == 1u )
+					acc1[g] = fma(vw4, vh, acc1[g]);
+			}
+	}
+	constexpr uint PER_SIMD = D / HALF_SIMDS;
+	constexpr uint CHUNKS_PER_LANE = PER_SIMD / 32u;
+	const uint base_d = simd * PER_SIMD + lane * CHUNKS_PER_LANE;
+	for ( uint g = 0u; g < G; g++ )
+	{
+		if ( g > 0u )
+			threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( simd >= HALF_SIMDS )
+		{
+			const uint s_idx = simd - HALF_SIMDS;
+			if constexpr ( VFULL8 == 1u )
+			{
+				*(threadgroup float4 *)(shared_out[s_idx] + lane * 8u) = acc0[g];
+				*(threadgroup float4 *)(shared_out[s_idx] + lane * 8u + 4u) = acc1[g];
+			}
+			else
+				*(threadgroup float4 *)(shared_out[s_idx] + lane * 4u) = acc0[g];
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( simd < HALF_SIMDS )
+		{
+			if constexpr ( VFULL8 == 1u )
+			{
+				*(threadgroup float4 *)(shared_out[simd] + lane * 8u) = acc0[g] + *(threadgroup const float4 *)(shared_out[simd] + lane * 8u);
+				*(threadgroup float4 *)(shared_out[simd] + lane * 8u + 4u) = acc1[g] + *(threadgroup const float4 *)(shared_out[simd] + lane * 8u + 4u);
+			}
+			else
+				*(threadgroup float4 *)(shared_out[simd] + lane * 4u) = acc0[g] + *(threadgroup const float4 *)(shared_out[simd] + lane * 4u);
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		if ( simd < HALF_SIMDS )
+		{
+			device float *record = partial + (((ulong)row * p.heads + (head0 + g)) * p.partitions + part) * (D + 2u);
+			if ( simd == 0u && lane == 0u )
+			{
+				record[0] = pmax[g];
+				record[1] = (shared_sum[g][0] + shared_sum[g][1]) + (shared_sum[g][2] + shared_sum[g][3]);
+			}
+			device float *dst = record + 2u + base_d;
+			if constexpr ( CHUNKS_PER_LANE == 2u )
+			{
+				float2 sum2 = (*(threadgroup const float2 *)(shared_out[0] + base_d) + *(threadgroup const float2 *)(shared_out[1] + base_d)) +
+					(*(threadgroup const float2 *)(shared_out[2] + base_d) + *(threadgroup const float2 *)(shared_out[3] + base_d));
+				*(device float2 *)dst = sum2;
+			}
+			else
+				dst[0] = (shared_out[0][base_d] + shared_out[1][base_d]) + (shared_out[2][base_d] + shared_out[3][base_d]);
+		}
+	}
+}
+
 template <uint DK, uint D, bool EXTRA = false, bool GATHER = false>
 kernel void spark_attention_combine(constant SparkAttentionParams &p [[buffer(0)]], device const float *partial [[buffer(1)]],
 	device const ushort *gate [[buffer(2)]], device const uint *positions [[buffer(3)]], device ushort *output [[buffer(4)]],
@@ -612,6 +811,17 @@ SPARK_ATTENTION_INSTANCES("512", 512, 512)
 SPARK_ATTENTION_INSTANCES("128", 128, 128)
 SPARK_ATTENTION_INSTANCES("192v128", 192, 128)
 SPARK_ATTENTION_INSTANCES("576v512", 576, 512)
+#define SPARK_ATTENTION_GQA_INSTANCE(name, d, g) \
+	template [[host_name(name)]] kernel void spark_attention_decode_gqa<d, g>(constant SparkAttentionParams &p [[buffer(0)]], \
+		device const ushort *query [[buffer(1)]], device const ushort *pool [[buffer(2)]], device const uint *page_table [[buffer(3)]], \
+		device const uint *sequence_of_row [[buffer(4)]], device const uint *positions [[buffer(5)]], device float *partial [[buffer(6)]], \
+		device atomic_uint *error [[buffer(7)]], device const uint *fork_positions [[buffer(8)]], device const uint *slot_offsets [[buffer(9)]], \
+		uint3 group [[threadgroup_position_in_grid]], uint3 grid [[threadgroups_per_grid]], uint lane [[thread_index_in_simdgroup]], \
+		uint simd [[simdgroup_index_in_threadgroup]]);
+
+SPARK_ATTENTION_GQA_INSTANCE("spark_attention_decode_gqa4_d256", 256, 4)
+SPARK_ATTENTION_GQA_INSTANCE("spark_attention_decode_gqa6_d256", 256, 6)
+SPARK_ATTENTION_GQA_INSTANCE("spark_attention_decode_gqa4_d128", 128, 4)
 SPARK_ATTENTION_GATHER_INSTANCES("256", 256, 256)
 SPARK_ATTENTION_GATHER_INSTANCES("512", 512, 512)
 SPARK_ATTENTION_GATHER_INSTANCES("128", 128, 128)
