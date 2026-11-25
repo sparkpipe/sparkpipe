@@ -111,7 +111,7 @@ def entry_points(model):
     # that only reads unity.cu would force dead C wrappers back into existence
     # to satisfy a gate, which is the tail wagging the dog.
     for part in sorted(unity.parent.glob("slice.cuh")):
-        exports |= set(re.findall(r"return\(?\s*(\w+)<", part.read_text()))
+        exports |= set(re.findall(r"(?:return\(?|=\s*)\s*(\w+)<", part.read_text()))
     return exports
 
 
