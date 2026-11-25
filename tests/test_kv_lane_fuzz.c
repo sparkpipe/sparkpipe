@@ -463,7 +463,7 @@ static void RunCase(uint32_t scenario,uint32_t count)
     CHECK(SparkKvLaneTransactionsReset(&h.transactions) == SPARK_STATUS_OK);
     Ledger(&h,0u,SPARK_KV_LANE_TRANSACTION_EMPTY,0u,0u);
     for (i=0u; i<count; i++) h.lanes[i].flags = 0u;
-    CHECK(SparkKvLaneTransactionsClaim(&h.transactions,&frame) == SPARK_STATUS_BUSY);
+    CHECK(SparkKvLaneTransactionsClaim(&h.transactions,&frame) == SPARK_STATUS_VALIDATION_FAILED);
     h.request = saved;
     h.request.request_id = 12u;
     h.request.control_generation++;
