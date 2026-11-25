@@ -37,9 +37,19 @@
       "description": "GLM 5.3, the largest GLM. 1M context. Switching to it takes about 40 s."
     },
     {
+      "id": "glm-5.3-fp8",
+      "name": "GLM 5.3 FP8",
+      "description": "GLM 5.3 at 8-bit precision (the publisher's FP8 release). 1M context. Switching to it takes about 25 s."
+    },
+    {
       "id": "glm-5.3-flash",
       "name": "GLM 5.3 Flash",
       "description": "GLM 5.3 Flash: quicker than GLM 5.3. 128K context. Switching to it takes about 25 s."
+    },
+    {
+      "id": "glm-5.3-flash-fp8",
+      "name": "GLM 5.3 Flash FP8",
+      "description": "GLM 5.3 Flash at 8-bit precision (the publisher's FP8 release). 128K context. Switching to it takes about 15 s."
     },
     {
       "id": "deepseek-v4.1-flash",

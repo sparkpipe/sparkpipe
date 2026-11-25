@@ -15,6 +15,22 @@ model_list:
   model_info:
     max_input_tokens: 1048576
     max_output_tokens: 131072
+- model_name: glm-5.3-fp8
+  litellm_params:
+    model: hosted_vllm/glm-5.3-fp8
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 1048576
+    max_output_tokens: 131072
+- model_name: glm-5.3-fp8-bulk
+  litellm_params:
+    model: hosted_vllm/glm-5.3-fp8-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 1048576
+    max_output_tokens: 131072
 - model_name: glm-5.3-flash
   litellm_params:
     model: hosted_vllm/glm-5.3-flash
@@ -26,6 +42,22 @@ model_list:
 - model_name: glm-5.3-flash-bulk
   litellm_params:
     model: hosted_vllm/glm-5.3-flash-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 131072
+    max_output_tokens: 131072
+- model_name: glm-5.3-flash-fp8
+  litellm_params:
+    model: hosted_vllm/glm-5.3-flash-fp8
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 131072
+    max_output_tokens: 131072
+- model_name: glm-5.3-flash-fp8-bulk
+  litellm_params:
+    model: hosted_vllm/glm-5.3-flash-fp8-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:

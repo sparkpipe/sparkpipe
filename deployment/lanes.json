@@ -50,6 +50,21 @@
         "stream": "10.10.250.2:7741"
       }
     },
+    "glm-5.3-fp8": {
+      "launcher": "stage_lane",
+      "model": "glm53_full_fp8",
+      "lane": 0,
+      "runtime_root": "/home/{host}/stage-lanes/glm53_full_fp8/lane0/root",
+      "weightd_socket": "/tmp/spark_weightd.sock",
+      "sequences": 64,
+      "rows": 4096,
+      "context_tokens": 1048576,
+      "kv_logical_pages": 1048576,
+      "state_budget_bytes": 12884901888,
+      "memory_max": "28G",
+      "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
+      "text_prompt_prefix_token_ids": []
+    },
     "glm-5.3-flash": {
       "launcher": "stage_lane",
       "model": "glm53_flash",
@@ -95,6 +110,22 @@
         "rank": 15,
         "stream": "10.10.250.2:7761"
       }
+    },
+    "glm-5.3-flash-fp8": {
+      "launcher": "stage_lane",
+      "model": "glm53_flash_fp8",
+      "lane": 0,
+      "runtime_root": "/home/{host}/stage-lanes/glm53_flash_fp8/lane0/root",
+      "weightd_socket": "/tmp/spark_weightd.sock",
+      "sequences": 64,
+      "rows": 4096,
+      "context_tokens": 131072,
+      "context_reason": "131,072 positions: the index score gather kernel holds no longer context",
+      "kv_logical_pages": 131072,
+      "state_budget_bytes": 12884901888,
+      "memory_max": "24G",
+      "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
+      "text_prompt_prefix_token_ids": []
     },
     "kimi-k3": {
       "launcher": "k3_lane",

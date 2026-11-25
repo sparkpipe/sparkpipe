@@ -74,9 +74,111 @@
       }
     },
     {
+      "id": "glm-5.3-fp8",
+      "model_dir": "models/glm-5.3",
+      "engine": "http://127.0.0.1:8489",
+      "context_tokens": 1048576,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "glm-5.3-bf16/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort",
+        "clear_thinking"
+      ],
+      "reasoning_effort": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "high"
+        },
+        "high": {
+          "reasoning_effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
+    },
+    {
       "id": "glm-5.3-flash",
       "model_dir": "models/glm-5.3-flash",
       "engine": "http://127.0.0.1:8476",
+      "context_tokens": 131072,
+      "max_output_tokens": 131072,
+      "sampling_defaults": {
+        "temperature": 1.0,
+        "top_p": 0.95
+      },
+      "sampling_source": "glm-5.3-flash-bf16-official/generation_config.json",
+      "warm_queue": {
+        "depth": 64,
+        "wait_seconds": 3900,
+        "activation_url": "http://127.0.0.1:8440/activate"
+      },
+      "sequences": 64,
+      "stop_tokens": [
+        "<|endoftext|>",
+        "<|user|>",
+        "<|observation|>"
+      ],
+      "template_defaults": {},
+      "template_kwargs": [
+        "reasoning_effort",
+        "clear_thinking"
+      ],
+      "reasoning_effort": {
+        "low": {
+          "reasoning_effort": "low"
+        },
+        "medium": {
+          "reasoning_effort": "high"
+        },
+        "high": {
+          "reasoning_effort": "max"
+        }
+      },
+      "reasoning": {
+        "start": "<think>",
+        "end": "</think>"
+      },
+      "tool_calls": {
+        "start": "<tool_call>",
+        "end": "</tool_call>",
+        "key_start": "<arg_key>",
+        "key_end": "</arg_key>",
+        "value_start": "<arg_value>",
+        "value_end": "</arg_value>"
+      }
+    },
+    {
+      "id": "glm-5.3-flash-fp8",
+      "model_dir": "models/glm-5.3-flash",
+      "engine": "http://127.0.0.1:8490",
       "context_tokens": 131072,
       "max_output_tokens": 131072,
       "sampling_defaults": {

@@ -1,0 +1,2 @@
++76
+Wire glm-5.3-fp8 and glm-5.3-flash-fp8 side-by-side A/B variant lanes across tools/stage_lane.py (+22) and tools/rais_score.py (+54) so live Gate GX and quality parity verification can run against the verified 16-rank FP8 packs already present on spark0..sparkf without disturbing BF16 defaults.

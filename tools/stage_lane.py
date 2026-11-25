@@ -292,6 +292,16 @@ GLM53_FLASH = {
     "kv_page_bytes": (11 * 64 * 1024 + 11 * 64 * 514) // WORLD,
     "recurrent_bytes": 34 * (4 * 128 * 128 * 4 + 3 * 512 * 4 * 2),
 }
+GLM53_FLASH_FP8 = {
+    **GLM53_FLASH,
+    "swap_id": "glm-5.3-flash-fp8",
+    "api_port": 8490,
+    "kv_label": "glm53_flash_stage",
+    "node_memory_bytes": 25 << 30,
+    "pack": "sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank{rank:x}.sp",
+    "adapter": "libglm53_flash_tp16_serving_adapter.so",
+    "node_target": "cuda.sm121.glm53_flash.stage_runner.linear_bf16.expert_fp8.kv_bf16",
+}
 LAGUNA = {
     "swap_id": "laguna-s-2.1",
     "api_port": 8472,
@@ -400,6 +410,16 @@ GLM53_FULL = {
     "kv_page_bytes": (78 * 64 * 1152 + 21 * 64 * 256) // WORLD,
     "recurrent_bytes": 0,
 }
+GLM53_FULL_FP8 = {
+    **GLM53_FULL,
+    "swap_id": "glm-5.3-fp8",
+    "api_port": 8489,
+    "kv_label": "glm53_full_tp16_stage",
+    "node_memory_bytes": 57 << 30,
+    "pack": "sparkdata/glm53full.fp8lin.tp16/packs/glm53full.fp8lin.tp16-rank{rank}.glm52sp",
+    "adapter": "libglm53_full_tp16_serving_adapter.so",
+    "node_target": "cuda.sm121.glm53_full.stage_runner.linear_fp8.expert_fp8.kv_bf16",
+}
 MIMO26_FLASH = {
     "swap_id": "mimo-v2.6-flash",
     "api_port": 8473,
@@ -475,7 +495,9 @@ MODELS = {
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,
+    "glm53_flash_fp8": GLM53_FLASH_FP8,
     "glm53_full": GLM53_FULL,
+    "glm53_full_fp8": GLM53_FULL_FP8,
     "glm53_full_ab": {**GLM53_FULL, "swap_id": "glm-5.3-ab", "api_port": 8497},
     "hy4": HY4,
     "k3": K3,

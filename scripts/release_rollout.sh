@@ -15,7 +15,7 @@ RD=$HUB_WORK/$R
 BK=$HUB_WORK/backups
 OLD_WD=${OLD_WD:?OLD_WD is the 16-hex weightd every node runs before this release}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
-MODELS="qwen3.8-max glm-5.3 kimi-k3 kimi-k3.1-pro glm-5.3-flash qwen3.8-27b qwen3.8-27b-fp8 qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
+MODELS="qwen3.8-max glm-5.3 glm-5.3-fp8 kimi-k3 kimi-k3.1-pro glm-5.3-flash glm-5.3-flash-fp8 qwen3.8-27b qwen3.8-27b-fp8 qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
 GX_MODELS="kimi-k3.1-pro kimi-k3 glm-5.3 glm-5.3-flash qwen3.8-27b qwen3.8-max deepseek-v4.1-flash"
 for id in $GX_MODELS; do case " $MODELS " in *" $id "*) ;; *) echo "GX_MODELS names $id, which MODELS does not: refusing to run" >&2; exit 1;; esac; done
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
