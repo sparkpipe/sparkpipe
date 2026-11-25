@@ -67,6 +67,9 @@ current authority.
 - [`FUSED_KERNELS.md`](FUSED_KERNELS.md): the fused kernel generator, its
   plans and op catalogue, the bit-exact test it writes, and the fused
   hyper-connection block of the DeepSeek V4.1 Flash decode step.
+- [`SKLC_ENCODINGS.md`](SKLC_ENCODINGS.md): `sm_121` (Blackwell) 128-bit SASS
+  instruction encodings, CUBIN ELF64 container layout, and `cuobjdump` /
+  `nvdisasm` verification receipt for `tools/sklc/`.
 - [`STAGEPACK_NAMING.md`](STAGEPACK_NAMING.md): pack directory and
   runtime-root naming; `tools/stagepack_naming.json` is the machine source.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): serving recipe datafile and KV

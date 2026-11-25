@@ -231,17 +231,44 @@ static void TestDefaults(void)
 		"an overloaded template kernel resolves by its argument count");
 }
 
+static void TestSingleEvaluation(void)
+{
+	ArgumentShape shape;
+	uint32_t i = 10u, g = 2u, b = 32u, s = 16u;
+	memset(&shape,0,sizeof(shape));
+	shape.rows = 3u;
+	shape.lanes = 5u;
+	shape.flag = 1u;
+	shape.weight = 0.5;
+	LM_LAUNCH((ArgumentDefaults<3u>),dim3(g++),dim3(b++),s++,(SparkGpuStream)0,i++,shape);
+	Check(i == 11u && g == 3u && b == 33u && s == 17u,
+		"defaulted kernel launch evaluates grid, block, shared and arguments strictly once");
+	Check(argument_record.launches == 1u && argument_record.grid[0] == 2u && argument_record.block[0] == 32u && argument_record.shared == 16u &&
+		PackedAt<uint32_t>(0u,0u,10u) && PackedAt<float>(3u,32u,1.5f),
+		"defaulted kernel launch receives pre-increment values and preserves defaults");
+	LM_LAUNCH((ArgumentStep<5u>),dim3(g++),dim3(b++),s++,(SparkGpuStream)0,0,(float)(i++));
+	Check(i == 12u && g == 4u && b == 34u && s == 18u && PackedAt<float>(1u,8u,11.0f),
+		"direct kernel launch evaluates every argument strictly once");
+	LM_LAUNCH((ArgumentOverloaded<2u>),dim3(g++),dim3(b++),s++,(SparkGpuStream)0,i++,9ull);
+	Check(i == 13u && g == 5u && b == 35u && s == 19u && PackedAt<uint32_t>(0u,0u,12u),
+		"overloaded kernel launch evaluates every argument strictly once");
+	Check(LM_LAUNCH_DEPENDENT((ArgumentDefaults<3u>),dim3(g++),dim3(b++),s++,(SparkGpuStream)0,i++,shape) == SPARK_GPU_SUCCESS &&
+		argument_dependent == 1u && i == 14u && g == 6u && b == 36u && s == 20u && PackedAt<uint32_t>(0u,0u,13u) && PackedAt<float>(3u,32u,1.5f),
+		"dependent defaulted kernel launch evaluates every argument strictly once");
+}
+
 int main(void)
 {
 	TestConversions();
 	TestTemplate();
 	TestDefaults();
+	TestSingleEvaluation();
 	if ( argument_failures != 0u )
 	{
 		printf("FAIL (%u)\n",argument_failures);
 		return(1);
 	}
 	printf("PASS LM_LAUNCH converts each argument to its kernel parameter's type as <<<>>> does: bit-fields, a literal 0 for a pointer, "
-		"arithmetic conversions and structs by value, packed at each parameter's offset\n");
+		"arithmetic conversions and structs by value, packed at each parameter's offset, with single evaluation\n");
 	return(0);
 }
