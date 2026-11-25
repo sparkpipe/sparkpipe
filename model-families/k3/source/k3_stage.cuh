@@ -99,6 +99,29 @@ __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint1
 	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
 	const uint32_t stride = query_slice + key_slice;
 	uint32_t rank;
+	if ( ((query_slice & 7u) == 0u) && ((key_slice & 3u) == 0u) && ((stride & 3u) == 0u) &&
+		LmIsAligned16(query) && ((((uintptr_t)gathered) & 7u) == 0u) && ((((uintptr_t)key) & 7u) == 0u) )
+	{
+		const uint32_t qv = K3_Q_LORA_RANK >> 3u, kv = K3_MLA_KV_A_DIM >> 2u;
+		const uint32_t qs = query_slice >> 3u, ks = key_slice >> 2u;
+		if ( column < qv )
+		{
+			rank = column / qs;
+			const uint64_t src_off = ((uint64_t)rank * rows + row) * stride + ((column % qs) << 3u);
+			const uint2 *s = (const uint2 *)(gathered + src_off);
+			const uint2 lo = s[0], hi = s[1];
+			((uint4 *)(query + (uint64_t)row * K3_Q_LORA_RANK))[column] = make_uint4(lo.x, lo.y, hi.x, hi.y);
+			return;
+		}
+		if ( column < qv + kv )
+		{
+			const uint32_t c = column - qv;
+			rank = c / ks;
+			const uint64_t src_off = ((uint64_t)rank * rows + row) * stride + query_slice + ((c % ks) << 2u);
+			((uint2 *)(key + (uint64_t)row * K3_MLA_KV_A_DIM))[c] = *(const uint2 *)(gathered + src_off);
+		}
+		return;
+	}
 	if ( column < K3_Q_LORA_RANK )
 	{
 		rank = column / query_slice;
@@ -526,10 +549,15 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	if ( base == K3_COLLECTIVE_MLA_DOWN )
 	{
 		const uint32_t degree = b->kv_shard.degree;
+		const uint32_t query_slice = K3_Q_LORA_RANK / degree, key_slice = K3_MLA_KV_A_DIM / degree;
+		const uint32_t stride = query_slice + key_slice;
+		const uint32_t vec = ((query_slice & 7u) == 0u) && ((key_slice & 3u) == 0u) && ((stride & 3u) == 0u) &&
+			LmIsAligned16(b->latent_bf16) && ((((uintptr_t)state->fused_device) & 7u) == 0u) && ((((uintptr_t)b->kv_slot_bf16) & 7u) == 0u) ? 1u : 0u;
+		const uint32_t cols = vec != 0u ? (K3_Q_LORA_RANK >> 3u) + (K3_MLA_KV_A_DIM >> 2u) : (K3_Q_LORA_RANK + K3_MLA_KV_A_DIM);
 		K3RunnerRound(state, stream, rows, b->latent_bf16, state->fused_device,
-			(K3_Q_LORA_RANK + K3_MLA_KV_A_DIM) / degree, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
-		LM_LAUNCH((K3RunnerMlaDownRowsKernel), dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream,
-			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, K3_Q_LORA_RANK / degree, K3_MLA_KV_A_DIM / degree);
+			stride, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+		LM_LAUNCH((K3RunnerMlaDownRowsKernel), dim3((cols + 255u) / 256u, rows), 256u, 0, stream,
+			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, query_slice, key_slice);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			K3ModelFail(state);
 		return;

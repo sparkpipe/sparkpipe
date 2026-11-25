@@ -218,7 +218,7 @@
         "wait_seconds": 3900,
         "activation_url": "http://127.0.0.1:8440/activate"
       },
-      "sequences": 32,
+      "sequences": 64,
       "tokenizer": {
         "kind": "tiktoken",
         "file": "tiktoken.model",

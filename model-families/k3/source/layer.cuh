@@ -300,6 +300,310 @@ static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t
 		output_dimension,0u,0u,stream,1u));
 }
 
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+static __device__ __forceinline__ float K3Dot8Unpacked(const float *wf, const float *af)
+{
+	float a0 = wf[0] * af[0], a1 = wf[1] * af[1];
+	a0 = fmaf(wf[2], af[2], a0);
+	a1 = fmaf(wf[3], af[3], a1);
+	a0 = fmaf(wf[4], af[4], a0);
+	a1 = fmaf(wf[5], af[5], a1);
+	a0 = fmaf(wf[6], af[6], a0);
+	a1 = fmaf(wf[7], af[7], a1);
+	return(a0 + a1);
+}
+
+template<uint32_t RG, uint32_t NPG>
+__global__ __launch_bounds__(256u, 2)
+void K3ExactSplitKernel(const __grid_constant__ LmSkinnyMultiArguments multi)
+{
+	constexpr uint32_t SW = LM_SKINNY_SPLIT_WARPS;
+	__shared__ float partial[SW][NPG][RG];
+	const LmSkinnyArguments &head = multi.part[0];
+	const uint32_t rows = head.rows, chunks = head.input_dimension / 8u;
+	const uint32_t neuron_task = blockIdx.x, base_row = blockIdx.y * RG;
+	const uint32_t count = base_row < rows ? (rows - base_row < RG ? rows - base_row : RG) : 0u;
+	if ( count == 0u )
+		return;
+	uint32_t part = 0u;
+	while ( part + 1u < multi.count && neuron_task >= multi.first_task[part + 1u] )
+		part++;
+	const LmSkinnyArguments &args = multi.part[part];
+	const uint32_t neuron = (neuron_task - multi.first_task[part]) * NPG;
+	const uint32_t warp = threadIdx.x / 32u, sub = threadIdx.x % 32u;
+	const uint32_t first = chunks * warp / SW, last = chunks * (warp + 1u) / SW;
+	const uint4 *w_ptrs[NPG];
+	#pragma unroll
+	for ( uint32_t n = 0u; n < NPG; ++n )
+	{
+		const uint32_t rn = neuron + n < args.output_dimension ? neuron + n : neuron;
+		w_ptrs[n] = (const uint4 *)(args.weight + (uint64_t)rn * chunks * 16u);
+	}
+	float acc[NPG][RG];
+	#pragma unroll
+	for ( uint32_t n = 0u; n < NPG; ++n )
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RG; ++r )
+			acc[n][r] = 0.0f;
+	for ( uint32_t c = first + sub; c < last; c += 32u )
+	{
+		float wf[NPG][8];
+		#pragma unroll
+		for ( uint32_t n = 0u; n < NPG; ++n )
+			LmSkinnyUnpackBf16x8(__ldcs(w_ptrs[n] + c), wf[n]);
+		const uint16_t *act_base = head.activation + (uint64_t)base_row * head.input_dimension + c * 8u;
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RG; ++r )
+		{
+			const uint32_t rr = r < count ? r : 0u;
+			const uint4 a = __ldg((const uint4 *)(act_base + (uint64_t)rr * head.input_dimension));
+			float af[8];
+			LmSkinnyUnpackBf16x8(a, af);
+			#pragma unroll
+			for ( uint32_t n = 0u; n < NPG; ++n )
+				acc[n][r] += K3Dot8Unpacked(wf[n], af);
+		}
+	}
+	#pragma unroll
+	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
+		#pragma unroll
+		for ( uint32_t n = 0u; n < NPG; ++n )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+				acc[n][r] += __shfl_xor_sync(0xffffffffu, acc[n][r], offset);
+	if ( sub == 0u )
+	{
+		#pragma unroll
+		for ( uint32_t n = 0u; n < NPG; ++n )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+				partial[warp][n][r] = acc[n][r];
+	}
+	__syncthreads();
+	for ( uint32_t idx = threadIdx.x; idx < NPG * RG; idx += 256u )
+	{
+		const uint32_t n = idx / RG, r = idx % RG;
+		if ( r < count && neuron + n < args.output_dimension )
+		{
+			float total = 0.0f;
+			#pragma unroll
+			for ( uint32_t w = 0u; w < SW; ++w )
+				total += partial[w][n][r];
+			const uint64_t oidx = (uint64_t)(base_row + r) * args.output_row_stride + args.output_column_offset + neuron + n;
+			if ( args.output_f32 != 0 )
+				args.output_f32[oidx] = total;
+			else
+				args.output_bf16[oidx] = LmFloatToBf16(total);
+		}
+	}
+}
+
+static int32_t K3ExactSplitMultiLaunch(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation, uint32_t rows, uint32_t input_dimension, SparkGpuStream stream)
+{
+	LmSkinnyMultiArguments multi = {};
+	if ( targets == 0 || activation == 0 || count == 0u || count > LM_SKINNY_MULTI_MAX || rows == 0u ||
+		(input_dimension & 7u) != 0u || input_dimension / 8u < LM_SKINNY_SPLIT_WARPS * 32u || !LmIsAligned16(activation) )
+		return(LmSkinnyDenseMulti<LmBf16Format>(targets,count,activation,rows,input_dimension,stream,1u,1u));
+	multi.count = count;
+	multi.first_task[0] = 0u;
+	for ( uint32_t p = 0u; p < count; ++p )
+	{
+		LmSkinnyArguments *a = &multi.part[p];
+		if ( targets[p].weight == 0 || !LmIsAligned16(targets[p].weight) || targets[p].output_dimension == 0u ||
+			(targets[p].output_bf16 == 0 && targets[p].output_f32 == 0) )
+			return(LmSkinnyDenseMulti<LmBf16Format>(targets,count,activation,rows,input_dimension,stream,1u,1u));
+		a->weight = (const uint8_t *)targets[p].weight;
+		a->activation = activation;
+		a->output_bf16 = targets[p].output_bf16;
+		a->output_f32 = targets[p].output_f32;
+		a->rows = rows;
+		a->input_dimension = input_dimension;
+		a->output_dimension = targets[p].output_dimension;
+		a->output_row_stride = targets[p].output_row_stride != 0u ? targets[p].output_row_stride : targets[p].output_dimension;
+		a->output_column_offset = targets[p].output_column_offset;
+		multi.first_task[p + 1u] = multi.first_task[p] + (a->output_dimension + 3u) / 4u;
+	}
+	LM_LAUNCH((K3ExactSplitKernel<8u,4u>), dim3(multi.first_task[count], (rows + 7u) / 8u), 256u, 0, stream, multi);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
+}
+
+template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM>
+__global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
+void K3SparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight, Pages index_view,
+	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position,
+	uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores, uint32_t dense_limit)
+{
+	const LmKvView &index_cache = LmIndexScorePages(index_view);
+	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
+	constexpr uint32_t STEPS = INDEX_DIM / 16u;
+	constexpr uint32_t CHUNK_TILES = LM_INDEX_SCORE_STAGE_POSITIONS / LM_INDEX_SCORE_TILE_POSITIONS;
+	constexpr uint32_t CHUNKS = LM_INDEX_SCORE_BLOCK_POSITIONS / LM_INDEX_SCORE_STAGE_POSITIONS;
+	constexpr uint32_t PITCH = INDEX_DIM * (uint32_t)sizeof(uint16_t) + LM_INDEX_SCORE_STAGE_PAD;
+	constexpr uint32_t STAGE_BYTES = LM_INDEX_SCORE_STAGE_POSITIONS * PITCH;
+	constexpr uint32_t ROW_PIECES = (INDEX_DIM * (uint32_t)sizeof(uint16_t)) / 16u;
+	constexpr uint32_t COPIES = (LM_INDEX_SCORE_STAGE_POSITIONS * ROW_PIECES) / LM_INDEX_SCORE_THREADS;
+	__shared__ const uint8_t *block_slots[LM_INDEX_SCORE_BLOCK_POSITIONS];
+	__shared__ alignas(16) uint8_t staged[LM_INDEX_SCORE_STAGES * STAGE_BYTES];
+	__shared__ uint32_t block_sequence, block_mixed, block_bound;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES, warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t group = lane / 4u, pair = lane % 4u;
+	const uint32_t row = blockIdx.y * LM_INDEX_SCORE_WARPS + warp;
+	const uint32_t block_first = blockIdx.x * LM_INDEX_SCORE_BLOCK_POSITIONS;
+	const uint32_t live = row < rows ? 1u : 0u;
+	uint32_t a[HEAD_TILES][STEPS][4], next[STEPS][2], b[STEPS][2];
+	float weight[2u * HEAD_TILES];
+	uint32_t sequence = 0xffffffffu, bound = 0u, tile, step, head_tile, valid = 0u;
+	if ( scores == 0 )
+		return;
+	if ( threadIdx.x == 0u )
+	{
+		block_sequence = 0xffffffffu;
+		block_mixed = 0u;
+		block_bound = 0u;
+	}
+	__syncthreads();
+	if ( live != 0u )
+	{
+		valid = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 && LmKvViewIsConfigured(index_cache) ? 1u : 0u;
+		sequence = valid != 0u ? sequence_of_row[row] : 0xffffffffu;
+		if ( valid == 0u || sequence >= index_cache.sequence_count )
+		{
+			if ( lane == 0u && blockIdx.x == 0u )
+				LmKvReportRequiredAccessFailure(index_cache, valid == 0u ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, block_first, 0xffffffffu);
+			valid = 0u;
+		}
+		else
+		{
+			bound = context_length[sequence];
+			if ( row_position != 0 && row_position[row] + 1u < bound )
+				bound = row_position[row] + 1u;
+			if ( dense_limit != 0u && bound <= dense_limit )
+				bound = 0u;
+			else
+				bound = LmIndexScoreKeys(index_view, bound);
+		}
+	}
+	if ( lane == 0u && valid != 0u && bound > block_first )
+	{
+		(void)atomicCAS(&block_sequence, 0xffffffffu, sequence);
+		(void)atomicMax(&block_bound, bound);
+	}
+	__syncthreads();
+	if ( block_bound <= block_first )
+		return;
+	if ( lane == 0u && valid != 0u && bound > block_first && block_sequence != sequence )
+		block_mixed = 1u;
+	if ( live != 0u && valid != 0u && bound > block_first )
+	{
+		const uint16_t *query = index_query_bf16 + (uint64_t)row * INDEX_HEADS * INDEX_DIM;
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+			for (step = 0u; step < STEPS; step++)
+			{
+				const uint16_t *top = query + (uint64_t)(head_tile * 16u + group) * INDEX_DIM + step * 16u + pair * 2u;
+				const uint16_t *bottom = top + 8u * INDEX_DIM;
+				a[head_tile][step][0] = *(const uint32_t *)top;
+				a[head_tile][step][1] = *(const uint32_t *)bottom;
+				a[head_tile][step][2] = *(const uint32_t *)(top + 8u);
+				a[head_tile][step][3] = *(const uint32_t *)(bottom + 8u);
+			}
+		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+		{
+			weight[2u * head_tile] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group]);
+			weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
+		}
+	}
+	__syncthreads();
+	const uint32_t shared_slots = block_mixed == 0u && block_sequence != 0xffffffffu ? 1u : 0u;
+	if ( shared_slots != 0u )
+	{
+		const uint32_t position = block_first + threadIdx.x;
+		block_slots[threadIdx.x] = position < block_bound && position < score_stride ?
+			LmIndexScoreSlot<Geometry>(index_view, block_sequence, position, blockIdx.y * LM_INDEX_SCORE_WARPS) : 0;
+	}
+	__syncthreads();
+	if ( shared_slots != 0u )
+	{
+		const uint32_t staged_s = (uint32_t)__cvta_generic_to_shared(staged), matrix_lane = (lane & 7u) * PITCH + (lane >> 3u) * 16u;
+		auto produce = [&](uint32_t chunk, uint32_t slot)
+		{
+			#pragma unroll
+			for ( uint32_t q = 0u; q < COPIES; q++ )
+			{
+				const uint32_t piece = threadIdx.x + q * LM_INDEX_SCORE_THREADS, key = piece / ROW_PIECES, part = piece % ROW_PIECES;
+				const uint8_t *source = block_slots[chunk * LM_INDEX_SCORE_STAGE_POSITIONS + key];
+				LmIndexScoreCopy16(staged_s + slot * STAGE_BYTES + key * PITCH + part * 16u, source != 0 ? source + part * 16u : (const uint8_t *)index_query_bf16,
+					source != 0 ? 16u : 0u);
+			}
+		};
+		#pragma unroll
+		for ( uint32_t stage = 0u; stage + 1u < LM_INDEX_SCORE_STAGES; stage++ )
+		{
+			produce(stage, stage);
+			asm volatile("cp.async.commit_group;\n" ::: "memory");
+		}
+		for ( uint32_t chunk = 0u; chunk < CHUNKS; chunk++ )
+		{
+			asm volatile("cp.async.wait_group %0;\n" :: "n"(LM_INDEX_SCORE_STAGES - 2u) : "memory");
+			__syncthreads();
+			if ( chunk + LM_INDEX_SCORE_STAGES - 1u < CHUNKS )
+				produce(chunk + LM_INDEX_SCORE_STAGES - 1u, (chunk + LM_INDEX_SCORE_STAGES - 1u) % LM_INDEX_SCORE_STAGES);
+			asm volatile("cp.async.commit_group;\n" ::: "memory");
+			if ( live == 0u || valid == 0u || bound <= block_first )
+				continue;
+			const uint32_t base = staged_s + (chunk % LM_INDEX_SCORE_STAGES) * STAGE_BYTES + matrix_lane;
+			#pragma unroll
+			for ( tile = 0u; tile < CHUNK_TILES; tile++ )
+			{
+				const uint32_t first = block_first + (chunk * CHUNK_TILES + tile) * LM_INDEX_SCORE_TILE_POSITIONS, written = first + pair * 2u;
+				float accumulator[HEAD_TILES][4] = {};
+				if ( first >= bound || first >= score_stride )
+					break;
+				#pragma unroll
+				for ( step = 0u; step < STEPS; step += 2u )
+				{
+					uint32_t value[4];
+					LmIndexScoreMatrix4(base + tile * LM_INDEX_SCORE_TILE_POSITIONS * PITCH + step * 32u, value);
+					const uint32_t low_b[2] = { value[0], value[1] }, high_b[2] = { value[2], value[3] };
+					for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+						LmMmaBf16(accumulator[head_tile], a[head_tile][step], low_b);
+					for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+						LmMmaBf16(accumulator[head_tile], a[head_tile][step + 1u], high_b);
+				}
+				LmIndexScoreStore<HEAD_TILES, false>(accumulator, weight, valid, bound, written, group, row, score_stride, qk_scale, scores);
+			}
+		}
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		return;
+	}
+	if ( live == 0u || valid == 0u || bound <= block_first )
+		return;
+	LmIndexScoreKeyFragments<STEPS>(block_first + group < bound && block_first < score_stride ?
+		LmIndexScoreSlot<Geometry>(index_view, sequence, block_first + group, row) : 0, pair, next);
+	for (tile = 0u; tile < LM_INDEX_SCORE_BLOCK_TILES; tile++)
+	{
+		const uint32_t first = block_first + tile * LM_INDEX_SCORE_TILE_POSITIONS;
+		const uint32_t ahead = first + LM_INDEX_SCORE_TILE_POSITIONS + group;
+		const uint32_t written = first + pair * 2u;
+		float accumulator[HEAD_TILES][4] = {};
+		if ( first >= bound || first >= score_stride )
+			break;
+		for (step = 0u; step < STEPS; step++)
+		{
+			b[step][0] = next[step][0];
+			b[step][1] = next[step][1];
+		}
+		LmIndexScoreKeyFragments<STEPS>(tile + 1u < LM_INDEX_SCORE_BLOCK_TILES && ahead < bound && first + LM_INDEX_SCORE_TILE_POSITIONS < score_stride ?
+			LmIndexScoreSlot<Geometry>(index_view, sequence, ahead, row) : 0, pair, next);
+		for (step = 0u; step < STEPS; step++)
+			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
+				LmMmaBf16(accumulator[head_tile], a[head_tile][step], b[step]);
+		LmIndexScoreStore<HEAD_TILES, false>(accumulator, weight, valid, bound, written, group, row, score_stride, qk_scale, scores);
+	}
+}
+#endif
+
 #define K3_STREAM_INPUT_MULTIPLE LmStreamInputMultiple<LmBf16Format>()
 #define K3_TILED_INPUT_MULTIPLE 32u
 
@@ -453,21 +757,37 @@ static void K3PartialRows(const K3LayerBuffers *b, const uint16_t *value, uint32
 }
 
 template<uint32_t THREADS>
-static __device__ __forceinline__ void K3CopyAligned4To16(const uint16_t *__restrict__ src, uint16_t *__restrict__ dst, uint32_t elements)
+static __device__ __forceinline__ void K3CopyAligned4To16(const uint16_t *__restrict__ src, uint16_t *__restrict__ dst, uint16_t *__restrict__ dst2, uint32_t elements)
 {
 	const uint32_t *s32 = (const uint32_t *)src;
 	uint4 *d4 = (uint4 *)dst;
+	uint4 *d4b = (uint4 *)dst2;
 	const uint32_t vecs = elements >> 3u;
 	for (uint32_t i = threadIdx.x; i < vecs; i += THREADS)
 	{
 		const uint32_t b = i << 2u;
-		d4[i] = make_uint4(s32[b], s32[b + 1u], s32[b + 2u], s32[b + 3u]);
+		const uint4 v = make_uint4(s32[b], s32[b + 1u], s32[b + 2u], s32[b + 3u]);
+		d4[i] = v;
+		if ( d4b != 0 )
+			d4b[i] = v;
+	}
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ void K3CopySliceDualBf16(const uint16_t *__restrict__ src, uint16_t *__restrict__ dst, uint16_t *__restrict__ dst2, uint32_t elements)
+{
+	for (uint32_t i = threadIdx.x; i < elements; i += THREADS)
+	{
+		const uint16_t v = src[i];
+		dst[i] = v;
+		if ( dst2 != 0 )
+			dst2[i] = v;
 	}
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
+void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint16_t *__restrict__ replay_q_bf16, uint16_t *__restrict__ replay_k_bf16, uint16_t *__restrict__ replay_v_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
 {
 	const uint32_t row = blockIdx.x;
 	if ( row >= rows ) return;
@@ -475,18 +795,22 @@ void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint1
 	uint16_t *q_dst = query_bf16 + (uint64_t)row * qk_dim;
 	uint16_t *k_dst = key_bf16 + (uint64_t)row * qk_dim;
 	uint16_t *v_dst = value_bf16 + (uint64_t)row * v_dim;
+	uint16_t *rq_dst = replay_q_bf16 != 0 ? replay_q_bf16 + (uint64_t)row * qk_dim : (uint16_t *)0;
+	uint16_t *rk_dst = replay_k_bf16 != 0 ? replay_k_bf16 + (uint64_t)row * qk_dim : (uint16_t *)0;
+	uint16_t *rv_dst = replay_v_bf16 != 0 ? replay_v_bf16 + (uint64_t)row * v_dim : (uint16_t *)0;
+	const bool replay_aligned = (rq_dst == 0 || LmIsAligned16(rq_dst)) && (rk_dst == 0 || LmIsAligned16(rk_dst)) && (rv_dst == 0 || LmIsAligned16(rv_dst));
 	if ( ((qk_dim & 7u) == 0u) && ((v_dim & 7u) == 0u) && ((fused_rows & 1u) == 0u) &&
-		((((uintptr_t)src) & 3u) == 0u) && LmIsAligned16(q_dst) && LmIsAligned16(k_dst) && LmIsAligned16(v_dst) )
+		((((uintptr_t)src) & 3u) == 0u) && LmIsAligned16(q_dst) && LmIsAligned16(k_dst) && LmIsAligned16(v_dst) && replay_aligned )
 	{
-		K3CopyAligned4To16<THREADS>(src, q_dst, qk_dim);
-		K3CopyAligned4To16<THREADS>(src + qk_dim, k_dst, qk_dim);
-		K3CopyAligned4To16<THREADS>(src + 2u * qk_dim, v_dst, v_dim);
+		K3CopyAligned4To16<THREADS>(src, q_dst, rq_dst, qk_dim);
+		K3CopyAligned4To16<THREADS>(src + qk_dim, k_dst, rk_dst, qk_dim);
+		K3CopyAligned4To16<THREADS>(src + 2u * qk_dim, v_dst, rv_dst, v_dim);
 	}
 	else
 	{
-		LmCopySliceBf16<THREADS>(src, q_dst, qk_dim);
-		LmCopySliceBf16<THREADS>(src + qk_dim, k_dst, qk_dim);
-		LmCopySliceBf16<THREADS>(src + 2u * qk_dim, v_dst, v_dim);
+		K3CopySliceDualBf16<THREADS>(src, q_dst, rq_dst, qk_dim);
+		K3CopySliceDualBf16<THREADS>(src + qk_dim, k_dst, rk_dst, qk_dim);
+		K3CopySliceDualBf16<THREADS>(src + 2u * qk_dim, v_dst, rv_dst, v_dim);
 	}
 	LmCopySliceBf16<THREADS>(src + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
 }
@@ -670,17 +994,9 @@ static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_
 	LM_LAUNCH((K3SplitFusedProjectionsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->fused_qkvb_bf16,
 		b->query_bf16,b->key_bf16,b->value_bf16,(uint16_t *)b->kda_beta_logit,
+		b->replay_conv_q,b->replay_conv_q != 0 ? b->replay_conv_k : (uint16_t *)0,b->replay_conv_q != 0 ? b->replay_conv_v : (uint16_t *)0,
 		rows,rank_qk,rank_v,rank_heads,
 		K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS));
-	if ( b->replay_conv_q != 0 )
-	{
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
-			b->query_bf16,b->replay_conv_q,rows,rank_qk);
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((rank_qk + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
-			b->key_bf16,b->replay_conv_k,rows,rank_qk);
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((rank_v + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
-			b->value_bf16,b->replay_conv_v,rows,rank_v);
-	}
 	(void)state_slot_bytes;
 	return(LM_LAUNCH_OK);
 }
@@ -791,7 +1107,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 }
 
 #define K3_MLA_DOWN_SLICED(b, rows) \
-	((b)->tp_sharded != 0u && (b)->kv_shard.degree > 1u && (rows) <= LM_SKINNY_ROWS_WIDE && \
+	((b)->tp_sharded != 0u && (b)->kv_shard.degree > 1u && ((rows) <= LM_SKINNY_ROWS_WIDE || (b)->row_invariant != 0u) && \
 	(b)->mla_q_down_scale == 0 && (b)->mla_kv_a_scale == 0 && \
 	(K3_Q_LORA_RANK % (b)->kv_shard.degree) == 0u && (K3_MLA_KV_A_DIM % (b)->kv_shard.degree) == 0u)
 
@@ -808,7 +1124,11 @@ static int32_t K3LayerMlaDownSlice(const K3LayerBuffers *b, uint32_t rows, Spark
 		const LmSkinnyDenseTarget targets[2] = {
 			{qw, b->latent_bf16, (float *)0, query, query + key, 0u, LmScaleTensorNone()},
 			{kw, b->latent_bf16, (float *)0, key, query + key, query, LmScaleTensorNone()}};
-		return(LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,0u,1u));
+#if defined(__CUDACC__)
+		if ( rows > LM_SKINNY_ROWS_WIDE && b->row_invariant != 0u )
+			return(K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream));
+#endif
+		return(LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u));
 	}
 #endif
 	status = LmSkinnyDense<LmBf16Format>(qw,b->normed_bf16,b->latent_bf16,(float *)0,rows,K3_HIDDEN,query,query + key,0u,stream);
@@ -941,13 +1261,19 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		LmKvViewIsConfigured(b->index_shard.pages) == 0u )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 #if !defined(LM_HOST_CUDA_PRELUDE)
-	if ( b->index_active != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) )
+	if ( b->index_active != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u || rows <= 64u) )
 	{
 		LmSkinnyDenseTarget targets[2] = {
 			{b->mla_index_key_weight, b->index_key_bf16, (float *)0, K3_INDEX_DIM, K3_INDEX_DIM, 0u, LmScaleTensorNone()},
 			{b->mla_index_head_weight, b->index_head_bf16, (float *)0, K3_INDEX_HEADS, K3_INDEX_HEADS, 0u, LmScaleTensorNone()}
 		};
+#if defined(__CUDACC__)
+		status = rows > LM_SKINNY_ROWS_WIDE ?
+			K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream) :
+			LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
+#else
 		status = LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
+#endif
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		head_done = 1u;
@@ -975,11 +1301,26 @@ static int32_t K3LayerMlaIndexSelect(const K3LayerBuffers *b, uint32_t rows, Spa
 	const uint32_t first = K3LayerIndexChunkFirst(b), count = K3LayerIndexChunkCount(b, rows), stride = b->index_score_stride;
 	if ( b->index_active == 0u || count == 0u || stride == 0u || b->index_keep == 0u || (uint64_t)count * stride > b->index_score_floats )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( b->fork_positions == 0 && b->slot_offsets == 0 )
+	{
+		LM_LAUNCH((K3SparseScoreSlotsKernel<K3IndexKv,LmKvShardView,K3_INDEX_HEADS,K3_INDEX_DIM>),
+			dim3(LmIndexScoreBlocks(stride),(count + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
+			b->index_query_bf16 + (uint64_t)first * K3_INDEX_QUERY,b->index_head_bf16 + (uint64_t)first * K3_INDEX_HEADS,b->index_shard,
+			b->sequence_of_row + first,b->context_length,b->positions + first,count,stride,K3_INDEX_SCALE / sqrtf((float)K3_INDEX_HEADS),
+			b->index_scores,K3_INDEX_TOPK);
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ||
+			LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard,b->index_scores,stride,b->sequence_of_row + first,b->context_length,
+				b->positions + first,b->index_keep,K3_INDEX_TOPK,count,b->index_send,b->index_error,stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
+#endif
 	if ( LmWeightedSparseScoreLaunch<K3IndexKv,K3_INDEX_HEADS,K3_INDEX_DIM,LmKvShardView>(b->index_query_bf16 + (uint64_t)first * K3_INDEX_QUERY,
 			b->index_head_bf16 + (uint64_t)first * K3_INDEX_HEADS,b->index_shard,b->sequence_of_row + first,b->context_length,b->positions + first,
 			count,stride,K3_INDEX_SCALE / sqrtf((float)K3_INDEX_HEADS),b->index_scores,stream,
 			b->fork_positions != 0 ? b->fork_positions + first : (const uint32_t *)0,
-			b->slot_offsets != 0 ? b->slot_offsets + first : (const uint32_t *)0) != SPARK_GPU_SUCCESS ||
+			b->slot_offsets != 0 ? b->slot_offsets + first : (const uint32_t *)0,K3_INDEX_TOPK) != SPARK_GPU_SUCCESS ||
 		LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard,b->index_scores,stride,b->sequence_of_row + first,b->context_length,
 			b->positions + first,b->index_keep,K3_INDEX_TOPK,count,b->index_send,b->index_error,stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
@@ -1076,13 +1417,20 @@ static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, S
 	}
 	if ( b->row_invariant != 0u )
 	{
-		if ( !(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,LmLatentShardDecodeSplits(1u),stream,b->fork_positions,b->slot_offsets) == SPARK_GPU_SUCCESS) )
+		const uint32_t splits = K3LayerIndexed(b) != 0u ? 1u : LmLatentShardDecodeSplits(1u);
+		if ( !(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,splits,stream,b->fork_positions,b->slot_offsets) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return(LM_LAUNCH_OK);
 	}
 	if ( rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS )
 	{
 		if ( !(LmLatentShardPrefillLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
+	if ( K3LayerIndexed(b) != 0u )
+	{
+		if ( !(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,1u,stream,b->fork_positions,b->slot_offsets) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return(LM_LAUNCH_OK);
 	}
@@ -1721,7 +2069,13 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 			const LmSkinnyDenseTarget targets[2] = {
 				{b->routed_down_weight, b->latent_bf16, (float *)0, slice, slice, 0u, LmScaleTensorNone()},
 				{rslice, (uint16_t *)0, K3_ROUTER_SLICE(b,rows), experts, experts, 0u, LmScaleTensorNone()}};
+#if defined(__CUDACC__)
+			status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant != 0u ?
+				K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream) :
+				LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u);
+#else
 			status = LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u);
+#endif
 			if ( status == LM_LAUNCH_ERR_SHAPE )
 				LM_LAUNCH_REFUSE("k3 moe route+down: the multi-target skinny kernel refused %u rows; waves of up to %u rows and row-invariant waves "
 					"run on it, so the weights and activation need 16-byte alignment\n",rows,LM_SKINNY_ROWS_WIDE);
