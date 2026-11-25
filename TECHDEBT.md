@@ -49,13 +49,13 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   third. Split each peer's traffic over both rails: two queue pairs a peer and
   alternate publications, which the half-slot positions and tails already keep
   apart.
-- Mesh collectives write to all fifteen peers at once. That fifteen-to-one
-  incast holds rail 2 all-to-all at 88 of 98 Gb/s a node and gives small
-  messages a 0.65-1.3 ms p99 behind PFC pauses. Permutation-scheduled steps
-  (rotation or pairwise halving and doubling) measured 98 Gb/s a node and a
-  30 us p99. Schedule bulk collectives as permutations, and send
-  latency-critical small messages in the rail 2 fast class (traffic class 202).
-  The CRS804 has no second lossless class.
+- Permutation-scheduled RDMA peer posting (#2164) and E14 doorbell batching with
+  unsignaled WR chaining (#2225) are in `node/weightd_mesh.c`, replacing
+  unscheduled all-at-once 15:1 writes (which held rail 2 all-to-all at 88 of
+  98 Gb/s a node with 0.65-1.3 ms small-message p99 behind PFC pauses). Still
+  open: live fleet verification of the permutation schedule against the
+  98 Gb/s / 30 us target, and sending latency-critical small messages in the
+  rail 2 fast class (traffic class 202; CRS804 has no second lossless class).
 - The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
   which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
   node; release main's agent, which has that default, and drop the override.
@@ -214,9 +214,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Production status). Qualify GPU cancellation, drain and event-driven mesh
   activity on that path too, so that rearming a wait cannot cancel unrelated
   work on the rank.
-- NCCL leftovers after `b31761e`, which deleted the NCCL backend: `tools/qwen38_tp4_nccl_bench.c`,
-  and the `nccl` configs in `tests/test_tp_allreduce_fuzz.c`. The enum value
-  and the stage-config parser branch are gone.
+- Opt-in E9 MXFP8/FP8 wire compression for large prefill collectives (#2231,
+  `inference/runner/mesh_fast_kernels.cuh`) is covered by CUDA unit tests
+  (`tests/cuda/tp_mesh_mxfp8_wire_cuda.cu`), but has no per-lane quality
+  measurement or Gate GX verification yet. Keep it off by default until each
+  lane passes a quality measurement and Gate GX with compression enabled.
 - Awaiting fleet proof (lane `mesh/contracts`): attach now fails with
   `MESH-CAPABILITY-MISSING` when the local weightd lacks a route the regimes
   use, and the routes are fixed at attach, so no later read of the wait cell
@@ -269,12 +271,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Steady-state decode hot path
 
-- The attention kernels keep the stack frames recorded in `PENDING`
-  (`tools/kernel_spill_audit.py`, 27 instantiations under CUDA 13.0).
-  `D41AttendKernel` at two query tiles (DSV4.1's row-parallel attention)
-  keeps its 168-byte spill on purpose. Its ten warps (eight consumers, a
-  planner and an issuer) cap ptxas at 168 registers, against the 242 it
-  needs. Measured cold on one GB10 (CUDA 13.0, 2026-11-23, bytes identical):
+- The attention kernels keep the five stack frames recorded in `PENDING`
+  (`tools/kernel_spill_audit.py` under CUDA 13.0, down from 27 after #2214,
+  #2222 and #2243): the four `D41AttendKernel` instantiations (136 bytes at
+  two query tiles, 40 bytes at one) and `LmAttentionBlockPartialKernel<192,128>`
+  (56 bytes). `D41AttendKernel` at two query tiles (DSV4.1's row-parallel
+  attention) keeps its spill on purpose: its ten warps (eight consumers, a
+  planner and an issuer) cap ptxas at 168 registers against the 242 it needs.
+  Measured cold on one GB10 (CUDA 13.0, 2026-11-23, bytes identical):
   - reloading the query fragments every tile removes the spill, but runs at
     0.72-0.93x at 1-16 rows a rank (decode) and about even at 32-256 rows;
   - keeping half the fragments in registers still needs about 210 registers;
@@ -287,20 +291,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   and reads it with ldmatrix, which has room only there (16 KB); its frame
   is the 40-byte table of the precise sine and cosine slow path that the
   RoPE epilogue calls, which runs only for huge angles.
-  `LmLatentShardPrefillKernel` (14 entries, six families) runs the same ten
-  warps and keeps its query fragments in registers for the whole row (72
-  registers at 576 dimensions). Its 32 queries (about 37 KB) do not fit in
-  the roughly 15 KB of shared memory left beside its double-buffered key
-  rows. Reloading the fragments every step only shrinks its frames (ptxas,
-  DSV4.1, CUDA 13.0: 40 to 24 bytes, still spilling, and 32 to 8 bytes) at
-  the same 168 registers. A cold timing of the latent prefill across the
-  six families comes before any change. The other entries wait for their
-  own measurement.
-- Accept each hot-path change independently: exact token parity first, then
-  at least three unprofiled end-to-end cached-prefill B1 runs. Do not stack
-  candidates until the preceding candidate beats the current GLM 5.3 Flash
-  TP16 B1 receipt in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)
-  (36 tok/s on 2026-09-28).
+  `LmAttentionBlockPartialKernel<192,128>` waits for its own measurement.
 - The stage runner waits for each wave on residentd's thread.
   `StageRunnerGraphLaunch` synchronizes the stream after every graph replay
   (`SparkTpDeviceCollectiveGraphSettle`,
@@ -311,7 +302,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `node/model_residentd.c`). Move the round checks and token copies into a
   completion path so residentd keeps serving its socket during the replay.
 - Prefill waves never run as a graph: the stage runner captures only waves
-  with one row per sequence and at most 16 rows (`StageRunnerGraphEligible`,
+  with one row per sequence (or eligible verify frames) and at most 64 rows
+  (`STAGE_RUNNER_GRAPH_ROWS`, `StageRunnerGraphEligible`,
   `inference/runner/stage_runner.cu`). A decode wave queued behind a prefill
   wave waits for that wave's whole GPU time, because residentd submits one
   wave at a time and the runner returns only when the wave has finished.
@@ -1200,30 +1192,29 @@ Related common-code debt:
   proof: publish a 4K prompt, restart residentd on all ranks, resend it, and
   see `cached_tokens` equal to the published prefix with tokens identical to
   the first run.
+- Gate GX (`tools/gx_gate.py`, #1970) and pre-suffix / periodic recurrent
+  prefix checkpoints (#2210, #2249) are on `main`, but intermittent warm-vs-cold
+  reply drift and cross-build output comparisons remain open until exact
+  wave-cut reuse (#1972) lands and every release enforces old/new capture,
+  golden compare and Gate GX.
 
 ## Dynamic batching
 
-- Kimi K3 and GLM 5.3 Full serve at most 8 sequences at once and GLM 5.3
-  Flash 16. GLM Flash's shared batch scheduler selects arbitrary counts up to
-  its configured limit; a power-of-two kernel bucket is not an admission rule.
-  The GLM deployments set active and resident capacity to 16 or less
-  (`deployment/glm5_next_tp16/model_resident.json` and the GLM records in
-  `deployment/lanes.json`), while the stage
-  serving adapter allows up to `SPARK_STAGE_SERVING_MAX_LANES` (128). KV is
-  paged from the weightd pool through `runtime/stage_kv_binding.c`, so a
-  sequence no longer reserves its full context. Qualify explicit larger
-  capacities with arrivals/completions and memory gates before raising the
-  limit.
+- Most lanes in `deployment/lanes.json` now serve up to 64 active sequences
+  (`kimi-k3` and `k-exaone-2.0` serve 32; #2170, #2176, #2239), while the
+  stage serving adapter allows up to `SPARK_STAGE_SERVING_MAX_LANES` (128).
+  KV is paged from the weightd pool through `runtime/stage_kv_binding.c`, so
+  a sequence no longer reserves its full context. Qualify capacities beyond
+  64 with arrivals/completions and memory gates before raising the limit.
 - Making a page resident when the resident pool is full still scans every
   resident slot for a victim instead of taking the least recently used
   unreferenced entry; pool fullness, retained pages, evictions and spill
   traffic are now reported in the API's `kv_store_report`.
 - Prewarm the decode graphs a deployment admits at load. The stage runner
-  captures a graph per row count the first time that count runs, and only up
-  to 16 rows with one row per sequence (`STAGE_RUNNER_GRAPH_ROWS`,
-  `StageRunnerGraphEligible`, `StageRunnerStep` in
-  `inference/runner/stage_runner.cu`). The first wave at each count pays the
-  capture, and wider waves run eager.
+  captures a graph per row count the first time that count runs, up to 64
+  rows (`STAGE_RUNNER_GRAPH_ROWS`, `StageRunnerGraphEligible`,
+  `StageRunnerStep` in `inference/runner/stage_runner.cu`). The first wave
+  at each count pays the capture, and wider waves run eager.
 - Qualify mixed arrivals, priorities, prompt lengths, shared prefixes, cache
   pressure, cancellation, and starvation bounds.
 - Priority and deadline reach admission, prefill and decode scheduling (the
@@ -1335,6 +1326,10 @@ Related common-code debt:
   other stage checks every tensor: GLM, glm5_next and DSV4.1 check the whole
   pack directory at open, and Ling, Gemma, hy4 and mimo26 check each bind's
   bytes.
+- Newly wired CUDA TP16 models (`HY4-FP8`, `Ling 3.1-Flash`, `Ling 3.2-Air`,
+  and `sage-s2.1-flash`; #2223, #2229) have stage code, packers and RAIS
+  wiring, but still need live fleet qualification receipts and Metal
+  device-stage parity.
 
 ## Korean models
 
@@ -1345,7 +1340,7 @@ The sources are pinned. All three serve.
   - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39). The cp.async expert gather and grouped skinny batches (#1633) took prefill on a 7.7K prompt from 364 to 539 tok/s in both rounds of one hold (16K needle 43.4 to 30.2 s, 64K 223.6 to 170.4 s), captures token-identical.
   - **Missing:**
     - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. That shape dependence was the reference's: BLAS picks its summation order by matrix shape. The K-EXAONE, A.X K2, Ling and Solar references now accumulate every product in f64 before rounding and round attention probabilities to bf16 as the publisher does, so a prompt's numbers no longer depend on the other prompts or on later tokens; the 92-position comparison has to be re-scored with them. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
-    - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its MTP layer and the DSpark drafter are not wired.
+    - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its native C DSpark drafter (`kexaone2dspark`) is wired (#2218, #2221), awaiting live soak qualification and commercial license clearance (see Packaging and provenance); its MTP layer is not wired.
 - **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
   - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
   - **Measured (main fc764057b, 10-27):** 26.8 tok/s at B1 without speculation and 1,234 tok/s prefill at 8K, in one hold with the previous lane build (26.9 and 1,152). The low-rank gate split (#1597) and the expert top-k sized to the expert count (#1598) took B1 from 23.8; the hardware bf16 conversion (#1602) took back the 6.4% of prefill the NaN-safe software rounding had cost.
@@ -1356,7 +1351,7 @@ The sources are pinned. All three serve.
     - The lane serves −inf since 2026-10-26 14:55Z. The numpy reference masks the same way.
   - **Reference:** with both masking with −inf, the served tokens agree with the numpy reference at all 122 positions, served logprobs within 0.31 (median under 0.005). Under 0.0-fill, the Korean contract prompt had disagreed at 3 to 5 of 48 positions, and which positions moved with how the reference batched its prompts.
   - **Missing:**
-    - Speculation with the DSpark drafter is not wired.
+    - Native C DSpark drafter (`axk2dspark`) is wired (#2220, #2221) and awaits live soak qualification.
 - **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
   - **Serving:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4. Answers are right in English and Korean, including a 3,076-token passkey; the UI smoke passes 6 of 6, tool calls included.
   - **Measured:** 61.2 tok/s at B1 without speculation (median of eight runs), 1,025 tok/s prefill at 6K. The grouped expert kernel's routed-row grid (#1584) took it from 56.2 and 56.6 to 60.4 and 62.5 in one hold, capture unchanged. The cp.async expert gather and grouped skinny batches (#1633) took prefill on an 8.1K prompt from 995 and 1,000 to 1,476 and 1,489 tok/s in one hold (16K needle 18.1 to 13.0 s, 64K 105.5 to 83.9 s), captures token-identical. Every routed expert is split over the 16 ranks by rows, 80 real rows per rank. Same-hold A/B on 2026-10-26: 47.0 and 47.4 tok/s with the 80 rows zero-padded to 128 against 57.0 and 56.4 at 80 rows; prefill on an 8.1K prompt 972 and 973 against 1,003 and 994 tok/s. Earlier layouts measured 41.1 tok/s with 20 whole experts per rank. The 80-row pack is 31.5 GB per rank, against 49.6 GB padded.
@@ -1372,19 +1367,16 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Speculation
 
-- The hub's drafters still run in Python (`tools/block_draftd.py`), one
-  process per lane. `build/sparkpipe_draftd` is the C replacement: one
-  process per GPU, DFT3 and tap stream in C. It serves only the host replay
-  drafter so far. The engine drafters (the K3.1 Pro and DSV4.1 DSparks and
-  the Qwen3.8-27B DSpine, from the packs `tools/drafter_pack.py` cuts) and
-  weightd on the hub come next; K3's DFlash2 drafter retires with its lane
-  (#1910).
-- weightd's held packs bind drafters on a device without unified memory
-  through exported host memory (`SparkDeviceMemoryCreateHost`). The CUDA
-  backend has it; nvrm's, a system-memory object exported through the NV0000
-  path, is the runtime track's next item and builds on 64 KiB pages for
-  objects from 4 GiB (#2084). Until then a held bind on nvrm is refused. A
-  held pack is released only when weightd exits.
+- `build/sparkpipe_draftd` now serves eight native C DRPK v1 drafters wired
+  into `deployment/lanes.json`, `deployment/hub/draftd_engine.json` and
+  `deployment/drafter_provenance.json` (`k31dspark`, `qwen27bdspine`,
+  `dsv41dspark`, `glm53dspark`, `qwen38maxdspark`, `glm53flashdflash2`,
+  `kexaone2dspark` and `axk2dspark`; #2157, #2215-#2221), and only the
+  retiring `kimi-k3` lane still runs Python `tools/block_draftd.py`. Open:
+  live soak and qualification receipts for the switched `sparkpipe_draftd`
+  lanes, and retiring `tools/block_draftd.py` with `kimi-k3` (#1910).
+- A held pack in `weightd` (bound through `SparkDeviceMemoryCreateHost` on
+  both CUDA and nvrm, #2109) is released only when `weightd` exits.
 - The K3.1 Pro DSpark module (`modules/k31_dspark_draft_stage/`) drafts in
   5.1 ms at 100 context positions on the 5090: the block forward takes 3.5 ms
   and the heads 1.7 ms. The forward's weights (4.52 GB) take 2.53 ms to read
@@ -1400,22 +1392,15 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   launches in 0.12 ms while the GPU works for 5 ms. With a busy thread
   on the draft server's core, both builds wait the same for the wake after the
   stream sync. The work is per-kernel time.
-- Tree frames serve only where the stage maps keys per path: Solar Open 2
-  on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
-  A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
-  Gemma 4 and MiMo share the GQA kernels that take the mapping, but their
-  stages lack the relocation and the capability
-  (`docs/TREE_VERIFICATION_DESIGN.md`, phases P3 and P5).
 - One draft model per lane. A second drafter on a lane waits for the
   agreement between two drafters on recorded streams, which bounds what its
   branches can add.
-- A draft is asked when its frame is built, so the frame waits for the
-  answer up to `wait_ms`. Asking one round ahead, while the previous frame
-  runs, is not built.
 - Speculation serves on every model in the README model table, whose
-  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
-  Still to do:
-  - verify frames for Motif 3 once it serves;
+  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`,
+  with tree verification wired across CUDA TP16 adapters (#2149-#2162, #2202)
+  and pure-KV Metal stages (#2166) and pipelined multi-lane neural drafting
+  up to B=8 (#2180, #2190). Still to do:
+  - qualify Motif 3 verify frames once Motif 3 serves on the fleet;
   - MiMo V2.6 speculates from the request's own context only: its 3-layer MTP
     head (F32 in the checkpoint) and the DFlash draft model it ships in
     `dflash/` are not packed or wired as drafters;
@@ -1428,10 +1413,10 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     GLM 5.3 Full and A.X K2 long frames;
   - Ling 3.0 Flash's checkpoint carries one MTP layer (`model.layers.42`); the
     pack drops it, so Ling 3.0 verifies only context-lookup drafts;
-  - graphs for verify frames that carry several sequences: the runner
-    captures a graph for one row per sequence or for one sequence's verify
-    frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
-    so shared verify frames run eager;
+  - graphs for multi-sequence tree verify frames: `StageRunnerGraphEligible`
+    (`inference/runner/stage_runner.cu`) now captures multi-sequence linear
+    verify frames (`sequences > 1 && tree == 0`, #2150), while multi-sequence
+    tree verify frames still run eager;
   - show that plain prompts with no matches lose no speed beyond noise on
     every model that speculates; every verify-capable stage now reproduces
     one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
@@ -1525,6 +1510,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - The ds4-eval fixtures keep GPQA questions in plain text, which GPQA's
     dataset card asks users not to publish; a decision on keeping only ids
     is open.
+  - `K-EXAONE-2.0-750B-A37B-DSpark` (`deployment/drafter_provenance.json`,
+    #2238) carries a non-commercial license
+    (`EXAONE-AI-Model-License-Agreement-1.2-NC`) and cannot be served
+    commercially on rented fleets without a separate license or replacement
+    drafter.
 - Add the upstream implementation commit to stage-pack provenance at the next
   pack format revision.
 - Publish one synchronized pack-environment manifest for Python, CUDA, and
@@ -1546,11 +1536,23 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   the same slot matches a fresh-process run token for token.
 - The stage runner is one driver per model and takes any row count up to its
   `max_input_row_count`, but it captures its per-row-count decode graphs (1 to
-  16 rows, `STAGE_RUNNER_GRAPH_ROWS` in `inference/runner/stage_runner.cu`) on
+  64 rows, `STAGE_RUNNER_GRAPH_ROWS` in `inference/runner/stage_runner.cu`) on
   the first step of each row count, so the first request at a new batch width
   pays the capture. Prewarm them at load.
 
 ## Runtime completion
+
+- `nvrm` program launch-chain optimizations (#2167: QMD chaining, compute WFI,
+  L1 membar task chasing and PDL CTA overlap) have host-visibility coverage
+  (`tests/nvrm/host_visibility.cu`, #2243), but still need the strict GPU gate
+  and CUDA-vs-NVRM bit-identity verification across served models on GB10
+  hardware.
+- Collective chain-seed upload ordering on pass prefill (`docs/UPLOAD_ORDERING.md`):
+  the chain seed is queued on the caller's stream, so for a rank whose first
+  collective work is a streamed pass prefill without a preceding weight
+  switch, pass prefill's gather round runs on its own stream without an
+  explicit event wait behind the seed. Add an explicit event wait so nothing
+  relies on timing.
 
 - Fleet agent restart order. `ensure_weightd` in `tools/fleet_node_agent.sh`
   starts a replacement weightd as soon as it finds none, while the node's
@@ -2049,20 +2051,11 @@ and the multidev docs on 2026-09-28. Line numbers are in
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
   `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
-  library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
-  - that device backend;
-  - a build flavour that links neither library;
-  - weightd on nvrm on a node. weightd's memory goes through the device layer
-    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)), and
-    the RDMA transport links the flavour's device library instead of the
-    driver.
-    - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
-      programs with no CUDA library. They have not run on a GPU yet.
-    - The nvrm flavour builds residentd, the transport and every adapter.
-      Every adapter's model kernel image loads on nvrm, but the stage
-      runner's still calls device `printf`, which only the CUDA driver
-      provides, and the stage runner's graph capture has no nvrm equivalent
-      yet, so no adapter serves on nvrm.
+  library: the global `LDFLAGS` no longer add `-lcuda`, all 27 NVRM adapters
+  build (#2072, #2208), `SparkDeviceBackendProgram*` runs native QMD launch
+  chains (#2167), and zero-NVIDIA `sklc` + NVRM proofs have run on GB10
+  (#2159, #2207, #2230). Still open: end-to-end fleet qualification of a
+  hosted release root running on the hosted node image against DGX OS.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:
@@ -2116,13 +2109,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
   pageable memory, copy-engine copies and fills, queues (one GPFIFO ring
   each, compute and copy ordered on a 64-bit timeline), events, waits
   between queues, host callbacks and timing; the device contract passes on
-  GB10 and memory bandwidth is at par with `cudaMalloc`. The barrier count a kernel needs is
-  not read from its cubin yet (the packer takes it as an input). Kernel libraries (cubins with PTX parameter
-  manifests) load and launch through the device layer with the parameter
-  block as constants. Missing: the kernel registration entry points and
-  the hosted LM_LAUNCH template that map nvcc's host stubs to those
-  kernels; command lists replacing graphs; memory shared with weightd;
-  TMA descriptors; fault reports (a hung queue is waited on forever).
+  GB10 and memory bandwidth is at par with `cudaMalloc`. The barrier count a
+  kernel needs is not read from its cubin yet (the packer takes it as an
+  input). Kernel registration, hosted `LM_LAUNCH` (#2208), native program
+  launch chains (#2167), weightd shared memory (#2039, #2109, #2128) and TMA
+  descriptor builds (#2072) are implemented. Still missing: fault reports
+  (a hung queue is waited on forever).
   Host-backed memory registers 4 KiB pages and reads 18% slower than
   device memory. On the hub's RTX 5090 the backend runs the whole GPU gate
   with device-private and shared memory in video memory, and host-pinned
@@ -2149,9 +2141,6 @@ and the multidev docs on 2026-09-28. Line numbers are in
     CPU mapping, and the module allocates the memory without charging the
     process's memory cgroup, so a lane's memory limit does not count its
     host-pinned or shared-coherent buffers on a discrete GPU.
-  Production modules call the CUDA runtime directly
-  (above), so even a complete backend serves nothing until they move
-  behind the device layer or a GPU API of our own.
 - nvrm stream priorities. The nvrm GPU front reports one stream priority:
   `SparkGpuDeviceGetStreamPriorityRange` answers 0 to 0, as CUDA does for a
   context without priorities, and refuses any other priority. So the
@@ -2520,25 +2509,20 @@ Metal backend and the single-Studio stage are in
   passes against references a and h (KL 1.10 and 0.98 times the floor's,
   paired +2.0 and +1.2 sigma). The Metal backend for Qwen 3.8 Max is in
   progress.
-- HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
-  `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
-  top-2,048 per rank and over the gathered candidates, the second KV pool
-  of 128-wide keys) is not built, so the stage refuses a row past position
-  2,047; below that the indexer keeps every key and attention is dense. The
+- HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer is coded
+  through `inference/runner/device_indexer.h` (#1916, kernel tests passing),
+  but the stage has not been run past position 2,047 on a Studio yet. The
   latent KV slot stores the 512-wide latent a second time as the value (1,088
   elements per slot where CUDA keeps 576), and the rope's inverse
   frequencies come from a double-precision table where CUDA's kernel
   computes `__powf`.
 - GLM 5.3 Flash on the Studio (`Glm5NextDevice<Glm53FlashDevice>`): the DSA
-  indexer (`index_q`, `index_k` with its LayerNorm, the pooled key scores
-  with the compressor gate and position embedding, the top 512 of 4-key
-  pools, the index key pool) is not built, so the stage refuses a row past
-  position 2,047, below which every pool is selected and attention is
-  dense. The rope-free latent slot stores the 512-wide latent twice, as the
-  key and as the value (CUDA keeps it once and reads it as both), and the
-  latent attention is not sharded by context across ranks: each rank
-  attends its own heads over the whole context. The MTP layer is not
-  packed.
+  indexer is coded through `inference/runner/device_indexer.h` (#1916, kernel
+  tests passing), but the stage has not been run past position 2,047 on a
+  Studio yet. The rope-free latent slot stores the 512-wide latent twice, as
+  the key and as the value (CUDA keeps it once and reads it as both), and the
+  latent attention is not sharded by context across ranks: each rank attends
+  its own heads over the whole context. The MTP layer is not packed.
 - K-EXAONE 2.0 on the Studio (`GemmaDevice<Kexaone2Device>`, TP8 paged from
   the SSD) passes the gate's KL (0.91x / 0.68x of the floor) and top-1 (1.10x /
   1.02x) tests and fails the paired test (+6.18 / +8.52 sigma). Its references
@@ -2549,7 +2533,8 @@ Metal backend and the single-Studio stage are in
   above the floor's on every prompt, which puts most positions above the floor
   and the paired share far past 0.5.
 - GLM 5.3 Full on the Studio (`Glm52Device<Glm53FullDevice>`): the DSA
-  indexer is not built either (rows past position 2,047 refused) and the
+  indexer is coded through `inference/runner/device_indexer.h` (#1916, kernel
+  tests passing, stage not yet run past position 2,047 on a Studio), and the
   MTP layer is not packed. The rope's inverse frequencies come from a
   double-precision table, as the teacher's, where CUDA's kernels compute
   `__powf` (about 1e-6 relative, 1e-3 rad by position 2,000). Its geometry
@@ -2557,9 +2542,11 @@ Metal backend and the single-Studio stage are in
   Metal-side `Geometry` with the layer count and first routed layer, because
   `Glm53FullGeometry` still lives in the CUDA module's `.cu`. A.X K2
   (`Glm52Device<Axk2Device>`) reads `Axk2Dimensions` from its module header,
-  which the CUDA `Axk2Geometry` also takes its values from; its indexer
-  (64 heads, ReLU scores, half-split rope) is not built either.
-- Kimi K3 on the Studio (`K3Device`): the latent attention layers run `q_b`,
+  which the CUDA `Axk2Geometry` also takes its values from; its indexer is
+  likewise coded in #1916 and awaits a Studio stage run.
+- Kimi K3 on the Studio (`K3Device`): Kimi K3.1 Pro and the shared sparse
+  indexer are coded in #1916 (kernels tested, stages not yet run on a Studio).
+  The latent attention layers run `q_b`,
   round, then multiply each head by `mla_uk` (kv_b's key rows) and round
   again, as the teacher does, where CUDA's pack folds the key rows into the
   query weight and rounds once; the latent slot stores the 512-wide latent
@@ -2570,11 +2557,8 @@ Metal backend and the single-Studio stage are in
   `ResidentMoe` split by latent input, and every rank scores all 896
   experts where CUDA scores 112 per rank and gathers them.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
-  - the QSA indexer is not built, so the stage refuses contexts past 2,048
-    positions. Below 2,052 the indexer keeps every block and attention is
-    dense, so nothing is lost there; longer contexts need the index key pool,
-    the block-key and tail kernels, the score and top-512 selection and a
-    block mask in the attention kernels;
+  - the QSA indexer is coded through `inference/runner/device_indexer.h`
+    (#1916, kernels tested), awaiting a Studio stage run past 2,050 positions;
   - speculation replays the n-gram conv window and token history for the
     kept rows from the verify step's saved conv input; it is exact only if
     a speculative run's tokens equal plain decoding's, which the gate checks
@@ -2664,13 +2648,10 @@ Metal backend and the single-Studio stage are in
     solo tokens. Taking the GEMV passes for three to eight rows in the GEMV
     family would make B3 to B8 both faster and identical to solo decode;
     it needs Gemma's ladder gate re-run.
-- DeepSeek V4.1 Flash on Metal (`model-families/dsv41_flash/device/`) is the
-  dense path only:
-  - the sparse-attention indexer is not built, so a row at position 512 or
-    later is refused. It needs the index keys beside the compressed keys,
-    the 32-head ReLU-weighted scores, an exact top 512 with CUDA's tie
-    order, the selection reused by the layers between index sources and the
-    candidate-block prefilter past 16,384 compressed keys;
+- DeepSeek V4.1 Flash on Metal (`model-families/dsv41_flash/device/`):
+  - the sparse-attention indexer is coded through
+    `inference/runner/device_indexer.h` (#1916, kernels tested), awaiting a
+    Studio stage run past position 512 and indexer-weight packs;
   - the window keys of every layer sit in the paged pool for every position
     (2 KB per position per layer), not in a 128-row ring per sequence;
   - `SparkOpsAttentionExtra` runs the decode kernel for every row count, so
