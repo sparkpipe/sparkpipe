@@ -114,18 +114,22 @@ class DirectPacks(unittest.TestCase):
         uses = re.findall(r"ln -s\S*|readlink -f \S*", text)
         return uses + [token for token in re.findall(r"[^\s\"'()=]*packs/[^\s\"'()]*", text) if "sparkdata/" not in token and not token.endswith(("packs/pack.sha256", "packs/pack.sha256.tmp"))]
 
+    def dsv41_model(self):
+        return stage_lane.MODELS[lane_config.record("deepseek-v4.1-flash")["model"]]
+
     def fleet(self, scratch: str):
         fake = Path(scratch) / "fleet"
         fake.mkdir()
         binary = fake_bin(Path(scratch), {"ssh": FAKE_SSH, "scp": FAKE_SCP})
         firmware = Path(scratch) / "firmware"
         firmware.mkdir()
+        dsv41_adapter = self.dsv41_model()["adapter"]
         for name in ("sparkpipe_model_residentd", "weightd_warm", "libhidden_transport_spark_host_rdma_verbs.so",
-                     "libk3_tp16_serving_adapter.so", stage_lane.MODELS["dsv41_flash"]["adapter"]):
+                     "libk3_tp16_serving_adapter.so", dsv41_adapter):
             (firmware / name).write_text(name)
         (firmware / "runtime_libs").mkdir()
         (firmware / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("device")
-        for adapter in ("libk3_tp16_serving_adapter.so", stage_lane.MODELS["dsv41_flash"]["adapter"]):
+        for adapter in ("libk3_tp16_serving_adapter.so", dsv41_adapter):
             kernels = firmware / (adapter + ".kernels")
             kernels.mkdir()
             (kernels / "stage_runner.cubin").write_text("cubin of " + adapter)
@@ -149,7 +153,7 @@ class DirectPacks(unittest.TestCase):
         return subprocess.run(["bash", str(ROOT / "tools/k3_lane.sh"), "setup"], env=settings, capture_output=True, text=True, timeout=600)
 
     def test_setup_creates_no_link_and_removes_old_ones(self):
-        model = stage_lane.MODELS["dsv41_flash"]
+        model = self.dsv41_model()
         k3 = stage_lane.MODELS["k3"]
         with tempfile.TemporaryDirectory() as scratch:
             fake, firmware, environment = self.fleet(scratch)
@@ -177,7 +181,7 @@ class DirectPacks(unittest.TestCase):
             self.assertEqual(old.read_text(), "old run\n")
 
     def test_setup_stages_every_adapter_with_its_kernels(self):
-        model = stage_lane.MODELS["dsv41_flash"]
+        model = self.dsv41_model()
         k3 = stage_lane.MODELS["k3"]
         staged = {"deepseek-v4.1-flash": (model["adapter"], "lib/" + model["adapter"]),
                   "kimi-k3": ("libk3_tp16_serving_adapter.so", "lib/libk3_serving_adapter.so")}
@@ -218,7 +222,7 @@ class DirectPacks(unittest.TestCase):
                     self.assertEqual([host for host in stage_lane.HOSTS if any((fake / "home" / host).glob("*-lanes"))], [])
 
     def test_setup_refuses_a_linked_or_missing_weight_file(self):
-        model = stage_lane.MODELS["dsv41_flash"]
+        model = self.dsv41_model()
         k3 = stage_lane.MODELS["k3"]
         with tempfile.TemporaryDirectory() as scratch:
             fake, firmware, environment = self.fleet(scratch)
@@ -254,21 +258,21 @@ class DirectPacks(unittest.TestCase):
             run = lambda *args: subprocess.run([sys.executable, str(ROOT / "tools/lane_pack_files.py"), *args], env=environment, capture_output=True, text=True, timeout=300)
             result = run("--host", "spark3")
             self.assertEqual(result.returncode, 0, result.stderr)
-            xs, k3 = "/home/spark3/sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs", "/home/spark3/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank03.pack"
-            self.assertEqual(result.stdout.splitlines(), [
-                f"spark3 deepseek-v4.1-flash digest {xs}/rank3.spstage.sha256",
-                f"spark3 deepseek-v4.1-flash experts {xs}/rank3.spstage.experts",
-                f"spark3 deepseek-v4.1-flash pack {xs}/rank3.spstage",
-                f"spark3 deepseek-v4.1-flash sibling {xs}/engram.spengram",
-                f"spark3 deepseek-v4.1-flash sibling {xs}/engram.spengram.digest",
-                f"spark3 deepseek-v4.1-flash sibling {xs}/engram.spengram.experts",
-                f"spark3 deepseek-v4.1-flash sibling {xs}/engram_tables.bin",
+            model = self.dsv41_model()
+            pack_dir = "/home/spark3/" + os.path.dirname(model["pack"].format(rank=3))
+            k3 = "/home/spark3/sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank03.pack"
+            expected = [
+                f"spark3 deepseek-v4.1-flash digest {pack_dir}/rank3.spstage.sha256",
+                f"spark3 deepseek-v4.1-flash experts {pack_dir}/rank3.spstage.experts",
+                f"spark3 deepseek-v4.1-flash pack {pack_dir}/rank3.spstage",
+                *[f"spark3 deepseek-v4.1-flash sibling {pack_dir}/{sibling}" for sibling in sorted(model["pack_siblings"])],
                 f"spark3 kimi-k3 digest {k3}.sha256",
                 f"spark3 kimi-k3 experts {k3}.experts",
                 f"spark3 kimi-k3 pack {k3}",
-            ])
+            ]
+            self.assertEqual(result.stdout.splitlines(), expected)
             every = run().stdout.splitlines()
-            self.assertEqual(len(every), 16 * 10)
+            self.assertEqual(len(every), 16 * len(expected))
             self.assertEqual({line.split()[0] for line in every}, set(stage_lane.HOSTS))
             self.assertTrue(all(line.split()[3].startswith(f"/home/{line.split()[0]}/sparkdata/") for line in every))
             self.assertNotEqual(run("no-such-record").returncode, 0)
