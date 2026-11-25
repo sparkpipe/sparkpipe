@@ -153,9 +153,9 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
       <div class="actions">
         <a class="btn solid" href="#scorecard">Inspect live scorecard</a>
         <a class="btn" href="#reproduce">Run on your engine</a>
-        <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">Read full spec</a>
+        <a class="btn" href="#pillars">Read methodology</a>
       </div>
-      <p class="note">Reference scorer: <span class="mono">tools/rais_score.py</span> · Reference OpenAI-compatible runner: <span class="mono">tools/rais_bench.py</span>. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) Wave-4B sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>47.6</b> Certified Fleet RAIS, +0.96 vs <span class="mono">99fc2a2c1</span>) from verbatim receipts in <span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>, plus live <span class="mono">1x-gb10</span> Zero-NVIDIA NVRM (<b>63.3</b> VALID vs CUDA 63.2) and <span class="mono">1x-m5-ultra</span> Apple M5 Ultra Metal 4.0 (<b>20.3</b> VALID).</p>
+      <p class="note">Open reference runner &amp; scorer for any OpenAI-compatible inference engine. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) Wave-4B sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>47.6</b> Certified Fleet RAIS, +0.96 vs prior release), plus live <span class="mono">1x-gb10</span> Zero-NVIDIA NVRM (<b>63.3</b> VALID vs CUDA 63.2) and <span class="mono">1x-m5-ultra</span> Apple M5 Ultra Metal 4.0 (<b>20.3</b> VALID).</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.0</b> · Physical Law</span><span>0–100 scale</span></div>
@@ -303,7 +303,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>RAIS hill-climb trajectory with full sub-metric detail.</h2>
-    <p class="prose">Every single-release 16× DGX Spark sweep is appended to <span class="mono">qualification/rais_history.jsonl</span> with fleet-weighted pillars, all 12 sub-metrics, and per-model raw measurements. Switch views to inspect the fleet curve, all 12 sub-metrics, or any individual model over time; click any release point to inspect its exact deltas vs baseline.</p>
+    <p class="prose">Every single-release 16× DGX Spark sweep is recorded in the time-series ledger with fleet-weighted pillars, all 12 sub-metrics, and per-model raw measurements. Switch views to inspect the fleet curve, all 12 sub-metrics, or any individual model over time; click any release point to inspect its exact deltas vs baseline.</p>
 
     <div class="rais-hist-box">
       <div class="rais-hist-head">
@@ -357,7 +357,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>Fleet scorecard and hardware rooflines.</h2>
-    <p class="prose">Generated directly via <span class="mono">python3 tools/rais_score.py score --format html-data</span> from verbatim single-release live 16× DGX Spark receipts (<span class="mono">qualification/releases/dff7b5a96/rais-fleet-16x-gb10-1x100g.jsonl</span>), single-GB10 Zero-NVIDIA NVRM receipts (<span class="mono">qualification/hardware/1x-gb10/rais-qwen38-27b-nvrm.jsonl</span>), and Apple M5 Ultra Metal 4.0 receipts (<span class="mono">qualification/hardware/1x-m5-ultra/rais-qwen38-27b-metal4.jsonl</span>). All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>47.6</b> Certified Fleet RAIS; pending hardware profiles remain unmeasured and are never interpolated.</p>
+    <p class="prose">Scored directly by the RAIS v1.0 reference scorer from verbatim single-release live measurements on 16× DGX Spark, single-GB10 Zero-NVIDIA NVRM, and Apple M5 Ultra Metal 4.0. All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>47.6</b> Certified Fleet RAIS; pending hardware profiles remain unmeasured and are never interpolated.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
@@ -437,13 +437,13 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
       </table>
     </div>
 
-    <p class="caption">Scores reflect verbatim live receipts on the selected profile: missing sub-metrics (such as B=8 batched speculation on non-B8-spec lanes) contribute 0 until measured by <span class="mono">tools/rais_bench.py</span>, and scores marked with <span class="mono">*</span> failed a binary gate (<span class="mono">INVALID</span>). Two variant lanes (<span class="mono">qwen3.8-27b-fp8</span> at 42.0 VALID and <span class="mono">ling-3.0-flash-fin</span> at 44.4 VALID) are included in the receipt file and score standalone without double-counting in the 19-model fleet aggregate. See also the <a href="fleets.html">Fleet List</a> for per-model licenses and served context windows.</p>
+    <p class="caption">Scores reflect verbatim live measurements on the selected profile: missing sub-metrics (such as B=8 batched speculation on non-B8-spec lanes) contribute 0 until measured, and scores marked with <span class="mono">*</span> failed a binary gate (<span class="mono">INVALID</span>). Two variant lanes (<span class="mono">qwen3.8-27b-fp8</span> at 42.0 VALID and <span class="mono">ling-3.0-flash-fin</span> at 44.4 VALID) score standalone without double-counting in the 19-model fleet aggregate. See also the <a href="fleets.html">Fleet List</a> for per-model licenses and served context windows.</p>
   </div>
 </section>
 
 <section id="gates" class="sec">
   <div class="sec-rail">
-    <p class="label">04 Integrity</p>
+    <p class="label">05 Integrity</p>
     <p class="label">Hard binary gates</p>
   </div>
   <div class="sec-body">
@@ -468,7 +468,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
     </div>
 
     <h3>Compatible Execution Tiers</h3>
-    <p class="prose">Both tiers emit the exact same RAIS v1.0 JSONL schema and are scored identically by <span class="mono">tools/rais_score.py</span>.</p>
+    <p class="prose">Both tiers emit the exact same RAIS v1.0 JSONL schema and are scored identically by the reference RAIS scorer.</p>
     <div class="table-wrap" tabindex="0" role="region" aria-label="Compatible execution tiers">
       <table>
         <thead>
@@ -493,7 +493,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 
 <section id="reproduce" class="sec">
   <div class="sec-rail">
-    <p class="label">05 Reproduce</p>
+    <p class="label">06 Reproduce</p>
     <p class="label">Any OpenAI endpoint</p>
   </div>
   <div class="sec-body">
@@ -501,7 +501,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
     <p class="prose">The reference runner talks standard OpenAI <span class="mono">/v1/chat/completions</span> and works against SparkPipe, vLLM, SGLang, TensorRT-LLM, or any OpenAI-compatible server. Compare two engines on identical hardware with a single command.</p>
     <div class="code">
       <div class="code-head"><span>RAIS v1.0 CLI · Fast Hill-Climb &amp; Cross-Engine Comparison</span><span>shell</span></div>
-      <pre tabindex="0" role="region" aria-label="RAIS v1.0 CLI commands"><span class="k">python3</span> tools/rais_bench.py \
+      <pre tabindex="0" role="region" aria-label="RAIS v1.0 CLI commands"><span class="k">rais-bench</span> \
   --base-url http://127.0.0.1:8000 \
   --model glm-5.3-flash \
   --tier fast \
@@ -511,20 +511,18 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   --output rais_results.jsonl \
   --score
 
-<span class="k">python3</span> tools/rais_score.py score rais_results.jsonl \
+<span class="k">rais-score</span> score rais_results.jsonl \
   --hardware 16x-gb10-1x100g \
   --format html-data \
-  --output site/rais-data.json
+  --output rais-data.json
 
-<span class="k">python3</span> tools/rais_score.py compare sparkpipe.jsonl vllm.jsonl \
+<span class="k">rais-score</span> compare sparkpipe.jsonl vllm.jsonl \
   --hardware 16x-gb10-1x100g \
   --label-a SparkPipe \
   --label-b vLLM</pre>
     </div>
     <div class="actions">
-      <a class="btn solid" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">RAIS v1.0 Specification</a>
-      <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/tools/rais_score.py">tools/rais_score.py</a>
-      <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/tools/rais_bench.py">tools/rais_bench.py</a>
+      <a class="btn solid" href="https://github.com/sparkpipe/sparkpipe">Source on GitHub</a>
       <a class="btn" href="fleets.html">Fleet List</a>
     </div>
   </div>

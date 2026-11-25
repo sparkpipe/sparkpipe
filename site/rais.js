@@ -30,7 +30,7 @@
     selectModel: "행의 모델을 클릭하면 4개 축과 12개 세부 지표, 3대 루프라인 분해를 볼 수 있습니다.",
     detailTitle: function (m, hw) { return m.model + " · " + hw.name; },
     detailSub: function (m) {
-      var r = m.receipt ? ("근거: " + m.receipt) : "아직 전체 rais_bench.py 스윕 전입니다.";
+      var r = m.receipt ? ("근거: " + m.receipt) : "전체 RAIS 스윕 대기 중입니다.";
       return "티어 " + m.tier + " (" + m.fleet_weight_pct + "%) · " + m.dtype + " · 활성 " + m.active_params_b + "B · 컨텍스트 " + fmtCtx(m.context_tokens) + " · " + r;
     },
     pillars: [
@@ -104,7 +104,7 @@
     selectModel: "Select any model row to inspect its 4 pillars, 12 sub-metrics, 3-roofline breakdown, and source receipt.",
     detailTitle: function (m, hw) { return m.model + " · " + hw.name; },
     detailSub: function (m) {
-      var r = m.receipt ? ("Receipt: " + m.receipt) : "Pending full rais_bench.py sweep on this profile.";
+      var r = m.receipt ? ("Run: " + m.receipt) : "Pending full RAIS sweep on this profile.";
       return "Tier " + m.tier + " (" + m.fleet_weight_pct + "% fleet wt) · " + m.dtype + " · " + m.active_params_b + "B active · " + fmtCtx(m.context_tokens) + " ctx · " + r;
     },
     pillars: [
@@ -146,7 +146,7 @@
       p4b_long_cold_prefill: "4b Long Cold Prefill (32K/128K+)",
       p4c_multiturn_prefix_ttft: "4c Multi-Turn Prefix Reuse TTFT"
     },
-    noRoi: "No receipted measurements on this profile yet; run tools/rais_bench.py to populate ROI headroom.",
+    noRoi: "No measured runs on this profile yet.",
     modelsShown: function (n, total) { return "Showing " + n + " of " + total + " fleet models"; }
   };
 
