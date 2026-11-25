@@ -43,7 +43,7 @@
 #define HY_THREADS 256u
 #define HY_SCALE_GROUP 32u
 #define HY_FP8_BLOCK 128u
-#define HY_SELECT_CHUNK 64u
+#define HY_SELECT_CHUNK 256u
 
 enum HyWeightCodec : uint8_t
 {
@@ -143,6 +143,9 @@ struct HyState : CudaStagePackState
 	uint32_t *selected;
 	uint32_t *split_positions;
 	uint32_t *split_offsets;
+	uint32_t *gather_seq;
+	uint32_t *gather_offset;
+	uint32_t *gather_context;
 	uint16_t *gate_up;
 	uint16_t *intermediate;
 	float *router_logits;
@@ -223,15 +226,16 @@ __global__ __launch_bounds__(HY_THREADS, 2)
 static void HyHcPostDotSmallKernel(uint16_t *__restrict__ streams, const float *__restrict__ post_in, const uint16_t *__restrict__ partial_in,
 	const float *__restrict__ fn, float *__restrict__ hc_partial)
 {
-	constexpr uint32_t FLAT = STREAMS * WIDTH, STEPS = FLAT / LM_HC_MIX_LANES;
-	static_assert(FLAT % LM_HC_MIX_LANES == 0u && MIXES == 8u, "8 mixes map cleanly onto 8 warps across 256 lanes");
-	__shared__ float s_x[8][32];
+	constexpr uint32_t FLAT = STREAMS * WIDTH, VECS = WIDTH >> 3u, FLAT_VECS = STREAMS * VECS;
+	constexpr uint32_t STEPS = (FLAT_VECS + LM_HC_MIX_LANES - 1u) / LM_HC_MIX_LANES;
+	static_assert((WIDTH & 7u) == 0u && MIXES == 8u, "8 mixes map cleanly onto 8 warps across 256 vectorized lanes");
+	__shared__ uint4 s_x[8][32];
 	__shared__ float s_p[STREAMS];
 	const uint32_t slice = blockIdx.x, row = blockIdx.y;
 	const uint32_t warp = threadIdx.x >> 5u, lane32 = threadIdx.x & 31u;
 	const uint32_t lane256 = slice * 32u + lane32;
-	uint16_t *st_row = streams + (uint64_t)row * FLAT;
-	const uint16_t *part_row = HAS_POST ? partial_in + (uint64_t)row * WIDTH : (const uint16_t *)0;
+	uint4 *st4 = (uint4 *)(streams + (uint64_t)row * FLAT);
+	const uint4 *part4 = HAS_POST ? (const uint4 *)(partial_in + (uint64_t)row * WIDTH) : (const uint4 *)0;
 	LmDependentWait();
 	if constexpr ( HAS_POST )
 	{
@@ -245,16 +249,25 @@ static void HyHcPostDotSmallKernel(uint16_t *__restrict__ streams, const float *
 		const uint32_t load_step = s_base + warp;
 		if ( load_step < STEPS )
 		{
-			const uint32_t k = load_step * LM_HC_MIX_LANES + lane256;
-			float xv = LmBf16ToFloat(st_row[k]);
-			if constexpr ( HAS_POST )
+			const uint32_t kv = load_step * LM_HC_MIX_LANES + lane256;
+			if ( kv < FLAT_VECS )
 			{
-				const uint32_t st = k / WIDTH, col = k % WIDTH;
-				const uint16_t upd = LmFloatToBf16(fmaf(s_p[st], LmBf16ToFloat(part_row[col]), xv));
-				st_row[k] = upd;
-				xv = LmBf16ToFloat(upd);
+				uint4 raw4 = st4[kv];
+				if constexpr ( HAS_POST )
+				{
+					const uint32_t st = kv / VECS, v = kv % VECS;
+					float xv[8], pv[8];
+					LmLoadBf16x8AsFloat(raw4, xv);
+					LmLoadBf16x8AsFloat(__ldg(part4 + v), pv);
+					const float sp = s_p[st];
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 8u; ++e )
+						xv[e] = fmaf(sp, pv[e], xv[e]);
+					raw4 = LmPackUint4FloatToBf16(xv);
+					st4[kv] = raw4;
+				}
+				s_x[warp][lane32] = raw4;
 			}
-			s_x[warp][lane32] = xv;
 		}
 		__syncthreads();
 		const uint32_t rem = STEPS - s_base < 8u ? STEPS - s_base : 8u;
@@ -263,11 +276,29 @@ static void HyHcPostDotSmallKernel(uint16_t *__restrict__ streams, const float *
 		{
 			if ( u < rem )
 			{
-				const uint32_t k = (s_base + u) * LM_HC_MIX_LANES + lane256;
-				const float xv = s_x[u][lane32];
-				dot = fmaf(xv, __ldg(fn + (uint64_t)warp * FLAT + k), dot);
-				if ( warp == 0u )
-					sq = fmaf(xv, xv, sq);
+				const uint32_t kv = (s_base + u) * LM_HC_MIX_LANES + lane256;
+				if ( kv < FLAT_VECS )
+				{
+					float xv[8];
+					LmLoadBf16x8AsFloat(s_x[u][lane32], xv);
+					const uint64_t k_elem = (uint64_t)kv * 8u;
+					const float4 f0 = __ldg((const float4 *)(fn + (uint64_t)warp * FLAT + k_elem));
+					const float4 f1 = __ldg((const float4 *)(fn + (uint64_t)warp * FLAT + k_elem + 4u));
+					dot = fmaf(xv[0], f0.x, dot);
+					dot = fmaf(xv[1], f0.y, dot);
+					dot = fmaf(xv[2], f0.z, dot);
+					dot = fmaf(xv[3], f0.w, dot);
+					dot = fmaf(xv[4], f1.x, dot);
+					dot = fmaf(xv[5], f1.y, dot);
+					dot = fmaf(xv[6], f1.z, dot);
+					dot = fmaf(xv[7], f1.w, dot);
+					if ( warp == 0u )
+					{
+						#pragma unroll
+						for ( uint32_t e = 0u; e < 8u; ++e )
+							sq = fmaf(xv[e], xv[e], sq);
+					}
+				}
 			}
 		}
 		if ( s_base + 8u < STEPS )
@@ -394,15 +425,16 @@ static void HyHcPostMixNormWideKernel(uint16_t *__restrict__ streams, const floa
 	const float *__restrict__ fn, const float *__restrict__ base, const float *__restrict__ scale, float *__restrict__ post_out,
 	const uint16_t *__restrict__ norm_weight, uint16_t *__restrict__ normed, float norm_epsilon, float hc_epsilon, float post_magnitude)
 {
-	constexpr uint32_t FLAT = STREAMS * WIDTH, WARPS = HY_THREADS / 32u;
-	static_assert(WIDTH % HY_THREADS == 0u && MIXES == 2u * STREAMS, "width divides 256 lanes cleanly for exact per-lane reduction order");
+	constexpr uint32_t FLAT = STREAMS * WIDTH, WARPS = HY_THREADS / 32u, VECS = WIDTH >> 3u, FLAT_VECS = STREAMS * VECS;
+	static_assert((WIDTH & 7u) == 0u && MIXES == 2u * STREAMS, "width divides 8-element vectors cleanly for exact per-lane reduction order");
 	extern __shared__ __align__(16) uint16_t hy_hc_smem[];
 	uint16_t *s_streams = hy_hc_smem;
 	float *sq_wave = (float *)(hy_hc_smem + FLAT);
 	__shared__ float reduction[MIXES + 1u][WARPS], weights[STREAMS], s_p[STREAMS], norm_red[WARPS];
 	const uint32_t row = blockIdx.x, lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
-	uint16_t *st_row = streams + (uint64_t)row * FLAT;
-	const uint16_t *part_row = HAS_POST ? partial_in + (uint64_t)row * WIDTH : (const uint16_t *)0;
+	uint4 *st4 = (uint4 *)(streams + (uint64_t)row * FLAT);
+	uint4 *sst4 = (uint4 *)s_streams;
+	const uint4 *part4 = HAS_POST ? (const uint4 *)(partial_in + (uint64_t)row * WIDTH) : (const uint4 *)0;
 	LmDependentWait();
 	if constexpr ( HAS_POST )
 	{
@@ -414,26 +446,42 @@ static void HyHcPostMixNormWideKernel(uint16_t *__restrict__ streams, const floa
 	#pragma unroll
 	for ( uint32_t m = 0u; m < MIXES; ++m )
 		dot[m] = 0.0f;
-	for ( uint32_t st = 0u; st < STREAMS; ++st )
+	for ( uint32_t kv = threadIdx.x; kv < FLAT_VECS; kv += HY_THREADS )
 	{
-		const float sp = HAS_POST ? s_p[st] : 0.0f;
-		const uint32_t st_off = st * WIDTH;
-		for ( uint32_t col = threadIdx.x; col < WIDTH; col += HY_THREADS )
+		uint4 raw4 = st4[kv];
+		float xv[8];
+		LmLoadBf16x8AsFloat(raw4, xv);
+		if constexpr ( HAS_POST )
 		{
-			const uint32_t k = st_off + col;
-			uint16_t raw = st_row[k];
-			float xv = LmBf16ToFloat(raw);
-			if constexpr ( HAS_POST )
-			{
-				raw = LmFloatToBf16(fmaf(sp, LmBf16ToFloat(__ldg(part_row + col)), xv));
-				st_row[k] = raw;
-				xv = LmBf16ToFloat(raw);
-			}
-			s_streams[k] = raw;
-			sq = fmaf(xv, xv, sq);
+			const uint32_t st = kv / VECS, v = kv % VECS;
+			float pv[8];
+			LmLoadBf16x8AsFloat(__ldg(part4 + v), pv);
+			const float sp = s_p[st];
 			#pragma unroll
-			for ( uint32_t m = 0u; m < MIXES; ++m )
-				dot[m] = fmaf(xv, __ldg(fn + (uint64_t)m * FLAT + k), dot[m]);
+			for ( uint32_t e = 0u; e < 8u; ++e )
+				xv[e] = fmaf(sp, pv[e], xv[e]);
+			raw4 = LmPackUint4FloatToBf16(xv);
+			st4[kv] = raw4;
+			LmLoadBf16x8AsFloat(raw4, xv);
+		}
+		sst4[kv] = raw4;
+		#pragma unroll
+		for ( uint32_t e = 0u; e < 8u; ++e )
+			sq = fmaf(xv[e], xv[e], sq);
+		const uint64_t k_elem = (uint64_t)kv * 8u;
+		#pragma unroll
+		for ( uint32_t m = 0u; m < MIXES; ++m )
+		{
+			const float4 f0 = __ldg((const float4 *)(fn + (uint64_t)m * FLAT + k_elem));
+			const float4 f1 = __ldg((const float4 *)(fn + (uint64_t)m * FLAT + k_elem + 4u));
+			dot[m] = fmaf(xv[0], f0.x, dot[m]);
+			dot[m] = fmaf(xv[1], f0.y, dot[m]);
+			dot[m] = fmaf(xv[2], f0.z, dot[m]);
+			dot[m] = fmaf(xv[3], f0.w, dot[m]);
+			dot[m] = fmaf(xv[4], f1.x, dot[m]);
+			dot[m] = fmaf(xv[5], f1.y, dot[m]);
+			dot[m] = fmaf(xv[6], f1.z, dot[m]);
+			dot[m] = fmaf(xv[7], f1.w, dot[m]);
 		}
 	}
 	#pragma unroll
@@ -645,6 +693,337 @@ static void HyIndexPrepStoreKernel(uint16_t *__restrict__ index_q, const uint16_
 					((uint4 *)slot)[threadIdx.x] = ((const uint4 *)s_k)[threadIdx.x];
 			}
 		}
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(32u, 1)
+static void HyGatherMetaKernel(const uint32_t *__restrict__ sequence_of_row, uint32_t context, uint32_t *__restrict__ gather_seq,
+	uint32_t *__restrict__ gather_offset, uint32_t *__restrict__ gather_context)
+{
+	LmDependentWait();
+	if ( threadIdx.x == 0u )
+	{
+		const uint32_t seq = sequence_of_row[0];
+		gather_seq[0] = seq;
+		gather_offset[seq] = 0u;
+		gather_context[seq] = context;
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(HY_THREADS, 2)
+static void HyPadCandidatesKernel(uint2 *__restrict__ candidates, uint32_t rows, uint32_t padded_rows, uint32_t keep)
+{
+	const uint64_t first = (uint64_t)rows * keep;
+	const uint64_t total = (uint64_t)padded_rows * keep;
+	const uint2 empty = make_uint2(0u, LM_INDEX_SHARD_NO_POSITION);
+	LmDependentWait();
+	for ( uint64_t i = first + (uint64_t)blockIdx.x * HY_THREADS + threadIdx.x; i < total; i += (uint64_t)gridDim.x * HY_THREADS )
+		candidates[i] = empty;
+	LmDependentRelease();
+}
+
+template<uint32_t TOPK>
+__global__ __launch_bounds__(HY_THREADS, 2)
+static void HyFillDenseSelectedKernel(const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length,
+	const uint32_t *__restrict__ positions, uint32_t *__restrict__ selected)
+{
+	const uint32_t row = blockIdx.x;
+	LmDependentWait();
+	const uint32_t pos = positions[row];
+	uint32_t bound = context_length[sequence_of_row[row]];
+	if ( pos + 1u < bound )
+		bound = pos + 1u;
+	if ( bound <= TOPK )
+	{
+		uint32_t *dst = selected + (uint64_t)row * TOPK;
+		for ( uint32_t i = threadIdx.x; i < TOPK; i += HY_THREADS )
+			dst[i] = i < bound ? i : LM_INDEX_SHARD_NO_POSITION;
+	}
+	LmDependentRelease();
+}
+
+template<class Geometry, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE, bool SPARSE>
+__global__ __launch_bounds__(LM_PREFILL_ATTN_THREADS, 1)
+static void HyGatherPrefillKernel(
+	const uint16_t *__restrict__ query_bf16,
+	LmKvShardGatherAllView cache,
+	const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ row_position,
+	const float *__restrict__ sinks,
+	float qk_scale,
+	uint16_t *__restrict__ output_bf16,
+	uint32_t rows,
+	const uint32_t *__restrict__ union_positions,
+	const uint8_t *__restrict__ union_masks,
+	const uint32_t *__restrict__ union_counts,
+	uint32_t union_capacity)
+{
+	constexpr uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES;
+	constexpr uint32_t DIM = LATENT + ROPE;
+	constexpr uint32_t ROW_BYTES = DIM * 2u;
+	constexpr uint32_t CHUNKS = DIM / 8u;
+	constexpr uint32_t TILE = LM_PREFILL_ATTN_TILE;
+	constexpr uint32_t K_STEPS = DIM / 16u;
+	constexpr uint32_t HALF_STEPS = K_STEPS / 2u;
+	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / HEADS;
+	constexpr uint32_t KEY_GROUPS = LM_PREFILL_ATTN_WARPS / 2u;
+	constexpr uint32_t KEY_FRAGS = TILE / (KEY_GROUPS * 8u);
+	constexpr uint32_t WARP_COLUMNS = LATENT / LM_PREFILL_ATTN_WARPS;
+	constexpr uint32_t COLUMN_FRAGS = WARP_COLUMNS / 8u;
+	constexpr uint32_t QUERY_KEYS = QUERIES * TILE / LM_PREFILL_ATTN_THREADS;
+	constexpr uint32_t QUERY_THREADS = TILE / QUERY_KEYS;
+	static_assert(HEADS == 4u && ROWS_PER_BLOCK == 4u && QUERIES == 16u && KEY_FRAGS == 1u && QUERY_KEYS == 2u,
+		"4-head 4-row grouped sparse prefill fills one 16-query MMA tile per CTA");
+	extern __shared__ __align__(128) uint8_t hy_prefill_smem[];
+	uint8_t *keys = hy_prefill_smem;
+	float *score_parts = (float *)(keys + 2u * TILE * ROW_BYTES);
+	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QUERIES * LM_PREFILL_ATTN_PARTIAL_STRIDE);
+	float *running_max = (float *)(weight_high + QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
+	float *running_sum = running_max + QUERIES;
+	float *rescale = running_sum + QUERIES;
+	const uint8_t **slots = (const uint8_t **)(rescale + QUERIES);
+	uint32_t *key_rows = (uint32_t *)(slots + 2u * TILE);
+	LmDependentWait();
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t matrix = lane >> 3u, within = lane & 7u;
+	const uint32_t half = (warp / KEY_GROUPS) & 1u, key_group = warp % KEY_GROUPS;
+	const uint32_t table = gridDim.x - 1u - blockIdx.x;
+	const uint32_t *tile_positions = SPARSE ? union_positions + (uint64_t)table * union_capacity : (const uint32_t *)0;
+	const uint8_t *tile_masks = SPARSE ? union_masks + (uint64_t)table * union_capacity : (const uint8_t *)0;
+	const uint32_t first_row = table * ROWS_PER_BLOCK;
+	const uint32_t row_end = LmPrefillMin(rows, first_row + ROWS_PER_BLOCK);
+	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
+	const uint32_t query_base = key_base + TILE * ROW_BYTES;
+	uint32_t query_frag[HALF_STEPS][4];
+	float output[COLUMN_FRAGS][4];
+	uint32_t row_limit[ROWS_PER_BLOCK];
+	const float scale_log2 = qk_scale * 1.4426950408889634f;
+	const uint32_t sequence = __ldg(sequence_of_row + first_row);
+	uint32_t first_position_min = 0xffffffffu, last_position = 0u;
+	for ( uint32_t r = first_row; r < row_end; ++r )
+	{
+		const uint32_t rpos = __ldg(row_position + r);
+		first_position_min = rpos < first_position_min ? rpos : first_position_min;
+		last_position = rpos > last_position ? rpos : last_position;
+	}
+	const uint32_t listed_keys = SPARSE ? __ldg(union_counts + table) : last_position + 1u;
+	const uint32_t tiles = (listed_keys + TILE - 1u) / TILE;
+	#pragma unroll
+	for ( uint32_t r = 0u; r < ROWS_PER_BLOCK; ++r )
+		row_limit[r] = first_row + r < row_end ? __ldg(row_position + first_row + r) : 0u;
+	auto listing = [&](uint32_t which, uint32_t &position, uint32_t &members)
+	{
+		const uint32_t listed = which * TILE + threadIdx.x;
+		position = !SPARSE ? listed : (listed < listed_keys ? __ldg(tile_positions + listed) : 0xffffffffu);
+		members = !SPARSE ? 0xffffffffu : (listed < listed_keys ? (uint32_t)__ldg(tile_masks + listed) : 0u);
+	};
+	auto resolve = [&](uint32_t position, uint32_t members, uint32_t &valid) -> const uint8_t *
+	{
+		valid = 0u;
+		#pragma unroll
+		for ( uint32_t r = 0u; r < ROWS_PER_BLOCK; ++r )
+			valid |= (first_row + r < row_end && ((members >> r) & 1u) != 0u && position <= row_limit[r] ? 1u : 0u) << r;
+		return position <= last_position ? LmKvShardSlotRequired<Geometry>(cache, sequence, position, first_row, LM_KV_ACCESS_READ) : (const uint8_t *)0;
+	};
+	auto copy = [&](uint32_t which)
+	{
+		const uint32_t buffer = which & 1u;
+		constexpr uint32_t SLOTS_PER_WARP = TILE / LM_PREFILL_ATTN_WARPS;
+		constexpr uint32_t WARP_ITERS = (SLOTS_PER_WARP * CHUNKS) / 32u;
+		const uint8_t *s0 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 0u];
+		const uint8_t *s1 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 1u];
+		const uint8_t *s2 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 2u];
+		const uint8_t *s3 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 3u];
+		#pragma unroll
+		for ( uint32_t iter = 0u; iter < WARP_ITERS; ++iter )
+		{
+			const uint32_t k = iter * 32u + lane;
+			const uint32_t s = (k >= CHUNKS) + (k >= 2u * CHUNKS) + (k >= 3u * CHUNKS);
+			const uint32_t piece = k - s * CHUNKS;
+			const uint32_t slot_index = warp * SLOTS_PER_WARP + s;
+			const uint8_t *slot = s == 0u ? s0 : (s == 1u ? s1 : (s == 2u ? s2 : s3));
+			LmPrefillCopy(key_base + (buffer * TILE + slot_index) * ROW_BYTES + LmPrefillSwizzle(slot_index, piece) * 16u,
+				slot != 0 ? (const void *)(slot + piece * 16u) : (const void *)query_bf16, slot != 0 ? 16u : 0u);
+		}
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+	};
+	for ( uint32_t idx = threadIdx.x; idx < QUERIES * CHUNKS; idx += LM_PREFILL_ATTN_THREADS )
+	{
+		const uint32_t q = idx / CHUNKS, chunk = idx % CHUNKS;
+		const uint32_t row = first_row + q / HEADS;
+		const uint16_t *src = row >= row_end ? query_bf16 : query_bf16 + ((uint64_t)row * HEADS + q % HEADS) * DIM + chunk * 8u;
+		LmPrefillCopy(query_base + q * ROW_BYTES + LmPrefillSwizzle(q, chunk) * 16u, src, row >= row_end ? 0u : 16u);
+	}
+	asm volatile("cp.async.commit_group;\n" ::: "memory");
+	uint32_t next_position = 0xffffffffu, next_members = 0u;
+	if ( threadIdx.x < TILE )
+	{
+		uint32_t valid, p0, m0, p1 = 0xffffffffu, m1 = 0u;
+		if ( tiles > 0u ) listing(0u, p0, m0);
+		if ( tiles > 1u ) listing(1u, p1, m1);
+		if ( tiles > 2u ) listing(2u, next_position, next_members);
+		if ( tiles > 0u ) { slots[threadIdx.x] = resolve(p0, m0, valid); key_rows[threadIdx.x] = valid; }
+		if ( tiles > 1u ) { slots[TILE + threadIdx.x] = resolve(p1, m1, valid); key_rows[TILE + threadIdx.x] = valid; }
+	}
+	__syncthreads();
+	if ( tiles > 0u )
+	{
+		copy(0u);
+		asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+	}
+	else
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+	__syncthreads();
+	{
+		const uint32_t a_row = (matrix & 1u) * 8u + within;
+		#pragma unroll
+		for ( uint32_t step = 0u; step < HALF_STEPS; ++step )
+			LmPrefillLoadX4(query_base + a_row * ROW_BYTES + LmPrefillSwizzle(a_row, (half * HALF_STEPS + step) * 2u + (matrix >> 1u)) * 16u,
+				query_frag[step]);
+	}
+	if ( threadIdx.x < QUERIES )
+	{
+		running_max[threadIdx.x] = -INFINITY;
+		running_sum[threadIdx.x] = 0.0f;
+	}
+	#pragma unroll
+	for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; ++frag )
+		output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
+	__syncthreads();
+	for ( uint32_t tile = 0u; tile < tiles; ++tile )
+	{
+		const uint32_t buffer = tile & 1u;
+		const uint32_t tile_base = key_base + buffer * TILE * ROW_BYTES;
+		uint32_t ahead_position = 0xffffffffu, ahead_members = 0u;
+		if ( tile + 1u < tiles )
+		{
+			copy(tile + 1u);
+			asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+		}
+		else
+			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		if ( threadIdx.x < TILE && tile + 3u < tiles )
+			listing(tile + 3u, ahead_position, ahead_members);
+		__syncthreads();
+		{
+			float score[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			uint32_t b[2];
+			const uint32_t b_row = key_group * 8u + within;
+			#pragma unroll
+			for ( uint32_t step = 0u; step < HALF_STEPS; ++step )
+			{
+				const uint32_t b_chunk = (half * HALF_STEPS + step) * 2u + (matrix & 1u);
+				LmPrefillLoadX2(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row, b_chunk) * 16u, b);
+				LmMmaBf16(score, query_frag[step], b);
+			}
+			const uint32_t base_col = key_group * 8u + (lane & 3u) * 2u;
+			const uint32_t row_lo = half * QUERIES + (lane >> 2u);
+			*(float2 *)(score_parts + row_lo * LM_PREFILL_ATTN_PARTIAL_STRIDE + base_col) = make_float2(score[0], score[1]);
+			*(float2 *)(score_parts + (row_lo + 8u) * LM_PREFILL_ATTN_PARTIAL_STRIDE + base_col) = make_float2(score[2], score[3]);
+		}
+		__syncthreads();
+		{
+			const uint32_t own = threadIdx.x / QUERY_THREADS, part = threadIdx.x % QUERY_THREADS;
+			const uint32_t key_base_idx = part * QUERY_KEYS, own_row = own / HEADS;
+			const bool full_dense_tile = !SPARSE && (first_row + own_row < row_end) && ((tile + 1u) * TILE - 1u <= first_position_min);
+			const float2 a = *(const float2 *)(score_parts + own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+			const float2 b = *(const float2 *)(score_parts + (QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+			float v0 = a.x + b.x, v1 = a.y + b.y;
+			if ( !full_dense_tile )
+			{
+				v0 = ((key_rows[buffer * TILE + key_base_idx] >> own_row) & 1u) != 0u ? v0 : -INFINITY;
+				v1 = ((key_rows[buffer * TILE + key_base_idx + 1u] >> own_row) & 1u) != 0u ? v1 : -INFINITY;
+			}
+			float peak = fmaxf(v0, v1);
+			#pragma unroll
+			for ( uint32_t shift = 1u; shift < QUERY_THREADS; shift <<= 1u )
+				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
+			const float previous_max = running_max[own];
+			const float next_max = fmaxf(previous_max, peak);
+			const float scale = previous_max == -INFINITY ? 0.0f : SparkMathExp2Fast((previous_max - next_max) * scale_log2);
+			const float shift_val = next_max == -INFINITY ? 0.0f : next_max * scale_log2;
+			const float w0 = full_dense_tile ? SparkMathExp2Fast(fmaf(v0, scale_log2, -shift_val)) :
+				(next_max == -INFINITY || v0 == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(v0, scale_log2, -shift_val)));
+			const float w1 = full_dense_tile ? SparkMathExp2Fast(fmaf(v1, scale_log2, -shift_val)) :
+				(next_max == -INFINITY || v1 == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(v1, scale_log2, -shift_val)));
+			*(uint32_t *)(weight_high + own * LM_PREFILL_ATTN_WEIGHT_STRIDE + key_base_idx) = LmPackBf16Pair(w0, w1);
+			float total = w0 + w1;
+			#pragma unroll
+			for ( uint32_t shift = 1u; shift < QUERY_THREADS; shift <<= 1u )
+				total += __shfl_xor_sync(0xffffffffu, total, shift);
+			if ( part == 0u )
+			{
+				running_sum[own] = fmaf(running_sum[own], scale, total);
+				running_max[own] = next_max;
+				rescale[own] = scale;
+			}
+		}
+		__syncthreads();
+		{
+			uint32_t a_high[4], b[4], first[2], second[2];
+			const float low_scale = rescale[lane >> 2u], high_scale = rescale[(lane >> 2u) + 8u];
+			if ( low_scale != 1.0f || high_scale != 1.0f )
+			{
+				#pragma unroll
+				for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; ++frag )
+				{
+					output[frag][0] *= low_scale;
+					output[frag][1] *= low_scale;
+					output[frag][2] *= high_scale;
+					output[frag][3] *= high_scale;
+				}
+			}
+			#pragma unroll
+			for ( uint32_t step = 0u; step < TILE / 16u; ++step )
+			{
+				const uint32_t a_row = (matrix & 1u) * 8u + within, a_col = step * 16u + (matrix >> 1u) * 8u;
+				LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_col), a_high);
+				#pragma unroll
+				for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; frag += 2u )
+				{
+					const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
+					const uint32_t b_chunk = (warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
+					LmPrefillLoadX4Trans(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row, b_chunk) * 16u, b);
+					first[0] = b[0]; first[1] = b[1];
+					second[0] = b[2]; second[1] = b[3];
+					LmMmaBf16(output[frag], a_high, first);
+					LmMmaBf16(output[frag + 1u], a_high, second);
+				}
+			}
+		}
+		if ( threadIdx.x < TILE && tile + 2u < tiles )
+		{
+			uint32_t valid;
+			slots[buffer * TILE + threadIdx.x] = resolve(next_position, next_members, valid);
+			key_rows[buffer * TILE + threadIdx.x] = valid;
+		}
+		next_position = ahead_position;
+		next_members = ahead_members;
+		__syncthreads();
+	}
+	const uint32_t q_lo = lane >> 2u, q_hi = q_lo + 8u;
+	const uint32_t row_lo = first_row + q_lo / HEADS, row_hi = first_row + q_hi / HEADS;
+	const float m_lo = running_max[q_lo] == -INFINITY ? -INFINITY : running_max[q_lo] * qk_scale;
+	const float m_hi = running_max[q_hi] == -INFINITY ? -INFINITY : running_max[q_hi] * qk_scale;
+	const float sink_lo = __ldg(sinks + q_lo % HEADS);
+	const float sink_hi = __ldg(sinks + q_hi % HEADS);
+	const float gm_lo = fmaxf(m_lo, sink_lo), gm_hi = fmaxf(m_hi, sink_hi);
+	const float s_lo = m_lo == -INFINITY ? 0.0f : __expf(m_lo - gm_lo);
+	const float s_hi = m_hi == -INFINITY ? 0.0f : __expf(m_hi - gm_hi);
+	const float inv_lo = row_lo < row_end ? s_lo / fmaxf(running_sum[q_lo] * s_lo + __expf(sink_lo - gm_lo), 1.0e-20f) : 0.0f;
+	const float inv_hi = row_hi < row_end ? s_hi / fmaxf(running_sum[q_hi] * s_hi + __expf(sink_hi - gm_hi), 1.0e-20f) : 0.0f;
+	#pragma unroll
+	for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; ++frag )
+	{
+		const uint32_t col = warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u;
+		if ( row_lo < row_end )
+			__stcs((uint32_t *)(output_bf16 + ((uint64_t)row_lo * HEADS + q_lo % HEADS) * LATENT + col),
+				LmPackBf16Pair(output[frag][0] * inv_lo, output[frag][1] * inv_lo));
+		if ( row_hi < row_end )
+			__stcs((uint32_t *)(output_bf16 + ((uint64_t)row_hi * HEADS + q_hi % HEADS) * LATENT + col),
+				LmPackBf16Pair(output[frag][2] * inv_hi, output[frag][3] * inv_hi));
 	}
 	LmDependentRelease();
 }
@@ -1055,6 +1434,181 @@ static void HyMoeSmallW2FinalizeKernel(const uint8_t *__restrict__ w2, const voi
 	LmDependentRelease();
 }
 
+template<class G, bool FP8_F32>
+__global__ __launch_bounds__(HY_THREADS, 2)
+static void HyMoeSmallW1W3SwigluGroupedKernel(const uint8_t *__restrict__ w1, const void *__restrict__ s1, const uint8_t *__restrict__ w3,
+	const void *__restrict__ s3, const uint16_t *__restrict__ activation, const float *__restrict__ packed_weight,
+	const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output)
+{
+	constexpr uint32_t CHUNKS = G::kHidden / 16u;
+	constexpr uint32_t SC_GROUP = FP8_F32 ? HY_FP8_BLOCK : HY_SCALE_GROUP;
+	constexpr uint32_t SC_SHIFT = FP8_F32 ? 3u : 1u;
+	constexpr uint32_t SC_STRIDE = G::kHidden / SC_GROUP;
+	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+	constexpr uint32_t GROUPS = HY_THREADS / LANES;
+	constexpr uint32_t N = G::kMoeInter;
+	constexpr uint32_t RG = 4u;
+	const uint32_t exp = blockIdx.y;
+	LmDependentWait();
+	const uint32_t first = __ldg(group_row_offset + exp);
+	const uint32_t end = __ldg(group_row_offset + exp + 1u);
+	if ( first < end )
+	{
+		const uint32_t group = threadIdx.x / LANES, sub = threadIdx.x & (LANES - 1u);
+		const uint32_t col0 = (blockIdx.x * GROUPS + group) * 2u;
+		if ( col0 < N )
+		{
+			const bool has1 = col0 + 1u < N;
+			const uint64_t row_base = (uint64_t)exp * N + col0;
+			const uint4 *w1_0 = (const uint4 *)w1 + row_base * CHUNKS;
+			const uint4 *w3_0 = (const uint4 *)w3 + row_base * CHUNKS;
+			const uint4 *w1_1 = has1 ? w1_0 + CHUNKS : w1_0;
+			const uint4 *w3_1 = has1 ? w3_0 + CHUNKS : w3_0;
+			const uint64_t sc_base0 = row_base * SC_STRIDE;
+			const uint64_t sc_base1 = has1 ? sc_base0 + SC_STRIDE : sc_base0;
+			for ( uint32_t r0 = first; r0 < end; r0 += RG )
+			{
+				const uint32_t cnt = end - r0 < RG ? end - r0 : RG;
+				const uint16_t *act_ptr[RG];
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+					act_ptr[r] = activation + (uint64_t)(r < cnt ? __ldg(route_source_token + r0 + r) : 0u) * G::kHidden;
+				float g0[RG], u0[RG], g1[RG], u1[RG];
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+					g0[r] = u0[r] = g1[r] = u1[r] = 0.0f;
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+				{
+					const uint32_t sc_idx = c >> SC_SHIFT;
+					const uint4 vw1_0 = __ldg(w1_0 + c);
+					const uint4 vw3_0 = __ldg(w3_0 + c);
+					const uint4 vw1_1 = __ldg(w1_1 + c);
+					const uint4 vw3_1 = __ldg(w3_1 + c);
+					const float sc1_0 = HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx);
+					const float sc3_0 = HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx);
+					const float sc1_1 = HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx);
+					const float sc3_1 = HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx);
+					#pragma unroll
+					for ( uint32_t r = 0u; r < RG; ++r )
+					{
+						if ( r < cnt )
+						{
+							const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(act_ptr[r] + c * 16u);
+							g0[r] = fmaf(sc1_0, LmSkinnyFormat<LmFp8>::Chunk(vw1_0, act), g0[r]);
+							u0[r] = fmaf(sc3_0, LmSkinnyFormat<LmFp8>::Chunk(vw3_0, act), u0[r]);
+							g1[r] = fmaf(sc1_1, LmSkinnyFormat<LmFp8>::Chunk(vw1_1, act), g1[r]);
+							u1[r] = fmaf(sc3_1, LmSkinnyFormat<LmFp8>::Chunk(vw3_1, act), u1[r]);
+						}
+					}
+				}
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+				{
+					if ( r < cnt )
+					{
+						#pragma unroll
+						for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
+						{
+							g0[r] += __shfl_down_sync(0xffffffffu, g0[r], offset);
+							u0[r] += __shfl_down_sync(0xffffffffu, u0[r], offset);
+							g1[r] += __shfl_down_sync(0xffffffffu, g1[r], offset);
+							u1[r] += __shfl_down_sync(0xffffffffu, u1[r], offset);
+						}
+						if ( sub == 0u )
+						{
+							const float wt = __ldg(packed_weight + r0 + r);
+							output[(uint64_t)(r0 + r) * N + col0] = LmFloatToBf16(SparkMathGateLimitedGlu(SparkMathRoundBf16(g0[r]), SparkMathRoundBf16(u0[r]), G::kSwigluLimit) * wt);
+							if ( has1 )
+								output[(uint64_t)(r0 + r) * N + col0 + 1u] = LmFloatToBf16(SparkMathGateLimitedGlu(SparkMathRoundBf16(g1[r]), SparkMathRoundBf16(u1[r]), G::kSwigluLimit) * wt);
+						}
+					}
+				}
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
+template<class G, bool FP8_F32>
+__global__ __launch_bounds__(HY_THREADS, 2)
+static void HyMoeSmallW2GroupedKernel(const uint8_t *__restrict__ w2, const void *__restrict__ s2, const uint16_t *__restrict__ expert_act,
+	const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output)
+{
+	constexpr uint32_t K = G::kMoeInter;
+	constexpr uint32_t CHUNKS = K / 16u;
+	constexpr uint32_t SC_GROUP = FP8_F32 ? HY_FP8_BLOCK : HY_SCALE_GROUP;
+	constexpr uint32_t SC_SHIFT = FP8_F32 ? 3u : 1u;
+	constexpr uint32_t SC_STRIDE = K / SC_GROUP;
+	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+	constexpr uint32_t GROUPS = HY_THREADS / LANES;
+	constexpr uint32_t N = G::kHidden;
+	constexpr uint32_t RG = 4u;
+	const uint32_t exp = blockIdx.y;
+	LmDependentWait();
+	const uint32_t first = __ldg(group_row_offset + exp);
+	const uint32_t end = __ldg(group_row_offset + exp + 1u);
+	if ( first < end )
+	{
+		const uint32_t group = threadIdx.x / LANES, sub = threadIdx.x & (LANES - 1u);
+		const uint32_t col0 = (blockIdx.x * GROUPS + group) * 2u;
+		if ( col0 < N )
+		{
+			const bool has1 = col0 + 1u < N;
+			const uint64_t row_base = (uint64_t)exp * N + col0;
+			const uint4 *w0 = (const uint4 *)w2 + row_base * CHUNKS;
+			const uint4 *w1 = has1 ? w0 + CHUNKS : w0;
+			const uint64_t sc_base0 = row_base * SC_STRIDE;
+			const uint64_t sc_base1 = has1 ? sc_base0 + SC_STRIDE : sc_base0;
+			for ( uint32_t r0 = first; r0 < end; r0 += RG )
+			{
+				const uint32_t cnt = end - r0 < RG ? end - r0 : RG;
+				float acc0[RG], acc1[RG];
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+					acc0[r] = acc1[r] = 0.0f;
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+				{
+					const uint32_t sc_idx = c >> SC_SHIFT;
+					const uint4 vw0 = __ldg(w0 + c);
+					const uint4 vw1 = __ldg(w1 + c);
+					const float sc0 = HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx);
+					const float sc1 = HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx);
+					#pragma unroll
+					for ( uint32_t r = 0u; r < RG; ++r )
+					{
+						if ( r < cnt )
+						{
+							const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(expert_act + (uint64_t)(r0 + r) * K + c * 16u);
+							acc0[r] = fmaf(sc0, LmSkinnyFormat<LmFp8>::Chunk(vw0, act), acc0[r]);
+							acc1[r] = fmaf(sc1, LmSkinnyFormat<LmFp8>::Chunk(vw1, act), acc1[r]);
+						}
+					}
+				}
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+				{
+					if ( r < cnt )
+					{
+						#pragma unroll
+						for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
+						{
+							acc0[r] += __shfl_down_sync(0xffffffffu, acc0[r], offset);
+							acc1[r] += __shfl_down_sync(0xffffffffu, acc1[r], offset);
+						}
+						if ( sub == 0u )
+						{
+							output[(uint64_t)(r0 + r) * N + col0] = LmFloatToBf16(acc0[r]);
+							if ( has1 )
+								output[(uint64_t)(r0 + r) * N + col0 + 1u] = LmFloatToBf16(acc1[r]);
+						}
+					}
+				}
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
 template<class G>
 struct HyModel : CudaStage<HyModel<G>>
 {
@@ -1108,17 +1662,34 @@ struct HyModel : CudaStage<HyModel<G>>
 		return LmSkinnyDenseMulti<LmMxfp8>(targets, count, source, rows, input_dimension, stream, exact, 0u, skip_part, seq, ctx, pos, skip_max_context);
 	}
 
+	static bool PrefillUnified(const SparkStageRunnerStep *step)
+	{
+		return step->commit != 0u && step->last_rows_only != 0u && step->sequences == 1u && step->tree == 0u;
+	}
+
 	static int32_t Linear(const HyScaled &weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream, uint32_t skip_max_context = 0u)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
-		if ( skip_max_context != 0u && rows == 1u )
+		const bool force_stream = PrefillUnified(step);
+		if ( !force_stream && skip_max_context != 0u && rows == 1u )
 		{
 			const LmSkinnyDenseTarget target = { weight.weight, destination, (float *)0, output_dimension, output_dimension, 0u,
 				Scales(weight, 1u, output_dimension, input_dimension) };
 			const int32_t status = SkinnyMulti(weight.codec, &target, 1u, source, rows, input_dimension, stream, exact, 0u, step, skip_max_context);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
+		}
+		if ( force_stream )
+		{
+			if ( weight.codec == HY_CODEC_BF16 )
+				return LmStreamGemmDense<LmBf16Format>(weight.weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
+					output_dimension, 0u, 0u, step->multiprocessors, stream);
+			if ( weight.codec == HY_CODEC_FP8_BLOCK128 )
+				return LmStreamGemmDense<LmFp8>(weight.weight, Scales(weight, 1u, output_dimension, input_dimension), source, destination, (float *)0,
+					rows, input_dimension, output_dimension, 0u, 0u, step->multiprocessors, stream);
+			return LmStreamGemmDense<LmMxfp8>(weight.weight, Scales(weight, 1u, output_dimension, input_dimension), source, destination, (float *)0,
+				rows, input_dimension, output_dimension, 0u, 0u, step->multiprocessors, stream);
 		}
 		if ( weight.codec == HY_CODEC_BF16 )
 			return LmDenseRows<LmBf16Format>(weight.weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
@@ -1135,7 +1706,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t row_exact = step->commit == 0u ? 1u : 0u;
-		if ( first.codec == second.codec && (rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u) )
+		if ( !PrefillUnified(step) && first.codec == second.codec && (rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u) )
 		{
 			const LmSkinnyDenseTarget targets[2] = {
 				{ first.weight, first_destination, (float *)0, first_dimension, first_dimension, 0u, Scales(first, 1u, first_dimension, input_dimension) },
@@ -1153,7 +1724,8 @@ struct HyModel : CudaStage<HyModel<G>>
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream, uint32_t skip_max_context = 0u)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
-		if ( skip_max_context != 0u && rows == 1u )
+		const bool force_stream = PrefillUnified(step);
+		if ( !force_stream && skip_max_context != 0u && rows == 1u )
 		{
 			LmSkinnyArguments args;
 			memset(&args, 0, sizeof(args));
@@ -1173,16 +1745,19 @@ struct HyModel : CudaStage<HyModel<G>>
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
 		}
+		if ( force_stream )
+			return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension,
+				output_dimension, 0u, 0u, step->multiprocessors, stream);
 		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
 			exact, step->multiprocessors, stream);
 	}
 
 	template<class Format>
 	static int32_t ExpertProjectionFormat(const LmLocalExpertRoutes &routes, const HyScaled &weight, const uint16_t *activation, uint16_t *output,
-		uint32_t down, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, SparkGpuStream stream)
+		uint32_t down, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, SparkGpuStream stream, uint32_t force_stream = 0u)
 	{
 		const LmScaleTensor scale = Scales(weight, G::kLocalExperts, output_dimension, input_dimension);
-		if ( exact == 0u && routes.rows >= 16u )
+		if ( exact == 0u && (routes.rows >= 16u || force_stream != 0u) )
 		{
 			const int32_t launch = LmStreamGemmGrouped<Format>(weight.weight, scale, activation, output, routes.group_row_offset,
 				down != 0u ? (const uint32_t *)0 : routes.route_source_token, routes.local_experts, routes.routes, input_dimension, output_dimension,
@@ -1195,13 +1770,13 @@ struct HyModel : CudaStage<HyModel<G>>
 	}
 
 	static int32_t ExpertProjection(const LmLocalExpertRoutes &routes, const HyScaled &weight, const uint16_t *activation, uint16_t *output, uint32_t down,
-		uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, SparkGpuStream stream)
+		uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, SparkGpuStream stream, uint32_t force_stream = 0u)
 	{
 		if ( weight.codec == HY_CODEC_BF16 )
-			return ExpertProjectionFormat<LmBf16Format>(routes, weight, activation, output, down, input_dimension, output_dimension, exact, stream);
+			return ExpertProjectionFormat<LmBf16Format>(routes, weight, activation, output, down, input_dimension, output_dimension, exact, stream, force_stream);
 		if ( weight.codec == HY_CODEC_FP8_BLOCK128 )
-			return ExpertProjectionFormat<LmFp8>(routes, weight, activation, output, down, input_dimension, output_dimension, exact, stream);
-		return ExpertProjectionFormat<LmMxfp8>(routes, weight, activation, output, down, input_dimension, output_dimension, exact, stream);
+			return ExpertProjectionFormat<LmFp8>(routes, weight, activation, output, down, input_dimension, output_dimension, exact, stream, force_stream);
+		return ExpertProjectionFormat<LmMxfp8>(routes, weight, activation, output, down, input_dimension, output_dimension, exact, stream, force_stream);
 	}
 
 	static SparkStatus MergeSelected(State *state, SparkKvShard shard, const uint2 *candidates, uint64_t rank_stride, uint32_t keep,
@@ -1226,7 +1801,7 @@ struct HyModel : CudaStage<HyModel<G>>
 	{
 		const uint32_t rows = step->rows, exact = step->commit == 0u ? 1u : 0u;
 		bool gate_done = false, idx_k_done = false, q_kv_done = false;
-		if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
+		if ( !PrefillUnified(step) && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
 		{
 			LmSkinnyDenseTarget targets[4];
 			uint32_t count = 0u;
@@ -1269,6 +1844,8 @@ struct HyModel : CudaStage<HyModel<G>>
 		const SparkStageRunnerStep *step = frame.step;
 		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, degree = state->tp_degree, exact = step->commit == 0u ? 1u : 0u;
+		const bool prefill_unified = PrefillUnified(step);
+		const uint32_t force_mma = prefill_unified ? 1u : 0u;
 		const uint64_t unit_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
 		const uint64_t record_unit = unit_bytes / sizeof(float);
 		const uint64_t partial_stride = ((uint64_t)rows * S::kRankHeads * S::kRecord + record_unit - 1u) / record_unit * record_unit;
@@ -1287,7 +1864,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			layer->q_norm, state->q_resid, G::kQLora, G::kQLora, G::kEpsilon);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( run_idx && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) && layer->q_b.codec == layer->index_q.codec )
+		if ( !prefill_unified && run_idx && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) && layer->q_b.codec == layer->index_q.codec )
 		{
 			const LmSkinnyDenseTarget targets[2] = {
 				{ layer->q_b.weight, state->q, (float *)0, S::kRankHeads * S::kQkDim, S::kRankHeads * S::kQkDim, 0u, Scales(layer->q_b, 1u, S::kRankHeads * S::kQkDim, G::kQLora) },
@@ -1305,7 +1882,7 @@ struct HyModel : CudaStage<HyModel<G>>
 				rows == 1u ? G::kIndexTopk : 0u) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( LmPerHeadProjectChainLaunch<HY_THREADS, G::kNope, G::kLatent, S::kQkDim, 0u, S::kSlot>(state->q, layer->uk, state->query, S::kRankHeads,
-				rows, stream, exact) != SPARK_GPU_SUCCESS )
+				rows, stream, exact, force_mma) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		(void)LM_LAUNCH_DEPENDENT((HyQueryRopePackDirectKernel<G>), dim3(rows, S::kRankHeads), 32u, 0, stream, state->q, step->positions, state->query);
 		CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
@@ -1327,52 +1904,225 @@ struct HyModel : CudaStage<HyModel<G>>
 		CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		uint64_t query_stride = (uint64_t)rows * S::kRankHeads * S::kSlot;
-		if ( run_idx )
+		const uint32_t gather_ctx = step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context : 0u;
+		const uint32_t gather_local_keys = gather_ctx != 0u ? SparkKvShardGatherKeys(view->shard, gather_ctx) : 0u;
+		const uint32_t kv_pack_units = gather_local_keys != 0u ?
+			(uint32_t)(((uint64_t)gather_local_keys * S::Kv::kSlotBytes + unit_bytes - 1u) / unit_bytes) : 0u;
+		const uint64_t kv_rank_stride = (uint64_t)kv_pack_units * unit_bytes;
+		const uint64_t send_cap_bytes = (uint64_t)degree * state->partial_stride * sizeof(float);
+		const uint32_t select_slice = (rows + degree - 1u) / degree;
+		const uint32_t idx_keep = gather_ctx != 0u ?
+			(SparkKvShardGatherKeys(view->shard, gather_ctx) < G::kIndexTopk ? SparkKvShardGatherKeys(view->shard, gather_ctx) : G::kIndexTopk) : 0u;
+		const bool idx_fits = !run_idx || (uint64_t)degree * select_slice * idx_keep * sizeof(uint2) <= send_cap_bytes;
+		const bool use_kv_gather = prefill_unified && gather_local_keys != 0u && kv_pack_units <= state->indexing_units_max &&
+			kv_rank_stride <= send_cap_bytes && idx_fits;
+		if ( use_kv_gather )
 		{
-			const LmKvShardView *idx_view = &state->index_views[layer->index_slot];
-			const uint32_t ctx = step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context : state->context_capacity;
-			const uint32_t local_keys = SparkKvShardGatherKeys(idx_view->shard, ctx);
-			const uint32_t score_stride = local_keys > 0u && local_keys <= state->local_capacity ? local_keys : state->local_capacity;
-			const uint32_t keep = score_stride < G::kIndexTopk ? score_stride : G::kIndexTopk;
-			const uint64_t cand_offset = (uint64_t)rows * S::kRankHeads * S::kSlot * sizeof(uint16_t);
-			const uint32_t gather_units = (uint32_t)((cand_offset + (uint64_t)rows * keep * sizeof(uint2) + unit_bytes - 1u) / unit_bytes);
-			uint2 *cand_local = (uint2 *)((uint8_t *)state->query + cand_offset);
-			if ( LmWeightedSparseScoreLaunch<typename S::IndexKv, G::kIndexHeads, G::kIndexDim, LmKvShardView, false, float>(state->index_q,
-					state->index_weights, *idx_view, step->sequence_of_row, step->context_length, step->positions, rows, score_stride, 1.0f,
-					state->index_scores, stream, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
-					step->tree != 0u ? step->slot_offsets : (const uint32_t *)0, G::kIndexTopk) != SPARK_GPU_SUCCESS ||
-				LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(idx_view->shard, state->index_scores, score_stride, step->sequence_of_row,
-					step->context_length, step->positions, keep, G::kIndexTopk, rows, cand_local, state->kv_error, stream) != SPARK_GPU_SUCCESS )
+			(void)LM_LAUNCH_DEPENDENT((HyGatherMetaKernel), 1u, 32u, 0, stream, step->sequence_of_row, gather_ctx, state->gather_seq,
+				state->gather_offset, state->gather_context);
+			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, gather_units, 0u, state->query, state->gathered);
+			if ( run_idx )
+			{
+				const LmKvShardView *idx_view = &state->index_views[layer->index_slot];
+				const uint32_t local_keys = SparkKvShardGatherKeys(idx_view->shard, gather_ctx);
+				const uint32_t score_stride = local_keys > 0u && local_keys <= state->local_capacity ? local_keys : state->local_capacity;
+				const uint32_t keep = score_stride < G::kIndexTopk ? score_stride : G::kIndexTopk;
+				uint2 *cand_local = (uint2 *)state->received;
+				if ( LmWeightedSparseScoreLaunch<typename S::IndexKv, G::kIndexHeads, G::kIndexDim, LmKvShardView, false, float>(state->index_q,
+						state->index_weights, *idx_view, step->sequence_of_row, step->context_length, step->positions, rows, score_stride, 1.0f,
+						state->index_scores, stream, (const uint32_t *)0, (const uint32_t *)0, G::kIndexTopk) != SPARK_GPU_SUCCESS ||
+					LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(idx_view->shard, state->index_scores, score_stride, step->sequence_of_row,
+						step->context_length, step->positions, keep, G::kIndexTopk, rows, cand_local, state->kv_error, stream) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				if ( degree > 1u )
+				{
+					const uint32_t padded_rows = select_slice * degree;
+					if ( padded_rows > rows )
+					{
+						const uint64_t pad_elems = (uint64_t)(padded_rows - rows) * keep;
+						(void)LM_LAUNCH_DEPENDENT((HyPadCandidatesKernel), (uint32_t)((pad_elems + HY_THREADS - 1u) / HY_THREADS), HY_THREADS, 0,
+							stream, cand_local, rows, padded_rows, keep);
+						if ( CudaStageLaunched() != SPARK_STATUS_OK )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					}
+					status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, 2u * select_slice, 2u * keep,
+						state->received, state->send);
+					if ( status != SPARK_STATUS_OK )
+						return status;
+					const uint32_t own_first = state->tp_rank * select_slice;
+					const uint32_t own_rows = own_first < rows ? (rows - own_first < select_slice ? rows - own_first : select_slice) : 0u;
+					for ( uint32_t first = 0u; first < own_rows; first += HY_SELECT_CHUNK )
+					{
+						const uint32_t count = own_rows - first < HY_SELECT_CHUNK ? own_rows - first : HY_SELECT_CHUNK;
+						if ( LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>((const uint2 *)state->send + (uint64_t)first * keep,
+								(uint64_t)select_slice * keep, idx_view->shard, keep, step->sequence_of_row + own_first + first,
+								step->context_length, step->positions + own_first + first, G::kIndexTopk, G::kIndexTopk, count,
+								state->bitmap_words, state->index_bitmaps, state->split_positions + (uint64_t)first * G::kIndexTopk,
+								state->kv_error, stream) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					}
+					status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, select_slice, 2u * G::kIndexTopk,
+						state->split_positions, state->selected);
+					if ( status != SPARK_STATUS_OK )
+						return status;
+				}
+				else
+				{
+					for ( uint32_t first = 0u; first < rows; first += HY_SELECT_CHUNK )
+					{
+						const uint32_t count = rows - first < HY_SELECT_CHUNK ? rows - first : HY_SELECT_CHUNK;
+						if ( LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(cand_local + (uint64_t)first * keep, (uint64_t)rows * keep,
+								idx_view->shard, keep, step->sequence_of_row + first, step->context_length, step->positions + first, G::kIndexTopk,
+								G::kIndexTopk, count, state->bitmap_words, state->index_bitmaps, state->selected + (uint64_t)first * G::kIndexTopk,
+								state->kv_error, stream) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					}
+				}
+			}
+			if ( LmKvShardGatherPackLaunch<typename S::Kv, HY_THREADS>(*view, state->gather_seq, state->gather_offset, state->gather_context, 1u,
+					gather_local_keys, (uint8_t *)state->send, stream) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, kv_pack_units, 0u, state->send, state->gathered);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			query_stride = (uint64_t)gather_units * G::kHidden;
-			status = MergeSelected(state, idx_view->shard, (const uint2 *)((const uint8_t *)state->gathered + cand_offset),
-				(uint64_t)gather_units * (unit_bytes / sizeof(uint2)), keep, step, stream);
-			if ( status != SPARK_STATUS_OK )
-				return status;
+			LmKvShardGatherAllView all_view;
+			if ( LmKvShardGatherAllViewInitialize<typename S::Kv>(&all_view, view->pages, view->shard, (const uint8_t *)state->gathered,
+					kv_rank_stride, state->gather_offset, state->gather_context) != 0 )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			const uint64_t local_partial_stride = (uint64_t)rows * S::kRankHeads * S::kRecord;
+			const float *rank_sinks = layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads;
+			if ( run_idx )
+			{
+				const uint32_t sparse_blocks = (rows + 3u) / 4u;
+				const uint32_t union_cap = 4u * G::kIndexTopk;
+				const uint64_t union_entries = (uint64_t)sparse_blocks * union_cap;
+				const uint64_t pos_bytes = ((union_entries * sizeof(uint32_t) + 127u) / 128u) * 128u;
+				const uint64_t mask_bytes = ((union_entries * sizeof(uint8_t) + 127u) / 128u) * 128u;
+				const uint64_t cnt_bytes = (uint64_t)sparse_blocks * sizeof(uint32_t);
+				if ( pos_bytes + mask_bytes + cnt_bytes <= send_cap_bytes )
+				{
+					uint8_t *ubase = (uint8_t *)state->received;
+					uint32_t *u_pos = (uint32_t *)ubase;
+					uint8_t *u_mask = ubase + pos_bytes;
+					uint32_t *u_cnt = (uint32_t *)(ubase + pos_bytes + mask_bytes);
+					constexpr uint32_t sp_shared = LmPrefillAttnSharedBytes<S::kSlot, LM_PREFILL_ATTN_QUERIES>();
+					static std::atomic<uint64_t> sp_granted(0u);
+					int dev = 0;
+					if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					if ( (sp_granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
+					{
+						if ( SparkGpuFuncSetAttribute((const void *)HyGatherPrefillKernel<typename S::Kv, S::kRankHeads, G::kLatent, G::kRope, true>,
+								SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sp_shared) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+						sp_granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
+					}
+					(void)LM_LAUNCH_DEPENDENT((HyFillDenseSelectedKernel<G::kIndexTopk>), rows, HY_THREADS, 0, stream,
+						step->sequence_of_row, step->context_length, step->positions, state->selected);
+					(void)LM_LAUNCH_DEPENDENT((LmPrefillSparseUnionKernel<4u, G::kIndexTopk>), sparse_blocks, LM_PREFILL_UNION_THREADS, 0, stream,
+						state->selected, step->positions, rows, (const uint32_t *)0, union_cap, u_pos, u_mask, u_cnt);
+					(void)LM_LAUNCH_DEPENDENT((HyGatherPrefillKernel<typename S::Kv, S::kRankHeads, G::kLatent, G::kRope, true>), sparse_blocks,
+						LM_PREFILL_ATTN_THREADS, sp_shared, stream, state->query, all_view, step->sequence_of_row, step->positions, rank_sinks,
+						(float)(1.0 / sqrt((double)S::kQkDim)), state->latent, rows, u_pos, u_mask, u_cnt, union_cap);
+					if ( CudaStageLaunched() != SPARK_STATUS_OK )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				}
+				else
+				{
+					(void)LM_LAUNCH_DEPENDENT((HySplitSelectedKernel), rows, HY_THREADS, 0, stream, all_view.shard, state->selected,
+						step->sequence_of_row, step->context_length, step->positions, G::kIndexTopk, state->split_positions, state->split_offsets);
+					if ( CudaStageLaunched() != SPARK_STATUS_OK ||
+						LmLatentShardAttendHeadsLaunch<typename S::Kv, LmKvShardGatherAllView, G::kLatent, G::kRope>(all_view, state->query,
+							(uint64_t)rows * S::kRankHeads * S::kSlot, S::kRankHeads, S::kRankHeads, step->sequence_of_row, step->context_length,
+							step->positions, state->selected, G::kIndexTopk, G::kIndexTopk, (float)(1.0 / sqrt((double)S::kQkDim)), state->send,
+							local_partial_stride, S::kRankHeads, 1u, rows, stream, state->split_positions, state->split_offsets, 4u) != SPARK_GPU_SUCCESS ||
+						LmLatentShardMergeLaunch<G::kLatent>(state->send, local_partial_stride, 1u, S::kRankHeads, state->latent, rows, stream,
+							rank_sinks) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				}
+			}
+			else if ( has_idx )
+			{
+				const uint32_t dense_blocks = (rows + 3u) / 4u;
+				constexpr uint32_t dn_shared = LmPrefillAttnSharedBytes<S::kSlot, LM_PREFILL_ATTN_QUERIES>();
+				static std::atomic<uint64_t> dn_granted(0u);
+				int dev = 0;
+				if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				if ( (dn_granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
+				{
+					if ( SparkGpuFuncSetAttribute((const void *)HyGatherPrefillKernel<typename S::Kv, S::kRankHeads, G::kLatent, G::kRope, false>,
+							SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)dn_shared) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					dn_granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
+				}
+				(void)LM_LAUNCH_DEPENDENT((HyGatherPrefillKernel<typename S::Kv, S::kRankHeads, G::kLatent, G::kRope, false>), dense_blocks,
+					LM_PREFILL_ATTN_THREADS, dn_shared, stream, state->query, all_view, step->sequence_of_row, step->positions, rank_sinks,
+					(float)(1.0 / sqrt((double)S::kQkDim)), state->latent, rows, (const uint32_t *)0, (const uint8_t *)0, (const uint32_t *)0, 0u);
+				if ( CudaStageLaunched() != SPARK_STATUS_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			}
+			else
+			{
+				if ( LmLatentGatherPrefillLaunch<typename S::Kv, LmKvShardGatherAllView, G::kLatent, G::kRope>(all_view, state->query, S::kRankHeads,
+						step->sequence_of_row, step->context_length, step->positions, (float)(1.0 / sqrt((double)S::kQkDim)), state->send, rows,
+						stream) != SPARK_GPU_SUCCESS ||
+					LmLatentShardMergeLaunch<G::kLatent>(state->send, local_partial_stride, 1u, S::kRankHeads, state->latent, rows, stream,
+						rank_sinks) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			}
 		}
 		else
 		{
-			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kRankHeads * S::kSlot, state->query, state->gathered);
+			uint64_t query_stride = (uint64_t)rows * S::kRankHeads * S::kSlot;
+			if ( run_idx )
+			{
+				const LmKvShardView *idx_view = &state->index_views[layer->index_slot];
+				const uint32_t ctx = step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context : state->context_capacity;
+				const uint32_t local_keys = SparkKvShardGatherKeys(idx_view->shard, ctx);
+				const uint32_t score_stride = local_keys > 0u && local_keys <= state->local_capacity ? local_keys : state->local_capacity;
+				const uint32_t keep = score_stride < G::kIndexTopk ? score_stride : G::kIndexTopk;
+				const uint64_t cand_offset = (uint64_t)rows * S::kRankHeads * S::kSlot * sizeof(uint16_t);
+				const uint32_t gather_units = (uint32_t)((cand_offset + (uint64_t)rows * keep * sizeof(uint2) + unit_bytes - 1u) / unit_bytes);
+				uint2 *cand_local = (uint2 *)((uint8_t *)state->query + cand_offset);
+				if ( LmWeightedSparseScoreLaunch<typename S::IndexKv, G::kIndexHeads, G::kIndexDim, LmKvShardView, false, float>(state->index_q,
+						state->index_weights, *idx_view, step->sequence_of_row, step->context_length, step->positions, rows, score_stride, 1.0f,
+						state->index_scores, stream, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
+						step->tree != 0u ? step->slot_offsets : (const uint32_t *)0, G::kIndexTopk) != SPARK_GPU_SUCCESS ||
+					LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(idx_view->shard, state->index_scores, score_stride, step->sequence_of_row,
+						step->context_length, step->positions, keep, G::kIndexTopk, rows, cand_local, state->kv_error, stream) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, gather_units, 0u, state->query, state->gathered);
+				if ( status != SPARK_STATUS_OK )
+					return status;
+				query_stride = (uint64_t)gather_units * G::kHidden;
+				status = MergeSelected(state, idx_view->shard, (const uint2 *)((const uint8_t *)state->gathered + cand_offset),
+					(uint64_t)gather_units * (unit_bytes / sizeof(uint2)), keep, step, stream);
+				if ( status != SPARK_STATUS_OK )
+					return status;
+			}
+			else
+			{
+				status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kRankHeads * S::kSlot, state->query, state->gathered);
+				if ( status != SPARK_STATUS_OK )
+					return status;
+			}
+			if ( LmLatentShardAttendHeadsLaunch<typename S::Kv, LmKvShardView, G::kLatent, G::kRope>(*view, state->gathered, query_stride, S::kRankHeads,
+					S::kRankHeads * degree, step->sequence_of_row, step->context_length, step->positions, host_dense ? (const uint32_t *)0 : state->selected,
+					G::kIndexTopk, G::kIndexTopk, (float)(1.0 / sqrt((double)S::kQkDim)), state->send, partial_stride, S::kRankHeads, 1u, rows, stream,
+					host_dense ? (const uint32_t *)0 : state->split_positions, host_dense ? (const uint32_t *)0 : state->split_offsets, 4u,
+					step->tree != 0u ? step->fork_positions : (const uint32_t *)0, step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->send,
+				state->received);
 			if ( status != SPARK_STATUS_OK )
 				return status;
+			if ( LmLatentShardMergeLaunch<G::kLatent>(state->received, partial_stride, degree, S::kRankHeads, state->latent, rows, stream,
+					layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
-		if ( LmLatentShardAttendHeadsLaunch<typename S::Kv, LmKvShardView, G::kLatent, G::kRope>(*view, state->gathered, query_stride, S::kRankHeads,
-				S::kRankHeads * degree, step->sequence_of_row, step->context_length, step->positions, host_dense ? (const uint32_t *)0 : state->selected,
-				G::kIndexTopk, G::kIndexTopk, (float)(1.0 / sqrt((double)S::kQkDim)), state->send, partial_stride, S::kRankHeads, 1u, rows, stream,
-				host_dense ? (const uint32_t *)0 : state->split_positions, host_dense ? (const uint32_t *)0 : state->split_offsets, 4u,
-				step->tree != 0u ? step->fork_positions : (const uint32_t *)0, step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->send,
-			state->received);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if ( LmLatentShardMergeLaunch<G::kLatent>(state->received, partial_stride, degree, S::kRankHeads, state->latent, rows, stream,
-				layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads) != SPARK_GPU_SUCCESS ||
-			LmPerHeadProjectChainLaunch<HY_THREADS,G::kLatent,G::kValueDim>(state->latent, layer->uv, state->value, S::kRankHeads, rows, stream, exact) !=
+		if ( LmPerHeadProjectChainLaunch<HY_THREADS,G::kLatent,G::kValueDim>(state->latent, layer->uv, state->value, S::kRankHeads, rows, stream, exact, force_mma) !=
 				SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		(void)LM_LAUNCH_DEPENDENT((HyOutputGateKernel<HY_THREADS>), rows, HY_THREADS, 0, stream, state->value, state->gate, S::kRankHeads * G::kValueDim);
@@ -1441,7 +2191,8 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, state->shared_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( rows <= 8u && layer->moe_w1.codec != HY_CODEC_BF16 && layer->moe_w1.codec == layer->moe_w3.codec &&
+		const uint32_t force_stream = PrefillUnified(step) ? 1u : 0u;
+		if ( force_stream == 0u && rows <= 8u && layer->moe_w1.codec != HY_CODEC_BF16 && layer->moe_w1.codec == layer->moe_w3.codec &&
 			layer->moe_w1.codec == layer->moe_w2.codec )
 		{
 			constexpr uint32_t UP_CHUNKS = G::kHidden / 16u;
@@ -1452,23 +2203,47 @@ struct HyModel : CudaStage<HyModel<G>>
 			constexpr uint32_t DN_LANES = DN_CHUNKS >= 32u ? 32u : (DN_CHUNKS >= 16u ? 16u : 8u);
 			constexpr uint32_t DN_COLS = (HY_THREADS / DN_LANES) * 2u;
 			const uint32_t dn_blocks = (G::kHidden + DN_COLS - 1u) / DN_COLS;
-			if ( layer->moe_w1.codec == HY_CODEC_FP8_BLOCK128 )
+			if ( rows == 1u )
 			{
-				(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW1W3SwigluKernel<G, true>), dim3(up_blocks, routes), HY_THREADS, 0, stream,
-					(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
-					normed, state->packed_weight, state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rows);
-				(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW2FinalizeKernel<G, true>), dim3(dn_blocks, rows), HY_THREADS, 0, stream,
-					(const uint8_t *)layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->route_packed_row, state->route_expert,
-					state->shared_out, state->partial);
+				if ( layer->moe_w1.codec == HY_CODEC_FP8_BLOCK128 )
+				{
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW1W3SwigluKernel<G, true>), dim3(up_blocks, routes), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rows);
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW2FinalizeKernel<G, true>), dim3(dn_blocks, rows), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->route_packed_row, state->route_expert,
+						state->shared_out, state->partial);
+				}
+				else
+				{
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW1W3SwigluKernel<G, false>), dim3(up_blocks, routes), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rows);
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW2FinalizeKernel<G, false>), dim3(dn_blocks, rows), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->route_packed_row, state->route_expert,
+						state->shared_out, state->partial);
+				}
 			}
 			else
 			{
-				(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW1W3SwigluKernel<G, false>), dim3(up_blocks, routes), HY_THREADS, 0, stream,
-					(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
-					normed, state->packed_weight, state->route_global, state->route_source_token, state->group_row_offset, state->expert_act, rows);
-				(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW2FinalizeKernel<G, false>), dim3(dn_blocks, rows), HY_THREADS, 0, stream,
-					(const uint8_t *)layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->route_packed_row, state->route_expert,
-					state->shared_out, state->partial);
+				if ( layer->moe_w1.codec == HY_CODEC_FP8_BLOCK128 )
+				{
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW1W3SwigluGroupedKernel<G, true>), dim3(up_blocks, G::kLocalExperts), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->route_source_token, state->group_row_offset, state->expert_act);
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW2GroupedKernel<G, true>), dim3(dn_blocks, G::kLocalExperts), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->group_row_offset, state->expert_out);
+				}
+				else
+				{
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW1W3SwigluGroupedKernel<G, false>), dim3(up_blocks, G::kLocalExperts), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+						normed, state->packed_weight, state->route_source_token, state->group_row_offset, state->expert_act);
+					(void)LM_LAUNCH_DEPENDENT((HyMoeSmallW2GroupedKernel<G, false>), dim3(dn_blocks, G::kLocalExperts), HY_THREADS, 0, stream,
+						(const uint8_t *)layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->group_row_offset, state->expert_out);
+				}
+				LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(LmVecBlocks<HY_THREADS>(G::kHidden), rows), HY_THREADS, 0, stream, state->expert_out,
+					state->route_packed_row, state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 			}
 			return CudaStageLaunched();
 		}
@@ -1482,14 +2257,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		expert_routes.top_k = G::kTopK;
 		expert_routes.local_experts = G::kLocalExperts;
 		expert_routes.multiprocessors = step->multiprocessors;
-		if ( ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, exact, stream) != LM_LAUNCH_OK ||
-			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, exact, stream) != LM_LAUNCH_OK )
+		if ( ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, exact, stream, force_stream) != LM_LAUNCH_OK ||
+			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, exact, stream, force_stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		(void)LM_LAUNCH_DEPENDENT((HyMoeSwigluPackedKernel), dim3(LmVecBlocks<HY_THREADS>(G::kMoeInter), routes), HY_THREADS, 0, stream,
 			state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter,
 			G::kSwigluLimit);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, exact, stream) != LM_LAUNCH_OK )
+			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, exact, stream, force_stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(LmVecBlocks<HY_THREADS>(G::kHidden), rows), HY_THREADS, 0, stream, state->expert_out,
 			state->route_packed_row, state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
@@ -1603,6 +2378,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		const uint64_t rows = state->max_rows, routes = rows * G::kTopK, groups = G::kLocalExperts + 2u;
 		const uint64_t unit_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
 		const uint64_t width = rows * unit_bytes, chunk = rows < HY_SELECT_CHUNK ? rows : HY_SELECT_CHUNK;
+		const uint64_t select_rows = ((rows + state->tp_degree - 1u) / state->tp_degree) * state->tp_degree;
 		const CudaStageSlice plan[] =
 		{
 			{ (void **)&state->streams, rows * S::kResidual * sizeof(uint16_t) },
@@ -1625,9 +2401,12 @@ struct HyModel : CudaStage<HyModel<G>>
 			{ (void **)&state->index_weights, rows * G::kIndexHeads * sizeof(float) },
 			{ (void **)&state->index_scores, rows * state->local_capacity * sizeof(float) },
 			{ (void **)&state->index_bitmaps, chunk * 2u * state->bitmap_words * sizeof(uint32_t) },
-			{ (void **)&state->selected, rows * G::kIndexTopk * sizeof(uint32_t) },
-			{ (void **)&state->split_positions, rows * G::kIndexTopk * sizeof(uint32_t) },
+			{ (void **)&state->selected, select_rows * G::kIndexTopk * sizeof(uint32_t) },
+			{ (void **)&state->split_positions, select_rows * G::kIndexTopk * sizeof(uint32_t) },
 			{ (void **)&state->split_offsets, rows * (state->tp_degree + 1u) * sizeof(uint32_t) },
+			{ (void **)&state->gather_seq, sizeof(uint32_t) },
+			{ (void **)&state->gather_offset, (uint64_t)state->slots * sizeof(uint32_t) },
+			{ (void **)&state->gather_context, (uint64_t)state->slots * sizeof(uint32_t) },
 			{ (void **)&state->gate_up, rows * 2u * state->ffn_rows * sizeof(uint16_t) },
 			{ (void **)&state->intermediate, rows * state->ffn_rows * sizeof(uint16_t) },
 			{ (void **)&state->router_logits, rows * G::kExperts * sizeof(float) },

@@ -1,0 +1,2 @@
++1335
+HY4 and Gemma-4 GB10 prefill, batch, and 5c exactness kernels: adds KV-gather sparse/dense prefill MMA attention with fused sinks and 16-way sharded indexer merge, vectorized HyperPostNorm, and grouped B2-B8 exact MoE kernels to hy4_stage.cuh; adds KV-gather local-head FlashAttention MMA prefill, prior KV pack/unpack/direct kernels, tight-slot norms, and B2-B8 exact MoE routing for 5c B1==B8 exactness to gemma4_stage.cuh.
