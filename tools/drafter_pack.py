@@ -5,7 +5,7 @@
         [--expect-sha256 FILE=HEX ...]
 
 NAME is one of DRAFTERS: k31dspark (Kimi K3.1 Pro's DSpark), dsv41dspark (the DSpark built into DeepSeek V4.1
-1017's checkpoint) and qwen27bdspine (Qwen3.8-27B's DSpine b16). For dsv41dspark the target tensors live in the
+1017's checkpoint), qwen27bdspine (Qwen3.8-27B's DSpine b16) and glm53dspark (GLM-5.3's RedHat AI DSpark). For dsv41dspark the target tensors live in the
 checkpoint's own files, so it takes no --target.
 
 Every tensor of the drafter's files and of the target files is either packed, byte for byte, or left out by a named
@@ -91,6 +91,21 @@ DRAFTERS = {
         "skip": {},
         "target_from_checkpoint": False,
     },
+    "glm53dspark": {
+        "arm": "glm53dspark.bf16.tp1",
+        "config": "config.json",
+        "architectures": ["DSparkDraftModel"],
+        "layer_count": "transformer_layer_config.num_hidden_layers",
+        "layer_pattern": r"^layers\.(\d+)\.",
+        "include": [r"^fc\.weight$", r"^hidden_norm\.weight$", r"^norm\.weight$", r"^layers\.\d+\.",
+                    r"^markov_head\.markov_w[12]\.weight$", r"^confidence_head\.proj\.(weight|bias)$"],
+        "dtypes": ["BF16"],
+        "target": {"target.embed": "model.embed_tokens.weight",
+                   "target.head": "lm_head.weight",
+                   "target.norm": "model.norm.weight"},
+        "skip": {r"^model\.layers\.\d+\.": "target decoder layers sharing the embedding and norm shards"},
+        "target_from_checkpoint": False,
+    },
 }
 
 
@@ -172,6 +187,15 @@ def verify_digest(path: Path, computed: str, expected: dict) -> None:
             raise PackFailure(f"{path.name}: sha256 {computed}, its receipt says {digest}")
 
 
+def config_value(config: dict, key: str):
+    current = config
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
 def plan(spec: dict, checkpoint: Path, targets: list) -> tuple:
     config_path = checkpoint / spec["config"]
     if not config_path.is_file():
@@ -179,7 +203,7 @@ def plan(spec: dict, checkpoint: Path, targets: list) -> tuple:
     config = json.loads(config_path.read_text())
     if spec["architectures"] is not None and config.get("architectures") != spec["architectures"]:
         raise PackFailure(f"{config_path}: architectures {config.get('architectures')}, expected {spec['architectures']}")
-    layer_count = config.get(spec["layer_count"]) if spec["layer_count"] else None
+    layer_count = config_value(config, spec["layer_count"]) if spec["layer_count"] else None
     if spec["target_from_checkpoint"] and targets:
         raise PackFailure("this drafter's target tensors are in its own checkpoint; it takes no --target")
     if not spec["target_from_checkpoint"] and not targets:

@@ -193,12 +193,57 @@ def test_qwen(scratch):
         check(blob == sources[manifest["tensors"][name]["source"]], f"qwen27bdspine: {name} byte for byte")
 
 
+def test_glm53(scratch):
+    checkpoint, target_a, target_b, out = (
+        scratch / "glm53", scratch / "glm53-target" / "model-00001.safetensors",
+        scratch / "glm53-target" / "model-00282.safetensors", scratch / "glm53-out")
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text(json.dumps({
+        "architectures": ["DSparkDraftModel"], "aux_hidden_state_layer_ids": [2, 20, 39, 58, 75],
+        "block_size": 8, "markov_rank": 4, "mask_token_id": 12,
+        "transformer_layer_config": {"num_hidden_layers": 2, "hidden_size": 8}}))
+    sources = write_safetensors(checkpoint / "model.safetensors", {
+        "fc.weight": ("BF16", [8, 40], None), "hidden_norm.weight": ("BF16", [8], None),
+        "norm.weight": ("BF16", [8], None), "layers.0.self_attn.q_proj.weight": ("BF16", [8, 8], None),
+        "layers.1.mlp.down_proj.weight": ("BF16", [8, 16], None),
+        "markov_head.markov_w1.weight": ("BF16", [32, 4], None),
+        "markov_head.markov_w2.weight": ("BF16", [32, 4], None),
+        "confidence_head.proj.weight": ("BF16", [1, 12], None), "confidence_head.proj.bias": ("BF16", [1], None)})
+    sources.update(write_safetensors(target_a, {
+        "model.embed_tokens.weight": ("BF16", [32, 8], None),
+        "lm_head.weight": ("BF16", [32, 8], None),
+        "model.layers.0.input_layernorm.weight": ("BF16", [8], None)}))
+    sources.update(write_safetensors(target_b, {
+        "model.norm.weight": ("BF16", [8], None),
+        "model.layers.9.self_attn.o_proj.weight": ("BF16", [8, 8], None)}))
+    result = run("--drafter", "glm53dspark", "--checkpoint", checkpoint, "--target", target_a, "--target", target_b,
+                 "--revision", "198b3ced9d2d", "--out", out)
+    check(result.returncode == 0, f"glm53dspark packs: {result.stderr}")
+    _, _, manifest, payloads = read_pack(out / "glm53dspark.bf16.tp1.rank0.sp")
+    check(manifest["format"]["drafter"] == "glm53dspark" and
+          set(payloads) == {name for name in sources if not name.startswith("model.") and name != "lm_head.weight"} |
+          {"target.embed", "target.head", "target.norm"}, f"glm53dspark: packed names {sorted(payloads)}")
+    for name, blob in payloads.items():
+        check(blob == sources[manifest["tensors"][name]["source"]], f"glm53dspark: {name} byte for byte")
+    receipt = json.loads((out / "glm53dspark.bf16.tp1.rank0.sp.receipt.json").read_text())
+    check(len(receipt["skipped"]) == 2 and len(receipt["sources"]) == 3, "glm53dspark: skips target layers and records all 3 sources")
+    deep = scratch / "glm53-deep"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text((checkpoint / "config.json").read_text())
+    write_safetensors(deep / "model.safetensors", {"layers.2.input_layernorm.weight": ("BF16", [8], None)})
+    result = run("--drafter", "glm53dspark", "--checkpoint", deep, "--target", target_a, "--target", target_b,
+                 "--revision", "198b3ced9d2d", "--out", scratch / "o9")
+    check(result.returncode == 1 and "layer 2 is past transformer_layer_config.num_hidden_layers = 2" in result.stderr,
+          f"glm53dspark: nested layer_count refuses out-of-range layer: {result.stderr}")
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="drafter-pack-") as directory:
         scratch = Path(directory)
         test_k31(scratch)
         test_dsv41(scratch)
         test_qwen(scratch)
+        test_glm53(scratch)
     for failure in FAILURES:
         print(f"FAIL {failure}")
     if FAILURES:
