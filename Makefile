@@ -540,6 +540,7 @@ PYTHON_TESTS := \
 	tests/test_gpu_test_gate.py \
 	tests/test_nvrm_gpu_gate.py \
 	tests/test_nvrm_kernel_log.py \
+	tests/test_nvrm_skl_overlay.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
