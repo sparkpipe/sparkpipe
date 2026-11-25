@@ -73,18 +73,24 @@ def sample_valid_record(model: str = "glm-5.3-flash", engine: str = "sparkpipe",
 
 
 class TestRaisWeightsAndCatalog(unittest.TestCase):
-    def test_submetric_weights_sum_to_one_and_four_pillars(self) -> None:
-        self.assertEqual(len(rais_score.SUBMETRIC_SPECS), 12)
+    def test_submetric_weights_sum_to_one_and_five_pillars(self) -> None:
+        self.assertEqual(rais_score.RAIS_VERSION, "1.1")
+        self.assertEqual(len(rais_score.SUBMETRIC_SPECS), 15)
         total = sum(rais_score.SUBMETRIC_WEIGHTS.values())
         self.assertAlmostEqual(total, 1.0, places=9)
         for pillar in ("P1", "P2", "P3", "P4"):
             p_sum = sum(w for _, p, _, w in rais_score.SUBMETRIC_SPECS if p == pillar)
-            self.assertAlmostEqual(p_sum, 0.25, places=9)
+            self.assertAlmostEqual(p_sum, 0.225, places=9)
+        p5_sum = sum(w for _, p, _, w in rais_score.SUBMETRIC_SPECS if p == "P5")
+        self.assertAlmostEqual(p5_sum, 0.10, places=9)
         self.assertAlmostEqual(
             rais_score.SUBMETRIC_WEIGHTS["p2b_verify_b1"] + rais_score.SUBMETRIC_WEIGHTS["p2b_verify_b8"],
-            0.13,
+            0.117,
             places=9,
         )
+        self.assertAlmostEqual(rais_score.SUBMETRIC_WEIGHTS["p5a_cold_boot"], 0.05, places=9)
+        self.assertAlmostEqual(rais_score.SUBMETRIC_WEIGHTS["p5b_memory_efficiency"], 0.03, places=9)
+        self.assertAlmostEqual(rais_score.SUBMETRIC_WEIGHTS["p5c_batch_invariance"], 0.02, places=9)
 
     def test_all_hardware_profiles_present(self) -> None:
         expected = {
@@ -97,6 +103,10 @@ class TestRaisWeightsAndCatalog(unittest.TestCase):
             "8x-h200-nvlink",
         }
         self.assertEqual(set(rais_score.HARDWARE_PROFILES.keys()), expected)
+        for hw in rais_score.HARDWARE_PROFILES.values():
+            self.assertGreater(hw.nvme_bw_gb_s_per_rank, 0.0)
+            self.assertGreater(hw.ram_gib_per_rank, 0.0)
+            self.assertGreater(hw.os_reserve_gib_per_rank, 0.0)
 
     def test_all_deployment_lanes_and_fleet_weights(self) -> None:
         lanes = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))["lanes"]
@@ -267,7 +277,7 @@ class TestRaisScoringAndGates(unittest.TestCase):
                 )
                 if fmt in ("json", "html-data"):
                     parsed = json.loads(proc.stdout)
-                    self.assertEqual(parsed["rais_version"], "1.0")
+                    self.assertEqual(parsed["rais_version"], "1.1")
                 else:
                     self.assertIn("ROI Priority Table", proc.stdout)
 
@@ -735,11 +745,200 @@ class TestRaisDivisorReconstitution(unittest.TestCase):
         utcs = [s["utc"] for s in snaps]
         self.assertEqual(utcs, sorted(utcs))
         latest = snaps[-1]
+        self.assertEqual(latest["rais_version"], "1.1")
         self.assertEqual(latest["fleet"]["status"], "VALID")
         self.assertEqual(latest["fleet"]["valid_models"], 19)
-        self.assertEqual(len(latest["fleet"]["submetrics"]), 12)
+        self.assertEqual(len(latest["fleet"]["submetrics"]), 15)
+        self.assertIn("P5", latest["fleet"]["pillars"])
         self.assertIn("kimi-k3.1-pro", latest["models"])
-        self.assertEqual(len(latest["models"]["kimi-k3.1-pro"]["submetrics"]), 12)
+        self.assertEqual(len(latest["models"]["kimi-k3.1-pro"]["submetrics"]), 15)
+        self.assertIn("P5", latest["models"]["kimi-k3.1-pro"]["pillars"])
+        sanitized = rais_history.sanitize_site_snapshots(snaps)
+        for snap in sanitized:
+            self.assertNotIn("qualification/", snap["receipt"])
+            self.assertIn("release ", snap["receipt"])
+
+
+class TestRaisPillar5AndStackBadges(unittest.TestCase):
+    def test_p5a_cold_boot_and_swap_floor(self) -> None:
+        hw = rais_score.resolve_hardware("16x-gb10-1x100g")
+        spec = rais_score.MODEL_SPECS["kimi-k3.1-pro"]
+        expected_floor = max(1.0, (spec.total_weight_bytes / hw.ranks) / (hw.nvme_bw_gb_s_per_rank * 1e9))
+
+        rec_none = sample_valid_record("kimi-k3.1-pro")
+        res_none = rais_score.score_model(rec_none, "16x-gb10-1x100g")
+        self.assertEqual(res_none["submetrics"]["p5a_cold_boot"]["score"], 0.0)
+        self.assertAlmostEqual(res_none["submetrics"]["p5a_cold_boot"]["t_boot_floor_s"], expected_floor, places=2)
+
+        rec_exact = sample_valid_record("kimi-k3.1-pro")
+        rec_exact["metrics"]["cold_boot_s"] = expected_floor
+        res_exact = rais_score.score_model(rec_exact, "16x-gb10-1x100g")
+        self.assertEqual(res_exact["submetrics"]["p5a_cold_boot"]["score"], 100.0)
+
+        rec_2x = sample_valid_record("kimi-k3.1-pro")
+        rec_2x["metrics"]["swap_s"] = expected_floor * 2.0
+        res_2x = rais_score.score_model(rec_2x, "16x-gb10-1x100g")
+        self.assertAlmostEqual(res_2x["submetrics"]["p5a_cold_boot"]["score"], 50.0, places=1)
+
+        rec_fast = sample_valid_record("kimi-k3.1-pro")
+        rec_fast["metrics"]["cold_boot_s"] = expected_floor * 0.5
+        res_fast = rais_score.score_model(rec_fast, "16x-gb10-1x100g")
+        self.assertEqual(res_fast["submetrics"]["p5a_cold_boot"]["score"], 100.0)
+
+    def test_p5b_usable_kv_memory_efficiency(self) -> None:
+        hw = rais_score.resolve_hardware("1x-gb10")
+        spec = rais_score.MODEL_SPECS["qwen3.8-27b"]
+        weights_gib = spec.total_weight_bytes / float(1 << 30)
+        expected_floor = max(1.0, hw.ram_gib_per_rank - weights_gib - hw.os_reserve_gib_per_rank)
+
+        rec_none = sample_valid_record("qwen3.8-27b")
+        res_none = rais_score.score_model(rec_none, "1x-gb10")
+        self.assertEqual(res_none["submetrics"]["p5b_memory_efficiency"]["score"], 0.0)
+        self.assertAlmostEqual(res_none["submetrics"]["p5b_memory_efficiency"]["m_free_floor_gib"], expected_floor, places=2)
+
+        rec_half = sample_valid_record("qwen3.8-27b")
+        rec_half["metrics"]["usable_kv_gib_per_rank"] = expected_floor * 0.5
+        res_half = rais_score.score_model(rec_half, "1x-gb10")
+        self.assertAlmostEqual(res_half["submetrics"]["p5b_memory_efficiency"]["score"], 50.0, places=1)
+
+        rec_bytes = sample_valid_record("qwen3.8-27b")
+        rec_bytes["metrics"]["kv_cache_bytes_per_rank"] = expected_floor * float(1 << 30)
+        res_bytes = rais_score.score_model(rec_bytes, "1x-gb10")
+        self.assertEqual(res_bytes["submetrics"]["p5b_memory_efficiency"]["score"], 100.0)
+
+    def test_p5c_batch_invariance_and_p5_composite(self) -> None:
+        rec_true = sample_valid_record("glm-5.3-flash")
+        rec_true["metrics"]["batch_invariant_exact"] = True
+        res_true = rais_score.score_model(rec_true, "16x-gb10-1x100g")
+        self.assertEqual(res_true["submetrics"]["p5c_batch_invariance"]["score"], 100.0)
+        self.assertEqual(res_true["pillars"]["P5"], 20.0)
+        self.assertEqual(res_true["status"], "VALID")
+
+        rec_false = sample_valid_record("glm-5.3-flash")
+        rec_false["metrics"]["batch_invariant_exact"] = False
+        res_false = rais_score.score_model(rec_false, "16x-gb10-1x100g")
+        self.assertEqual(res_false["submetrics"]["p5c_batch_invariance"]["score"], 0.0)
+        self.assertEqual(res_false["pillars"]["P5"], 0.0)
+        self.assertEqual(res_false["status"], "VALID")
+        self.assertIsNotNone(res_false["certified_rais"])
+        self.assertAlmostEqual(res_true["raw_rais"] - res_false["raw_rais"], 2.0, places=2)
+        self.assertEqual(res_true["base_roofline_r"], res_false["base_roofline_r"])
+
+    def test_stack_badge_zero_score_impact_and_html_path_sanitization(self) -> None:
+        rec_plain = sample_valid_record("qwen3.8-27b")
+        rec_badge = sample_valid_record("qwen3.8-27b")
+        rec_badge["stack_badge"] = "Zero-NVIDIA NVRM + SKL"
+        s_plain = rais_score.score_model(rec_plain, "1x-gb10")
+        s_badge = rais_score.score_model(rec_badge, "1x-gb10")
+        self.assertEqual(s_plain["raw_rais"], s_badge["raw_rais"])
+        self.assertEqual(s_plain["base_roofline_r"], s_badge["base_roofline_r"])
+        self.assertEqual(s_plain["pillars"], s_badge["pillars"])
+        self.assertEqual(s_badge["stack_badge"], "Zero-NVIDIA NVRM + SKL")
+
+        fleet_jsonl = ROOT / "qualification" / "releases" / "dff7b5a96" / "rais-fleet-16x-gb10-1x100g.jsonl"
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "rais_score.py"),
+                "score",
+                str(fleet_jsonl),
+                "--hardware",
+                "16x-gb10-1x100g",
+                "--stack-badge",
+                "CUDA 13.0",
+                "--format",
+                "html-data",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for forbidden in ("qualification/", "tools/rais_", "docs/RAIS", "/srv/", "/home/", "/Users/"):
+            self.assertNotIn(forbidden, proc.stdout)
+        parsed = json.loads(proc.stdout)
+        self.assertEqual(parsed["rais_version"], "1.1")
+        self.assertEqual(parsed["fleet"]["receipt"], "release dff7b5a96 (16x-gb10-1x100g)")
+        self.assertEqual(parsed["fleet"]["stack_badge"], "CUDA 13.0")
+        self.assertEqual(len(parsed["submetrics_meta"]), 15)
+        self.assertEqual(len(parsed["models"][0]["pillars"]), 5)
+
+    def test_bench_p5_cli_and_live_batch_invariance_probe(self) -> None:
+        state_lock = threading.Lock()
+        in_flight = {"count": 0}
+        perturb_batch = {"enabled": False}
+
+        class BatchInvarianceHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                with state_lock:
+                    in_flight["count"] += 1
+                    concurrent_now = in_flight["count"]
+                try:
+                    import time
+                    time.sleep(0.02)
+                    with state_lock:
+                        concurrent_now = max(concurrent_now, in_flight["count"])
+                    prompt = body.get("prompt") or ""
+                    out_text = f"det:{len(prompt)}:{prompt[:16]}"
+                    if perturb_batch["enabled"] and concurrent_now > 1:
+                        out_text += ":nondet"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    chunks = [
+                        {"choices": [{"text": out_text[:10], "finish_reason": None}]},
+                        {"choices": [{"text": out_text[10:], "finish_reason": "length"}], "usage": {"prompt_tokens": max(1, len(prompt) // 4), "completion_tokens": 2}},
+                    ]
+                    for item in chunks:
+                        self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                finally:
+                    with state_lock:
+                        in_flight["count"] -= 1
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BatchInvarianceHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            parser = rais_bench.build_parser()
+            args = parser.parse_args([
+                "--base-url", url,
+                "--model", "qwen3.8-27b",
+                "--hardware", "1x-gb10",
+                "--tier", "fast",
+                "--max-batch", "8",
+                "--spec-toggle", "none",
+                "--no-b8-spec",
+                "--cold-boot-s", "10.8",
+                "--usable-kv-gib", "52.0",
+                "--stack-badge", "Zero-NVIDIA NVRM + SKL",
+            ])
+            rec_det = rais_bench.run_benchmark(args)
+            self.assertEqual(rec_det["rais_version"], "1.1")
+            self.assertEqual(rec_det["stack_badge"], "Zero-NVIDIA NVRM + SKL")
+            self.assertEqual(rec_det["metrics"]["cold_boot_s"], 10.8)
+            self.assertEqual(rec_det["metrics"]["usable_kv_gib_per_rank"], 52.0)
+            self.assertTrue(rec_det["metrics"]["batch_invariant_exact"])
+            scored_det = rais_score.score_model(rec_det, "1x-gb10")
+            self.assertEqual(scored_det["status"], "VALID")
+            self.assertEqual(scored_det["submetrics"]["p5c_batch_invariance"]["score"], 100.0)
+            self.assertGreater(scored_det["pillars"]["P5"], 75.0)
+
+            perturb_batch["enabled"] = True
+            rec_nondet = rais_bench.run_benchmark(args)
+            self.assertFalse(rec_nondet["metrics"]["batch_invariant_exact"])
+            scored_nondet = rais_score.score_model(rec_nondet, "1x-gb10")
+            self.assertEqual(scored_nondet["status"], "VALID")
+            self.assertEqual(scored_nondet["submetrics"]["p5c_batch_invariance"]["score"], 0.0)
+            self.assertAlmostEqual(scored_det["raw_rais"] - scored_nondet["raw_rais"], 2.0, delta=0.5)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

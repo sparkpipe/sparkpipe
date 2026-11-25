@@ -4,31 +4,37 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import statistics
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-RAIS_VERSION = "1.0"
+RAIS_VERSION = "1.1"
 DEFAULT_BASKET_ID = "v1.0-initial"
 DEFAULT_DIVISOR = 1.0
 ALPHA_REF = 4.0
 SLA_MIN_RATIO = 0.25
+GIB_BYTES = float(1 << 30)
+PILLAR_ORDER = ("P1", "P2", "P3", "P4", "P5")
 
 SUBMETRIC_SPECS = (
-    ("p1a_short_b1", "P1", "1a Short-ctx B1 (C=256)", 0.12),
-    ("p1b_long_b1", "P1", "1b Long-ctx B1 (C=64K-128K)", 0.09),
-    ("p1c_tail_jitter", "P1", "1c Tail Jitter (p50/p99 ITL)", 0.04),
-    ("p2a_spec_acceptance", "P2", "2a Spec Acceptance (alpha vs 4.0)", 0.12),
-    ("p2b_verify_b1", "P2", "2b-i B1 Verify & Draft Eff (1/V)", 0.08),
-    ("p2b_verify_b8", "P2", "2b-ii B8 Batched Verify Eff (1/V)", 0.05),
-    ("p3a_interactive_batch", "P3", "3a Interactive Batch (B=4,8,16 + SLA)", 0.10),
-    ("p3b_high_concurrency", "P3", "3b High-Concurrency (B=32,64)", 0.09),
-    ("p3c_long_ctx_batch", "P3", "3c Long-Ctx Batch (B=8 @ 32K-64K)", 0.06),
-    ("p4a_cold_prefill_8k", "P4", "4a Cold Prefill (8K)", 0.08),
-    ("p4b_long_cold_prefill", "P4", "4b Long Cold Prefill (32K/128K+)", 0.09),
-    ("p4c_multiturn_prefix_ttft", "P4", "4c Multi-Turn Prefix Reuse TTFT", 0.08),
+    ("p1a_short_b1", "P1", "1a Short-ctx B1 (C=256)", 0.108),
+    ("p1b_long_b1", "P1", "1b Long-ctx B1 (C=64K-128K)", 0.081),
+    ("p1c_tail_jitter", "P1", "1c Tail Jitter (p50/p99 ITL)", 0.036),
+    ("p2a_spec_acceptance", "P2", "2a Spec Acceptance (alpha vs 4.0)", 0.108),
+    ("p2b_verify_b1", "P2", "2b-i B1 Verify & Draft Eff (1/V)", 0.072),
+    ("p2b_verify_b8", "P2", "2b-ii B8 Batched Verify Eff (1/V)", 0.045),
+    ("p3a_interactive_batch", "P3", "3a Interactive Batch (B=4,8,16 + SLA)", 0.090),
+    ("p3b_high_concurrency", "P3", "3b High-Concurrency (B=32,64)", 0.081),
+    ("p3c_long_ctx_batch", "P3", "3c Long-Ctx Batch (B=8 @ 32K-64K)", 0.054),
+    ("p4a_cold_prefill_8k", "P4", "4a Cold Prefill (8K)", 0.072),
+    ("p4b_long_cold_prefill", "P4", "4b Long Cold Prefill (32K/128K+)", 0.081),
+    ("p4c_multiturn_prefix_ttft", "P4", "4c Multi-Turn Prefix Reuse TTFT", 0.072),
+    ("p5a_cold_boot", "P5", "5a Cold Boot / Model Swap Eff", 0.050),
+    ("p5b_memory_efficiency", "P5", "5b Usable KV Memory Eff", 0.030),
+    ("p5c_batch_invariance", "P5", "5c Batch-Size Bit-Invariance", 0.020),
 )
 
 SUBMETRIC_WEIGHTS = {key: weight for key, _, _, weight in SUBMETRIC_SPECS}
@@ -39,6 +45,7 @@ PILLAR_NAMES = {
     "P2": "Speculation",
     "P3": "Batch & Concurrency Scaling",
     "P4": "Prefill & Multi-Turn Agent Loops",
+    "P5": "Operational & Systems Physics",
 }
 
 
@@ -54,6 +61,9 @@ class HardwareProfile:
     net_bw_gb_s_per_rank: float
     net_hop_us: float
     vram_gb_per_rank: float
+    nvme_bw_gb_s_per_rank: float
+    ram_gib_per_rank: float
+    os_reserve_gib_per_rank: float
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,20 @@ class ModelSpec:
         )
 
     @property
+    def total_weight_bytes(self) -> float:
+        spine = self.non_expert_params_b * 1e9 * self.non_expert_bytes_per_param
+        if self.expert_count > 0 and self.experts_per_token > 0 and self.active_expert_params_b > 0.0:
+            pool = (
+                self.active_expert_params_b
+                * 1e9
+                * (self.expert_count / float(self.experts_per_token))
+                * self.expert_bytes_per_param
+            )
+        else:
+            pool = 0.0
+        return spine + pool
+
+    @property
     def allreduce_ops_per_step(self) -> int:
         return 2 * self.layers
 
@@ -129,6 +153,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=12.5,
         net_hop_us=16.0,
         vram_gb_per_rank=128.0,
+        nvme_bw_gb_s_per_rank=5.0,
+        ram_gib_per_rank=128.0,
+        os_reserve_gib_per_rank=12.0,
     ),
     "16x-gb10-2x100g": HardwareProfile(
         name="16x-gb10-2x100g",
@@ -141,6 +168,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=25.0,
         net_hop_us=16.0,
         vram_gb_per_rank=128.0,
+        nvme_bw_gb_s_per_rank=5.0,
+        ram_gib_per_rank=128.0,
+        os_reserve_gib_per_rank=12.0,
     ),
     "4x-gb10-1x100g": HardwareProfile(
         name="4x-gb10-1x100g",
@@ -153,6 +183,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=12.5,
         net_hop_us=12.0,
         vram_gb_per_rank=128.0,
+        nvme_bw_gb_s_per_rank=5.0,
+        ram_gib_per_rank=128.0,
+        os_reserve_gib_per_rank=12.0,
     ),
     "4x-gb10-2x100g": HardwareProfile(
         name="4x-gb10-2x100g",
@@ -165,6 +198,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=25.0,
         net_hop_us=12.0,
         vram_gb_per_rank=128.0,
+        nvme_bw_gb_s_per_rank=5.0,
+        ram_gib_per_rank=128.0,
+        os_reserve_gib_per_rank=12.0,
     ),
     "1x-gb10": HardwareProfile(
         name="1x-gb10",
@@ -177,6 +213,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=0.0,
         net_hop_us=0.0,
         vram_gb_per_rank=128.0,
+        nvme_bw_gb_s_per_rank=5.0,
+        ram_gib_per_rank=128.0,
+        os_reserve_gib_per_rank=12.0,
     ),
     "1x-m5-ultra": HardwareProfile(
         name="1x-m5-ultra",
@@ -189,6 +228,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=0.0,
         net_hop_us=0.0,
         vram_gb_per_rank=256.0,
+        nvme_bw_gb_s_per_rank=7.0,
+        ram_gib_per_rank=256.0,
+        os_reserve_gib_per_rank=32.0,
     ),
     "8x-h200-nvlink": HardwareProfile(
         name="8x-h200-nvlink",
@@ -201,6 +243,9 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         net_bw_gb_s_per_rank=450.0,
         net_hop_us=2.0,
         vram_gb_per_rank=141.0,
+        nvme_bw_gb_s_per_rank=7.0,
+        ram_gib_per_rank=141.0,
+        os_reserve_gib_per_rank=4.0,
     ),
 }
 
@@ -1412,8 +1457,76 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
         "bottleneck": rf_4c_main.binding_bottleneck,
     }
 
+    weight_bytes_per_rank = model.total_weight_bytes / float(max(1, hw.ranks))
+    t_boot_floor_s = (
+        max(1.0, weight_bytes_per_rank / (hw.nvme_bw_gb_s_per_rank * 1e9))
+        if hw.nvme_bw_gb_s_per_rank > 0.0
+        else 1.0
+    )
+    cold_boot_s = metrics.get("cold_boot_s")
+    if cold_boot_s is None:
+        cold_boot_s = metrics.get("swap_s")
+    if cold_boot_s is None:
+        cold_boot_s = record.get("cold_boot_s", record.get("swap_s"))
+    if isinstance(cold_boot_s, (int, float)) and cold_boot_s > 0.0:
+        raw_5a = 100.0 * t_boot_floor_s / float(cold_boot_s)
+        s_5a = _clamp_score(raw_5a)
+    else:
+        raw_5a = 0.0
+        s_5a = 0.0
+    submetrics["p5a_cold_boot"] = {
+        "score": round(s_5a, 2),
+        "raw_efficiency_pct": round(raw_5a, 2),
+        "weight": SUBMETRIC_WEIGHTS["p5a_cold_boot"],
+        "cold_boot_s": round(float(cold_boot_s), 3) if isinstance(cold_boot_s, (int, float)) else None,
+        "t_boot_floor_s": round(t_boot_floor_s, 3),
+        "weight_gb_per_rank": round(weight_bytes_per_rank / 1e9, 2),
+        "nvme_bw_gb_s_per_rank": hw.nvme_bw_gb_s_per_rank,
+        "bottleneck": "storage",
+    }
+
+    weights_gib_per_rank = weight_bytes_per_rank / GIB_BYTES
+    m_free_floor_gib = max(1.0, hw.ram_gib_per_rank - weights_gib_per_rank - hw.os_reserve_gib_per_rank)
+    usable_kv_gib = metrics.get("usable_kv_gib_per_rank")
+    if usable_kv_gib is None:
+        usable_kv_gib = metrics.get("usable_kv_gib")
+    if usable_kv_gib is None and isinstance(metrics.get("kv_cache_bytes_per_rank"), (int, float)):
+        usable_kv_gib = float(metrics["kv_cache_bytes_per_rank"]) / GIB_BYTES
+    if usable_kv_gib is None:
+        usable_kv_gib = record.get("usable_kv_gib_per_rank")
+    if isinstance(usable_kv_gib, (int, float)) and usable_kv_gib > 0.0:
+        raw_5b = 100.0 * float(usable_kv_gib) / m_free_floor_gib
+        s_5b = _clamp_score(raw_5b)
+    else:
+        raw_5b = 0.0
+        s_5b = 0.0
+    submetrics["p5b_memory_efficiency"] = {
+        "score": round(s_5b, 2),
+        "raw_efficiency_pct": round(raw_5b, 2),
+        "weight": SUBMETRIC_WEIGHTS["p5b_memory_efficiency"],
+        "usable_kv_gib_per_rank": round(float(usable_kv_gib), 3) if isinstance(usable_kv_gib, (int, float)) else None,
+        "m_free_floor_gib": round(m_free_floor_gib, 3),
+        "weights_gib_per_rank": round(weights_gib_per_rank, 3),
+        "ram_gib_per_rank": hw.ram_gib_per_rank,
+        "os_reserve_gib_per_rank": hw.os_reserve_gib_per_rank,
+        "bottleneck": "memory_footprint",
+    }
+
+    batch_invariant_exact = metrics.get("batch_invariant_exact")
+    if batch_invariant_exact is None and isinstance(record.get("gates"), dict):
+        batch_invariant_exact = record["gates"].get("batch_invariant_exact")
+    if batch_invariant_exact is None:
+        batch_invariant_exact = record.get("batch_invariant_exact")
+    s_5c = 100.0 if batch_invariant_exact is True else 0.0
+    submetrics["p5c_batch_invariance"] = {
+        "score": round(s_5c, 2),
+        "weight": SUBMETRIC_WEIGHTS["p5c_batch_invariance"],
+        "batch_invariant_exact": batch_invariant_exact if isinstance(batch_invariant_exact, bool) else None,
+        "bottleneck": "determinism",
+    }
+
     pillar_scores: dict[str, float] = {}
-    for pillar in ("P1", "P2", "P3", "P4"):
+    for pillar in PILLAR_ORDER:
         keys = [k for k, p, _, _ in SUBMETRIC_SPECS if p == pillar]
         p_weight = sum(SUBMETRIC_WEIGHTS[k] for k in keys)
         p_sum = sum(SUBMETRIC_WEIGHTS[k] * submetrics[k]["score"] for k in keys)
@@ -1424,6 +1537,9 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
 
     gate_info = evaluate_gates(record)
     certified_rais = None if gate_info["status"] == "INVALID" else raw_rais
+
+    raw_badge = record.get("stack_badge")
+    stack_badge = raw_badge.strip() if isinstance(raw_badge, str) and raw_badge.strip() else None
 
     roi_items = []
     for key, pillar, label, weight in SUBMETRIC_SPECS:
@@ -1445,6 +1561,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
         "rais_version": RAIS_VERSION,
         "model": model_name,
         "engine": record.get("engine", "unknown"),
+        "stack_badge": stack_badge,
         "tier_run": record.get("tier", "custom"),
         "hardware": hw.name,
         "model_tier": model.tier,
@@ -1505,11 +1622,22 @@ def score_fleet(
     weights_override: dict[str, float] | None = None,
     divisor: float = DEFAULT_DIVISOR,
     basket_id: str = DEFAULT_BASKET_ID,
+    stack_badge_override: str | None = None,
 ) -> dict[str, Any]:
     if divisor <= 0.0:
         raise ValueError(f"index divisor must be positive (got {divisor})")
     hw = resolve_hardware(hardware_name)
-    per_model = [score_model(rec, hw.name) for rec in records]
+    badge_override = (
+        stack_badge_override.strip()
+        if isinstance(stack_badge_override, str) and stack_badge_override.strip()
+        else None
+    )
+    per_model = []
+    for rec in records:
+        scored = score_model(rec, hw.name)
+        if badge_override is not None:
+            scored["stack_badge"] = badge_override
+        per_model.append(scored)
     by_canonical: dict[str, dict[str, Any]] = {}
     for item in per_model:
         canon = item["canonical_model"]
@@ -1551,12 +1679,14 @@ def score_fleet(
     fleet_rais_covered = round(raw_covered_exact, 2)
     fleet_rais_strict = round(strict_sum, 2)
     fleet_rais_raw_index = round(raw_covered_exact / divisor, 2)
+    unique_badges = list(dict.fromkeys(m["stack_badge"] for m in per_model if m.get("stack_badge")))
 
     return {
         "rais_version": RAIS_VERSION,
         "basket_id": basket_id,
         "index_divisor": round(divisor, 8),
         "hardware": asdict(hw),
+        "stack_badge": unique_badges[0] if len(unique_badges) == 1 else (", ".join(unique_badges) if unique_badges else None),
         "model_count": len(per_model),
         "fleet_coverage_pct": round(covered_weight * 100.0, 2),
         "fleet_status": "INVALID" if any_invalid else ("VALID" if all(m["status"] == "VALID" for m in per_model) and per_model else "UNVERIFIED"),
@@ -1659,6 +1789,8 @@ def compare_reports(report_a: dict[str, Any], report_b: dict[str, Any], label_a:
             "model": model_name,
             "status_a": ma["status"],
             "status_b": mb["status"],
+            "stack_badge_a": ma.get("stack_badge"),
+            "stack_badge_b": mb.get("stack_badge"),
             "rais_a": ma["raw_rais"],
             "rais_b": mb["raw_rais"],
             "delta_rais": round(mb["raw_rais"] - ma["raw_rais"], 2),
@@ -1666,7 +1798,7 @@ def compare_reports(report_a: dict[str, Any], report_b: dict[str, Any], label_a:
             "r_b": mb["base_roofline_r"],
             "delta_r": round(mb["base_roofline_r"] - ma["base_roofline_r"], 2),
             "pillars_delta": {
-                p: round(mb["pillars"][p] - ma["pillars"][p], 2) for p in ("P1", "P2", "P3", "P4")
+                p: round(mb["pillars"][p] - ma["pillars"][p], 2) for p in PILLAR_ORDER
             },
             "submetrics_delta": {
                 k: round(mb["submetrics"][k]["score"] - ma["submetrics"][k]["score"], 2) for k in SUBMETRIC_WEIGHTS
@@ -1677,6 +1809,8 @@ def compare_reports(report_a: dict[str, Any], report_b: dict[str, Any], label_a:
         "hardware": report_a["hardware"]["name"],
         "label_a": label_a,
         "label_b": label_b,
+        "stack_badge_a": report_a.get("stack_badge"),
+        "stack_badge_b": report_b.get("stack_badge"),
         "fleet_rais_a": report_a["fleet_rais_raw_covered"],
         "fleet_rais_b": report_b["fleet_rais_raw_covered"],
         "delta_fleet_rais": round(report_b["fleet_rais_raw_covered"] - report_a["fleet_rais_raw_covered"], 2),
@@ -1818,6 +1952,12 @@ def import_hillclimb_records(path: Path, default_model: str | None = None, engin
                 ("prefill_128k_tokens", "prefill_128k_tokens"),
                 ("warm_8k_ttft_ms", "warm_8k_ttft_ms"),
                 ("warm_100k_ttft_ms", "warm_100k_ttft_ms"),
+                ("cold_boot_s", "cold_boot_s"),
+                ("swap_s", "swap_s"),
+                ("usable_kv_gib_per_rank", "usable_kv_gib_per_rank"),
+                ("usable_kv_gib", "usable_kv_gib_per_rank"),
+                ("kv_cache_bytes_per_rank", "kv_cache_bytes_per_rank"),
+                ("batch_invariant_exact", "batch_invariant_exact"),
             ):
                 if entry.get(src) is not None:
                     m[dst] = entry[src]
@@ -1827,33 +1967,66 @@ def import_hillclimb_records(path: Path, default_model: str | None = None, engin
             for s_key in ("alpha", "alpha_prose", "alpha_code", "alpha_edit", "verify_v_b1", "verify_v_b8", "verify_k", "b1_spec_tok_s", "verify_b1_enabled", "verify_b8_enabled"):
                 if entry.get(s_key) is not None:
                     m["speculation"][s_key] = entry[s_key]
+            if isinstance(entry.get("stack_badge"), str) and entry["stack_badge"].strip():
+                rec["stack_badge"] = entry["stack_badge"].strip()
             if isinstance(entry.get("gates"), dict):
                 rec["gates"] = entry["gates"]
 
     return list(grouped.values())
 
 
+def sanitize_receipt_label(
+    raw: str | Path | None,
+    hardware: str | None = None,
+    release: str | None = None,
+) -> str:
+    hw_suffix = f" ({hardware})" if hardware else ""
+    if release:
+        return f"release {release}{hw_suffix}"
+    if raw is None:
+        return f"live run{hw_suffix}".strip()
+    text = str(raw).strip()
+    if not text:
+        return f"live run{hw_suffix}".strip()
+    rel_match = re.search(r"(?:^|[\\/])releases[\\/]([0-9a-fA-F]{7,40})(?:[\\/]|$)", text)
+    if rel_match:
+        return f"release {rel_match.group(1)}{hw_suffix}"
+    forbidden = ("qualification/", "tools/", "docs/", "/srv/", "/home/", "/Users/", "\\")
+    if any(tok in text for tok in forbidden) or "/" in text:
+        stem = Path(text).name
+        for ext in (".jsonl", ".json", ".txt", ".log"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+        stem = re.sub(r"^rais-fleet-", "", stem)
+        if hardware and hardware not in stem:
+            return f"{stem}{hw_suffix}"
+        return stem or f"live run{hw_suffix}".strip()
+    return text
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     hw = report["hardware"]
+    stack_line = f" | **Stack:** `{report['stack_badge']}`" if report.get("stack_badge") else ""
     lines = [
         f"# RAIS v{report['rais_version']} Scorecard — `{hw['name']}`",
         "",
-        f"- **Hardware:** {hw['description']} (`{hw['ranks']}x`, {hw['mem_bw_gb_s_per_rank']:.0f} GB/s/rank, {hw['fp8_tflops_per_rank']:.0f} FP8 / {hw['bf16_tflops_per_rank']:.0f} BF16 TFLOPS/rank, {hw['net_bw_gb_s_per_rank']:.1f} GB/s/rank net @ {hw['net_hop_us']:.0f} us)",
+        f"- **Hardware:** {hw['description']} (`{hw['ranks']}x`, {hw['mem_bw_gb_s_per_rank']:.0f} GB/s/rank, {hw['fp8_tflops_per_rank']:.0f} FP8 / {hw['bf16_tflops_per_rank']:.0f} BF16 TFLOPS/rank, {hw['net_bw_gb_s_per_rank']:.1f} GB/s/rank net @ {hw['net_hop_us']:.0f} us, {hw['nvme_bw_gb_s_per_rank']:.1f} GB/s NVMe, {hw['ram_gib_per_rank']:.0f} GiB RAM / {hw['os_reserve_gib_per_rank']:.0f} GiB OS reserve){stack_line}",
         f"- **Fleet Status:** `{report['fleet_status']}` | **Basket:** `{report['basket_id']}` (divisor `{report['index_divisor']:.6f}`) | **Coverage:** {report['fleet_coverage_pct']:.1f}% ({report['model_count']} models)",
         f"- **Fleet Aggregate RAIS (covered):** `{report['fleet_rais_covered'] if report['fleet_rais_covered'] is not None else 'INVALID'}` (raw: {report['fleet_rais_raw_covered']:.2f}) | **RAIS Index:** `{report['fleet_rais_index'] if report['fleet_rais_index'] is not None else 'INVALID'}` | **Strict Fleet RAIS:** `{report['fleet_rais_strict'] if report['fleet_rais_strict'] is not None else 'INVALID'}`",
         "",
         "## Model Summary",
         "",
-        "| Model | Engine | Dtype | Status | RAIS | Base R | P1 Dec | P2 Spec (a / 1/V) | P3 Batch | P4 Prefill |",
-        "| --- | --- | --- | :---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Model | Engine | Stack | Dtype | Status | RAIS | Base R | P1 Dec | P2 Spec (a / 1/V) | P3 Batch | P4 Prefill | P5 Sys |",
+        "| --- | --- | --- | --- | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for m in report["models"]:
         spec = m["speculation_summary"]
         rais_str = f"**{m['certified_rais']:.1f}**" if m["certified_rais"] is not None else f"INVALID ({m['raw_rais']:.1f})"
+        badge_str = f"`{m['stack_badge']}`" if m.get("stack_badge") else "-"
         lines.append(
-            f"| `{m['model']}` | {m['engine']} | {m['dtype']} | `{m['status']}` | {rais_str} | {m['base_roofline_r']:.1f} | "
+            f"| `{m['model']}` | {m['engine']} | {badge_str} | {m['dtype']} | `{m['status']}` | {rais_str} | {m['base_roofline_r']:.1f} | "
             f"{m['pillars']['P1']:.1f} | {m['pillars']['P2']:.1f} ({spec['alpha']:.2f} / {spec['inv_v_b1']:.2f}) | "
-            f"{m['pillars']['P3']:.1f} | {m['pillars']['P4']:.1f} |"
+            f"{m['pillars']['P3']:.1f} | {m['pillars']['P4']:.1f} | {m['pillars']['P5']:.1f} |"
         )
 
     for m in report["models"]:
@@ -1872,13 +2045,13 @@ def render_markdown(report: dict[str, Any]) -> str:
                 rf = first_pt.get("roofline")
             if rf:
                 lines.append(
-                    f"| {label} | {weight * 100:.0f}% | {sm['score']:.1f} | {rf['t_compute_ms']:.2f} | "
+                    f"| {label} | {weight * 100:.1f}% | {sm['score']:.1f} | {rf['t_compute_ms']:.2f} | "
                     f"{rf['t_memory_ms']:.2f} | {rf['t_network_ms']:.2f} | {rf['t_floor_ms']:.2f} | "
                     f"{rf['overlap_gain_max']:.2f}x | `{sm['bottleneck']}` |"
                 )
             else:
                 lines.append(
-                    f"| {label} | {weight * 100:.0f}% | {sm['score']:.1f} | - | - | - | - | - | `{sm['bottleneck']}` |"
+                    f"| {label} | {weight * 100:.1f}% | {sm['score']:.1f} | - | - | - | - | - | `{sm['bottleneck']}` |"
                 )
         if m["gates"]["failed_gates"]:
             lines.append("")
@@ -1902,19 +2075,24 @@ def render_markdown(report: dict[str, Any]) -> str:
 def render_compare_markdown(cmp_report: dict[str, Any]) -> str:
     la = cmp_report["label_a"]
     lb = cmp_report["label_b"]
+    ba = cmp_report.get("stack_badge_a")
+    bb = cmp_report.get("stack_badge_b")
+    stack_note = ""
+    if ba or bb:
+        stack_note = f" | **Stacks:** `{ba or '-'}` vs `{bb or '-'}`"
     lines = [
         f"# RAIS v{cmp_report['rais_version']} Comparison — `{la}` vs `{lb}` on `{cmp_report['hardware']}`",
         "",
-        f"- **Fleet Aggregate RAIS:** `{la}` = **{cmp_report['fleet_rais_a']:.2f}** vs `{lb}` = **{cmp_report['fleet_rais_b']:.2f}** (Δ = **{cmp_report['delta_fleet_rais']:+.2f}**)",
+        f"- **Fleet Aggregate RAIS:** `{la}` = **{cmp_report['fleet_rais_a']:.2f}** vs `{lb}` = **{cmp_report['fleet_rais_b']:.2f}** (Δ = **{cmp_report['delta_fleet_rais']:+.2f}**){stack_note}",
         "",
-        f"| Model | {la} RAIS | {lb} RAIS | dRAIS | dR | dP1 | dP2 | dP3 | dP4 | Status ({la}/{lb}) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |",
+        f"| Model | {la} RAIS | {lb} RAIS | dRAIS | dR | dP1 | dP2 | dP3 | dP4 | dP5 | Status ({la}/{lb}) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |",
     ]
     for row in cmp_report["models"]:
         pd = row["pillars_delta"]
         lines.append(
             f"| `{row['model']}` | {row['rais_a']:.1f} | {row['rais_b']:.1f} | {row['delta_rais']:+.1f} | "
-            f"{row['delta_r']:+.1f} | {pd['P1']:+.1f} | {pd['P2']:+.1f} | {pd['P3']:+.1f} | {pd['P4']:+.1f} | "
+            f"{row['delta_r']:+.1f} | {pd['P1']:+.1f} | {pd['P2']:+.1f} | {pd['P3']:+.1f} | {pd['P4']:+.1f} | {pd['P5']:+.1f} | "
             f"`{row['status_a']}` / `{row['status_b']}` |"
         )
     return "\n".join(lines)
@@ -1938,38 +2116,51 @@ def render_reconstitute_markdown(rec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_html_data(report: dict[str, Any]) -> str:
+def render_html_data(report: dict[str, Any], receipt_label: str | Path | None = None) -> str:
+    hw_name = report["hardware"]["name"]
+    clean_receipt = sanitize_receipt_label(receipt_label, hardware=hw_name) if receipt_label is not None else None
+    fleet_obj: dict[str, Any] = {
+        "status": report["fleet_status"],
+        "coverage_pct": report["fleet_coverage_pct"],
+        "rais_covered": report["fleet_rais_covered"],
+        "rais_strict": report["fleet_rais_strict"],
+        "rais_index": report["fleet_rais_index"],
+        "rais_raw_covered": report["fleet_rais_raw_covered"],
+        "rais_raw_index": report["fleet_rais_raw_index"],
+    }
+    if report.get("stack_badge"):
+        fleet_obj["stack_badge"] = report["stack_badge"]
+    if clean_receipt:
+        fleet_obj["receipt"] = clean_receipt
     payload = {
         "rais_version": report["rais_version"],
         "basket_id": report["basket_id"],
         "index_divisor": report["index_divisor"],
         "hardware": report["hardware"],
-        "fleet": {
-            "status": report["fleet_status"],
-            "coverage_pct": report["fleet_coverage_pct"],
-            "rais_covered": report["fleet_rais_covered"],
-            "rais_strict": report["fleet_rais_strict"],
-            "rais_index": report["fleet_rais_index"],
-            "rais_raw_covered": report["fleet_rais_raw_covered"],
-            "rais_raw_index": report["fleet_rais_raw_index"],
-        },
+        "fleet": fleet_obj,
         "models": [
             {
                 "model": m["model"],
                 "engine": m["engine"],
+                "stack_badge": m.get("stack_badge"),
                 "dtype": m["dtype"],
                 "status": m["status"],
                 "rais": m["certified_rais"],
                 "raw_rais": m["raw_rais"],
                 "base_r": m["base_roofline_r"],
                 "spec": m["speculation_summary"],
-                "pillars": [m["pillars"]["P1"], m["pillars"]["P2"], m["pillars"]["P3"], m["pillars"]["P4"]],
+                "pillars": [m["pillars"][p] for p in PILLAR_ORDER],
                 "submetric_scores": {k: m["submetrics"][k]["score"] for k in SUBMETRIC_WEIGHTS},
                 "failed_gates": m["gates"]["failed_gates"],
+                **({"receipt": clean_receipt} if clean_receipt else {}),
             }
             for m in report["models"]
         ],
         "roi_top": report["fleet_roi_top"][:15],
+        "submetrics_meta": [
+            {"key": k, "pillar": p, "label": lbl, "weight_pct": round(w * 100.0, 1)}
+            for k, p, lbl, w in SUBMETRIC_SPECS
+        ],
     }
     return json.dumps(payload, indent=2)
 
@@ -1982,7 +2173,7 @@ def emit_output(text: str, output_path: str | None) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rais_score", description="RAIS v1.0 3-roofline reference scorer and ROI planner.")
+    parser = argparse.ArgumentParser(prog="rais_score", description="RAIS v1.1 3-roofline + Pillar 5 reference scorer and ROI planner.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_score = sub.add_parser("score", help="Score a RAIS JSONL file against a hardware profile.")
@@ -1991,6 +2182,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--weights", help="Optional basket weights JSON file.")
     p_score.add_argument("--divisor", type=float, default=None, help="Optional S&P/DJIA continuity divisor.")
     p_score.add_argument("--basket-id", default=None, help="Optional basket identifier.")
+    p_score.add_argument("--stack-badge", default=None, help="Optional display-only stack badge metadata.")
     p_score.add_argument("--format", default="markdown", choices=("markdown", "json", "html-data"))
     p_score.add_argument("--output", help="Optional output file path.")
 
@@ -2002,6 +2194,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.add_argument("--divisor", type=float, default=None, help="Optional S&P/DJIA continuity divisor.")
     p_cmp.add_argument("--label-a", default="EngineA")
     p_cmp.add_argument("--label-b", default="EngineB")
+    p_cmp.add_argument("--stack-badge-a", default=None, help="Optional display-only stack badge for Engine A.")
+    p_cmp.add_argument("--stack-badge-b", default=None, help="Optional display-only stack badge for Engine B.")
     p_cmp.add_argument("--format", default="markdown", choices=("markdown", "json", "html-data"))
     p_cmp.add_argument("--output", help="Optional output file path.")
 
@@ -2032,18 +2226,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def render_catalog_markdown() -> str:
     lines = [
-        "# RAIS v1.0 Hardware Profiles & Fleet Model Catalog",
+        f"# RAIS v{RAIS_VERSION} Hardware Profiles & Fleet Model Catalog",
         "",
         "## Hardware Profiles",
         "",
-        "| Profile | Ranks | Mem BW/rank | BF16 / FP8 / FP4 TFLOPS | Net BW/rank | Hop Latency |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Profile | Ranks | Mem BW/rank | BF16 / FP8 / FP4 TFLOPS | Net BW/rank | Hop Latency | NVMe BW/rank | RAM / OS Reserve |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for hw in HARDWARE_PROFILES.values():
         lines.append(
             f"| `{hw.name}` | {hw.ranks} | {hw.mem_bw_gb_s_per_rank:.0f} GB/s | "
             f"{hw.bf16_tflops_per_rank:.0f} / {hw.fp8_tflops_per_rank:.0f} / {hw.fp4_tflops_per_rank:.0f} | "
-            f"{hw.net_bw_gb_s_per_rank:.1f} GB/s | {hw.net_hop_us:.0f} us |"
+            f"{hw.net_bw_gb_s_per_rank:.1f} GB/s | {hw.net_hop_us:.0f} us | "
+            f"{hw.nvme_bw_gb_s_per_rank:.1f} GB/s | {hw.ram_gib_per_rank:.0f} / {hw.os_reserve_gib_per_rank:.0f} GiB |"
         )
     lines.extend([
         "",
@@ -2086,11 +2281,18 @@ def main(argv: list[str] | None = None) -> int:
                 basket_id = file_basket
             if args.divisor is None and file_div is not None:
                 divisor = file_div
-        report = score_fleet(records, args.hardware, weights_override=weights_override, divisor=divisor, basket_id=basket_id)
+        report = score_fleet(
+            records,
+            args.hardware,
+            weights_override=weights_override,
+            divisor=divisor,
+            basket_id=basket_id,
+            stack_badge_override=args.stack_badge,
+        )
         if args.format == "json":
             emit_output(json.dumps(report, indent=2), args.output)
         elif args.format == "html-data":
-            emit_output(render_html_data(report), args.output)
+            emit_output(render_html_data(report, receipt_label=args.results), args.output)
         else:
             emit_output(render_markdown(report), args.output)
         return 0
@@ -2103,8 +2305,22 @@ def main(argv: list[str] | None = None) -> int:
             weights_override, basket_id, file_div = load_weights_file(Path(args.weights))
             if args.divisor is None and file_div is not None:
                 divisor = file_div
-        rep_a = score_fleet(load_jsonl(Path(args.engine_a)), args.hardware, weights_override=weights_override, divisor=divisor, basket_id=basket_id)
-        rep_b = score_fleet(load_jsonl(Path(args.engine_b)), args.hardware, weights_override=weights_override, divisor=divisor, basket_id=basket_id)
+        rep_a = score_fleet(
+            load_jsonl(Path(args.engine_a)),
+            args.hardware,
+            weights_override=weights_override,
+            divisor=divisor,
+            basket_id=basket_id,
+            stack_badge_override=args.stack_badge_a,
+        )
+        rep_b = score_fleet(
+            load_jsonl(Path(args.engine_b)),
+            args.hardware,
+            weights_override=weights_override,
+            divisor=divisor,
+            basket_id=basket_id,
+            stack_badge_override=args.stack_badge_b,
+        )
         cmp_rep = compare_reports(rep_a, rep_b, args.label_a, args.label_b)
         if args.format in ("json", "html-data"):
             emit_output(json.dumps(cmp_rep, indent=2), args.output)
@@ -2145,7 +2361,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.format == "json":
                 emit_output(json.dumps(report, indent=2), args.output)
             elif args.format == "html-data":
-                emit_output(render_html_data(report), args.output)
+                emit_output(render_html_data(report, receipt_label=args.hillclimb), args.output)
             else:
                 emit_output(render_markdown(report), args.output)
         else:

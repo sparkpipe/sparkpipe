@@ -4,7 +4,10 @@
     loading: "RAIS 데이터를 불러오는 중…",
     err: "rais-data.json을 불러오지 못했습니다.",
     hwSummary: function (h) {
-      return h.ranks + "랭크 · 랭크당 메모리 " + h.mem_bw_gb_s_per_rank + " GB/s (합계 " + Math.round(h.ranks * h.mem_bw_gb_s_per_rank).toLocaleString("en-US") + " GB/s) · BF16/FP8/FP4 " + h.bf16_tflops_per_rank + "/" + h.fp8_tflops_per_rank + "/" + h.fp4_tflops_per_rank + " TFLOPS · 네트워크 " + h.net_bw_gb_s_per_rank + " GB/s (" + h.net_hop_us + " µs)";
+      var sysPart = (h.nvme_bw_gb_s_per_rank != null && h.ram_gib_per_rank != null)
+        ? (" · NVMe " + h.nvme_bw_gb_s_per_rank + " GB/s · RAM " + h.ram_gib_per_rank + " GiB (OS " + h.os_reserve_gib_per_rank + " GiB)")
+        : "";
+      return h.ranks + "랭크 · 랭크당 메모리 " + h.mem_bw_gb_s_per_rank + " GB/s (합계 " + Math.round(h.ranks * h.mem_bw_gb_s_per_rank).toLocaleString("en-US") + " GB/s) · BF16/FP8/FP4 " + h.bf16_tflops_per_rank + "/" + h.fp8_tflops_per_rank + "/" + h.fp4_tflops_per_rank + " TFLOPS · 네트워크 " + h.net_bw_gb_s_per_rank + " GB/s (" + h.net_hop_us + " µs)" + sysPart;
     },
     statusLabels: {
       VALID: "인증 완료",
@@ -13,10 +16,10 @@
       PENDING: "전체 RAIS 스윕 대기"
     },
     sweepBadge: function (m) {
-      if (m.status === "VALID") return "인증 완료 (" + (m.measured_count || 11) + "/12)";
+      if (m.status === "VALID") return "인증 완료 (" + (m.measured_count || 12) + "/15)";
       if (m.status === "INVALID") return "무효 (" + ((m.failed_gates && m.failed_gates.length) ? m.failed_gates.join(", ") : "게이트 실패") + ")";
-      if (m.sweep_state === "partial_multi") return "부분 실측 " + m.measured_count + "/12 · 전체 RAIS 스윕 대기";
-      if (m.sweep_state === "partial_qual") return "릴리스 검증 " + m.measured_count + "/12 · 전체 RAIS 스윕 대기";
+      if (m.sweep_state === "partial_multi") return "부분 실측 " + m.measured_count + "/15 · 전체 RAIS 스윕 대기";
+      if (m.sweep_state === "partial_qual") return "릴리스 검증 " + m.measured_count + "/15 · 전체 RAIS 스윕 대기";
       return "전체 RAIS 스윕 대기";
     },
     kpiHw: "선택한 하드웨어",
@@ -27,17 +30,18 @@
     pendingShort: "스윕 대기",
     pendingCell: "–",
     noMeasured: "이 하드웨어 프로필의 실측 데이터가 아직 없습니다. 물리적 루프라인 하한만 표시합니다.",
-    selectModel: "행의 모델을 클릭하면 4개 축과 12개 세부 지표, 3대 루프라인 분해를 볼 수 있습니다.",
+    selectModel: "행의 모델을 클릭하면 5개 축과 15개 세부 지표, 3대 루프라인 및 시스템 물리 하한을 볼 수 있습니다.",
     detailTitle: function (m, hw) { return m.model + " · " + hw.name; },
     detailSub: function (m) {
       var r = m.receipt ? ("근거: " + m.receipt) : "전체 RAIS 스윕 대기 중입니다.";
       return "티어 " + m.tier + " (" + m.fleet_weight_pct + "%) · " + m.dtype + " · 활성 " + m.active_params_b + "B · 컨텍스트 " + fmtCtx(m.context_tokens) + " · " + r;
     },
     pillars: [
-      ["P1", "단일 스트림 디코드 (25%)"],
-      ["P2", "추측 디코딩 (25%)"],
-      ["P3", "배치·동시성 확장 (25%)"],
-      ["P4", "프리필·멀티턴 에이전트 (25%)"]
+      ["P1", "단일 스트림 디코드 (22.5%)"],
+      ["P2", "추측 디코딩 (22.5%)"],
+      ["P3", "배치·동시성 확장 (22.5%)"],
+      ["P4", "프리필·멀티턴 에이전트 (22.5%)"],
+      ["P5", "운영·시스템 물리 (10%)"]
     ],
     rooflineHead: "물리적 하드웨어 루프라인 (B1 짧은 컨텍스트 · 8K 콜드 프리필)",
     b1Floor: "B1 루프라인 하한",
@@ -56,6 +60,9 @@
       speculation: "추측 디코딩",
       jitter: "지터",
       capacity_cap: "동시성 상한",
+      storage: "NVMe 부팅",
+      memory_footprint: "KV 메모리 점유",
+      determinism: "배치 비트 일치",
       unknown: "–"
     },
     submetricLabels: {
@@ -70,7 +77,10 @@
       p3c_long_ctx_batch: "3c 긴 컨텍스트 배치 (B=8 @ 32K–64K)",
       p4a_cold_prefill_8k: "4a 콜드 프리필 (8K)",
       p4b_long_cold_prefill: "4b 긴 콜드 프리필 (32K/128K+)",
-      p4c_multiturn_prefix_ttft: "4c 멀티턴 프리픽스·상태 재사용 TTFT"
+      p4c_multiturn_prefix_ttft: "4c 멀티턴 프리픽스·상태 재사용 TTFT",
+      p5a_cold_boot: "5a 콜드 부트·스왑 효율 (NVMe 하한)",
+      p5b_memory_efficiency: "5b 가용 KV 메모리 효율",
+      p5c_batch_invariance: "5c 배치 크기 비트 불변성"
     },
     noRoi: "이 하드웨어 프로필에 등록된 실측 결과가 아직 없어 ROI 순위가 비어 있습니다.",
     modelsShown: function (n, total) { return total + "개 모델 중 " + n + "개 표시"; }
@@ -78,7 +88,10 @@
     loading: "Loading RAIS scorecard data…",
     err: "Failed to load rais-data.json.",
     hwSummary: function (h) {
-      return h.ranks + " rank" + (h.ranks === 1 ? "" : "s") + " · " + h.mem_bw_gb_s_per_rank + " GB/s/rank (" + Math.round(h.ranks * h.mem_bw_gb_s_per_rank).toLocaleString("en-US") + " GB/s agg) · BF16/FP8/FP4 " + h.bf16_tflops_per_rank + "/" + h.fp8_tflops_per_rank + "/" + h.fp4_tflops_per_rank + " TFLOPS · Net " + h.net_bw_gb_s_per_rank + " GB/s (" + h.net_hop_us + " µs hop)";
+      var sysPart = (h.nvme_bw_gb_s_per_rank != null && h.ram_gib_per_rank != null)
+        ? (" · NVMe " + h.nvme_bw_gb_s_per_rank + " GB/s · RAM " + h.ram_gib_per_rank + " GiB (OS " + h.os_reserve_gib_per_rank + " GiB)")
+        : "";
+      return h.ranks + " rank" + (h.ranks === 1 ? "" : "s") + " · " + h.mem_bw_gb_s_per_rank + " GB/s/rank (" + Math.round(h.ranks * h.mem_bw_gb_s_per_rank).toLocaleString("en-US") + " GB/s agg) · BF16/FP8/FP4 " + h.bf16_tflops_per_rank + "/" + h.fp8_tflops_per_rank + "/" + h.fp4_tflops_per_rank + " TFLOPS · Net " + h.net_bw_gb_s_per_rank + " GB/s (" + h.net_hop_us + " µs hop)" + sysPart;
     },
     statusLabels: {
       VALID: "Certified VALID",
@@ -87,10 +100,10 @@
       PENDING: "Pending full RAIS sweep"
     },
     sweepBadge: function (m) {
-      if (m.status === "VALID") return "VALID (" + (m.measured_count || 11) + "/12)";
+      if (m.status === "VALID") return "VALID (" + (m.measured_count || 12) + "/15)";
       if (m.status === "INVALID") return "INVALID (" + ((m.failed_gates && m.failed_gates.length) ? m.failed_gates.join(", ") : "gate failed") + ")";
-      if (m.sweep_state === "partial_multi") return "Partial " + m.measured_count + "/12 · Pending full RAIS sweep";
-      if (m.sweep_state === "partial_qual") return "Qual " + m.measured_count + "/12 · Pending full RAIS sweep";
+      if (m.sweep_state === "partial_multi") return "Partial " + m.measured_count + "/15 · Pending full RAIS sweep";
+      if (m.sweep_state === "partial_qual") return "Qual " + m.measured_count + "/15 · Pending full RAIS sweep";
       return "Pending full RAIS sweep";
     },
     kpiHw: "Selected hardware",
@@ -101,17 +114,18 @@
     pendingShort: "Pending sweep",
     pendingCell: "–",
     noMeasured: "No committed receipts on this hardware profile yet. Exact physical rooflines are shown for all 19 fleet models.",
-    selectModel: "Select any model row to inspect its 4 pillars, 12 sub-metrics, 3-roofline breakdown, and source receipt.",
+    selectModel: "Select any model row to inspect its 5 pillars, 15 sub-metrics, 3-roofline breakdown, and systems physics floors.",
     detailTitle: function (m, hw) { return m.model + " · " + hw.name; },
     detailSub: function (m) {
       var r = m.receipt ? ("Run: " + m.receipt) : "Pending full RAIS sweep on this profile.";
       return "Tier " + m.tier + " (" + m.fleet_weight_pct + "% fleet wt) · " + m.dtype + " · " + m.active_params_b + "B active · " + fmtCtx(m.context_tokens) + " ctx · " + r;
     },
     pillars: [
-      ["P1", "Single-Stream Decode (25%)"],
-      ["P2", "Speculation (25%)"],
-      ["P3", "Batch & Concurrency (25%)"],
-      ["P4", "Prefill & Multi-Turn (25%)"]
+      ["P1", "Single-Stream Decode (22.5%)"],
+      ["P2", "Speculation (22.5%)"],
+      ["P3", "Batch & Concurrency (22.5%)"],
+      ["P4", "Prefill & Multi-Turn (22.5%)"],
+      ["P5", "Operational & Systems (10%)"]
     ],
     rooflineHead: "Physical hardware rooflines (B1 short ctx · 8K cold prefill)",
     b1Floor: "B1 roofline floor",
@@ -130,6 +144,9 @@
       speculation: "speculation",
       jitter: "jitter",
       capacity_cap: "capacity_cap",
+      storage: "storage",
+      memory_footprint: "memory_footprint",
+      determinism: "determinism",
       unknown: "–"
     },
     submetricLabels: {
@@ -144,7 +161,10 @@
       p3c_long_ctx_batch: "3c Long-Ctx Batch (B=8 @ 32K–64K)",
       p4a_cold_prefill_8k: "4a Cold Prefill (8K)",
       p4b_long_cold_prefill: "4b Long Cold Prefill (32K/128K+)",
-      p4c_multiturn_prefix_ttft: "4c Multi-Turn Prefix Reuse TTFT"
+      p4c_multiturn_prefix_ttft: "4c Multi-Turn Prefix Reuse TTFT",
+      p5a_cold_boot: "5a Cold Boot / Model Swap Eff",
+      p5b_memory_efficiency: "5b Usable KV Memory Eff",
+      p5c_batch_invariance: "5c Batch-Size Bit-Invariance"
     },
     noRoi: "No measured runs on this profile yet.",
     modelsShown: function (n, total) { return "Showing " + n + " of " + total + " fleet models"; }
@@ -213,17 +233,21 @@
     var raisLbl = hasValid ? T.kpiRais : T.kpiRaisPending;
     var raisNum = hasValid ? (prof.fleet.rais_covered.toFixed(1) + " / 100") : (prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) + " / 100" : T.pendingCell);
     var raisSub = hasValid ? ((ko ? "엄격 플릿 " : "Strict fleet ") + (prof.fleet.rais_strict != null ? prof.fleet.rais_strict.toFixed(1) : "–") + (ko ? " · 19종 원시 " : " · 19-model raw ") + (prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) : "–")) : (prof.fleet.coverage_pct > 0 ? (prof.fleet.coverage_pct.toFixed(1) + "% weight covered") : T.pendingShort);
+    var stackBadge = prof.fleet && prof.fleet.stack_badge;
     var items = [
-      [T.kpiHw, prof.hardware.name, prof.hardware.description],
-      [T.kpiCoverage, covVal, covSub],
-      [raisLbl, raisNum, raisSub],
+      [T.kpiHw, prof.hardware.name, prof.hardware.description, stackBadge],
+      [T.kpiCoverage, covVal, covSub, null],
+      [raisLbl, raisNum, raisSub, null],
       [T.kpiRoi, topRoi ? ("+" + topRoi.fleet_headroom_pts.toFixed(2) + " pts") : T.pendingCell,
-        topRoi ? (topRoi.model + " · " + (T.submetricLabels[topRoi.submetric] || topRoi.label)) : T.pendingShort]
+        topRoi ? (topRoi.model + " · " + (T.submetricLabels[topRoi.submetric] || topRoi.label)) : T.pendingShort, null]
     ];
     items.forEach(function (it) {
       var box = mk("div");
       box.appendChild(mk("p", "label", it[0]));
       box.appendChild(mk("strong", "num", it[1]));
+      if (it[3]) {
+        box.appendChild(mk("span", "rais-stack-badge", it[3]));
+      }
       box.appendChild(mk("span", "", it[2]));
       kpi.appendChild(box);
     });
@@ -242,8 +266,14 @@
     left.appendChild(mk("h3", "mono", T.detailTitle(model, prof.hardware)));
     left.appendChild(mk("p", "rais-detail-sub", T.detailSub(model)));
     head.appendChild(left);
+    var rightBadges = mk("div", "rais-badge-group");
+    var mBadge = model.stack_badge || (prof.fleet && prof.fleet.stack_badge);
+    if (mBadge) {
+      rightBadges.appendChild(mk("span", "rais-stack-badge", mBadge));
+    }
     var badgeCls = model.status === "VALID" ? "rais-badge valid" : (model.sweep_state === "partial_multi" ? "rais-badge partial" : "rais-badge pending");
-    head.appendChild(mk("span", badgeCls, T.sweepBadge(model)));
+    rightBadges.appendChild(mk("span", badgeCls, T.sweepBadge(model)));
+    head.appendChild(rightBadges);
     box.appendChild(head);
 
     var rfGrid = mk("div", "rais-rf-grid");
@@ -312,7 +342,7 @@
     if (!list.length) {
       var trEmpty = mk("tr");
       var tdEmpty = mk("td", "muted", T.noMeasured);
-      tdEmpty.colSpan = 9;
+      tdEmpty.colSpan = 10;
       trEmpty.appendChild(tdEmpty);
       tbody.appendChild(trEmpty);
       return;
@@ -328,6 +358,10 @@
       var nameWrap = mk("div", "rais-model-cell");
       nameWrap.appendChild(mk("b", "mono", m.model));
       nameWrap.appendChild(mk("span", "rais-tier-pill t" + m.tier, "T" + m.tier + " · " + m.fleet_weight_pct + "%"));
+      var mStack = m.stack_badge || (prof.fleet && prof.fleet.stack_badge);
+      if (mStack && m.sweep_state !== "pending") {
+        nameWrap.appendChild(mk("span", "rais-stack-badge compact", mStack));
+      }
       tdModel.appendChild(nameWrap);
       tdModel.appendChild(mk("div", "rais-model-meta mono", m.dtype + " · " + m.active_params_b + "B · " + fmtCtx(m.context_tokens)));
       tr.appendChild(tdModel);
@@ -353,6 +387,8 @@
       var hasP3 = hasScore && (m.measured_submetrics || []).some(function (k) { return k.indexOf("p3") === 0; });
       tr.appendChild(mk("td", "num", hasP3 ? fmtScore(m.pillars[2]) : T.pendingCell));
       tr.appendChild(mk("td", "num", hasScore ? fmtScore(m.pillars[3]) : T.pendingCell));
+      var hasP5 = hasScore && (m.measured_submetrics || []).some(function (k) { return k.indexOf("p5") === 0; });
+      tr.appendChild(mk("td", hasP5 ? "num" : "num muted", hasScore ? fmtScore(m.pillars[4]) : T.pendingCell));
 
       var tdRf = mk("td", "num mono rais-rf-cell");
       tdRf.textContent = fmtTok(m.rooflines.b1_floor_tok_s) + " / " + fmtTok(m.rooflines.pf8k_floor_tok_s);
@@ -406,7 +442,8 @@
         { key: "P1", label: "P1 Decode", color: "#38bdf8", width: 1.8, get: function (s) { return s.fleet.pillars.P1; } },
         { key: "P2", label: "P2 Spec", color: "#c084fc", width: 1.8, get: function (s) { return s.fleet.pillars.P2; } },
         { key: "P3", label: "P3 Batch", color: "#fbbf24", width: 1.8, get: function (s) { return s.fleet.pillars.P3; } },
-        { key: "P4", label: "P4 Prefill", color: "#fb7185", width: 1.8, get: function (s) { return s.fleet.pillars.P4; } }
+        { key: "P4", label: "P4 Prefill", color: "#fb7185", width: 1.8, get: function (s) { return s.fleet.pillars.P4; } },
+        { key: "P5", label: "P5 Systems", color: "#2dd4bf", width: 1.8, get: function (s) { return s.fleet.pillars.P5 != null ? s.fleet.pillars.P5 : 0; } }
       ];
     }
     if (view === "model") {
@@ -417,14 +454,16 @@
         { key: "P1", label: "P1 Decode", color: "#38bdf8", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P1 : null; } },
         { key: "P2", label: "P2 Spec", color: "#c084fc", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P2 : null; } },
         { key: "P3", label: "P3 Batch", color: "#fbbf24", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P3 : null; } },
-        { key: "P4", label: "P4 Prefill", color: "#fb7185", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P4 : null; } }
+        { key: "P4", label: "P4 Prefill", color: "#fb7185", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P4 : null; } },
+        { key: "P5", label: "P5 Systems", color: "#2dd4bf", width: 1.8, get: function (s) { var m = s.models[mn]; return m && m.pillars.P5 != null ? m.pillars.P5 : null; } }
       ];
     }
     var groupMap = {
       p1: [["p1a_short_b1", "#38bdf8"], ["p1b_long_b1", "#0ea5e9"], ["p1c_tail_jitter", "#a7f3d0"]],
       p2: [["p2a_spec_acceptance", "#c084fc"], ["p2b_verify_b1", "#f97316"], ["p2b_verify_b8", "#fbbf24"]],
       p3: [["p3a_interactive_batch", "#fbbf24"], ["p3b_high_concurrency", "#f97316"], ["p3c_long_ctx_batch", "#38bdf8"]],
-      p4: [["p4a_cold_prefill_8k", "#fb7185"], ["p4b_long_cold_prefill", "#f97316"], ["p4c_multiturn_prefix_ttft", "#4ade80"]]
+      p4: [["p4a_cold_prefill_8k", "#fb7185"], ["p4b_long_cold_prefill", "#f97316"], ["p4c_multiturn_prefix_ttft", "#4ade80"]],
+      p5: [["p5a_cold_boot", "#2dd4bf"], ["p5b_memory_efficiency", "#38bdf8"], ["p5c_batch_invariance", "#a7f3d0"]]
     };
     return (groupMap[view] || []).map(function (pair) {
       return {
@@ -612,6 +651,7 @@
         tr.appendChild(mk("td", "num", s.fleet.pillars.P2.toFixed(1)));
         tr.appendChild(mk("td", "num", s.fleet.pillars.P3.toFixed(1)));
         tr.appendChild(mk("td", "num", s.fleet.pillars.P4.toFixed(1)));
+        tr.appendChild(mk("td", "num", (s.fleet.pillars.P5 != null ? s.fleet.pillars.P5 : 0).toFixed(1)));
         tr.addEventListener("click", function () { state.histIdx = idx; renderHistory(); });
         rowsEl.appendChild(tr);
       });
@@ -677,7 +717,7 @@
   var statusEl = el("rais-status");
   if (statusEl) statusEl.textContent = T.loading;
   wireControls();
-  fetch("rais-data.json?v=3")
+  fetch("rais-data.json?v=4")
     .then(function (r) {
       if (!r.ok) throw new Error(String(r.status));
       return r.json();

@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>RAIS v1.0 · Roofline-Anchored Inference Score · SparkPipe</title>
-<meta name="description" content="RAIS v1.0 (Roofline-Anchored Inference Score) anchors every inference workload to the exact physical lower bound of compute, memory bandwidth, and network collectives across 4 pillars, 12 sub-metrics, and 4 binary correctness gates.">
+<title>RAIS v1.1 · Roofline-Anchored Inference Score · SparkPipe</title>
+<meta name="description" content="RAIS v1.1 (Roofline-Anchored Inference Score) anchors every inference workload to the exact physical lower bound of compute, memory bandwidth, network collectives, NVMe boot, and usable KV memory across 5 pillars, 15 sub-metrics, and 4 binary correctness gates.">
 <meta name="theme-color" content="#0a0c10">
 <link rel="canonical" href="https://sparkpipe.ai/rais.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="SparkPipe">
-<meta property="og:title" content="RAIS v1.0 · Roofline-Anchored Inference Score · SparkPipe">
-<meta property="og:description" content="Engine-agnostic 0–100 roofline efficiency benchmark across compute, memory, and network collectives, with speculation separation and hard binary correctness gates.">
+<meta property="og:title" content="RAIS v1.1 · Roofline-Anchored Inference Score · SparkPipe">
+<meta property="og:description" content="Engine-agnostic 0–100 roofline efficiency benchmark across compute, memory, network collectives, and operational systems physics, with speculation separation and hard binary correctness gates.">
 <meta property="og:url" content="https://sparkpipe.ai/rais.html">
 <meta property="og:image" content="https://sparkpipe.ai/apple-touch-icon.png">
 <meta property="og:locale" content="en_US">
@@ -62,6 +62,9 @@ h1 { max-width: 17ch; }
 .rais-badge.valid { background: color-mix(in srgb, #4ade80 15%, transparent); color: #86efac; border: 1px solid color-mix(in srgb, #4ade80 40%, transparent); }
 .rais-badge.partial { background: color-mix(in srgb, var(--signal) 12%, transparent); color: var(--signal); border: 1px solid color-mix(in srgb, var(--signal) 40%, transparent); }
 .rais-badge.pending { background: var(--raise); color: var(--steel); border: 1px solid var(--rule-strong); }
+.rais-badge-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rais-stack-badge { display: inline-flex; align-items: center; font: 600 10.5px/1.2 var(--mono); padding: 3px 7px; border-radius: 3px; background: color-mix(in srgb, #2dd4bf 14%, transparent); color: #5eead4; border: 1px solid color-mix(in srgb, #2dd4bf 40%, transparent); white-space: nowrap; width: fit-content; }
+.rais-stack-badge.compact { font-size: 10px; padding: 2px 6px; }
 .rais-score-cell { font: 700 15px var(--mono); color: var(--ink); }
 .rais-rf-cell { font-size: 12.5px; color: var(--steel); white-space: nowrap; }
 .rais-detail { border: 1px solid var(--rule); border-radius: 6px; background: var(--screen); padding: 20px; display: grid; gap: 18px; }
@@ -72,7 +75,7 @@ h1 { max-width: 17ch; }
 .rais-rf-card { border: 1px solid var(--screen-rule); border-radius: 4px; background: var(--screen-panel); padding: 12px 14px; display: grid; gap: 4px; }
 .rais-rf-card strong { font: 700 16px/1.2 var(--mono); color: var(--screen-ink); }
 .rais-rf-card small { font-size: 11px; color: var(--screen-dim); line-height: 1.4; }
-.rais-pillars-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rais-pillars-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .rais-pillar-card { border: 1px solid var(--screen-rule); border-radius: 4px; background: var(--screen-panel); padding: 12px 14px; display: grid; gap: 8px; }
 .rais-pillar-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .rais-pillar-top strong { font: 700 16px var(--mono); color: var(--screen-ink); }
@@ -98,7 +101,7 @@ h1 { max-width: 17ch; }
 .rais-hist-dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
 .rais-hist-svg-wrap { width: 100%; overflow-x: auto; }
 .rais-hist-svg { width: 100%; min-width: 560px; height: auto; display: block; }
-.rais-hist-subgrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rais-hist-subgrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .rais-hist-subcard { border: 1px solid var(--screen-rule); border-radius: 4px; background: var(--screen-panel); padding: 9px 11px; display: grid; gap: 3px; }
 .rais-hist-subcard .k { font: 500 11px/1.3 var(--mono); color: var(--screen-dim); }
 .rais-hist-subcard .v { font: 700 14px/1.2 var(--mono); color: var(--screen-ink); display: flex; justify-content: space-between; gap: 6px; }
@@ -118,15 +121,15 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 <a class="skip" href="#main">Skip to content</a>
 <div class="strip">
   <div class="wrap">
-    <span><b>RAIS v1.0</b> · Open Benchmark Standard</span>
+    <span><b>RAIS v1.1</b> · Open Benchmark Standard</span>
     <span><b>3 Rooflines</b> · Compute · Memory · Network</span>
-    <span><b>4 Pillars</b> · 12 Orthogonal Sub-Metrics</span>
+    <span><b>5 Pillars</b> · 15 Orthogonal Sub-Metrics</span>
     <span><b>4 Binary Gates</b> · Pass or INVALID</span>
   </div>
 </div>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">RAIS v1.0</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">RAIS v1.1</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="#rooflines">Rooflines</a>
       <a href="#pillars">Pillars</a>
@@ -145,29 +148,29 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 
 <main id="main">
 <section class="wrap hero">
-  <p class="label hero-kicker">Open Inference Benchmark Specification · Version 1.0</p>
+  <p class="label hero-kicker">Open Inference Benchmark Specification · Version 1.1</p>
   <h1>Roofline-Anchored Inference Score.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">Raw tokens per second cannot compare a 104B active MoE against a 5B flash model, BF16 against FP4, or 16 DGX Sparks against 8 H200s. <b>RAIS v1.0</b> anchors every workload to the exact physical lower bound imposed by compute, memory bandwidth, and network collectives on the target hardware — producing a standalone <b>0–100</b> efficiency score for apples-to-apples comparisons across SparkPipe, vLLM, SGLang, TensorRT-LLM, and custom engines on identical silicon.</p>
+      <p class="lead">Raw tokens per second cannot compare a 104B active MoE against a 5B flash model, BF16 against FP4, or 16 DGX Sparks against 8 H200s. <b>RAIS v1.1</b> anchors every workload to the exact physical lower bound imposed by compute, memory bandwidth, network collectives, NVMe boot throughput, and usable KV memory on the target hardware — producing a standalone <b>0–100</b> efficiency score for apples-to-apples comparisons across SparkPipe, vLLM, SGLang, TensorRT-LLM, and custom engines on identical silicon.</p>
       <div class="actions">
         <a class="btn solid" href="#scorecard">Inspect live scorecard</a>
         <a class="btn" href="#reproduce">Run on your engine</a>
         <a class="btn" href="#pillars">Read methodology</a>
       </div>
-      <p class="note">Open reference runner &amp; scorer for any OpenAI-compatible inference engine. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) Wave-4B sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>47.6</b> Certified Fleet RAIS, +0.96 vs prior release), plus live <span class="mono">1x-gb10</span> Zero-NVIDIA NVRM (<b>63.3</b> VALID vs CUDA 63.2) and <span class="mono">1x-m5-ultra</span> Apple M5 Ultra Metal 4.0 (<b>20.3</b> VALID).</p>
+      <p class="note">Open reference runner &amp; scorer for any OpenAI-compatible inference engine. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) Wave-4B sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>42.9</b> Certified Fleet RAIS v1.1 with Base Roofline R <b>42.0</b> and 10 pts of Pillar 5 systems physics headroom), plus live <span class="mono">4x-gb10-1x100g</span> TP4 (<b>54.7</b> VALID), <span class="mono">1x-gb10</span> <span class="rais-stack-badge compact">Zero-NVIDIA NVRM + SKL</span> (<b>57.0</b> VALID vs <span class="rais-stack-badge compact">CUDA 13.0</span> 56.9), and <span class="mono">1x-m5-ultra</span> <span class="rais-stack-badge compact">Apple Metal 4.0</span> (<b>18.3</b> VALID).</p>
     </div>
     <figure class="screen">
-      <div class="screen-bar"><span><b>RAIS v1.0</b> · Physical Law</span><span>0–100 scale</span></div>
+      <div class="screen-bar"><span><b>RAIS v1.1</b> · Physical Law</span><span>0–100 scale</span></div>
       <div class="eq-box">
         <div class="eq-line"><span>Overlapped physical floor</span><b>T<sub>floor</sub> = max(T<sub>compute</sub>, T<sub>memory</sub>, T<sub>network</sub><sup>min</sup>)</b></div>
         <div class="eq-line"><span>Sub-metric efficiency</span><b>S<sub>k</sub> = min(100, 100 × T<sub>floor,k</sub> / T<sub>actual,k</sub>)</b></div>
-        <div class="eq-line"><span>Standalone RAIS score</span><b>RAIS = 0.25·P1 + 0.25·P2 + 0.25·P3 + 0.25·P4</b></div>
+        <div class="eq-line"><span>Standalone RAIS v1.1</span><b>RAIS = 0.225·(P1+P2+P3+P4) + 0.10·P5</b></div>
         <div class="eq-line"><span>Non-speculative base</span><b>R = (P1 + P3 + P4) / 3</b></div>
         <div class="eq-line"><span>ROI headroom ranking</span><b>ΔRAIS<sub>max</sub> = w<sub>k</sub> · (100 − S<sub>k</sub>)</b></div>
       </div>
       <div class="screen-read">
-        <div><small>Four equal pillars</small><strong>25% × 4</strong></div>
+        <div><small>Five physical pillars</small><strong>22.5%×4 + 10%</strong></div>
         <div><small>Fleet model catalog</small><strong>19 models</strong></div>
         <div><small>Correctness contract</small><strong>4 hard gates</strong></div>
       </div>
@@ -175,8 +178,8 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="specs">
     <div><strong>0–100</strong><span>physical efficiency score anchored to hardware physics — never referencing engine internals, so any two engines share the exact same denominator</span></div>
-    <div><strong>3 <em>floors</em></strong><span>compute (T<sub>c</sub>), memory bandwidth (T<sub>m</sub>), and network collective lower bound (T<sub>n</sub><sup>min</sup>) evaluated independently per workload shape</span></div>
-    <div><strong>12 <em>metrics</em></strong><span>orthogonal workloads spanning short &amp; long decode, speculation (α and 1/V), interactive &amp; saturated batching, cold prefill, and multi-turn prefix reuse</span></div>
+    <div><strong>5 <em>pillars</em></strong><span>22.5% each across Decode, Speculation, Batching, and Prefill plus 10% Pillar 5 (NVMe boot floor, usable KV memory floor, and batch bit-invariance)</span></div>
+    <div><strong>15 <em>metrics</em></strong><span>orthogonal workloads spanning decode, speculation (α and 1/V), batching, prefill, multi-turn prefix reuse, cold boot, KV memory, and determinism</span></div>
     <div><strong>VALID <em>only</em></strong><span>when greedy speculation matches no-spec bit-for-bit, cached prefix matches cold (Gate GX), and zero serving faults occur</span></div>
   </div>
 </section>
@@ -222,16 +225,17 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
             <th scope="col" class="num-th">BF16 / FP8 / FP4 TFLOPS</th>
             <th scope="col" class="num-th">Net BW / rank</th>
             <th scope="col" class="num-th">Hop τ<sub>hop</sub></th>
-            <th scope="col" class="num-th">VRAM / rank</th>
+            <th scope="col" class="num-th">NVMe BW / rank</th>
+            <th scope="col" class="num-th">RAM / OS (GiB)</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td class="mono"><b>16x-gb10-1x100g</b></td><td class="num">16</td><td class="num">273 GB/s</td><td class="num">4,368 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">12.5 GB/s</td><td class="num">16 µs</td><td class="num">128 GB</td></tr>
-          <tr><td class="mono"><b>16x-gb10-2x100g</b></td><td class="num">16</td><td class="num">273 GB/s</td><td class="num">4,368 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">25.0 GB/s</td><td class="num">16 µs</td><td class="num">128 GB</td></tr>
-          <tr><td class="mono"><b>4x-gb10-1x100g</b></td><td class="num">4</td><td class="num">273 GB/s</td><td class="num">1,092 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">12.5 GB/s</td><td class="num">12 µs</td><td class="num">128 GB</td></tr>
-          <tr><td class="mono"><b>1x-gb10</b></td><td class="num">1</td><td class="num">273 GB/s</td><td class="num">273 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">0.0 GB/s</td><td class="num">0 µs</td><td class="num">128 GB</td></tr>
-          <tr><td class="mono"><b>1x-m5-ultra</b></td><td class="num">1</td><td class="num">1,144 GB/s</td><td class="num">1,144 GB/s</td><td class="num">95 / 190 / 190</td><td class="num">0.0 GB/s</td><td class="num">0 µs</td><td class="num">256 GB</td></tr>
-          <tr><td class="mono"><b>8x-h200-nvlink</b></td><td class="num">8</td><td class="num">4,800 GB/s</td><td class="num">38,400 GB/s</td><td class="num">989 / 1,979 / 1,979</td><td class="num">450.0 GB/s</td><td class="num">2 µs</td><td class="num">141 GB</td></tr>
+          <tr><td class="mono"><b>16x-gb10-1x100g</b></td><td class="num">16</td><td class="num">273 GB/s</td><td class="num">4,368 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">12.5 GB/s</td><td class="num">16 µs</td><td class="num">5.0 GB/s</td><td class="num">128 / 12</td></tr>
+          <tr><td class="mono"><b>16x-gb10-2x100g</b></td><td class="num">16</td><td class="num">273 GB/s</td><td class="num">4,368 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">25.0 GB/s</td><td class="num">16 µs</td><td class="num">5.0 GB/s</td><td class="num">128 / 12</td></tr>
+          <tr><td class="mono"><b>4x-gb10-1x100g</b></td><td class="num">4</td><td class="num">273 GB/s</td><td class="num">1,092 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">12.5 GB/s</td><td class="num">12 µs</td><td class="num">5.0 GB/s</td><td class="num">128 / 12</td></tr>
+          <tr><td class="mono"><b>1x-gb10</b></td><td class="num">1</td><td class="num">273 GB/s</td><td class="num">273 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">0.0 GB/s</td><td class="num">0 µs</td><td class="num">5.0 GB/s</td><td class="num">128 / 12</td></tr>
+          <tr><td class="mono"><b>1x-m5-ultra</b></td><td class="num">1</td><td class="num">1,144 GB/s</td><td class="num">1,144 GB/s</td><td class="num">95 / 190 / 190</td><td class="num">0.0 GB/s</td><td class="num">0 µs</td><td class="num">7.0 GB/s</td><td class="num">256 / 32</td></tr>
+          <tr><td class="mono"><b>8x-h200-nvlink</b></td><td class="num">8</td><td class="num">4,800 GB/s</td><td class="num">38,400 GB/s</td><td class="num">989 / 1,979 / 1,979</td><td class="num">450.0 GB/s</td><td class="num">2 µs</td><td class="num">7.0 GB/s</td><td class="num">141 / 4</td></tr>
         </tbody>
       </table>
     </div>
@@ -241,58 +245,69 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 <section id="pillars" class="sec">
   <div class="sec-rail">
     <p class="label">02 Pillars</p>
-    <p class="label">4 × 25% = 100%</p>
+    <p class="label">22.5%×4 + 10%</p>
   </div>
   <div class="sec-body">
-    <h2>Four orthogonal pillars and twelve sub-metrics.</h2>
-    <p class="prose">Every real serving workload stresses a different axis of an engine. RAIS distributes 100% of its weight equally across four 25% pillars (3 sub-metrics per pillar) so fast single-stream decode cannot hide broken batching, cold prefill bottlenecks, or absent speculation.</p>
+    <h2>Five orthogonal pillars and fifteen sub-metrics.</h2>
+    <p class="prose">Every real serving workload stresses a different axis of an engine. RAIS v1.1 distributes 90% of its weight equally across four 22.5% core runtime pillars and 10% to <b>Pillar 5 — Operational &amp; Systems Physics</b> (3 sub-metrics per pillar), all 100% physically anchored and vendor-neutral.</p>
     <div class="fns">
       <div class="fn">
-        <p class="label">P1 · Single-Stream Decode · 25%</p>
+        <p class="label">P1 · Single-Stream Decode · 22.5%</p>
         <dl>
-          <dt>1a · Short-ctx B1 (C=256) · 12%</dt>
+          <dt>1a · Short-ctx B1 (C=256) · 10.8%</dt>
           <dd>Plain non-speculative decode (<span class="mono">spec=OFF</span>), B=1 at 256 context. Scored as 100 × T<sub>floor</sub> / T<sub>actual</sub>.</dd>
-          <dt>1b · Long-ctx B1 (C=64K–128K) · 9%</dt>
+          <dt>1b · Long-ctx B1 (C=64K–128K) · 8.1%</dt>
           <dd>Plain decode at 64K–128K context (capped to served context), exposing KV-scan and sparse-indexer bandwidth overhead.</dd>
-          <dt>1c · Tail Jitter (p50/p99 ITL) · 4%</dt>
+          <dt>1c · Tail Jitter (p50/p99 ITL) · 3.6%</dt>
           <dd>Inter-token latency smoothness on the B1 stream: 100 × min(1, ITL<sub>p50</sub> / ITL<sub>p99</sub>).</dd>
         </dl>
       </div>
       <div class="fn">
-        <p class="label">P2 · Speculation · 25%</p>
+        <p class="label">P2 · Speculation · 22.5%</p>
         <dl>
-          <dt>2a · Acceptance Quality (α) · 12%</dt>
+          <dt>2a · Acceptance Quality (α) · 10.8%</dt>
           <dd>Mean committed tokens/round α = E[A] + 1 across prose, code, and edit, normalized to α<sub>ref</sub> = 4.0: 100 × min(1, max(0, α − 1) / 3).</dd>
-          <dt>2b-i · B1 Verify &amp; Draft Efficiency (1/V) · 8%</dt>
+          <dt>2b-i · B1 Verify &amp; Draft Efficiency (1/V) · 7.2%</dt>
           <dd>Verify overhead V<sub>B1</sub> = α / (TPS<sub>spec</sub> / TPS<sub>nospec</sub>) at K ∈ [4, 16]. Scored as 100 × min(1, 1/V<sub>B1</sub>) when active, else 0.</dd>
-          <dt>2b-ii · B8 Batched Verify Efficiency (1/V) · 5%</dt>
+          <dt>2b-ii · B8 Batched Verify Efficiency (1/V) · 4.5%</dt>
           <dd>Batched speculative verify efficiency at B=8: 100 × min(1, 1/V<sub>B8</sub>) when enabled, separating drafter quality (α) from kernel verify cost (V).</dd>
         </dl>
       </div>
       <div class="fn">
-        <p class="label">P3 · Batch &amp; Concurrency Scaling · 25%</p>
+        <p class="label">P3 · Batch &amp; Concurrency Scaling · 22.5%</p>
         <dl>
-          <dt>3a · Interactive Batch (B=4, 8, 16) · 10%</dt>
+          <dt>3a · Interactive Batch (B=4, 8, 16) · 9.0%</dt>
           <dd>Equal average across B ∈ {4, 8, 16} against T<sub>floor</sub>(B, 256) with a per-stream SLA ≥ 0.25 × TPS<sub>B1</sub>; SLA misses scale proportionally.</dd>
-          <dt>3b · High-Concurrency Saturation (B=32, 64) · 9%</dt>
+          <dt>3b · High-Concurrency Saturation (B=32, 64) · 8.1%</dt>
           <dd>Equal average over B ∈ {32, 64}. Unsupported or capacity-capped batches are <b>scored flat</b> at the highest working smaller batch's aggregate tok/s against B's roofline.</dd>
-          <dt>3c · Long-Context Batch (B=8 @ 32K–64K) · 6%</dt>
+          <dt>3c · Long-Context Batch (B=8 @ 32K–64K) · 5.4%</dt>
           <dd>Concurrent 8-stream decode at 32K–64K context against T<sub>floor</sub>(8, C), testing multi-sequence KV pressure.</dd>
         </dl>
       </div>
       <div class="fn">
-        <p class="label">P4 · Prefill &amp; Multi-Turn Agent Loops · 25%</p>
+        <p class="label">P4 · Prefill &amp; Multi-Turn Agent Loops · 22.5%</p>
         <dl>
-          <dt>4a · Interactive Cold Prefill (8K) · 8%</dt>
+          <dt>4a · Interactive Cold Prefill (8K) · 7.2%</dt>
           <dd>Cold uncached 8,192-token prompt TTFT against T<sub>floor,prefill</sub>(8192).</dd>
-          <dt>4b · Long Cold Prefill (32K / 128K+) · 9%</dt>
+          <dt>4b · Long Cold Prefill (32K / 128K+) · 8.1%</dt>
           <dd>Cold uncached 32K (40%) and 128K (60%, capped to served context) prefill against the exact compute/memory/network prefill floor.</dd>
-          <dt>4c · Multi-Turn Prefix &amp; State Reuse TTFT · 8%</dt>
+          <dt>4c · Multi-Turn Prefix &amp; State Reuse TTFT · 7.2%</dt>
           <dd>Warm follow-up turns (8K+128 at 40%, 100K+128 at 60%) scored against delta prefill floor T<sub>floor,warm</sub>(C<sub>prefix</sub>, 128). Cold recomputation collapses near 0.</dd>
         </dl>
       </div>
+      <div class="fn">
+        <p class="label">P5 · Operational &amp; Systems Physics · 10.0%</p>
+        <dl>
+          <dt>5a · Cold Boot / Model Swap Efficiency · 5.0%</dt>
+          <dd>Anchored to NVMe sequential read floor T<sub>boot</sub><sup>floor</sup> = max(1 s, W<sub>rank</sub> / BW<sub>NVMe</sub>). Scored as min(100, 100 × T<sub>boot</sub><sup>floor</sup> / T<sub>cold_boot</sub>); unmeasured = 0.</dd>
+          <dt>5b · Usable KV Memory Efficiency · 3.0%</dt>
+          <dd>Anchored to free RAM floor M<sub>free</sub> = max(1 GiB, RAM − Weights − OS reserve). Scored as min(100, 100 × M<sub>usable_kv</sub> / M<sub>free</sub>); unmeasured = 0.</dd>
+          <dt>5c · Batch-Size Bit-Invariance · 2.0%</dt>
+          <dd>Deterministic B=1 short prompt (<span class="mono">temperature=0, spec=OFF</span>) run as lane 0 of a mixed B=8 batch. 100 if bit-exact, else 0 — separate from INVALID gates.</dd>
+        </dl>
+      </div>
     </div>
-    <p class="prose">Alongside standalone <b>RAIS</b>, every scorecard reports <b>Base Roofline R = (P1 + P3 + P4) / 3</b> (pure non-speculative engine efficiency), speculation tuple <b>(α, 1/V<sub>B1</sub>, 1/V<sub>B8</sub>)</b>, and fleet-weighted aggregates across all 19 canonical models (<b>Tier 1 = 55%</b>, <b>Tier 2 = 25%</b>, <b>Tier 3 = 20%</b>).</p>
+    <p class="prose">Alongside standalone <b>RAIS</b>, every scorecard reports <b>Base Roofline R = (P1 + P3 + P4) / 3</b> (unchanged pure non-speculative kernel efficiency), speculation tuple <b>(α, 1/V<sub>B1</sub>, 1/V<sub>B8</sub>)</b>, display-only <b>Stack Badges</b> (<span class="rais-stack-badge compact">Zero-NVIDIA NVRM + SKL</span> <span class="rais-stack-badge compact">CUDA 13.0</span> <span class="rais-stack-badge compact">Apple Metal 4.0</span> — zero impact on numeric score), and fleet-weighted aggregates across all 19 canonical models (<b>Tier 1 = 55%</b>, <b>Tier 2 = 25%</b>, <b>Tier 3 = 20%</b>).</p>
   </div>
 </section>
 
@@ -303,18 +318,19 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>RAIS hill-climb trajectory with full sub-metric detail.</h2>
-    <p class="prose">Every single-release 16× DGX Spark sweep is recorded in the time-series ledger with fleet-weighted pillars, all 12 sub-metrics, and per-model raw measurements. Switch views to inspect the fleet curve, all 12 sub-metrics, or any individual model over time; click any release point to inspect its exact deltas vs baseline.</p>
+    <p class="prose">Every single-release 16× DGX Spark sweep is recorded in the time-series ledger with fleet-weighted pillars, all 15 sub-metrics, and per-model raw measurements. Switch views to inspect the fleet curve, all 15 sub-metrics, or any individual model over time; click any release point to inspect its exact deltas vs baseline.</p>
 
     <div class="rais-hist-box">
       <div class="rais-hist-head">
         <div class="rais-control">
           <span class="label">Chart view</span>
           <div class="rais-pills" role="group" aria-label="History chart view">
-            <button type="button" class="rais-pill" data-hist-view="fleet" aria-pressed="true">Fleet &amp; 4 Pillars</button>
+            <button type="button" class="rais-pill" data-hist-view="fleet" aria-pressed="true">Fleet &amp; 5 Pillars</button>
             <button type="button" class="rais-pill" data-hist-view="p1" aria-pressed="false">P1 Sub-Metrics</button>
             <button type="button" class="rais-pill" data-hist-view="p2" aria-pressed="false">P2 Spec</button>
             <button type="button" class="rais-pill" data-hist-view="p3" aria-pressed="false">P3 Batch</button>
             <button type="button" class="rais-pill" data-hist-view="p4" aria-pressed="false">P4 Prefill</button>
+            <button type="button" class="rais-pill" data-hist-view="p5" aria-pressed="false">P5 Systems</button>
             <button type="button" class="rais-pill" data-hist-view="model" aria-pressed="false">Single Model</button>
           </div>
         </div>
@@ -342,6 +358,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
             <th class="num-th">P2 Spec</th>
             <th class="num-th">P3 Batch</th>
             <th class="num-th">P4 Prefill</th>
+            <th class="num-th">P5 Sys</th>
           </tr>
         </thead>
         <tbody id="rais-hist-rows"></tbody>
@@ -357,7 +374,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>Fleet scorecard and hardware rooflines.</h2>
-    <p class="prose">Scored directly by the RAIS v1.0 reference scorer from verbatim single-release live measurements on 16× DGX Spark, single-GB10 Zero-NVIDIA NVRM, and Apple M5 Ultra Metal 4.0. All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>47.6</b> Certified Fleet RAIS; pending hardware profiles remain unmeasured and are never interpolated.</p>
+    <p class="prose">Scored directly by the RAIS v1.1 reference scorer from verbatim single-release live measurements on 16× DGX Spark, 4× DGX Spark TP4, single-GB10 Zero-NVIDIA NVRM + SKL, and Apple M5 Ultra Metal 4.0. All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>42.9</b> Certified Fleet RAIS v1.1 (Base Roofline R <b>42.0</b>, with Pillar 5 operational physics unmeasured at 0.0 until swept — never interpolated).</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
@@ -399,7 +416,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
       <span id="rais-count"></span>
     </div>
 
-    <div class="table-wrap" tabindex="0" role="region" aria-label="RAIS v1.0 Fleet Model Scorecard">
+    <div class="table-wrap" tabindex="0" role="region" aria-label="RAIS v1.1 Fleet Model Scorecard">
       <table id="rais-table">
         <thead>
           <tr>
@@ -411,6 +428,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
             <th scope="col" class="num-th">P2 Spec</th>
             <th scope="col" class="num-th">P3 Batch</th>
             <th scope="col" class="num-th">P4 Prefill</th>
+            <th scope="col" class="num-th">P5 Sys</th>
             <th scope="col" class="num-th">B1 / 8K Floor (tok/s)</th>
           </tr>
         </thead>
@@ -437,7 +455,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
       </table>
     </div>
 
-    <p class="caption">Scores reflect verbatim live measurements on the selected profile: missing sub-metrics (such as B=8 batched speculation on non-B8-spec lanes) contribute 0 until measured, and scores marked with <span class="mono">*</span> failed a binary gate (<span class="mono">INVALID</span>). Two variant lanes (<span class="mono">qwen3.8-27b-fp8</span> at 42.0 VALID and <span class="mono">ling-3.0-flash-fin</span> at 44.4 VALID) score standalone without double-counting in the 19-model fleet aggregate. See also the <a href="fleets.html">Fleet List</a> for per-model licenses and served context windows.</p>
+    <p class="caption">Scores reflect verbatim live measurements on the selected profile: missing sub-metrics (including Pillar 5 operational physics on v1.0 sweeps) contribute 0 until measured, and scores marked with <span class="mono">*</span> failed a binary gate (<span class="mono">INVALID</span>). Two variant lanes (<span class="mono">qwen3.8-27b-fp8</span> at 39.1 VALID and <span class="mono">ling-3.0-flash-fin</span> at 43.3 VALID) score standalone without double-counting in the 19-model fleet aggregate. See also the <a href="fleets.html">Fleet List</a> for per-model licenses and served context windows.</p>
   </div>
 </section>
 
@@ -448,7 +466,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>Speed without bit-exact fidelity is marked INVALID.</h2>
-    <p class="prose">Every certified RAIS run evaluates four binary correctness gates alongside throughput. Passing all four yields <span class="gate-pill pass">VALID</span>; any single failure sets <span class="mono">certified_rais = null</span> and marks the run <span class="gate-pill fail">INVALID</span>; imported partial receipts without the full gate suite are marked <span class="gate-pill warn">UNVERIFIED</span>.</p>
+    <p class="prose">Every certified RAIS run evaluates four binary correctness gates alongside throughput. Passing all four yields <span class="gate-pill pass">VALID</span>; any single failure sets <span class="mono">certified_rais = null</span> and marks the run <span class="gate-pill fail">INVALID</span>; imported partial receipts without the full gate suite are marked <span class="gate-pill warn">UNVERIFIED</span>. Batch-size bit-invariance (<span class="mono">5c</span>) is scored separately inside Pillar 5 (+2.0 pts) so non-deterministic engines still receive a valid score while deterministic engines earn full credit.</p>
     <div class="table-wrap" tabindex="0" role="region" aria-label="Hard binary correctness gates">
       <table>
         <thead>
@@ -468,7 +486,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
     </div>
 
     <h3>Compatible Execution Tiers</h3>
-    <p class="prose">Both tiers emit the exact same RAIS v1.0 JSONL schema and are scored identically by the reference RAIS scorer.</p>
+    <p class="prose">Both tiers emit the exact same RAIS v1.1 JSONL schema (backwards compatible with v1.0 receipts) and are scored identically by the reference RAIS scorer.</p>
     <div class="table-wrap" tabindex="0" role="region" aria-label="Compatible execution tiers">
       <table>
         <thead>
@@ -482,9 +500,10 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
           <tr><td><b>Runtime &amp; purpose</b></td><td>~3–4 min/model · per-PR hill-climbing and rapid A/B verification</td><td>~15–25 min/model · release qualification and cross-engine publication</td></tr>
           <tr><td><b>1a / 1c B1 short</b></td><td>O=128, 2 repeats</td><td>O=256, 3 repeats</td></tr>
           <tr><td><b>1b B1 long</b></td><td>C=32K (capped), O=64</td><td>C=64K–128K (capped), O=128</td></tr>
-          <tr><td><b>2a / 2b Speculation</b></td><td>prose + code + edit, O=128 (B8 skipped or imported)</td><td>prose + code + edit, O=256 + batched B8 verify</td></tr>
+          <tr><td><b>2a / 2b Speculation</b></td><td>prose + code + edit, O=128 + B8 verify</td><td>prose + code + edit, O=256 + batched B8 verify</td></tr>
           <tr><td><b>3a / 3b / 3c Batch</b></td><td>B=4, 8, 16, 32, 64 (O=96) + B=8 @ 32K (O=64)</td><td>B=4, 8, 16, 32, 64 (O=256) + B=8 @ 64K (O=128)</td></tr>
           <tr><td><b>4a / 4b / 4c Prefill &amp; GX</b></td><td>8K + 32K cold + warm 8K+128 + Gate GX (O=32)</td><td>8K + 32K + 128K cold + warm 8K+128 &amp; 100K+128 + Gate GX (O=64)</td></tr>
+          <tr><td><b>5a / 5b / 5c Systems</b></td><td>Cold boot / swap time, usable KV GiB/rank, live B=1 vs B=8 lane-0 invariance (O=128)</td><td>Cold boot / swap time, usable KV GiB/rank, live B=1 vs B=8 lane-0 invariance (O=256)</td></tr>
         </tbody>
       </table>
     </div>
@@ -500,13 +519,16 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
     <h2>Run RAIS on your own inference engine.</h2>
     <p class="prose">The reference runner talks standard OpenAI <span class="mono">/v1/chat/completions</span> and works against SparkPipe, vLLM, SGLang, TensorRT-LLM, or any OpenAI-compatible server. Compare two engines on identical hardware with a single command.</p>
     <div class="code">
-      <div class="code-head"><span>RAIS v1.0 CLI · Fast Hill-Climb &amp; Cross-Engine Comparison</span><span>shell</span></div>
-      <pre tabindex="0" role="region" aria-label="RAIS v1.0 CLI commands"><span class="k">rais-bench</span> \
+      <div class="code-head"><span>RAIS v1.1 CLI · Fast Hill-Climb &amp; Cross-Engine Comparison</span><span>shell</span></div>
+      <pre tabindex="0" role="region" aria-label="RAIS v1.1 CLI commands"><span class="k">rais-bench</span> \
   --base-url http://127.0.0.1:8000 \
   --model glm-5.3-flash \
   --tier fast \
   --hardware 16x-gb10-1x100g \
   --engine sparkpipe \
+  --stack-badge "Zero-NVIDIA NVRM + SKL" \
+  --cold-boot-s 8.4 \
+  --usable-kv-gib 72.0 \
   --spec-toggle speculation \
   --output rais_results.jsonl \
   --score
@@ -533,9 +555,9 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="rais.html" aria-current="page">RAIS v1.0</a><a href="availability.html">Availability</a><a href="compare.html">Cost check</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="rais-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="rais.html" aria-current="page">RAIS v1.1</a><a href="availability.html">Availability</a><a href="compare.html">Cost check</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="rais-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="rais.js?v=1"></script>
+<script src="rais.js?v=2"></script>
 </body>
 </html>

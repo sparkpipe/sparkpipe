@@ -53,6 +53,9 @@ def _extract_raw_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         "prefill_8k_tok_s": _round2(metrics.get("prefill_8k_tok_s")),
         "prefill_32k_tok_s": _round2(metrics.get("prefill_32k_tok_s")),
         "warm_8k_ttft_ms": _round2(metrics.get("warm_8k_ttft_ms")),
+        "cold_boot_s": _round2(metrics.get("cold_boot_s", metrics.get("swap_s"))),
+        "usable_kv_gib_per_rank": _round2(metrics.get("usable_kv_gib_per_rank", metrics.get("usable_kv_gib"))),
+        "batch_invariant_exact": metrics.get("batch_invariant_exact"),
     }
 
 
@@ -106,7 +109,7 @@ def build_snapshot(
     base_r = sum(eff_weights[k] * by_model[k]["base_roofline_r"] for k in canonical_models) / w_sum
     pillars = {
         p: round(sum(eff_weights[k] * by_model[k]["pillars"][p] for k in canonical_models) / w_sum, 2)
-        for p in ("P1", "P2", "P3", "P4")
+        for p in rs.PILLAR_ORDER
     }
     submetrics = {
         sk: round(
@@ -132,7 +135,7 @@ def build_snapshot(
             "rais": _round2(m["certified_rais"]),
             "raw_rais": _round2(m["raw_rais"]),
             "base_r": _round2(m["base_roofline_r"]),
-            "pillars": {p: _round2(m["pillars"][p]) for p in ("P1", "P2", "P3", "P4")},
+            "pillars": {p: _round2(m["pillars"][p]) for p in rs.PILLAR_ORDER},
             "submetrics": {sk: _round2(m["submetrics"][sk]["score"]) for sk in rs.SUBMETRIC_WEIGHTS},
             "failed_gates": list(m["gates"]["failed_gates"]),
             "raw": _extract_raw_summary(raw_metrics),
@@ -190,19 +193,33 @@ def write_history_jsonl(snapshots: list[dict[str, Any]], output_path: Path) -> N
     output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+def sanitize_site_snapshots(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for snap in snapshots:
+        item = dict(snap)
+        item["receipt"] = rs.sanitize_receipt_label(
+            snap.get("receipt"),
+            hardware=snap.get("hardware"),
+            release=snap.get("release"),
+        )
+        cleaned.append(item)
+    return cleaned
+
+
 def update_site_data(site_data_path: Path, snapshots: list[dict[str, Any]], hardware: str) -> None:
     data = json.loads(site_data_path.read_text(encoding="utf-8"))
+    site_snaps = sanitize_site_snapshots(snapshots)
     if data.get("hardware", {}).get("name") == hardware:
-        data["history"] = snapshots
+        data["history"] = site_snaps
     elif hardware in (data.get("profiles") or {}):
-        data["profiles"][hardware]["history"] = snapshots
+        data["profiles"][hardware]["history"] = site_snaps
     else:
-        data["history"] = snapshots
+        data["history"] = site_snaps
     site_data_path.write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="rais_history", description="Build and track chronological RAIS v1.0 history with full pillar, sub-metric, and per-model breakdowns.")
+    parser = argparse.ArgumentParser(prog="rais_history", description="Build and track chronological RAIS v1.1 history with full pillar, sub-metric, and per-model breakdowns.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_reb = sub.add_parser("rebuild", help="Scan qualification/releases/* and rebuild qualification/rais_history.jsonl.")
@@ -237,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  {s['utc']} | {s['label']:8s} ({s['release']}) | valid={fl['valid_models']:2d}/{fl['total_models']} | "
                 f"unpen={fl['rais_unpenalized']:5.2f} | valid_wt={fl['rais_valid_weighted']:5.2f} | cert={str(fl['rais_certified']):>5s} | "
-                f"R={fl['base_r']:5.2f} | P1={p['P1']:5.2f} P2={p['P2']:5.2f} P3={p['P3']:5.2f} P4={p['P4']:5.2f}"
+                f"R={fl['base_r']:5.2f} | P1={p['P1']:5.2f} P2={p['P2']:5.2f} P3={p['P3']:5.2f} P4={p['P4']:5.2f} P5={p['P5']:5.2f}"
             )
         return 0
 
