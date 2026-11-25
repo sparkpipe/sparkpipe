@@ -1,0 +1,2 @@
++1653
+GLM-5.3 RedHat AI DSpark drafter module (`modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu`), `glm53dspark` packer support in `tools/drafter_pack.py`, and Makefile build rules for `GLM53_DSPARK_DRAFTER_MODULE` and `build/glm53_dspark_block_probe`.
