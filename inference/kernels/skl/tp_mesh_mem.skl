@@ -1,6 +1,6 @@
 const BLOCK = 256;
 
-kernel[BLOCK, 32] tp_f32_to_bf16_vec16(
+kernel[BLOCK, 96] tp_f32_to_bf16_vec16(
     global u32* src_f32, global u32* dst_bf16,
     u32 chunks16
 ) {
@@ -25,7 +25,7 @@ kernel[BLOCK, 32] tp_f32_to_bf16_vec16(
     stg128(ptr_add(dst_bf16, i1, 16), o1);
 }
 
-kernel[BLOCK, 40] tp_bf16_to_f32_vec16(
+kernel[BLOCK, 96] tp_bf16_to_f32_vec16(
     global u32* src_bf16, global u32* dst_f32,
     u32 chunks16
 ) {
@@ -45,7 +45,7 @@ kernel[BLOCK, 40] tp_bf16_to_f32_vec16(
     stg256(ptr_add(dst_f32, idx * 2 + 1, 32), o1);
 }
 
-kernel[BLOCK, 32] device_program_copy_vec256(
+kernel[BLOCK, 96] device_program_copy_vec256(
     global u32* dst, global u32* src,
     u32 chunks32
 ) {

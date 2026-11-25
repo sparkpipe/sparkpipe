@@ -1,6 +1,6 @@
 const BLOCK = 256;
 
-kernel[BLOCK, 40] router_softmax_256(
+kernel[BLOCK, 24] router_softmax_256(
     global f32* logits, global f32* probs,
     u32 rows
 ) {
@@ -49,7 +49,7 @@ kernel[BLOCK, 40] router_softmax_256(
     stg256(ptr_add(out_row, lane, 32), ov);
 }
 
-kernel[BLOCK, 40] router_softmax_bf16_256(
+kernel[BLOCK, 80] router_softmax_bf16_256(
     global u32* logits_bf16, global f32* probs,
     u32 rows
 ) {

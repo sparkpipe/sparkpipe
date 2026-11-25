@@ -1,0 +1,2 @@
++302
+SKL Blackwell compiler optimizations (basic-block list scheduler, top-level/loop liveness register freeing, LRU temp allocation, self-barrier conflict guard, and blocking BAR.SYNC fix in tools/sklc/) plus GB10 kernel optimizations across inference/kernels/skl/*.skl (hoisted pre-scaled Q and single-unpack K in latent_attn_decode_512_64, pipelined skinny_bf16_b1, in-place vector reuse in norm_act.skl, and LPDDR5X occupancy tuning).

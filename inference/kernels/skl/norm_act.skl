@@ -1,6 +1,6 @@
 const BLOCK = 256;
 
-kernel[BLOCK, 48] rmsnorm_bf16_vec16(
+kernel[BLOCK, 96] rmsnorm_bf16_vec16(
     global u32* x_bf16, global u32* weight_bf16, global u32* out_bf16,
     u32 rows, u32 chunks16, f32 eps, f32 inv_dim
 ) {
@@ -48,17 +48,16 @@ kernel[BLOCK, 48] rmsnorm_bf16_vec16(
     for (reg u32 c = tid; c < chunks16; c += BLOCK) {
         reg u32x8 xv = ldg256_persist(ptr_add(x_row, c, 32));
         reg u32x8 wv = ldg256_persist(ptr_add(weight_bf16, c, 32));
-        reg u32x8 ov;
         unroll (k = 0..8) {
             reg f32 lo = bf16_lo(xv[k]) * inv_rms * bf16_lo(wv[k]);
             reg f32 hi = bf16_hi(xv[k]) * inv_rms * bf16_hi(wv[k]);
-            ov[k] = pack_bf16x2(lo, hi);
+            xv[k] = pack_bf16x2(lo, hi);
         }
-        stg256(ptr_add(o_row, c, 32), ov);
+        stg256(ptr_add(o_row, c, 32), xv);
     }
 }
 
-kernel[BLOCK, 48] fused_residual_rmsnorm_bf16x8(
+kernel[BLOCK, 96] fused_residual_rmsnorm_bf16x8(
     global u32* x_bf16, global u32* res_bf16, global u32* weight_bf16, global u32* out_bf16,
     u32 rows, u32 chunks16, f32 eps, f32 inv_dim
 ) {
@@ -81,7 +80,6 @@ kernel[BLOCK, 48] fused_residual_rmsnorm_bf16x8(
     for (reg u32 c = tid; c < chunks16; c += BLOCK) {
         reg u32x8 xv = ldg256_stream(ptr_add(x_row, c, 32));
         reg u32x8 rv = ldg256_stream(ptr_add(r_row, c, 32));
-        reg u32x8 hv;
         unroll (k = 0..4) {
             reg f32 v0 = bf16_lo(xv[k * 2]) + bf16_lo(rv[k * 2]);
             reg f32 v1 = bf16_hi(xv[k * 2]) + bf16_hi(rv[k * 2]);
@@ -91,10 +89,10 @@ kernel[BLOCK, 48] fused_residual_rmsnorm_bf16x8(
             s1 = fma(v1, v1, s1);
             s2 = fma(v2, v2, s2);
             s3 = fma(v3, v3, s3);
-            hv[k * 2] = pack_bf16x2(v0, v1);
-            hv[k * 2 + 1] = pack_bf16x2(v2, v3);
+            rv[k * 2] = pack_bf16x2(v0, v1);
+            rv[k * 2 + 1] = pack_bf16x2(v2, v3);
         }
-        stg256(ptr_add(r_row, c, 32), hv);
+        stg256(ptr_add(r_row, c, 32), rv);
     }
 
     reg f32 wsum = warp_sum((s0 + s1) + (s2 + s3));
@@ -112,17 +110,16 @@ kernel[BLOCK, 48] fused_residual_rmsnorm_bf16x8(
     for (reg u32 c = tid; c < chunks16; c += BLOCK) {
         reg u32x8 hv = ldg256_persist(ptr_add(r_row, c, 32));
         reg u32x8 wv = ldg256_persist(ptr_add(weight_bf16, c, 32));
-        reg u32x8 ov;
         unroll (k = 0..8) {
             reg f32 lo = bf16_lo(hv[k]) * inv_rms * bf16_lo(wv[k]);
             reg f32 hi = bf16_hi(hv[k]) * inv_rms * bf16_hi(wv[k]);
-            ov[k] = pack_bf16x2(lo, hi);
+            hv[k] = pack_bf16x2(lo, hi);
         }
-        stg256(ptr_add(o_row, c, 32), ov);
+        stg256(ptr_add(o_row, c, 32), hv);
     }
 }
 
-kernel[BLOCK, 48] swiglu_packed_bf16x8(
+kernel[BLOCK, 80] swiglu_packed_bf16x8(
     global u32* gate_bf16, global u32* up_bf16, global u32* out_bf16,
     u32 total_chunks16
 ) {
@@ -131,7 +128,6 @@ kernel[BLOCK, 48] swiglu_packed_bf16x8(
 
     reg u32x8 gv = ldg256_stream(ptr_add(gate_bf16, idx, 32));
     reg u32x8 uv = ldg256_stream(ptr_add(up_bf16, idx, 32));
-    reg u32x8 ov;
     unroll (k = 0..4) {
         reg f32 g0 = bf16_lo(gv[k * 2]);
         reg f32 g1 = bf16_hi(gv[k * 2]);
@@ -149,8 +145,8 @@ kernel[BLOCK, 48] swiglu_packed_bf16x8(
         e1 = g1 * e1;
         e2 = g2 * e2;
         e3 = g3 * e3;
-        ov[k * 2] = pack_bf16x2(e0 * bf16_lo(uv[k * 2]), e1 * bf16_hi(uv[k * 2]));
-        ov[k * 2 + 1] = pack_bf16x2(e2 * bf16_lo(uv[k * 2 + 1]), e3 * bf16_hi(uv[k * 2 + 1]));
+        gv[k * 2] = pack_bf16x2(e0 * bf16_lo(uv[k * 2]), e1 * bf16_hi(uv[k * 2]));
+        gv[k * 2 + 1] = pack_bf16x2(e2 * bf16_lo(uv[k * 2 + 1]), e3 * bf16_hi(uv[k * 2 + 1]));
     }
-    stg256(ptr_add(out_bf16, idx, 32), ov);
+    stg256(ptr_add(out_bf16, idx, 32), gv);
 }

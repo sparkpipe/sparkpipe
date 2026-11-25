@@ -74,7 +74,7 @@ def encode_bra(delta_bytes, pred=PT, neg=False, stall=5, yield_=False, wait=0):
 
 def encode_bar_sync(bar=0, stall=1, wait=0):
     lo = 0x7B1D | ((bar & 0xF) << 24)
-    hi = 0x0000000000010000 | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    hi = ctrl_bits(stall=stall, yield_=True, wr=7, rd=7, wait=wait)
     return (lo, hi)
 
 

@@ -81,6 +81,7 @@ class Op:
         is_branch=False,
         is_exit=False,
         is_bar=False,
+        is_store=False,
         target_label=None,
         label=None,
         fixed_lat=5,
@@ -101,6 +102,7 @@ class Op:
         self.is_branch = is_branch
         self.is_exit = is_exit
         self.is_bar = is_bar
+        self.is_store = is_store
         self.target_label = target_label
         self.label = label
         self.fixed_lat = fixed_lat
@@ -120,22 +122,49 @@ class RegAlloc:
         self.max_regs = max_regs
         self.used = set()
         self.peak = 0
+        self.tick = 0
+        self.free_tick = {}
 
-    def alloc(self, count, align=1):
+    def alloc(self, count, align=1, prefer_lru=False, avoid=()):
+        if prefer_lru and self.peak >= count:
+            avoid_set = set(avoid)
+            best = None
+            best_key = None
+            r = 0
+            while r + count <= self.peak:
+                if r % align == 0 and all((r + k) not in self.used for k in range(count)):
+                    hit_avoid = 1 if any((r + k) in avoid_set for k in range(count)) else 0
+                    age = max(self.free_tick.get(r + k, 0) for k in range(count))
+                    key = (hit_avoid, age, r)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best = r
+                r += align
+            if best is not None and (best_key[0] == 0 or self.peak + count > self.max_regs):
+                for k in range(count):
+                    self.used.add(best + k)
+                return tuple(range(best, best + count))
         r = 0
         while r + count <= self.max_regs:
             if r % align == 0 and all((r + k) not in self.used for k in range(count)):
+                if avoid and any((r + k) in avoid for k in range(count)):
+                    r += align
+                    continue
                 for k in range(count):
                     self.used.add(r + k)
                 if r + count > self.peak:
                     self.peak = r + count
                 return tuple(range(r, r + count))
             r += align
+        if avoid:
+            return self.alloc(count, align=align, prefer_lru=False, avoid=())
         raise RuntimeError(f"register allocator exhausted (need {count} aligned {align}, peak {self.peak})")
 
     def free(self, regs):
+        self.tick += 1
         for r in regs:
             self.used.discard(r)
+            self.free_tick[r] = self.tick
 
 
 class KernelCompiler:
@@ -156,6 +185,8 @@ class KernelCompiler:
         self.param_meta = []
         self.param_loaded = {}
         self.temp_stack = []
+        self.recent_mem_addr = set()
+        self.assigned_vars = set()
 
         off = 0
         for p in kdef["params"]:
@@ -181,8 +212,28 @@ class KernelCompiler:
     def emit_label(self, name):
         self.ops.append(Op(None, label=name))
 
-    def alloc_val(self, vtype, temp=False):
-        regs = self.alloc.alloc(TYPE_REGS[vtype], TYPE_ALIGN[vtype])
+    def all_live_regs(self):
+        live = set()
+        for frame in self.scopes:
+            for v in frame.values():
+                live.update(v.regs)
+        for v in self.param_loaded.values():
+            live.update(v.regs)
+        for v in self.cached_sr.values():
+            live.update(v.regs)
+        for frame in self.temp_stack:
+            for v in frame:
+                live.update(v.regs)
+        return live
+
+    def free_if_unreferenced(self, regs):
+        live = self.all_live_regs()
+        dead = [r for r in regs if r not in live]
+        if dead:
+            self.alloc.free(dead)
+
+    def alloc_val(self, vtype, temp=False, avoid=()):
+        regs = self.alloc.alloc(TYPE_REGS[vtype], TYPE_ALIGN[vtype], prefer_lru=temp, avoid=avoid)
         v = Val(vtype, regs, is_temp=temp)
         if temp:
             self.temp_stack[-1].append(v)
@@ -193,9 +244,14 @@ class KernelCompiler:
 
     def pop_temps(self, keep=None):
         keep_regs = set(keep.regs) if keep is not None else set()
-        for v in self.temp_stack.pop():
-            if not any(r in keep_regs for r in v.regs):
-                self.alloc.free(v.regs)
+        popped = self.temp_stack.pop()
+        if not popped:
+            return
+        live = self.all_live_regs() | keep_regs
+        for v in popped:
+            dead = [r for r in v.regs if r not in live]
+            if dead:
+                self.alloc.free(dead)
 
     def push_scope(self):
         self.scopes.append({})
@@ -203,7 +259,7 @@ class KernelCompiler:
     def pop_scope(self):
         frame = self.scopes.pop()
         for v in frame.values():
-            self.alloc.free(v.regs)
+            self.free_if_unreferenced(v.regs)
 
     def lookup_var(self, name):
         for frame in reversed(self.scopes):
@@ -258,22 +314,42 @@ class KernelCompiler:
         self.cached_sr[key] = v
         return v
 
-    def collect_uses(self, node, used_params, used_srs):
+    def collect_uses(self, node, used_idents, used_srs):
         if isinstance(node, list):
             for x in node:
-                self.collect_uses(x, used_params, used_srs)
+                self.collect_uses(x, used_idents, used_srs)
             return
         if not isinstance(node, tuple) or not node:
             return
         tag = node[0]
         if tag == "ident":
-            if node[1] in self.param_offsets:
-                used_params.add(node[1])
+            used_idents.add(node[1])
             return
         if tag == "call" and node[1] in ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id"):
             used_srs.add(node[1])
+            if node[1] == "warp_id":
+                used_srs.add("tid_x")
         for item in node[1:]:
-            self.collect_uses(item, used_params, used_srs)
+            self.collect_uses(item, used_idents, used_srs)
+
+    def collect_assigned(self, node, assigned):
+        if isinstance(node, list):
+            for x in node:
+                self.collect_assigned(x, assigned)
+            return
+        if not isinstance(node, tuple) or not node:
+            return
+        tag = node[0]
+        if tag == "assign":
+            lhs = node[2]
+            while isinstance(lhs, tuple) and lhs[0] in ("index", "field"):
+                lhs = lhs[1]
+            if isinstance(lhs, tuple) and lhs[0] == "ident":
+                assigned.add(lhs[1])
+        elif tag in ("for", "pipeline_for"):
+            assigned.add(node[3])
+        for item in node[1:]:
+            self.collect_assigned(item, assigned)
 
     def compile(self):
         self.emit(Op(
@@ -281,23 +357,71 @@ class KernelCompiler:
             uwrites=(self.ur_desc, self.ur_desc + 1),
             var_lat=True,
         ))
-        used_params = set()
-        used_srs = set()
-        self.collect_uses(self.kdef["body"], used_params, used_srs)
-        for p in self.kdef["params"]:
-            if p["name"] in used_params:
-                self.get_param(p["name"])
-        for sr in ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id"):
-            if sr in used_srs:
-                self.get_sr(sr)
-        self.compile_stmts(self.kdef["body"])
+        body = self.kdef["body"]
+        self.assigned_vars = set()
+        self.collect_assigned(body, self.assigned_vars)
+
+        stmt_idents = []
+        stmt_srs = []
+        first_param = {}
+        last_param = {}
+        first_sr = {}
+        last_sr = {}
+        last_var = {}
+        for idx, st in enumerate(body):
+            ui = set()
+            us = set()
+            self.collect_uses(st, ui, us)
+            stmt_idents.append(ui)
+            stmt_srs.append(us)
+            for name in ui:
+                if name in self.param_offsets:
+                    if name not in first_param:
+                        first_param[name] = idx
+                    last_param[name] = idx
+                else:
+                    last_var[name] = idx
+            for sr in us:
+                if sr not in first_sr:
+                    first_sr[sr] = idx
+                last_sr[sr] = idx
+
+        sr_order = ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id")
+        for idx, st in enumerate(body):
+            for p in self.kdef["params"]:
+                pname = p["name"]
+                if first_param.get(pname) == idx:
+                    self.get_param(pname)
+            for sr in sr_order:
+                if first_sr.get(sr) == idx:
+                    self.get_sr(sr)
+            self.compile_stmt(st)
+            for pname in list(self.param_loaded.keys()):
+                if last_param.get(pname, -1) == idx:
+                    v = self.param_loaded.pop(pname)
+                    self.free_if_unreferenced(v.regs)
+            for sr in list(self.cached_sr.keys()):
+                if last_sr.get(sr, -1) == idx:
+                    v = self.cached_sr.pop(sr)
+                    self.free_if_unreferenced(v.regs)
+            for vname in list(self.scopes[0].keys()):
+                if last_var.get(vname, -1) <= idx:
+                    v = self.scopes[0].pop(vname)
+                    self.free_if_unreferenced(v.regs)
+
         self.emit(Op(
             lambda wr, rd, wait, stall: isa.encode_exit(stall=stall, wait=wait),
             is_exit=True,
         ))
         insns = self.schedule_and_encode()
-        reg_count = max(self.kdef["regs"], self.alloc.peak + 4, 16)
-        reg_count = ((reg_count + 7) // 8) * 8
+        max_r = -1
+        for op in self.ops:
+            for r in op.reads | op.writes:
+                if r != isa.RZ and r > max_r:
+                    max_r = r
+        actual_peak = max(max_r + 1, 0)
+        reg_count = max(self.kdef["regs"], actual_peak + 2, 16)
+        reg_count = (reg_count + 1) & ~1
         return KernelImage(
             name=self.kdef["name"],
             insns=insns,
@@ -312,6 +436,22 @@ class KernelCompiler:
     def compile_stmts(self, stmts):
         for st in stmts:
             self.compile_stmt(st)
+
+    def compile_scoped_stmts(self, stmts):
+        last_local = {}
+        for idx, st in enumerate(stmts):
+            ui = set()
+            us = set()
+            self.collect_uses(st, ui, us)
+            for name in ui:
+                last_local[name] = idx
+        for idx, st in enumerate(stmts):
+            self.compile_stmt(st)
+            frame = self.scopes[-1]
+            for vname in list(frame.keys()):
+                if last_local.get(vname, -1) <= idx:
+                    v = frame.pop(vname)
+                    self.free_if_unreferenced(v.regs)
 
     def compile_stmt(self, st):
         kind = st[0]
@@ -345,6 +485,15 @@ class KernelCompiler:
             return
         if kind == "decl":
             _, _, vtype, name, init = st
+            if (
+                init is not None
+                and name not in self.assigned_vars
+                and init[0] == "call"
+                and init[1] in ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id")
+                and vtype == "u32"
+            ):
+                self.bind_var(name, self.get_sr(init[1]))
+                return
             v = self.alloc_val(vtype, temp=False)
             self.bind_var(name, v)
             if init is not None:
@@ -452,6 +601,7 @@ class KernelCompiler:
                     reads=(val.r0,),
                     preads=(pred,),
                     mem_addr_reads=(val.r0,),
+                    is_store=True,
                 ))
             else:
                 idx_v = self.eval_expr(args[1])
@@ -466,12 +616,14 @@ class KernelCompiler:
                     reads=(raddr.r0, val.r0),
                     preads=(pred,),
                     mem_addr_reads=(raddr.r0, val.r0),
+                    is_store=True,
                 ))
             return
         ptr = self.eval_expr(args[0])
         val = self.eval_expr(args[1])
         ur = self.ur_desc
         addr_reads = (ptr.regs[0], ptr.regs[1])
+        self.recent_mem_addr = set(addr_reads)
         if name == "stg256":
             self.emit(Op(
                 lambda wr, rd, wait, stall, pa=ptr.regs[0], vlo=val.regs[0], vhi=val.regs[4], u=ur, p=pred: isa.encode_stg256(pa, vlo, vhi, u, pred=p, neg=False, rd=rd, stall=stall, wait=wait),
@@ -479,6 +631,7 @@ class KernelCompiler:
                 preads=(pred,),
                 mem_addr_reads=addr_reads + val.regs,
                 ureads=(ur, ur + 1),
+                is_store=True,
             ))
             return
         wbits = {
@@ -494,6 +647,7 @@ class KernelCompiler:
             preads=(pred,),
             mem_addr_reads=addr_reads + val.regs,
             ureads=(ur, ur + 1),
+            is_store=True,
         ))
 
     def can_pipeline_loop(self, var, cond, step, body):
@@ -533,7 +687,7 @@ class KernelCompiler:
         self.pop_temps()
         self.emit_label(lbl_head)
         self.push_scope()
-        self.compile_stmts(body)
+        self.compile_scoped_stmts(body)
         self.pop_scope()
         self.push_temps()
         self.compile_stmt(step_st)
@@ -792,6 +946,25 @@ class KernelCompiler:
         if expr[0] == "call" and expr[1] == "fma":
             a = self.eval_expr(expr[2][0])
             b_const = try_eval_const(expr[2][1], self.consts)
+            c_const = try_eval_const(expr[2][2], self.consts)
+            if c_const is not None and float(c_const) == 0.0:
+                if b_const is not None:
+                    fv = float(b_const)
+                    self.emit(Op(
+                        lambda wr, rd, wait, stall, d=dst.r0, ra=a.r0, f=fv: isa.encode_fmul_i(d, ra, f, stall=stall, wait=wait),
+                        reads=(a.r0,),
+                        writes=(dst.r0,),
+                        pipe="fp32",
+                    ))
+                else:
+                    b = self.eval_expr(expr[2][1])
+                    self.emit(Op(
+                        lambda wr, rd, wait, stall, d=dst.r0, ra=a.r0, rb=b.r0: isa.encode_fmul_r(d, ra, rb, stall=stall, wait=wait),
+                        reads=(a.r0, b.r0),
+                        writes=(dst.r0,),
+                        pipe="fp32",
+                    ))
+                return dst
             c = self.eval_expr(expr[2][2])
             if b_const is not None:
                 fv = float(b_const)
@@ -825,6 +998,7 @@ class KernelCompiler:
         _, mode = LOAD_CALLS[fn_name]
         ur = self.ur_desc
         addr_reads = (ptr.regs[0], ptr.regs[1])
+        self.recent_mem_addr = set(addr_reads)
         if mode.startswith("256_"):
             pol = {"256_ef": "ef", "256_el": "el", "256_def": "default"}[mode]
             self.emit(Op(
@@ -1059,16 +1233,17 @@ class KernelCompiler:
             return self.get_sr(name)
 
         if name == "pdl_wait":
-            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_acqbulk(stall=stall, wait=wait)))
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_acqbulk(stall=stall, wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
 
         if name == "pdl_release":
-            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_preexit(stall=max(stall, 8), wait=wait)))
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_preexit(stall=max(stall, 8), wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
 
         if name == "barrier":
             self.barriers = max(self.barriers, 1)
             self.emit(Op(lambda wr, rd, wait, stall: isa.encode_bar_sync(0, stall=stall, wait=wait), is_bar=True))
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_nop(stall=max(stall, 1), yield_=True, wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
 
         if name == "prefetch_l2":
@@ -1082,7 +1257,7 @@ class KernelCompiler:
                 byte_off = int(idx_c) * int(str_c)
                 if byte_off == 0:
                     return base
-                d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u64") else self.alloc_val("u64", temp=True)
+                d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u64") else self.alloc_val("u64", temp=True, avoid=self.recent_mem_addr)
                 tmp = self.alloc_val("u32", temp=True)
                 self.emit(Op(lambda wr, rd, wait, stall, r=tmp.r0, im=byte_off & 0xFFFFFFFF: isa.encode_mov_i(r, im, stall=stall, wait=wait), writes=(tmp.r0,)))
                 self.emit(Op(
@@ -1092,7 +1267,7 @@ class KernelCompiler:
                 ))
                 return d
             idx_v = self.eval_expr(args[1])
-            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u64") else self.alloc_val("u64", temp=True)
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u64") else self.alloc_val("u64", temp=True, avoid=self.recent_mem_addr)
             if str_c is not None:
                 sv = int(str_c) & 0xFFFFFFFF
                 self.emit(Op(
@@ -1120,12 +1295,14 @@ class KernelCompiler:
             val = self.eval_expr(args[1])
             ur = self.ur_desc
             addr_reads = (ptr.regs[0], ptr.regs[1])
+            self.recent_mem_addr = set(addr_reads)
             if name == "stg256":
                 self.emit(Op(
                     lambda wr, rd, wait, stall, pa=ptr.regs[0], vlo=val.regs[0], vhi=val.regs[4], u=ur: isa.encode_stg256(pa, vlo, vhi, u, rd=rd, stall=stall, wait=wait),
                     reads=addr_reads + val.regs,
                     mem_addr_reads=addr_reads + val.regs,
                     ureads=(ur, ur + 1),
+                    is_store=True,
                 ))
                 return Val("u32", (isa.RZ,))
             wbits = {
@@ -1140,6 +1317,7 @@ class KernelCompiler:
                 reads=addr_reads + val.regs,
                 mem_addr_reads=addr_reads + val.regs,
                 ureads=(ur, ur + 1),
+                is_store=True,
             ))
             return Val("u32", (isa.RZ,))
 
@@ -1154,6 +1332,7 @@ class KernelCompiler:
                     lambda wr, rd, wait, stall, rv=val.r0, o=off: isa.encode_sts(isa.RZ, rv, offset=o, rd_bar=rd, stall=stall, wait=wait),
                     reads=(val.r0,),
                     mem_addr_reads=(val.r0,),
+                    is_store=True,
                 ))
             else:
                 idx_v = self.eval_expr(args[1])
@@ -1167,6 +1346,7 @@ class KernelCompiler:
                     lambda wr, rd, wait, stall, ra=raddr.r0, rv=val.r0, o=base_off: isa.encode_sts(ra, rv, offset=o, rd_bar=rd, stall=stall, wait=wait),
                     reads=(raddr.r0, val.r0),
                     mem_addr_reads=(raddr.r0, val.r0),
+                    is_store=True,
                 ))
             return Val("u32", (isa.RZ,))
 
@@ -1435,8 +1615,8 @@ class KernelCompiler:
             return d
 
         if name in ("warp_sum", "warp_max", "oct_sum", "oct_max", "quad_max", "quad_sum"):
-            v = self.eval_expr(args[0])
             d = hint_dst if (hint_dst is not None and hint_dst.vtype == "f32") else self.alloc_val("f32", temp=True)
+            v = self.eval_expr(args[0], hint_dst=d)
             if d.r0 != v.r0:
                 self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, s=v.r0: isa.encode_mov_r(r, s, stall=stall, wait=wait), reads=(v.r0,), writes=(d.r0,)))
             tmp = self.alloc_val("f32", temp=True)
@@ -1457,7 +1637,112 @@ class KernelCompiler:
 
         raise ValueError(f"unknown builtin: {name}")
 
+    def list_schedule_block(self, block):
+        n = len(block)
+        if n <= 2:
+            return block
+        succ = [{} for _ in range(n)]
+        indeg = [0] * n
+        for i in range(n):
+            oi = block[i]
+            for j in range(i + 1, n):
+                oj = block[j]
+                lat = 0
+                raw_g = bool(oi.writes & oj.reads)
+                raw_u = bool(oi.uwrites & oj.ureads)
+                raw_p = bool(oi.pwrites & oj.preads)
+                if raw_g or raw_u:
+                    if oi.var_lat:
+                        lat = 20 if oi.mem_addr_reads else 14
+                    elif oi.pipe == "fp32" and oj.pipe == "fp32":
+                        lat = 4
+                    elif oj.mem_addr_reads & oi.writes:
+                        lat = oi.fixed_lat + 1
+                    else:
+                        lat = oi.fixed_lat
+                if raw_p:
+                    plat = 13 if oj.mem_addr_reads else 5
+                    if plat > lat:
+                        lat = plat
+                if (oi.reads & oj.writes) or (oi.ureads & oj.uwrites) or (oi.preads & oj.pwrites):
+                    wlat = 6 if ((oi.mem_addr_reads & oj.writes) or (oi.var_lat and (oi.reads & oj.writes))) else 1
+                    if wlat > lat:
+                        lat = wlat
+                if (oi.writes & oj.writes) or (oi.uwrites & oj.uwrites) or (oi.pwrites & oj.pwrites):
+                    if lat < 1:
+                        lat = 1
+                if (oi.is_store and (oj.is_store or oj.var_lat)) or (oi.var_lat and oj.is_store):
+                    if lat < 1:
+                        lat = 1
+                if (oi.forced_wr is not None and oj.forced_wr is not None) and oi.forced_wr != oj.forced_wr:
+                    if lat < 1:
+                        lat = 1
+                if lat > 0:
+                    succ[i][j] = lat
+                    indeg[j] += 1
+
+        height = [1] * n
+        for i in range(n - 1, -1, -1):
+            best = 1
+            for j, lat in succ[i].items():
+                h = lat + height[j]
+                if h > best:
+                    best = h
+            height[i] = best
+
+        ready = [i for i in range(n) if indeg[i] == 0]
+        earliest = [0] * n
+        cur_cycle = 0
+        out = []
+        while ready:
+            best_idx = 0
+            best_key = None
+            for pos, idx in enumerate(ready):
+                oi = block[idx]
+                wait_cyc = earliest[idx] - cur_cycle
+                if wait_cyc < 0:
+                    wait_cyc = 0
+                prio = 0 if (oi.var_lat and not oi.is_store) else 1
+                key = (wait_cyc, prio, -height[idx], idx)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_idx = pos
+            chosen = ready.pop(best_idx)
+            out.append(block[chosen])
+            issue_cyc = cur_cycle if earliest[chosen] <= cur_cycle else earliest[chosen]
+            for j, lat in succ[chosen].items():
+                if issue_cyc + lat > earliest[j]:
+                    earliest[j] = issue_cyc + lat
+                indeg[j] -= 1
+                if indeg[j] == 0:
+                    ready.append(j)
+            cur_cycle = issue_cyc + 1
+        return out
+
+    def reorder_ops(self):
+        out = []
+        block = []
+        for op in self.ops:
+            is_boundary = (
+                op.label is not None
+                or op.is_branch
+                or op.is_exit
+                or op.is_bar
+                or op.forced_wait != 0
+            )
+            if is_boundary:
+                if block:
+                    out.extend(self.list_schedule_block(block))
+                    block = []
+                out.append(op)
+            else:
+                block.append(op)
+        if block:
+            out.extend(self.list_schedule_block(block))
+        self.ops = out
+
     def schedule_and_encode(self):
+        self.reorder_ops()
         real_ops = []
         reg_bar = {}
         ureg_bar = {}
@@ -1557,6 +1842,23 @@ class KernelCompiler:
                 ):
                     wait_mask |= 1 << rb
                 op.rd = rb
+
+            self_conflict = 0
+            if op.var_lat and (wait_mask & (1 << op.wr)):
+                self_conflict |= 1 << op.wr
+            if op.mem_addr_reads and (wait_mask & (1 << op.rd)):
+                self_conflict |= 1 << op.rd
+            if self_conflict:
+                nop = Op(lambda wr, rd, wait, stall: isa.encode_nop(stall=stall, wait=wait), forced_wait=self_conflict)
+                nop.wait = self_conflict
+                real_ops.append(nop)
+                wait_mask &= ~self_conflict
+                reg_bar = {k: v for k, v in reg_bar.items() if not (self_conflict & (1 << v))}
+                ureg_bar = {k: v for k, v in ureg_bar.items() if not (self_conflict & (1 << v))}
+                rd_bar = {k: v for k, v in rd_bar.items() if not (self_conflict & (1 << v))}
+                for b in range(6):
+                    if self_conflict & (1 << b):
+                        bar_batch.pop(b, None)
 
             op.wait = wait_mask
             if wait_mask and not op.preads:
