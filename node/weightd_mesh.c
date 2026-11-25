@@ -2842,7 +2842,7 @@ int SparkWeightdMeshStagingFd(void)
 {
     return weightd_mesh.mesh_ready != 0u && weightd_mesh.staging_mr != 0 ? dup(weightd_mesh.staging_memfd) : -1;
 }
-static uint32_t SparkWeightdMeshDoorbellStable(uint32_t index,uint32_t active_mask,uint64_t snapshot[2][4])
+static uint32_t SparkWeightdMeshDoorbellStable(uint32_t index,uint64_t snapshot[2][4])
 {
     uint32_t tries,alternate,word,agree;
     for ( tries = 0u; tries < 64u; tries++ )
@@ -2850,19 +2850,17 @@ static uint32_t SparkWeightdMeshDoorbellStable(uint32_t index,uint32_t active_ma
         agree = 1u;
         for (alternate=0u; alternate<2u; alternate++)
         {
-            volatile uint64_t *cell;
-            if ( (active_mask & (1u << alternate)) == 0u )
-            {
-                snapshot[alternate][0] = 0u;
-                snapshot[alternate][1] = 0u;
-                continue;
-            }
-            cell = SparkWeightdMeshDoorbellAt(index,alternate);
+            volatile uint64_t *cell = SparkWeightdMeshDoorbellAt(index,alternate);
             snapshot[alternate][0] = __atomic_load_n(&cell[0],__ATOMIC_ACQUIRE);
             for (word=1u; word<4u; word++)
                 snapshot[alternate][word] = cell[word];
-            SparkWeightdMeshLoadBarrier();
-            for (word=0u; word<4u; word++)
+        }
+        SparkWeightdMeshLoadBarrier();
+        for (alternate=0u; alternate<2u; alternate++)
+        {
+            volatile uint64_t *cell = SparkWeightdMeshDoorbellAt(index,alternate);
+            agree &= snapshot[alternate][0] == __atomic_load_n(&cell[0],__ATOMIC_ACQUIRE) ? 1u : 0u;
+            for (word=1u; word<4u; word++)
                 agree &= snapshot[alternate][word] == cell[word] ? 1u : 0u;
         }
         if ( agree != 0u )
@@ -2913,7 +2911,7 @@ static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_
         weightd_mesh.doorbell_stuck[index] = 0u;
         return(0u);
     }
-    if ( SparkWeightdMeshDoorbellStable(index,active_mask,snapshot) == 0u )
+    if ( SparkWeightdMeshDoorbellStable(index,snapshot) == 0u )
     {
         SparkWeightdMeshDoorbellStuck(index,"unstable",0u,0u,0u,now_ns);
         return(weightd_mesh.doorbell_stuck[index] < SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS ? 1u : 0u);

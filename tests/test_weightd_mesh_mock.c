@@ -2,6 +2,7 @@
 #include <stdatomic.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -806,6 +807,100 @@ static void test_half_slots(uint32_t local_rank)
             SparkWeightdMeshDoorbellAt(index,0u)[0] == 0u && SparkWeightdMeshDoorbellAt(index,1u)[0] == 0u,
             "re-configuring the idle lane clears both cells, both records and the issue mark");
     }
+}
+
+typedef struct TestDoorbellRaceContext
+{
+    uint32_t band;
+    uint32_t local_rank;
+    uint32_t all_peers;
+    uint32_t pairs;
+    uint64_t base_seq;
+    _Atomic uint32_t stop;
+} TestDoorbellRaceContext;
+
+static void *test_doorbell_stable_writer(void *argument)
+{
+    const TestDoorbellRaceContext *ctx = (const TestDoorbellRaceContext *)argument;
+    uint64_t seq = ctx->base_seq;
+    while ( atomic_load_explicit(&ctx->stop,memory_order_acquire) == 0u )
+    {
+        test_half_slot_publish(ctx->band,ctx->local_rank,seq,4096u,ctx->all_peers);
+        test_half_slot_publish(ctx->band,ctx->local_rank,seq + 1u,4096u,ctx->all_peers);
+        seq += 2u;
+    }
+    return 0;
+}
+
+static void *test_doorbell_race_writer(void *argument)
+{
+    const TestDoorbellRaceContext *ctx = (const TestDoorbellRaceContext *)argument;
+    uint32_t pair;
+    for ( pair = 0u; pair < ctx->pairs; pair++ )
+    {
+        uint64_t first = ctx->base_seq + (uint64_t)pair * 2u;
+        test_half_slot_publish(ctx->band,ctx->local_rank,first,4096u,ctx->all_peers);
+        test_half_slot_publish(ctx->band,ctx->local_rank,first + 1u,4096u,ctx->all_peers);
+        while ( test_shipped(ctx->band,ctx->local_rank) < first + 1u )
+            sched_yield();
+    }
+    return 0;
+}
+
+static void test_doorbell_pair_race(uint32_t local_rank)
+{
+    SparkWeightdMeshTopology topology = test_identity_topology(16u,local_rank);
+    TestDoorbellRaceContext ctx;
+    pthread_t writer;
+    uint32_t index = 2u * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    uint32_t skipped = 0u, completed = 0u, first_work, samples = 0u, torn = 0u;
+    uint64_t expected_issued, snapshot[2][4];
+    ctx.band = 2u;
+    ctx.local_rank = local_rank;
+    ctx.all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    ctx.pairs = 64u;
+    ctx.base_seq = (UINT64_C(0xfcb31) << 32u) | 584u;
+    atomic_store(&ctx.stop,0u);
+    CHECK(SparkWeightdMeshLaneConfigure(1u,&topology) == SPARK_STATUS_OK,"doorbell pair race lane configured");
+    CHECK(pthread_create(&writer,0,test_doorbell_stable_writer,&ctx) == 0,"doorbell stable writer started");
+    while ( samples < 20000u )
+    {
+        if ( SparkWeightdMeshDoorbellStable(index,snapshot) == 0u )
+            continue;
+        if ( snapshot[1][0] >= ctx.base_seq + 1u &&
+             (snapshot[0][0] + 1u < snapshot[1][0] || snapshot[0][0] > snapshot[1][0] + 1u) )
+            torn++;
+        samples++;
+    }
+    atomic_store_explicit(&ctx.stop,1u,memory_order_release);
+    CHECK(pthread_join(writer,0) == 0,"doorbell stable writer joined");
+    CHECK(torn == 0u,"two-cell doorbell snapshot never observes an odd round without its preceding even round");
+    CHECK(SparkWeightdMeshLaneConfigure(1u,&topology) == SPARK_STATUS_OK,"doorbell pair race lane reset after stable stress");
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+    first_work = spark_stub_ibv_posted_count();
+    expected_issued = ctx.base_seq - 1u;
+    CHECK(pthread_create(&writer,0,test_doorbell_race_writer,&ctx) == 0,"doorbell pair race writer started");
+    while ( completed < ctx.pairs * 2u )
+    {
+        uint32_t before = spark_stub_ibv_posted_count(), after, posted_chunks;
+        SparkWeightdMeshDoorbellPoll();
+        after = spark_stub_ibv_posted_count();
+        if ( after == before )
+            continue;
+        posted_chunks = (after - before) / (2u * TEST_MESH_PEERS);
+        if ( (after - before) != posted_chunks * 2u * TEST_MESH_PEERS ||
+             weightd_mesh.issued[index] != expected_issued + posted_chunks )
+            skipped++;
+        expected_issued = weightd_mesh.issued[index];
+        completed += posted_chunks;
+        test_complete_range(before,after);
+    }
+    CHECK(pthread_join(writer,0) == 0,"doorbell pair race writer joined");
+    CHECK(skipped == 0u &&
+        spark_stub_ibv_posted_count() - first_work == ctx.pairs * 2u * 2u * TEST_MESH_PEERS &&
+        test_shipped(ctx.band,local_rank) == ctx.base_seq + (uint64_t)ctx.pairs * 2u - 1u,
+        "concurrent two-cell even-then-odd doorbell pairs never skip the lower sequence");
+    CHECK(SparkWeightdMeshLaneConfigure(1u,&topology) == SPARK_STATUS_OK,"doorbell pair race lane reset");
 }
 
 static void test_slice_routes(uint32_t local_rank)
@@ -3482,6 +3577,7 @@ int main(void)
     test_slot_lifetimes(local_rank);
     test_slice_routes(local_rank);
     test_half_slots(local_rank);
+    test_doorbell_pair_race(local_rank);
     test_peer_routes(local_rank);
     test_peer_halves(local_rank);
     test_pair_first_routes(local_rank);

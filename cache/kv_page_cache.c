@@ -3802,7 +3802,7 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 				(unsigned long long)request->sequence_id,
 				(unsigned)request->cache_lanes[index].sequence_position);
 #endif
-			SPARK_FAIL(SPARK_STATUS_BUSY);
+			SPARK_FAIL(owner->phase == SPARK_KV_LANE_TRANSACTION_EMPTY ? SPARK_STATUS_VALIDATION_FAILED : SPARK_STATUS_BUSY);
 		}
 		if ( SparkKvLaneTransactionMatches(owner,request,&request->cache_lanes[index]) == 0u )
 		{
@@ -3833,7 +3833,11 @@ static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *
 	for (index=0u; index<request->cache_lane_count; index++)
 		owned += transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ? 1u : 0u;
 	if ( owned != 0u )
+	{
+		if ( owned != request->cache_lane_count )
+			SPARK_FAIL(SPARK_STATUS_BUSY);
 		return(SparkKvLaneTransactionsRequire(transactions,request,SPARK_KV_LANE_TRANSACTION_PREPARED));
+	}
 	for (index=0u; transactions->cache->shared_index != 0 && index<request->cache_lane_count; index++)
 	{
 		lane = &request->cache_lanes[index];

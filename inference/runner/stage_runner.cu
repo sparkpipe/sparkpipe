@@ -2597,10 +2597,13 @@ static SparkStatus StageRunnerGraphSettleFinish(SparkStageRunnerState *state)
 		return SPARK_STATUS_OK;
 	status = SparkTpDeviceCollectiveGraphSettleFinish(&state->device_collective, &collective_error);
 	if ( status == SPARK_STATUS_OK && collective_error != 0ull )
-		status = SPARK_STATUS_INTERNAL_ERROR;
+		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
+	{
 		fprintf(stderr, "STAGE-GRAPH-FAILED status=%d collective_error=%llu\n", (int)status, (unsigned long long)collective_error);
-	return status;
+		SPARK_FAIL(status);
+	}
+	return SPARK_STATUS_OK;
 }
 
 static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint64_t submit_ns, uint32_t steps_run)
@@ -3363,8 +3366,21 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 {
 	const SparkStatus status = StageRunnerSubmitBody(runner, dispatch);
 	SparkStageRunnerState *state = runner != 0 ? (SparkStageRunnerState *)runner->private_state : 0;
-	if ( status != SPARK_STATUS_OK && state != 0 && state->dispatch_queued != 0u )
-		StageRunnerSettleDispatch(state);
+	if ( status != SPARK_STATUS_OK && state != 0 )
+	{
+		if ( state->dispatch_queued != 0u || state->graph_launched != 0u )
+			StageRunnerSettleDispatch(state);
+		state->graph_launched = 0u;
+		if ( state->device_collective_created != 0 )
+		{
+			if ( SparkTpDeviceCollectiveEndChain(&state->device_collective, state->stream) == SPARK_STATUS_BUSY )
+			{
+				StageRunnerSettleDispatch(state);
+				(void)SparkTpDeviceCollectiveEndChain(&state->device_collective, state->stream);
+			}
+			(void)SparkTpDeviceCollectiveVerifyDeferred(&state->device_collective, state->stream);
+		}
+	}
 	return status;
 }
 
