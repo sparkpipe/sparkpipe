@@ -1,0 +1,2 @@
++466
+E14-Round2 RoCE collective B1/B4/B8/B16 latency & wire-efficiency optimizations: GPU-L2 arrival mailbox eliminating C2C tail-snoop storms, single/wide peer-stage and publish kernels with direct shipped-cell polling, 256-bit BF16 stream reduction for degree<=4, 2-node fast BF16 reduce-scatter path, and host weightd_mesh.c hot-path poll and O(1) pending tracking.

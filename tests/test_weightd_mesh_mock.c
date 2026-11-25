@@ -1583,6 +1583,103 @@ static void test_e14_rdma_verbs_fastpath(uint32_t local_rank)
     }
 }
 
+static void test_e14_r2_poll_fastpath(uint32_t local_rank)
+{
+    const uint32_t band = 4u;
+    const uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    const uint64_t seq = (UINT64_C(41) << 32u) | 1u;
+    const uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
+    volatile uint64_t *entry = (volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+        SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(band, local_rank));
+    char log_path[320];
+    SparkWeightdMeshRoute route = {0};
+    uint32_t first, last, sweep;
+
+    route.fields.peer_mask = all_peers;
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshHasPending() == 0u && weightd_mesh.send_pending_total == 0u,
+        "e14-r2: send_pending_total starts at zero when idle");
+    entry[1] = 1024u;
+    entry[2] = slot;
+    entry[3] = route.word;
+    entry[0] = seq;
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    CHECK(SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(1000)) == 1u,
+        "e14-r2: initial doorbell sweep posts the round");
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS * 2u &&
+          SparkWeightdMeshHasPending() != 0u &&
+          weightd_mesh.send_pending_total == TEST_MESH_PEERS * 2u,
+        "e14-r2: O(1) send_pending_total matches exact posted WR count");
+
+    (void)snprintf(log_path, sizeof(log_path), "%s/e14-r2-no-spam.log", SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    for ( sweep = 0u; sweep < 6000u; sweep++ )
+        CHECK(SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(2000) + (uint64_t)sweep) == 0u,
+            "e14-r2: in-flight sweep returns 0 without re-posting");
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    test_capture_end();
+    CHECK(test_file_contains(log_path, "WD-SEEN") == 0 &&
+          test_file_contains(log_path, "WD-TRANSFER-STUCK") == 0 &&
+          test_file_contains(log_path, "WD-STUCK") == 0,
+        "e14-r2: 6000 sub-1s in-flight sweeps emit zero stderr log spam");
+
+    entry[1] = 1024u;
+    entry[2] = slot + 1u;
+    entry[3] = route.word;
+    entry[0] = seq + 1u;
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    CHECK(SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(9000)) == 1u,
+        "e14-r2: second concurrent round fills the second transfer record");
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS * 4u &&
+          weightd_mesh.send_pending_total == TEST_MESH_PEERS * 4u,
+        "e14-r2: send_pending_total tracks both in-flight rounds accurately");
+
+    entry[1] = 1024u;
+    entry[2] = slot + 2u;
+    entry[3] = route.word;
+    entry[0] = seq + 2u;
+    test_capture_begin(log_path);
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    CHECK(SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(10000)) == 0u,
+        "e14-r2: third round waits while both transfer records are in flight");
+    for ( sweep = 0u; sweep < 5500u; sweep++ )
+        (void)SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(10001) + (uint64_t)sweep);
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    test_capture_end();
+    CHECK(test_file_contains(log_path, "WD-SEEN") == 0 &&
+          test_file_contains(log_path, "WD-TRANSFER-STUCK") == 0 &&
+          test_file_contains(log_path, "WD-STUCK") == 0,
+        "e14-r2: 5500 sub-1s queued-round sweeps emit zero stderr log spam");
+
+    test_capture_begin(log_path);
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    (void)SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(10000) + SPARK_WEIGHTD_MESH_STUCK_LOG_NS + UINT64_C(1000));
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    test_capture_end();
+    CHECK(test_file_contains(log_path, "WD-STUCK") != 0 &&
+          test_file_contains(log_path, "WD-TRANSFER-STUCK") != 0,
+        "e14-r2: genuine >1s stall still emits WD-STUCK and WD-TRANSFER-STUCK diagnostics");
+    (void)unlink(log_path);
+
+    test_complete_range(first, last);
+    CHECK(SparkWeightdMeshHasPending() == 0u && weightd_mesh.send_pending_total == 0u,
+        "e14-r2: send_pending_total returns to zero after both in-flight rounds drain");
+    first = spark_stub_ibv_posted_count();
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    CHECK(SparkWeightdMeshDoorbellCell(band, local_rank, UINT64_C(20000) + SPARK_WEIGHTD_MESH_STUCK_LOG_NS) == 1u,
+        "e14-r2: queued third round posts cleanly once transfer records drain");
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    test_complete_range(first, spark_stub_ibv_posted_count());
+    CHECK(SparkWeightdMeshHasPending() == 0u && weightd_mesh.send_pending_total == 0u &&
+          test_shipped(band, local_rank) == seq + 2u,
+        "e14-r2: third round completes with zero leaked send_pending_total");
+}
+
 typedef struct TestMeshActivityThread
 {
     SparkWeightdServer *server;
@@ -3585,6 +3682,7 @@ int main(void)
     test_pair_first_routes(local_rank);
     test_permutation_schedule(local_rank);
     test_e14_rdma_verbs_fastpath(local_rank);
+    test_e14_r2_poll_fastpath(local_rank);
     test_sq_occupancy_guard(local_rank);
     test_mesh_peer_reset(local_rank);
 
