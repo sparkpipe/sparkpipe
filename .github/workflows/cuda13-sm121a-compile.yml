@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || 'ci-main-snapshot' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -35,7 +35,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if [ "$EVENT" = workflow_dispatch ] || [ "$EVENT" = schedule ]; then
+          if [ "$EVENT" = workflow_dispatch ] || [ "$EVENT" = schedule ] || [ "$EVENT" = push ]; then
             python3 tools/ci_lanes.py full >> "$GITHUB_OUTPUT"
           else
             python3 tools/ci_lanes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
@@ -80,7 +80,7 @@ jobs:
 
   compile-sm121a:
     needs: lanes
-    if: needs.lanes.outputs.engine == 'true'
+    if: needs.lanes.outputs.engine == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-full-ci'))
     runs-on: ubuntu-24.04
     container:
       image: nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6
@@ -112,7 +112,7 @@ jobs:
 
   host-tests:
     needs: lanes
-    if: needs.lanes.outputs.engine == 'true'
+    if: needs.lanes.outputs.engine == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-full-ci'))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
