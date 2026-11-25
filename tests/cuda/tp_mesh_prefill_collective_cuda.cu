@@ -137,7 +137,7 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
     if ( st->wire_gbps_x10 != 0u )
         wire_per_peer_ns = (xfer_bytes * 10ull) / (uint64_t)st->wire_gbps_x10;
     uint32_t sent = 0u;
-    for ( uint32_t k = 0u; k < st->degree; ++k )
+    for ( uint32_t k = 0u; k < 16u; ++k )
     {
         uint32_t p = st->order[k];
         if ( p >= st->degree || p == st->rank )
@@ -165,6 +165,11 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
                     if ( len > slice ) len = slice;
                     if ( len != 0u )
                         memcpy(dst, st->peer_buf[p] + first, (size_t)(len * sizeof(uint16_t)));
+                }
+                else if ( SparkTpMeshDirectPhasesPerChunk(st->total_elements, st->degree, 1u,
+                              SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) == 1u )
+                {
+                    memcpy(dst, st->peer_buf[p], (size_t)(st->total_elements * sizeof(uint16_t)));
                 }
                 else
                 {
@@ -402,7 +407,8 @@ static void FixtureResetEpoch(LargeFixture *f, uint32_t rank, uint32_t degree, u
     __atomic_store_n(&f->responder.rounds_serviced, 0ull, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.reset_req, 1u, __ATOMIC_RELEASE);
     while ( __atomic_load_n(&f->responder.reset_req, __ATOMIC_ACQUIRE) != 0u ) {}
-    CUDA_OK(cudaMemcpy(f->control, &host, sizeof(host), cudaMemcpyHostToDevice));
+    CUDA_OK(cudaMemcpyAsync(f->control, &host, sizeof(host), cudaMemcpyHostToDevice, f->stream));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
 }
 
 static void EnsurePeerBufs(LargeFixture *f, uint64_t elems_per_peer, uint32_t salt)
@@ -506,11 +512,10 @@ static void TestReduceScatterExact(LargeFixture *f, uint32_t rank, uint64_t elem
     free(h_ref);
 }
 
-static void TestAllGatherExact(LargeFixture *f, uint32_t rank, uint64_t total_elements)
+static void TestAllGatherExactDeg(LargeFixture *f, uint32_t rank, uint32_t degree, uint64_t total_elements)
 {
-    const uint32_t degree = 16u;
     const uint64_t local_el = total_elements / degree;
-    EnsurePeerBufs(f, local_el, 3000u + rank + (uint32_t)(total_elements & 0xffffu));
+    EnsurePeerBufs(f, local_el, 3000u + rank + degree * 31u + (uint32_t)(total_elements & 0xffffu));
     uint16_t *h_ref = (uint16_t *)malloc((size_t)total_elements * sizeof(uint16_t));
     uint16_t *h_out = (uint16_t *)malloc((size_t)total_elements * sizeof(uint16_t));
     for ( uint32_t p = 0u; p < degree; ++p )
@@ -529,6 +534,117 @@ static void TestAllGatherExact(LargeFixture *f, uint32_t rank, uint64_t total_el
     CHECK(memcmp(h_ref, h_out, (size_t)total_elements * sizeof(uint16_t)) == 0, "AllGather large output is 0-ULP bitwise exact");
     free(h_out);
     free(h_ref);
+}
+
+static void TestAllGatherExact(LargeFixture *f, uint32_t rank, uint64_t total_elements)
+{
+    TestAllGatherExactDeg(f, rank, 16u, total_elements);
+}
+
+static void TestRsagExactDeg(LargeFixture *f, uint32_t rank, uint32_t degree, uint64_t elements, uint32_t inplace)
+{
+    EnsurePeerBufs(f, elements, 4000u + rank + degree * 37u + (uint32_t)(elements & 0xffffu) + inplace * 17u);
+    uint16_t *h_ref = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+    uint16_t *h_out = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+    for ( uint64_t i = 0u; i < elements; ++i )
+    {
+        float acc = 0.0f;
+        for ( uint32_t p = 0u; p < degree; ++p )
+            acc += Bf16ToFloat(f->responder.peer_buf[p][i]);
+        h_ref[i] = FloatToBf16Rn(acc);
+    }
+    FixtureResetEpoch(f, rank, degree, 1u, elements, 1u, 0u, 0u);
+    CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[rank], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    void *dst = inplace != 0u ? (void *)f->local_dev : (void *)f->out_dev;
+    if ( inplace == 0u )
+        CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)elements * sizeof(uint16_t)));
+    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+        f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, dst, f->scratch,
+        elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
+    CUDA_OK(cudaMemcpy(h_out, dst, (size_t)elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    SparkTpMeshRoundControl ctrl;
+    CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+    CHECK(ctrl.error_word == 0u && ctrl.rounds_done == 1u, "e14-r2 AllReduce exact completed cleanly");
+    CHECK(memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0, "e14-r2 AllReduce output is 0-ULP bitwise exact");
+    free(h_out);
+    free(h_ref);
+}
+
+static void TestReduceScatterExactDeg(LargeFixture *f, uint32_t rank, uint32_t degree, uint64_t elements)
+{
+    const uint64_t segment = elements / degree;
+    EnsurePeerBufs(f, elements, 5000u + rank + degree * 41u + (uint32_t)(elements & 0xffffu));
+    uint16_t *h_ref = (uint16_t *)malloc((size_t)segment * sizeof(uint16_t));
+    uint16_t *h_out = (uint16_t *)malloc((size_t)segment * sizeof(uint16_t));
+    for ( uint64_t i = 0u; i < segment; ++i )
+    {
+        float acc = 0.0f;
+        for ( uint32_t p = 0u; p < degree; ++p )
+            acc += Bf16ToFloat(f->responder.peer_buf[p][(uint64_t)rank * segment + i]);
+        h_ref[i] = FloatToBf16Rn(acc);
+    }
+    FixtureResetEpoch(f, rank, degree, SPARK_TP_MESH_OPERATION_REDUCE_SCATTER, elements, 1u, 0u, 0u);
+    CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[rank], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    CUDA_OK(cudaMemset(f->share_dev, 0, (size_t)segment * sizeof(uint16_t)));
+    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+        f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->share_dev, f->scratch,
+        elements, SPARK_TP_MESH_OPERATION_REDUCE_SCATTER, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
+    CUDA_OK(cudaMemcpy(h_out, f->share_dev, (size_t)segment * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    SparkTpMeshRoundControl ctrl;
+    CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+    CHECK(ctrl.error_word == 0u && ctrl.rounds_done == 1u, "e14-r2 ReduceScatter exact completed cleanly");
+    CHECK(memcmp(h_ref, h_out, (size_t)segment * sizeof(uint16_t)) == 0, "e14-r2 ReduceScatter output is 0-ULP bitwise exact");
+    free(h_out);
+    free(h_ref);
+}
+
+static void TestE14R2Degree4AndScatterFastPaths(LargeFixture *f)
+{
+    uint32_t deg4_ranks[] = { 0u, 3u };
+    for ( uint32_t r = 0u; r < 2u; ++r )
+    {
+        TestRsagExactDeg(f, deg4_ranks[r], 4u, 5120u, 0u);
+        TestRsagExactDeg(f, deg4_ranks[r], 4u, 20480u, 0u);
+        TestRsagExactDeg(f, deg4_ranks[r], 4u, 40960u, 1u);
+        TestRsagExactDeg(f, deg4_ranks[r], 4u, 81920u, 0u);
+        TestRsagExactDeg(f, deg4_ranks[r], 4u, 163840u, 1u);
+        TestReduceScatterExactDeg(f, deg4_ranks[r], 4u, 20480u);
+        TestReduceScatterExactDeg(f, deg4_ranks[r], 4u, 40960u);
+        TestReduceScatterExactDeg(f, deg4_ranks[r], 4u, 81920u);
+        TestReduceScatterExactDeg(f, deg4_ranks[r], 4u, 163840u);
+        TestAllGatherExactDeg(f, deg4_ranks[r], 4u, 20480u);
+        TestAllGatherExactDeg(f, deg4_ranks[r], 4u, 40960u);
+        TestAllGatherExactDeg(f, deg4_ranks[r], 4u, 81920u);
+        TestAllGatherExactDeg(f, deg4_ranks[r], 4u, 327680u);
+    }
+    TestReduceScatterExactDeg(f, 0u, 16u, 20480u);
+    TestReduceScatterExactDeg(f, 7u, 16u, 40960u);
+    TestReduceScatterExactDeg(f, 15u, 16u, 163840u);
+
+    SparkTpMeshRoundControl ctrl;
+    FixtureResetEpoch(f, 0u, 4u, 1u, 40960u, 0u, 0u, 0u);
+    __atomic_store_n(&f->responder.cancel_after_ns, 50000u, __ATOMIC_RELEASE);
+    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+        f->doorbell_dev, f->gate_dev, f->control, 0u, 4u, f->local_dev, f->out_dev, f->scratch,
+        40960u, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
+    CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+    CHECK((ctrl.error_word & SPARK_WEIGHTD_MESH_WAIT_ERROR_CANCELLED) != 0u && ctrl.rounds_done == 0u,
+        "e14-r2 deg4 wide256 stream allreduce cancels cleanly");
+
+    FixtureResetEpoch(f, 0u, 4u, SPARK_TP_MESH_OPERATION_REDUCE_SCATTER, 81920u, 0u, 0u, 0u);
+    __atomic_store_n(&f->responder.drop_peer, 2u, __ATOMIC_RELEASE);
+    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+        f->doorbell_dev, f->gate_dev, f->control, 0u, 4u, f->local_dev, f->share_dev, f->scratch,
+        81920u, SPARK_TP_MESH_OPERATION_REDUCE_SCATTER, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000ull, SPARK_TP_MESH_STAGE_ALL));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
+    CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+    CHECK(ctrl.error_word != 0u && ctrl.rounds_done == 0u,
+        "e14-r2 deg4 fast reduce-scatter times out cleanly on dropped peer");
+
+    TestReduceScatterExactDeg(f, 0u, 4u, 81920u);
 }
 
 typedef struct BenchMetrics
@@ -644,6 +760,7 @@ int main(void)
     TestRsagExact(&fixture, 0u, 1024ull * 8192ull, 0u);
     TestReduceScatterExact(&fixture, 0u, 4096ull * 4096ull);
     TestAllGatherExact(&fixture, 0u, 4096ull * 4096ull);
+    TestE14R2Degree4AndScatterFastPaths(&fixture);
     TestLargeCancelAndTimeout(&fixture);
 
     RunLargeBenchmarks(&fixture);

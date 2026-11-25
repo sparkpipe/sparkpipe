@@ -532,7 +532,8 @@ static void FixtureResetEpoch(WireFixture *f, uint32_t rank, uint32_t degree, ui
     __atomic_store_n(&f->responder.wire_bytes_total, 0ull, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.reset_req, 1u, __ATOMIC_RELEASE);
     while ( __atomic_load_n(&f->responder.reset_req, __ATOMIC_ACQUIRE) != 0u ) {}
-    CUDA_OK(cudaMemcpy(f->control, &host, sizeof(host), cudaMemcpyHostToDevice));
+    CUDA_OK(cudaMemcpyAsync(f->control, &host, sizeof(host), cudaMemcpyHostToDevice, f->stream));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
 }
 
 static void EnsurePeerBufs(WireFixture *f, uint64_t elems_per_peer, uint32_t salt)
