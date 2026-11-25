@@ -937,7 +937,7 @@ static __device__ __forceinline__ void LmSkinnyTask(const LmSkinnyArguments &arg
 }
 
 template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
-__global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyKernel(const __grid_constant__ LmSkinnyArguments args)
+__global__ __launch_bounds__(LM_SKINNY_THREADS, 1) void LmSkinnyKernel(const __grid_constant__ LmSkinnyArguments args)
 {
 	const uint32_t blocks = LmSkinnyRowBlocks<ROWS>(args.rows);
 	LmSkinnyTask<Format,LANES,ROWS,NPG>(args,((blockIdx.x / blocks) * LM_SKINNY_THREADS + threadIdx.x) / LANES,(blockIdx.x % blocks) * ROWS);
@@ -2281,7 +2281,7 @@ static __device__ __forceinline__ void LmSkinnyCellSplitRows(const LmSkinnyCellA
 }
 
 template<uint32_t BATCH, uint32_t WARPS, bool SPLIT, bool PAIR_CELLS>
-__global__ __launch_bounds__(WARPS * LM_WARP_LANES) void LmSkinnyCellSplitKernel(const __grid_constant__ LmSkinnyCellArguments args,
+__global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1) void LmSkinnyCellSplitKernel(const __grid_constant__ LmSkinnyCellArguments args,
 	const uint8_t *weight_secondary = 0, uint32_t primary_groups = 0u)
 {
 	__shared__ float partial[WARPS * BATCH * (PAIR_CELLS ? LM_WARP_LANES : LM_SKINNY_CELL_NEURONS)];
