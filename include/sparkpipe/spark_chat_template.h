@@ -30,6 +30,14 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 	bool thinking,
 	char **text,
 	uint32_t *text_bytes);
+SparkChatTemplateOutcome SparkChatTemplateRenderWithSuffix(
+	const SparkModelResidentChatTemplate *chat_template,
+	const SparkJsonDocument *document,
+	int32_t root,
+	bool thinking,
+	char **text,
+	uint32_t *text_bytes,
+	uint32_t *suffix_offset);
 const char *SparkChatTemplateOutcomeCode(SparkChatTemplateOutcome outcome);
 const char *SparkChatTemplateOutcomeMessage(SparkChatTemplateOutcome outcome);
 SparkStatus SparkChatTemplateResolveStops(

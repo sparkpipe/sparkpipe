@@ -82,23 +82,27 @@ static const char *SparkChatTemplateSystemSuffix(
 	return(leading_system && suffix != 0 ? suffix : "");
 }
 
-SparkChatTemplateOutcome SparkChatTemplateRender(
+SparkChatTemplateOutcome SparkChatTemplateRenderWithSuffix(
 	const SparkModelResidentChatTemplate *chat_template,
 	const SparkJsonDocument *document,
 	int32_t root,
 	bool thinking,
 	char **text,
-	uint32_t *text_bytes)
+	uint32_t *text_bytes,
+	uint32_t *suffix_offset)
 {
 	SparkChatTemplateText rendered;
 	SparkChatTemplateOutcome outcome = SPARK_CHAT_TEMPLATE_RENDERED;
 	int32_t messages;
 	uint32_t message_count,message_index;
 	uint32_t leading_system = 0u;
+	size_t tail_offset = 0u;
 	if ( document == 0 || root < 0 || text == 0 || text_bytes == 0 )
 		return(SPARK_CHAT_TEMPLATE_INVALID_MESSAGES);
 	*text = 0;
 	*text_bytes = 0u;
+	if ( suffix_offset != 0 )
+		*suffix_offset = 0u;
 	messages = SparkJsonFindObjectMember(document,root,"messages");
 	if ( messages < 0 )
 		return(SPARK_CHAT_TEMPLATE_NOT_CHAT);
@@ -153,11 +157,15 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 			outcome = SPARK_CHAT_TEMPLATE_INVALID_MESSAGES;
 			break;
 		}
-		if ( !SparkChatTemplateAppend(&rendered,header) || !SparkChatTemplateAppend(&rendered,piece) ||
-			!SparkChatTemplateAppend(&rendered,SparkChatTemplateSystemSuffix(chat_template,thinking,message_index == 0u && leading_system != 0u)) ||
+		if ( !SparkChatTemplateAppend(&rendered,header) || !SparkChatTemplateAppend(&rendered,piece) )
+			outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
+		if ( outcome == SPARK_CHAT_TEMPLATE_RENDERED && message_index + 1u == message_count )
+			tail_offset = rendered.length;
+		if ( outcome == SPARK_CHAT_TEMPLATE_RENDERED &&
+			(!SparkChatTemplateAppend(&rendered,SparkChatTemplateSystemSuffix(chat_template,thinking,message_index == 0u && leading_system != 0u)) ||
 			!SparkChatTemplateAppend(&rendered,SparkChatTemplateRoleSuffix(chat_template,document,
 				SparkJsonFindObjectMember(document,entry,"role"))) ||
-			!SparkChatTemplateAppend(&rendered,chat_template->turn_suffix) )
+			!SparkChatTemplateAppend(&rendered,chat_template->turn_suffix)) )
 			outcome = SPARK_CHAT_TEMPLATE_OUT_OF_MEMORY;
 		free(piece);
 	}
@@ -171,7 +179,20 @@ SparkChatTemplateOutcome SparkChatTemplateRender(
 	}
 	*text = rendered.bytes;
 	*text_bytes = (uint32_t)rendered.length;
+	if ( suffix_offset != 0 )
+		*suffix_offset = (uint32_t)tail_offset;
 	return(SPARK_CHAT_TEMPLATE_RENDERED);
+}
+
+SparkChatTemplateOutcome SparkChatTemplateRender(
+	const SparkModelResidentChatTemplate *chat_template,
+	const SparkJsonDocument *document,
+	int32_t root,
+	bool thinking,
+	char **text,
+	uint32_t *text_bytes)
+{
+	return(SparkChatTemplateRenderWithSuffix(chat_template,document,root,thinking,text,text_bytes,0));
 }
 
 const char *SparkChatTemplateOutcomeCode(SparkChatTemplateOutcome outcome)

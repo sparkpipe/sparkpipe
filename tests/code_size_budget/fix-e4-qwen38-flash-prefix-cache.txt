@@ -1,0 +1,2 @@
++65
+Automatic recurrent prefix cache checkpoint before chat template closing suffix in model_api (SparkChatTemplateRenderWithSuffix + pre-suffix cache_points[0] placement for recurrent-state adapters like qwen38_flash).
