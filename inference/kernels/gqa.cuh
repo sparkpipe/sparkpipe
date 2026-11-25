@@ -25,28 +25,40 @@ void LmBuildSlidingWindowPositionsKernel(
 	uint32_t start;
 	uint32_t index;
 
+	LmDependentWait();
 	if ( row >= row_count || window == 0u )
+	{
+		LmDependentRelease();
 		return;
-	sequence = sequence_of_row[row];
-	available = context_length[sequence];
-	if ( position_of_row != 0 && position_of_row[row] != 0xffffffffu
-		&& available > position_of_row[row] + 1u )
-		available = position_of_row[row] + 1u;
+	}
+	sequence = __ldg(sequence_of_row + row);
+	available = __ldg(context_length + sequence);
+	if ( position_of_row != 0 )
+	{
+		const uint32_t row_pos = __ldg(position_of_row + row);
+		if ( row_pos != 0xffffffffu && available > row_pos + 1u )
+			available = row_pos + 1u;
+	}
 	selected = available < window ? available : window;
 	start = available - selected;
 	for ( index = threadIdx.x; index < window; index += THREADS )
 		positions_out[((uint64_t)row * window) + index] = index < selected
 			? start + index
 			: LM_KV_POSITION_UNUSED;
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmExpandHeadsKernel(const uint16_t *__restrict__ input_bf16, uint16_t *__restrict__ output_bf16, uint32_t source_heads, uint32_t head_dim, uint32_t group, uint32_t rows)
 {
+	LmDependentWait();
 	uint32_t row = blockIdx.x,head,index;
 	if ( row >= rows )
+	{
+		LmDependentRelease();
 		return;
+	}
 	if ( (head_dim % 8u) == 0u && ((((uintptr_t)input_bf16 | (uintptr_t)output_bf16) & 15u) == 0u) )
 	{
 		const uint32_t head_chunks = head_dim >> 3u;
@@ -57,14 +69,16 @@ void LmExpandHeadsKernel(const uint16_t *__restrict__ input_bf16, uint16_t *__re
 		{
 			const uint32_t out_head = index / head_chunks;
 			const uint32_t chunk = index % head_chunks;
-			out4[index] = in4[(out_head / group) * head_chunks + chunk];
+			out4[index] = __ldg(in4 + (out_head / group) * head_chunks + chunk);
 		}
+		LmDependentRelease();
 		return;
 	}
 	for (head = 0u; head < source_heads * group; ++head)
 		for (index = threadIdx.x; index < head_dim; index += THREADS)
 			output_bf16[(((uint64_t)row * source_heads * group) + head) * head_dim + index] =
-				input_bf16[(((uint64_t)row * source_heads) + (head / group)) * head_dim + index];
+				__ldg(input_bf16 + (((uint64_t)row * source_heads) + (head / group)) * head_dim + index);
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -73,14 +87,21 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 {
 	static_assert(Geometry::kSlotBytes == (KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u),
 		"the slot is [K: heads x head_dim][V: heads x value_dim] bf16 and nothing else");
+	LmDependentWait();
 	uint32_t row = blockIdx.x,index;
 	uint8_t *slot;
 	if ( row >= row_count )
+	{
+		LmDependentRelease();
 		return;
+	}
 	slot = LmKvSlotMutableRequired<Geometry>(
-		view,sequence_of_row[row],position_of_row[row],row);
+		view,__ldg(sequence_of_row + row),__ldg(position_of_row + row),row);
 	if ( slot == 0 )
+	{
+		LmDependentRelease();
 		return;
+	}
 	if constexpr ( ((KV_HEADS * HEAD_DIM) % 8u) == 0u && ((KV_HEADS * VALUE_DIM) % 8u) == 0u )
 	{
 		if ( ((((uintptr_t)slot | (uintptr_t)key_bf16 | (uintptr_t)value_bf16) & 15u) == 0u) )
@@ -91,15 +112,17 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 			const uint4 *val4 = (const uint4 *)(value_bf16 + (uint64_t)row * KV_HEADS * VALUE_DIM);
 			uint4 *dst4 = (uint4 *)slot;
 			for (index = threadIdx.x; index < TOTAL_CHUNKS; index += THREADS)
-				dst4[index] = index < KEY_CHUNKS ? key4[index] : val4[index - KEY_CHUNKS];
+				dst4[index] = index < KEY_CHUNKS ? __ldg(key4 + index) : __ldg(val4 + (index - KEY_CHUNKS));
+			LmDependentRelease();
 			return;
 		}
 	}
 	for (index = threadIdx.x; index < KV_HEADS * (HEAD_DIM + VALUE_DIM); index += THREADS)
 		((uint16_t *)slot)[index] = index < KV_HEADS * HEAD_DIM
-			? key_bf16[((uint64_t)row * KV_HEADS * HEAD_DIM) + index]
-			: value_bf16[((uint64_t)row * KV_HEADS * VALUE_DIM)
-				+ (index - (KV_HEADS * HEAD_DIM))];
+			? __ldg(key_bf16 + ((uint64_t)row * KV_HEADS * HEAD_DIM) + index)
+			: __ldg(value_bf16 + ((uint64_t)row * KV_HEADS * VALUE_DIM)
+				+ (index - (KV_HEADS * HEAD_DIM)));
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -108,10 +131,12 @@ static __device__ __forceinline__ void LmGqaAttentionDecodeRow(const uint16_t *_
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[HEAD_DIM];
 	float accumulator[(VALUE_DIM + THREADS - 1u) / THREADS];
+	LmDependentWait();
 	uint32_t row = blockIdx.x,head = blockIdx.y,index,step,positions;
 	static_assert(Geometry::kSlotBytes == (KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u),
 		"store and decode must agree on the slot layout");
-	uint32_t sequence = sequence_of_row[row];
+	uint32_t sequence = __ldg(sequence_of_row + row);
+	const uint32_t max_pos = row_position != 0 ? __ldg(row_position + row) : 0xffffffffu;
 	uint32_t kv_head;
 	uint64_t query_base;
 	float running_max = initial_max,running_sum = initial_sum;
@@ -128,6 +153,7 @@ static __device__ __forceinline__ void LmGqaAttentionDecodeRow(const uint16_t *_
 			sequence,
 			0xffffffffu,
 			0xffffffffu);
+		LmDependentRelease();
 		return;
 	}
 	if ( heads < KV_HEADS || ( heads % KV_HEADS ) != 0u || head >= heads )
@@ -140,55 +166,66 @@ static __device__ __forceinline__ void LmGqaAttentionDecodeRow(const uint16_t *_
 			sequence,
 			head,
 			heads);
+		LmDependentRelease();
 		return;
 	}
 	kv_head = head / (heads / KV_HEADS);
 	query_base = ((uint64_t)row * heads + head) * HEAD_DIM;
+	#pragma unroll
 	for (index = 0u; index < (VALUE_DIM + THREADS - 1u) / THREADS; ++index)
 		accumulator[index] = 0.0f;
 	for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
-		shared_query[index] = LmBf16ToFloat(query_bf16[query_base + index]);
+		shared_query[index] = LmBf16ToFloat(__ldg(query_bf16 + query_base + index));
 	__syncthreads();
-	positions = selected_positions != 0 ? selected_count : context_length[sequence];
+	positions = selected_positions != 0 ? selected_count : __ldg(context_length + sequence);
 	for (step = 0u; step < positions; ++step)
 	{
 		uint32_t position = selected_positions != 0
-			? selected_positions[(row * selected_count) + step] : step;
+			? __ldg(selected_positions + (row * selected_count) + step) : step;
 		const uint8_t *slot;
 		if ( position == LM_KV_POSITION_UNUSED )
 			continue;
 		const uint16_t *key,*value;
-		float score = 0.0f,scaled,previous;
-		if ( row_position != 0 && position > row_position[row] )
+		float score = 0.0f,scaled,previous,current_prob,value_weight;
+		if ( row_position != 0 && position > max_pos )
 			continue;
 		slot = LmKvSlotRequired<Geometry>(
 			cache,sequence,position,row,LM_KV_ACCESS_READ);
 		if ( slot == 0 )
+		{
+			LmDependentRelease();
 			return;
+		}
 		key = (const uint16_t *)slot + (kv_head * HEAD_DIM);
 		value = (const uint16_t *)slot + (KV_HEADS * HEAD_DIM) + (kv_head * VALUE_DIM);
 		for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
-			score += shared_query[index] * LmBf16ToFloat(key[index]);
+			score += shared_query[index] * LmBf16ToFloat(__ldg(key + index));
 		score = LmBlockSum<THREADS>(score,reduction) * qk_scale;
 		previous = running_max;
 		running_max = fmaxf(running_max,score);
 		scaled = __expf(previous - running_max);
-		running_sum = (running_sum * scaled) + __expf(score - running_max);
+		current_prob = __expf(score - running_max);
+		running_sum = (running_sum * scaled) + current_prob;
+		value_weight = SparkMathAttentionValueWeight(current_prob);
+		#pragma unroll
 		for (index = 0u; index < (VALUE_DIM + THREADS - 1u) / THREADS; ++index)
 		{
 			uint32_t element = (index * THREADS) + threadIdx.x;
 			if ( element < VALUE_DIM )
 				accumulator[index] = (accumulator[index] * scaled)
-					+ (SparkMathAttentionValueWeight(__expf(score - running_max)) * LmBf16ToFloat(value[element]));
+					+ (value_weight * LmBf16ToFloat(__ldg(value + element)));
 		}
 	}
+	const float denom = fmaxf(running_sum,1.0e-20f);
+	#pragma unroll
 	for (index = 0u; index < (VALUE_DIM + THREADS - 1u) / THREADS; ++index)
 	{
 		uint32_t element = (index * THREADS) + threadIdx.x;
 		if ( element < VALUE_DIM )
 			output_bf16[(((uint64_t)row * heads) + head) * VALUE_DIM + element] =
-				LmFloatToBf16(accumulator[index] / fmaxf(running_sum,1.0e-20f));
+				LmFloatToBf16(accumulator[index] / denom);
 	}
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>

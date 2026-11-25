@@ -168,6 +168,34 @@ template<uint32_t HIDDEN>
 static __device__ void LmHcCollapse(const float *pre, const uint16_t *streams, uint16_t *collapsed, uint16_t *snapshot, uint32_t first, uint32_t thread,
 	uint32_t threads)
 {
+	if constexpr ( (LmHcSiteShape<HIDDEN>::kPreSlice % 8u) == 0u )
+	{
+		if ( LmIsAligned16(streams) && LmIsAligned16(collapsed) && LmIsAligned16(snapshot) )
+		{
+			const float p0 = pre[0], p1 = pre[1], p2 = pre[2], p3 = pre[3];
+			for ( uint32_t off = first + thread * 8u; off < first + LmHcSiteShape<HIDDEN>::kPreSlice; off += threads * 8u )
+			{
+				const uint4 v0 = __ldg((const uint4 *)(streams + 0u * HIDDEN + off));
+				const uint4 v1 = __ldg((const uint4 *)(streams + 1u * HIDDEN + off));
+				const uint4 v2 = __ldg((const uint4 *)(streams + 2u * HIDDEN + off));
+				const uint4 v3 = __ldg((const uint4 *)(streams + 3u * HIDDEN + off));
+				*(uint4 *)(snapshot + 0u * HIDDEN + off) = v0;
+				*(uint4 *)(snapshot + 1u * HIDDEN + off) = v1;
+				*(uint4 *)(snapshot + 2u * HIDDEN + off) = v2;
+				*(uint4 *)(snapshot + 3u * HIDDEN + off) = v3;
+				float f0[8], f1[8], f2[8], f3[8], out[8];
+				LmLoadBf16x8AsFloat(v0, f0);
+				LmLoadBf16x8AsFloat(v1, f1);
+				LmLoadBf16x8AsFloat(v2, f2);
+				LmLoadBf16x8AsFloat(v3, f3);
+#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					out[k] = (((0.0f + p0 * f0[k]) + p1 * f1[k]) + p2 * f2[k]) + p3 * f3[k];
+				*(uint4 *)(collapsed + off) = LmPackUint4FloatToBf16(out);
+			}
+			return;
+		}
+	}
 	for ( uint32_t element = first + thread; element < first + LmHcSiteShape<HIDDEN>::kPreSlice; element += threads )
 	{
 		float value = 0.0f;
@@ -175,7 +203,7 @@ static __device__ void LmHcCollapse(const float *pre, const uint16_t *streams, u
 		for ( uint32_t stream = 0u; stream < LM_HC_SITE_STREAMS; ++stream )
 		{
 			const uint64_t index = (uint64_t)stream * HIDDEN + element;
-			const uint16_t raw = streams[index];
+			const uint16_t raw = __ldg(streams + index);
 			snapshot[index] = raw;
 			value += pre[stream] * LmBf16ToFloat(raw);
 		}
@@ -219,6 +247,7 @@ __global__ void __cluster_dims__(LM_HC_SITE_CLUSTER, 1, 1) __launch_bounds__(LM_
 	for ( uint32_t row = 0u; row < live; ++row )
 		LmHcCollapse<HIDDEN>(shared.pre[row], streams + (uint64_t)row * S::kFlat, collapsed_bf16 + (uint64_t)(first + row) * HIDDEN,
 			snapshot_bf16 + (uint64_t)(first + row) * S::kFlat, slice * S::kPreSlice, threadIdx.x, LM_HC_SITE_THREADS);
+	LmDependentRelease();
 }
 
 template<uint32_t HIDDEN, uint32_t MIX_GROUPS, bool FUSE_POST>
@@ -387,10 +416,10 @@ __global__ __launch_bounds__(LM_HC_SITE_THREADS) void LmHcSiteMultiFinishKernel(
 	for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
 	{
 		const uint32_t off = (slot * LM_HC_SITE_THREADS + threadIdx.x) * 8u;
-		const uint4 v0 = *(const uint4 *)(row_streams + 0u * HIDDEN + off);
-		const uint4 v1 = *(const uint4 *)(row_streams + 1u * HIDDEN + off);
-		const uint4 v2 = *(const uint4 *)(row_streams + 2u * HIDDEN + off);
-		const uint4 v3 = *(const uint4 *)(row_streams + 3u * HIDDEN + off);
+		const uint4 v0 = __ldg((const uint4 *)(row_streams + 0u * HIDDEN + off));
+		const uint4 v1 = __ldg((const uint4 *)(row_streams + 1u * HIDDEN + off));
+		const uint4 v2 = __ldg((const uint4 *)(row_streams + 2u * HIDDEN + off));
+		const uint4 v3 = __ldg((const uint4 *)(row_streams + 3u * HIDDEN + off));
 		if constexpr ( WRITE_SNAPSHOT )
 		{
 			uint16_t *row_snap = snapshot_bf16 + (uint64_t)row * S::kFlat;
@@ -478,7 +507,7 @@ __global__ __launch_bounds__(LM_HC_SITE_THREADS) void LmHcPostBf16VecKernel(cons
 		LmLoadBf16x8AsFloat(__ldg((const uint4 *)(o_row + off)), fo);
 #pragma unroll
 		for ( uint32_t src = 0u; src < LM_HC_SITE_STREAMS; ++src )
-			LmLoadBf16x8AsFloat(*(const uint4 *)(s_row + (uint64_t)src * HIDDEN + off), r[src]);
+			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(s_row + (uint64_t)src * HIDDEN + off)), r[src]);
 #pragma unroll
 		for ( uint32_t s = 0u; s < LM_HC_SITE_STREAMS; ++s )
 		{
@@ -594,25 +623,59 @@ static SparkGpuError LmHcSiteNorm(const uint16_t *streams, const float *fn, cons
 template<uint32_t HIDDEN>
 __global__ void LmHcExpandStreamsKernel(const uint16_t *__restrict__ hidden, uint16_t *__restrict__ streams, uint32_t rows)
 {
+	LmDependentWait();
 	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( row >= rows || element >= HIDDEN )
+	{
+		LmDependentRelease();
 		return;
-	const uint16_t value = hidden[(uint64_t)row * HIDDEN + element];
+	}
+	const uint16_t value = __ldg(hidden + (uint64_t)row * HIDDEN + element);
+#pragma unroll
 	for ( uint32_t stream = 0u; stream < LM_HC_SITE_STREAMS; ++stream )
 		streams[((uint64_t)row * LM_HC_SITE_STREAMS + stream) * HIDDEN + element] = value;
+	LmDependentRelease();
 }
 
 template<uint32_t HIDDEN>
 __global__ void LmHcStreamsMeanKernel(const uint16_t *__restrict__ streams_bf16, uint16_t *__restrict__ reduced_bf16, uint32_t row_count)
 {
+	LmDependentWait();
 	const uint32_t row = blockIdx.x;
 	if ( row >= row_count )
+	{
+		LmDependentRelease();
 		return;
+	}
+	if constexpr ( (HIDDEN & 7u) == 0u )
+	{
+		if ( LmIsAligned16(streams_bf16) && LmIsAligned16(reduced_bf16) )
+		{
+			const uint16_t *row_streams = streams_bf16 + (uint64_t)row * LM_HC_SITE_STREAMS * HIDDEN;
+			uint16_t *row_out = reduced_bf16 + (uint64_t)row * HIDDEN;
+			for ( uint32_t off = threadIdx.x * 8u; off < HIDDEN; off += blockDim.x * 8u )
+			{
+				float s0[8], s1[8], s2[8], s3[8], out[8];
+				LmLoadBf16x8AsFloat(__ldg((const uint4 *)(row_streams + 0u * HIDDEN + off)), s0);
+				LmLoadBf16x8AsFloat(__ldg((const uint4 *)(row_streams + 1u * HIDDEN + off)), s1);
+				LmLoadBf16x8AsFloat(__ldg((const uint4 *)(row_streams + 2u * HIDDEN + off)), s2);
+				LmLoadBf16x8AsFloat(__ldg((const uint4 *)(row_streams + 3u * HIDDEN + off)), s3);
+#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					out[k] = ((((0.0f + s0[k]) + s1[k]) + s2[k]) + s3[k]) / (float)LM_HC_SITE_STREAMS;
+				*(uint4 *)(row_out + off) = LmPackUint4FloatToBf16(out);
+			}
+			LmDependentRelease();
+			return;
+		}
+	}
 	for ( uint32_t element = threadIdx.x; element < HIDDEN; element += blockDim.x )
 	{
 		float value = 0.0f;
+#pragma unroll
 		for ( uint32_t stream = 0u; stream < LM_HC_SITE_STREAMS; ++stream )
-			value += LmBf16ToFloat(streams_bf16[((uint64_t)row * LM_HC_SITE_STREAMS + stream) * HIDDEN + element]);
+			value += LmBf16ToFloat(__ldg(streams_bf16 + ((uint64_t)row * LM_HC_SITE_STREAMS + stream) * HIDDEN + element));
 		reduced_bf16[(uint64_t)row * HIDDEN + element] = LmFloatToBf16(value / (float)LM_HC_SITE_STREAMS);
 	}
+	LmDependentRelease();
 }
