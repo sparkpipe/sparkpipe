@@ -1033,12 +1033,12 @@ void LmIndexSelectMergeSampledKernel(const uint2 *__restrict__ gathered, uint64_
 		if ( threadIdx.x == 0u )
 			s.count = 0u;
 		__syncthreads();
-		for ( uint32_t idx = threadIdx.x; idx < scount; idx += THREADS )
+		for ( uint32_t offset = 0u; offset < scount; offset += THREADS )
 		{
-			const uint32_t d = idx / per_rank, j = idx % per_rank;
+			const uint32_t idx = offset + threadIdx.x, d = idx / per_rank, j = idx % per_rank;
 			const uint32_t off = j * stride + ((idx * 2654435761u) >> 16u) % stride;
-			const uint2 c = off < span ? __ldg(row_gathered + (uint64_t)d * rank_stride_candidates + off) : make_uint2(0u, bound);
-			const bool valid = c.y < bound;
+			const uint2 c = idx < scount && off < span ? __ldg(row_gathered + (uint64_t)d * rank_stride_candidates + off) : make_uint2(0u, bound);
+			const bool valid = idx < scount && c.y < bound;
 			const uint32_t m = __ballot_sync(0xffffffffu, valid);
 			if ( m != 0u )
 			{
