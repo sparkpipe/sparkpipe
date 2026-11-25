@@ -173,7 +173,7 @@
   }
 
   var DATA = null;
-  var state = { hw: "16x-gb10-1x100g", tier: "all", filter: "all", selected: "kimi-k3.1-pro" };
+  var state = { hw: "16x-gb10-1x100g", tier: "all", filter: "all", selected: "kimi-k3.1-pro", histView: "fleet", histModel: "kimi-k3.1-pro", histIdx: -1 };
 
   function currentProfile() {
     if (!DATA) return null;
@@ -396,9 +396,232 @@
     });
   }
 
+  function historySeries(snaps) {
+    var view = state.histView;
+    if (view === "fleet") {
+      return [
+        { key: "rais", label: ko ? "플릿 RAIS (전체)" : "Fleet RAIS (19-model)", color: "#f97316", width: 3.0, get: function (s) { return s.fleet.rais_unpenalized; } },
+        { key: "valid", label: ko ? "인증 가중 RAIS" : "Valid-Weighted RAIS", color: "#4ade80", width: 2.2, dash: "5 4", get: function (s) { return s.fleet.rais_valid_weighted; } },
+        { key: "base_r", label: ko ? "기본 루프라인 R" : "Base Roofline R", color: "#e2e8f0", width: 2.0, get: function (s) { return s.fleet.base_r; } },
+        { key: "P1", label: "P1 Decode", color: "#38bdf8", width: 1.8, get: function (s) { return s.fleet.pillars.P1; } },
+        { key: "P2", label: "P2 Spec", color: "#c084fc", width: 1.8, get: function (s) { return s.fleet.pillars.P2; } },
+        { key: "P3", label: "P3 Batch", color: "#fbbf24", width: 1.8, get: function (s) { return s.fleet.pillars.P3; } },
+        { key: "P4", label: "P4 Prefill", color: "#fb7185", width: 1.8, get: function (s) { return s.fleet.pillars.P4; } }
+      ];
+    }
+    if (view === "model") {
+      var mn = state.histModel;
+      return [
+        { key: "rais", label: mn + " RAIS", color: "#f97316", width: 3.0, get: function (s) { var m = s.models[mn]; return m ? m.raw_rais : null; } },
+        { key: "base_r", label: "Base R", color: "#e2e8f0", width: 2.0, get: function (s) { var m = s.models[mn]; return m ? m.base_r : null; } },
+        { key: "P1", label: "P1 Decode", color: "#38bdf8", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P1 : null; } },
+        { key: "P2", label: "P2 Spec", color: "#c084fc", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P2 : null; } },
+        { key: "P3", label: "P3 Batch", color: "#fbbf24", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P3 : null; } },
+        { key: "P4", label: "P4 Prefill", color: "#fb7185", width: 1.8, get: function (s) { var m = s.models[mn]; return m ? m.pillars.P4 : null; } }
+      ];
+    }
+    var groupMap = {
+      p1: [["p1a_short_b1", "#38bdf8"], ["p1b_long_b1", "#0ea5e9"], ["p1c_tail_jitter", "#a7f3d0"]],
+      p2: [["p2a_spec_acceptance", "#c084fc"], ["p2b_verify_b1", "#f97316"], ["p2b_verify_b8", "#fbbf24"]],
+      p3: [["p3a_interactive_batch", "#fbbf24"], ["p3b_high_concurrency", "#f97316"], ["p3c_long_ctx_batch", "#38bdf8"]],
+      p4: [["p4a_cold_prefill_8k", "#fb7185"], ["p4b_long_cold_prefill", "#f97316"], ["p4c_multiturn_prefix_ttft", "#4ade80"]]
+    };
+    return (groupMap[view] || []).map(function (pair) {
+      return {
+        key: pair[0],
+        label: T.submetricLabels[pair[0]] || pair[0],
+        color: pair[1],
+        width: 2.4,
+        get: function (s) { return s.fleet.submetrics ? s.fleet.submetrics[pair[0]] : null; }
+      };
+    });
+  }
+
+  function fmtDelta(a, b) {
+    if (a == null || b == null) return { text: "–", cls: "flat" };
+    var d = a - b;
+    if (Math.abs(d) < 0.05) return { text: "0.0", cls: "flat" };
+    return { text: (d > 0 ? "+" : "") + d.toFixed(2), cls: d > 0 ? "up" : "down" };
+  }
+
+  function renderHistory() {
+    var chartWrap = el("rais-hist-chart");
+    var legWrap = el("rais-hist-legend");
+    var snapEl = el("rais-hist-snapshot");
+    var subGrid = el("rais-hist-subgrid");
+    var rowsEl = el("rais-hist-rows");
+    var modelWrap = el("rais-hist-model-wrap");
+    var modelSel = el("rais-hist-model");
+    if (!chartWrap || !DATA || !DATA.history || !DATA.history.length) return;
+
+    var snaps = DATA.history;
+    if (state.histIdx < 0 || state.histIdx >= snaps.length) state.histIdx = snaps.length - 1;
+
+    if (modelWrap) modelWrap.style.display = state.histView === "model" ? "" : "none";
+    if (modelSel && !modelSel.options.length && DATA.models) {
+      DATA.models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m.model;
+        opt.textContent = m.model + " (" + m.fleet_weight_pct + "%)";
+        if (m.model === state.histModel) opt.selected = true;
+        modelSel.appendChild(opt);
+      });
+    }
+
+    var series = historySeries(snaps);
+    if (legWrap) {
+      legWrap.textContent = "";
+      series.forEach(function (sr) {
+        var sp = mk("span");
+        var dot = mk("i", "rais-hist-dot");
+        dot.style.background = sr.color;
+        sp.appendChild(dot);
+        var lastVal = sr.get(snaps[state.histIdx]);
+        sp.appendChild(document.createTextNode(sr.label + (lastVal != null ? (": " + lastVal.toFixed(1)) : "")));
+        legWrap.appendChild(sp);
+      });
+    }
+
+    var W = 820, H = 260, padL = 44, padR = 26, padT = 18, padB = 42;
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    var vals = [];
+    series.forEach(function (sr) {
+      snaps.forEach(function (s) {
+        var v = sr.get(s);
+        if (v != null && !isNaN(v)) vals.push(v);
+      });
+    });
+    var minV = vals.length ? Math.floor(Math.max(0, Math.min.apply(null, vals) - 5) / 5) * 5 : 0;
+    var maxV = vals.length ? Math.ceil(Math.min(100, Math.max.apply(null, vals) + 5) / 5) * 5 : 100;
+    if (maxV - minV < 15) { minV = Math.max(0, minV - 5); maxV = Math.min(100, maxV + 5); }
+
+    function xPos(i) { return snaps.length === 1 ? padL + plotW / 2 : padL + (i / (snaps.length - 1)) * plotW; }
+    function yPos(v) { return padT + (1 - (v - minV) / (maxV - minV)) * plotH; }
+
+    var svgNS = "http://www.w3.org/2000/svg";
+    function sEl(tag, attrs) {
+      var n = document.createElementNS(svgNS, tag);
+      Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, String(attrs[k])); });
+      return n;
+    }
+
+    var svg = sEl("svg", { viewBox: "0 0 " + W + " " + H, class: "rais-hist-svg", role: "img", "aria-label": "RAIS Progress Over Time" });
+    var ticks = 5;
+    for (var t = 0; t <= ticks; t++) {
+      var tv = minV + (t / ticks) * (maxV - minV);
+      var ty = yPos(tv);
+      svg.appendChild(sEl("line", { x1: padL, y1: ty, x2: W - padR, y2: ty, stroke: "rgba(148,163,184,0.18)", "stroke-width": 1 }));
+      var tl = sEl("text", { x: padL - 8, y: ty + 4, "text-anchor": "end", fill: "#94a3b8", "font-size": 11, "font-family": "var(--mono)" });
+      tl.textContent = tv.toFixed(0);
+      svg.appendChild(tl);
+    }
+
+    var activeX = xPos(state.histIdx);
+    svg.appendChild(sEl("line", { x1: activeX, y1: padT, x2: activeX, y2: H - padB, stroke: "rgba(249,115,22,0.45)", "stroke-width": 1.5, "stroke-dasharray": "4 3" }));
+
+    series.forEach(function (sr) {
+      var pts = [];
+      snaps.forEach(function (s, idx) {
+        var v = sr.get(s);
+        if (v != null && !isNaN(v)) pts.push(xPos(idx).toFixed(1) + "," + yPos(v).toFixed(1));
+      });
+      if (pts.length > 1) {
+        var pathAttrs = { fill: "none", stroke: sr.color, "stroke-width": sr.width, "stroke-linejoin": "round", "stroke-linecap": "round", points: pts.join(" ") };
+        if (sr.dash) pathAttrs["stroke-dasharray"] = sr.dash;
+        svg.appendChild(sEl("polyline", pathAttrs));
+      }
+      snaps.forEach(function (s, idx) {
+        var v = sr.get(s);
+        if (v == null || isNaN(v)) return;
+        var isCert = s.fleet.status === "VALID";
+        var isSel = idx === state.histIdx;
+        var c = sEl("circle", {
+          cx: xPos(idx).toFixed(1),
+          cy: yPos(v).toFixed(1),
+          r: isSel ? 5.5 : (isCert ? 4.2 : 3.2),
+          fill: isCert ? sr.color : "#0f172a",
+          stroke: sr.color,
+          "stroke-width": isSel ? 2.5 : 1.8,
+          style: "cursor:pointer"
+        });
+        c.addEventListener("click", function () { state.histIdx = idx; renderHistory(); });
+        svg.appendChild(c);
+      });
+    });
+
+    snaps.forEach(function (s, idx) {
+      var x = xPos(idx);
+      var lbl1 = sEl("text", { x: x, y: H - padB + 16, "text-anchor": "middle", fill: idx === state.histIdx ? "#f8fafc" : "#94a3b8", "font-size": 11, "font-weight": idx === state.histIdx ? "700" : "500", "font-family": "var(--mono)", style: "cursor:pointer" });
+      lbl1.textContent = s.label + (s.fleet.status === "VALID" ? " ✓" : "");
+      lbl1.addEventListener("click", function () { state.histIdx = idx; renderHistory(); });
+      svg.appendChild(lbl1);
+      var tStr = (s.utc || "").slice(5, 16).replace("T", " ") + "Z";
+      var lbl2 = sEl("text", { x: x, y: H - padB + 30, "text-anchor": "middle", fill: "#64748b", "font-size": 10, "font-family": "var(--mono)", style: "cursor:pointer" });
+      lbl2.textContent = tStr;
+      lbl2.addEventListener("click", function () { state.histIdx = idx; renderHistory(); });
+      svg.appendChild(lbl2);
+    });
+
+    chartWrap.textContent = "";
+    chartWrap.appendChild(svg);
+
+    var cur = snaps[state.histIdx];
+    var base = snaps[0];
+    if (snapEl) {
+      var tag = cur.label + " (" + cur.release + ") · " + cur.utc + " · " + cur.fleet.valid_models + "/" + cur.fleet.total_models + " VALID";
+      snapEl.textContent = cur.note ? (tag + " — " + cur.note) : tag;
+    }
+
+    if (subGrid) {
+      subGrid.textContent = "";
+      var curSubs = state.histView === "model" && cur.models[state.histModel] ? cur.models[state.histModel].submetrics : cur.fleet.submetrics;
+      var baseSubs = state.histView === "model" && base.models[state.histModel] ? base.models[state.histModel].submetrics : base.fleet.submetrics;
+      (DATA.submetrics_meta || []).forEach(function (meta) {
+        var k = meta.key;
+        var v = curSubs ? curSubs[k] : null;
+        var bv = baseSubs ? baseSubs[k] : null;
+        var dl = fmtDelta(v, bv);
+        var card = mk("div", "rais-hist-subcard");
+        card.appendChild(mk("span", "k", (T.submetricLabels[k] || meta.label).split(" (")[0]));
+        var vrow = mk("div", "v");
+        vrow.appendChild(mk("span", "", v != null ? v.toFixed(1) : "–"));
+        vrow.appendChild(mk("span", "d " + dl.cls, dl.text));
+        card.appendChild(vrow);
+        subGrid.appendChild(card);
+      });
+    }
+
+    if (rowsEl) {
+      rowsEl.textContent = "";
+      snaps.forEach(function (s, idx) {
+        var tr = mk("tr", "rais-row" + (idx === state.histIdx ? " active" : ""));
+        tr.tabIndex = 0;
+        var dl = fmtDelta(s.fleet.rais_unpenalized, base.fleet.rais_unpenalized);
+        var tdRel = mk("td");
+        tdRel.appendChild(mk("b", "mono", s.label + " (" + s.release + ")"));
+        tdRel.appendChild(mk("div", "rais-model-meta mono", (s.utc || "") + (s.note ? (" · " + s.note) : "")));
+        tr.appendChild(tdRel);
+        var tdVal = mk("td");
+        var bCls = s.fleet.status === "VALID" ? "rais-badge valid" : "rais-badge partial";
+        tdVal.appendChild(mk("span", bCls, s.fleet.valid_models + "/" + s.fleet.total_models + (s.fleet.status === "VALID" ? " VALID" : "")));
+        tr.appendChild(tdVal);
+        tr.appendChild(mk("td", "num rais-score-cell", s.fleet.rais_unpenalized.toFixed(2)));
+        tr.appendChild(mk("td", "num " + (dl.cls === "up" ? "signal" : ""), idx === 0 ? "base" : dl.text));
+        tr.appendChild(mk("td", "num", s.fleet.base_r.toFixed(2)));
+        tr.appendChild(mk("td", "num", s.fleet.pillars.P1.toFixed(1)));
+        tr.appendChild(mk("td", "num", s.fleet.pillars.P2.toFixed(1)));
+        tr.appendChild(mk("td", "num", s.fleet.pillars.P3.toFixed(1)));
+        tr.appendChild(mk("td", "num", s.fleet.pillars.P4.toFixed(1)));
+        tr.addEventListener("click", function () { state.histIdx = idx; renderHistory(); });
+        rowsEl.appendChild(tr);
+      });
+    }
+  }
+
   function renderAll() {
     var prof = currentProfile();
     if (!prof) return;
+    renderHistory();
     renderSummary(prof);
     renderTable(prof);
     renderDetail(prof);
@@ -406,6 +629,21 @@
   }
 
   function wireControls() {
+    var histBtns = document.querySelectorAll("[data-hist-view]");
+    Array.prototype.forEach.call(histBtns, function (btn) {
+      btn.addEventListener("click", function () {
+        state.histView = btn.getAttribute("data-hist-view");
+        Array.prototype.forEach.call(histBtns, function (b) { b.setAttribute("aria-pressed", b === btn ? "true" : "false"); });
+        renderHistory();
+      });
+    });
+    var histModelSel = el("rais-hist-model");
+    if (histModelSel) {
+      histModelSel.addEventListener("change", function () {
+        state.histModel = histModelSel.value;
+        renderHistory();
+      });
+    }
     var hwSel = el("rais-hw");
     if (hwSel) {
       hwSel.addEventListener("change", function () {
@@ -439,7 +677,7 @@
   var statusEl = el("rais-status");
   if (statusEl) statusEl.textContent = T.loading;
   wireControls();
-  fetch("rais-data.json?v=2")
+  fetch("rais-data.json?v=3")
     .then(function (r) {
       if (!r.ok) throw new Error(String(r.status));
       return r.json();

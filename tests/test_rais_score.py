@@ -726,6 +726,21 @@ class TestRaisDivisorReconstitution(unittest.TestCase):
         )
         self.assertAlmostEqual(rec["index_before"], rec["index_after"], places=4)
 
+    def test_rais_history_rebuild_and_submetrics(self) -> None:
+        import rais_history
+
+        releases_dir = Path(__file__).resolve().parent.parent / "qualification" / "releases"
+        snaps = rais_history.rebuild_history(releases_dir, hardware="16x-gb10-1x100g")
+        self.assertGreaterEqual(len(snaps), 6)
+        utcs = [s["utc"] for s in snaps]
+        self.assertEqual(utcs, sorted(utcs))
+        latest = snaps[-1]
+        self.assertEqual(latest["fleet"]["status"], "VALID")
+        self.assertEqual(latest["fleet"]["valid_models"], 19)
+        self.assertEqual(len(latest["fleet"]["submetrics"]), 12)
+        self.assertIn("kimi-k3.1-pro", latest["models"])
+        self.assertEqual(len(latest["models"]["kimi-k3.1-pro"]["submetrics"]), 12)
+
 
 if __name__ == "__main__":
     unittest.main()
