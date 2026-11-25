@@ -3327,7 +3327,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 			if ( status != SPARK_STATUS_OK )
 				return status;
 		}
-		state->row_invariant = step->commit == 0u ? 1u : 0u;
+		state->row_invariant = step->commit == 0u && step->sequences < D41_MX_MIN_ROWS ? 1u : 0u;
 		status = D41StepReach(state, step);
 		if ( status != SPARK_STATUS_OK )
 			return status;

@@ -22,6 +22,7 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the DFT3 wire format 
 #define DRAFT_SERVER_MAGIC_BYTES 4u
 #define DRAFT_SERVER_NS_PER_MS UINT64_C(1000000)
 #define DRAFT_SERVER_CLOSED (-1)
+#define DRAFT_SERVER_RX_BUFFER_BYTES 65536u
 
 #define DRAFT_SERVER_PHASE_IDLE 0u
 #define DRAFT_SERVER_PHASE_HEADER 1u
@@ -49,6 +50,9 @@ struct SparkDraftServer
 	uint64_t body_capacity;
 	uint64_t body_expected;
 	uint64_t body_got;
+	uint8_t *rx_buffer;
+	uint64_t rx_head;
+	uint64_t rx_tail;
 	uint8_t *reply;
 	uint64_t reply_capacity;
 	uint64_t reply_bytes;
@@ -97,6 +101,16 @@ static SparkStatus DraftServerNonBlocking(int fd)
 	return SPARK_STATUS_OK;
 }
 
+static void DraftServerQuickAck(int fd)
+{
+#ifdef TCP_QUICKACK
+	int enabled = 1;
+	(void)setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &enabled, (socklen_t)sizeof(enabled));
+#else
+	(void)fd;
+#endif
+}
+
 static void DraftServerDrop(SparkDraftServer *server)
 {
 	if ( server->socket_fd != DRAFT_SERVER_CLOSED )
@@ -109,6 +123,8 @@ static void DraftServerDrop(SparkDraftServer *server)
 	server->phase = DRAFT_SERVER_PHASE_IDLE;
 	server->header_got = 0u;
 	server->body_got = 0u;
+	server->rx_head = 0u;
+	server->rx_tail = 0u;
 	server->deadline_ns = 0u;
 	server->close_after_send = 0u;
 }
@@ -138,6 +154,7 @@ static void DraftServerAccept(SparkDraftServer *server)
 		(void)close(fd);
 		return;
 	}
+	DraftServerQuickAck(fd);
 #ifdef SO_NOSIGPIPE
 	(void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, (socklen_t)sizeof(enabled));
 #endif
@@ -264,12 +281,39 @@ static uint32_t DraftServerReceive(SparkDraftServer *server, uint8_t *destinatio
 {
 	while ( *got < want )
 	{
-		const ssize_t part = recv(server->socket_fd, destination + *got, (size_t)(want - *got), 0);
-		if ( part > 0 )
+		const uint64_t need = want - *got;
+		const uint64_t avail = server->rx_tail - server->rx_head;
+		ssize_t part;
+		if ( avail != 0u )
 		{
+			const uint64_t take = avail < need ? avail : need;
 			if ( server->deadline_ns == 0u )
 				server->deadline_ns = DraftServerDeadline(server);
-			*got += (uint64_t)part;
+			memcpy(destination + *got, server->rx_buffer + server->rx_head, (size_t)take);
+			*got += take;
+			server->rx_head += take;
+			if ( server->rx_head == server->rx_tail )
+			{
+				server->rx_head = 0u;
+				server->rx_tail = 0u;
+			}
+			continue;
+		}
+		server->rx_head = 0u;
+		server->rx_tail = 0u;
+		if ( need >= DRAFT_SERVER_RX_BUFFER_BYTES || server->rx_buffer == 0 )
+			part = recv(server->socket_fd, destination + *got, (size_t)need, 0);
+		else
+			part = recv(server->socket_fd, server->rx_buffer, DRAFT_SERVER_RX_BUFFER_BYTES, 0);
+		if ( part > 0 )
+		{
+			DraftServerQuickAck(server->socket_fd);
+			if ( server->deadline_ns == 0u )
+				server->deadline_ns = DraftServerDeadline(server);
+			if ( need >= DRAFT_SERVER_RX_BUFFER_BYTES || server->rx_buffer == 0 )
+				*got += (uint64_t)part;
+			else
+				server->rx_tail = (uint64_t)part;
 			continue;
 		}
 		if ( part < 0 && errno == EINTR )
@@ -343,13 +387,14 @@ SparkStatus SparkDraftServerCreate(const SparkDraftServerConfig *config, SparkDr
 	server->reply_capacity = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES + (uint64_t)config->max_nodes * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES +
 		SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES;
 	server->body = (uint8_t *)malloc((size_t)server->body_capacity);
+	server->rx_buffer = (uint8_t *)malloc(DRAFT_SERVER_RX_BUFFER_BYTES);
 	server->reply = (uint8_t *)malloc((size_t)server->reply_capacity);
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
 	(void)snprintf(port_text, sizeof(port_text), "%u", config->port);
-	if ( server->body == 0 || server->reply == 0 || getaddrinfo(config->host, port_text, &hints, &addresses) != 0 || addresses == 0 )
+	if ( server->body == 0 || server->rx_buffer == 0 || server->reply == 0 || getaddrinfo(config->host, port_text, &hints, &addresses) != 0 || addresses == 0 )
 	{
 		if ( addresses != 0 )
 			freeaddrinfo(addresses);
@@ -383,6 +428,7 @@ void SparkDraftServerDestroy(SparkDraftServer *server)
 	if ( server->listen_fd != DRAFT_SERVER_CLOSED )
 		(void)close(server->listen_fd);
 	free(server->body);
+	free(server->rx_buffer);
 	free(server->reply);
 	free(server);
 }
