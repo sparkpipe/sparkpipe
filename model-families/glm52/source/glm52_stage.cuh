@@ -561,7 +561,7 @@ static int32_t GlmLaunched(void)
 
 static int32_t GlmLinearBf16Into(const uint16_t *activation, const void *weight, uint16_t *output_bf16, float *output_f32, uint32_t rows,
 	uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors,
-	uint32_t row_exact, SparkGpuStream stream)
+	uint32_t row_exact, SparkGpuStream stream, uint32_t force_stream = 0u)
 {
 	if ( activation == 0 || weight == 0 || (output_bf16 == 0) == (output_f32 == 0) || rows == 0u || input_dimension == 0u || output_dimension == 0u ||
 		multiprocessors == 0u )
@@ -573,7 +573,7 @@ static int32_t GlmLinearBf16Into(const uint16_t *activation, const void *weight,
 		if ( fast_status != LM_LAUNCH_ERR_SHAPE )
 			return fast_status;
 	}
-	if ( rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u )
+	if ( (rows <= LM_SKINNY_ROWS_WIDE && force_stream == 0u) || row_exact != 0u )
 		return GlmSkinny<LmBf16Format>(weight, LmScaleTensorNone(), activation, output_bf16, output_f32, rows, input_dimension, output_dimension,
 			output_row_stride, output_column_offset, stream);
 	return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), activation, output_bf16, output_f32, rows, input_dimension, output_dimension,
@@ -613,7 +613,8 @@ static LmScaleTensor GlmLinearScale(GlmLinearWeight weight, uint32_t input_dimen
 
 template<class S>
 static int32_t GlmLinear(const uint16_t *activation, GlmLinearWeight weight, uint16_t *output, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, uint32_t row_exact, SparkGpuStream stream)
+	uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, uint32_t row_exact, SparkGpuStream stream,
+	uint32_t force_stream = 0u)
 {
 	const LmScaleTensor scale = GlmLinearScale<S>(weight, input_dimension, output_dimension);
 	if ( activation == 0 || weight.weight == 0 || (GlmLinearScaled<S> && weight.scale == 0) || output == 0 || rows == 0u || input_dimension == 0u ||
@@ -628,7 +629,7 @@ static int32_t GlmLinear(const uint16_t *activation, GlmLinearWeight weight, uin
 			if ( fast_status != LM_LAUNCH_ERR_SHAPE )
 				return fast_status;
 		}
-	if ( rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u )
+	if ( (rows <= LM_SKINNY_ROWS_WIDE && force_stream == 0u) || row_exact != 0u )
 		return GlmSkinny<GlmLinearFormat<S>>(weight.weight, scale, activation, output, 0, rows, input_dimension, output_dimension, output_row_stride,
 			output_column_offset, stream);
 	return LmStreamGemmDense<GlmLinearFormat<S>>(weight.weight, scale, activation, output, 0, rows, input_dimension, output_dimension,
@@ -825,7 +826,7 @@ static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, 
 {
 	if ( index_k_done == 0u )
 	{
-		const int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->index_k, b->index_key_bf16, rows, S::kHidden, S::kIndexDim, S::kIndexDim, 0u, sms, b->row_exact, stream);
+		const int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->index_k, b->index_key_bf16, rows, S::kHidden, S::kIndexDim, S::kIndexDim, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 		if ( status != LM_LAUNCH_OK )
 			return status;
 	}
@@ -867,10 +868,10 @@ static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms,
 		return GlmLaunched();
 	}
 	if ( index_q_done == 0u )
-		status = GlmLinear<S>(b->q_compressed_bf16, b->weights->index_q, b->index_query_bf16, rows, S::kQueryA, S::kIndexQuery, S::kIndexQuery, 0u, sms, b->row_exact, stream);
+		status = GlmLinear<S>(b->q_compressed_bf16, b->weights->index_q, b->index_query_bf16, rows, S::kQueryA, S::kIndexQuery, S::kIndexQuery, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status == LM_LAUNCH_OK )
 		status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
-			b->row_exact, stream);
+			b->row_exact, stream, b->single_sequence_rows);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if constexpr ( S::kRopeTable )
@@ -978,7 +979,7 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	GlmProjectionSlice(S::kSlot, b->tp_degree, b->tp_rank, &kv_first, &kv_count);
 	width = GlmProjectionSliceWidth<S>(b->tp_degree);
 	query_max = GlmProjectionSliceMax(S::kQueryA, b->tp_degree);
-	if ( q_count != 0u && kv_count != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_exact != 0u) )
+	if ( q_count != 0u && kv_count != 0u && ((rows <= LM_SKINNY_ROWS_WIDE && b->single_sequence_rows == 0u) || b->row_exact != 0u) )
 	{
 		const GlmLinearWeight q_a = GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden), kv_a = GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden);
 		const uint32_t fuse_ik = (with_index_k != 0u && b->weights->index_k.weight != 0 && (!GlmLinearScaled<S> || b->weights->index_k.scale != 0) &&
@@ -1019,9 +1020,9 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	}
 	status = LM_LAUNCH_OK;
 	if ( q_count != 0u )
-		status = GlmLinear<S>(b->normed_bf16, GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden), b->projection_local_bf16, rows, S::kHidden, q_count, width, 0u, sms, b->row_exact, stream);
+		status = GlmLinear<S>(b->normed_bf16, GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden), b->projection_local_bf16, rows, S::kHidden, q_count, width, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status == LM_LAUNCH_OK && kv_count != 0u )
-		status = GlmLinear<S>(b->normed_bf16, GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden), b->projection_local_bf16, rows, S::kHidden, kv_count, width, query_max, sms, b->row_exact, stream);
+		status = GlmLinear<S>(b->normed_bf16, GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden), b->projection_local_bf16, rows, S::kHidden, kv_count, width, query_max, sms, b->row_exact, stream, b->single_sequence_rows);
 	return status;
 }
 
@@ -1038,7 +1039,7 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 		b->slots != 0 ? b->slots : b->positions, store_kv);
 	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
-	if ( !S::kQueryConcat && fuse_index_q != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_exact != 0u) && b->weights->index_q.weight != 0 &&
+	if ( !S::kQueryConcat && fuse_index_q != 0u && ((rows <= LM_SKINNY_ROWS_WIDE && b->single_sequence_rows == 0u) || b->row_exact != 0u) && b->weights->index_q.weight != 0 &&
 		(!GlmLinearScaled<S> || b->weights->index_q.scale != 0) && b->index_query_bf16 != 0 &&
 		((b->q_b_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS && S::kIndexQuery > LM_SKINNY_SPLIT_MAX_OUTPUTS) ||
 			S::kQueryA / LmSkinnyFormat<GlmLinearFormat<S>>::kElements < LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES) )
@@ -1069,17 +1070,17 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 		else if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
 		else
-			status = GlmLinear<S>(b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, S::kQueryInput, b->q_b_rows, b->q_b_rows, 0u, sms, b->row_exact, stream);
+			status = GlmLinear<S>(b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, S::kQueryInput, b->q_b_rows, b->q_b_rows, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	}
 	else
 		status = GlmLinear<S>(S::kQueryConcat ? b->q_input_bf16 : b->q_compressed_bf16, b->weights->q_b, b->q_bf16, rows, S::kQueryInput, b->q_b_rows, b->q_b_rows, 0u,
-			sms, b->row_exact, stream);
+			sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( packed_query != 0 )
 	{
 		if constexpr ( S::kNope % 64u == 0u && S::kLatent % 16u == 0u )
-			if ( rows == 1u && (S::kLatent / 16u) * b->attn_heads >= 48u )
+			if ( b->single_sequence_rows == 0u && rows == 1u && (S::kLatent / 16u) * b->attn_heads >= 48u )
 			{
 				LM_LAUNCH_DEPENDENT((GlmKvBKeyRopeB1Kernel<S>), dim3(S::kLatent / 16u, b->attn_heads, 1u), 32u, 0, stream,
 					b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank * b->attn_heads * S::kLatent * S::kNope,
@@ -1087,7 +1088,7 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 				return GlmLaunched();
 			}
 		if constexpr ( S::kLatent % 16u == 0u )
-			if ( rows > 1u && rows <= 8u )
+			if ( b->single_sequence_rows == 0u && rows > 1u && rows <= 8u )
 			{
 				const uint16_t *kv_w = b->weights->kv_b_key + (uint64_t)b->tp_rank * b->attn_heads * S::kLatent * S::kNope;
 				if ( rows == 2u )
@@ -1104,14 +1105,14 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 		LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 			b->q_bf16, packed_query, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table, S::kLatent + S::kRope, S::kLatent);
 		if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u,S::kLatent + S::kRope>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
-				b->attn_heads * S::kLatent * S::kNope, packed_query, b->attn_heads, rows, stream, b->row_exact) != SPARK_GPU_SUCCESS )
+				b->attn_heads * S::kLatent * S::kNope, packed_query, b->attn_heads, rows, stream, b->row_exact, b->single_sequence_rows) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return LM_LAUNCH_OK;
 	}
 	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 		b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table);
 	if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
-			b->attn_heads * S::kLatent * S::kNope, b->query_latent_bf16, b->attn_heads, rows, stream, b->row_exact) != SPARK_GPU_SUCCESS )
+			b->attn_heads * S::kLatent * S::kNope, b->query_latent_bf16, b->attn_heads, rows, stream, b->row_exact, b->single_sequence_rows) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return LM_LAUNCH_OK;
 }
@@ -1129,13 +1130,13 @@ static int32_t GlmLatentAttentionGathered(const GlmBuffers *b, LmKvView cache, u
 {
 	const uint32_t *selected = context > S::kSelected ? b->selected_positions : 0;
 	const uint32_t selected_count = context > S::kSelected ? b->selected_position_count : 0u;
-	if ( (b->single_sequence_rows != 0u || b->prefill_block_table != 0) && rows > LM_SKINNY_ROWS && selected == 0 )
+	if ( (b->single_sequence_rows != 0u || b->prefill_block_table != 0) && (rows > LM_SKINNY_ROWS || b->single_sequence_rows != 0u) && selected == 0 )
 	{
 		if ( !(LmLatentAttentionPrefillLaunch<GlmKvGathered<S>,S::kLatent,S::kRope>(b->query_latent_bf16, b->query_rope_bf16, cache, b->sequence_of_row, b->row_positions, b->attn_heads, S::kQkScale, b->attention_latent_bf16, rows, b->prefill_block_table, b->prefill_table_blocks, stream) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return LM_LAUNCH_OK;
 	}
-	if ( (b->single_sequence_rows != 0u || b->prefill_block_table != 0) && rows > LM_SKINNY_ROWS && selected != 0 && b->prefill_union_positions != 0 )
+	if ( (b->single_sequence_rows != 0u || b->prefill_block_table != 0) && (rows > LM_SKINNY_ROWS || b->single_sequence_rows != 0u) && selected != 0 && b->prefill_union_positions != 0 )
 	{
 		if ( !(LmLatentAttentionSparsePrefillLaunch<GlmKvGathered<S>,S::kLatent,S::kRope,S::kSelected>(b->query_latent_bf16, b->query_rope_bf16, cache, b->sequence_of_row, b->row_positions, b->attn_heads, S::kQkScale, b->attention_latent_bf16, rows, b->prefill_block_table, b->prefill_table_blocks, selected, selected_count, b->prefill_union_positions, b->prefill_union_masks, b->prefill_union_counts, b->prefill_union_entries, stream) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
@@ -1148,12 +1149,12 @@ template<class S>
 static int32_t GlmAttentionOutput(const GlmBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kLatent,S::kValue>(b->attention_latent_bf16, b->weights->kv_b_value + (uint64_t)b->tp_rank *
-			b->attn_heads * S::kValue * S::kLatent, b->attention_value_bf16, b->attn_heads, rows, stream, b->row_exact) != SPARK_GPU_SUCCESS )
+			b->attn_heads * S::kValue * S::kLatent, b->attention_value_bf16, b->attn_heads, rows, stream, b->row_exact, b->single_sequence_rows) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	if constexpr ( S::kQueryGate != 0u )
 		LM_LAUNCH((LmHeadSigmoidGateKernel<GLM_THREADS>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 			b->attention_value_bf16, b->q_bf16, b->attn_heads, S::kValue, S::kQueryHead, S::kNope + S::kRope);
-	return GlmLinear<S>(b->attention_value_bf16, b->weights->o_proj, b->attention_out_bf16, rows, b->attn_output_columns, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream);
+	return GlmLinear<S>(b->attention_value_bf16, b->weights->o_proj, b->attention_out_bf16, rows, b->attn_output_columns, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 }
 
 template<class S>
@@ -1269,13 +1270,17 @@ static int32_t GlmDenseMlp(const GlmBuffers *b, uint32_t rows, uint32_t sms, Spa
 {
 	int32_t status;
 	if ( b->prenormed == 0u )
+	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 			b->attention_out_bf16, b->residual_bf16, b->weights->post_norm, b->residual_bf16, b->normed_bf16, S::kHidden, S::kHidden, S::kRmsEpsilon);
-	status = GlmLinear<S>(b->normed_bf16, b->weights->dense_gate_up, b->gate_up_bf16, rows, S::kHidden, b->dense_gate_up_rows, b->dense_gate_up_rows, 0u, sms, b->row_exact, stream);
+		if ( GlmNormGate<S>(b->normed_bf16, b->weights->post_gate_down, b->weights->post_gate_up, b->gate_bottleneck, rows, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	}
+	status = GlmLinear<S>(b->normed_bf16, b->weights->dense_gate_up, b->gate_up_bf16, rows, S::kHidden, b->dense_gate_up_rows, b->dense_gate_up_rows, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->dense_intermediate, false);
-	return GlmLinear<S>(b->intermediate_bf16, b->weights->dense_down, b->hidden_bf16, rows, b->dense_intermediate, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream);
+	return GlmLinear<S>(b->intermediate_bf16, b->weights->dense_down, b->hidden_bf16, rows, b->dense_intermediate, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 }
 
 template<class S>
@@ -1290,7 +1295,7 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	}
 	status = GlmLinearBf16Into(b->normed_bf16, b->weights->router, 0, b->router_logits, rows, S::kHidden, S::kExperts, S::kExperts, 0u, sms,
-		b->row_exact, stream);
+		b->row_exact, stream, b->single_sequence_rows);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( GlmLaunched() != LM_LAUNCH_OK )
@@ -1333,7 +1338,7 @@ static int32_t GlmExpertsProject(const GlmBuffers *b, const void *weight, const 
 	if ( b->row_exact != 0u )
 		return LmSkinnyGroupedExperts<Format>(weight, scale, input, output, b->group_row_offset, b->route_source_token, S::kExperts, packed_rows, mode,
 			input_dim, output_dim, stream, 1u);
-	if ( rows >= stream_rows )
+	if ( b->single_sequence_rows != 0u || rows >= stream_rows )
 	{
 		status = LmStreamGemmGrouped<Format>(weight, scale, input, output, b->group_row_offset, mode == 0u ? b->route_source_token : 0, S::kExperts,
 			packed_rows, input_dim, output_dim, sms, stream);
@@ -1709,7 +1714,7 @@ static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed
 	if constexpr ( ((S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 && S::kLinearCodec == SPARK_WEIGHT_CODEC_FP8_E4M3) ||
 		(S::kExpertCodec == SPARK_WEIGHT_CODEC_BF16 && S::kLinearCodec == SPARK_WEIGHT_CODEC_BF16)) &&
 		S::kHidden % 128u == 0u && S::kHidden / 16u >= LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES )
-		if ( rows == 1u && b->expert_intermediate == 128u && b->shared_intermediate == 128u &&
+		if ( b->single_sequence_rows == 0u && rows == 1u && b->expert_intermediate == 128u && b->shared_intermediate == 128u &&
 			b->expert_w1_weight != 0 && (!GlmExpertScaled<S> || b->expert_w1_scale != 0) &&
 			b->expert_w2_weight != 0 && (!GlmExpertScaled<S> || b->expert_w2_scale != 0) &&
 			b->weights->shared_gate_up.weight != 0 && (!GlmLinearScaled<S> || b->weights->shared_gate_up.scale != 0) &&
@@ -1734,23 +1739,23 @@ static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed
 			return GlmLaunched();
 		}
 	int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->shared_gate_up, b->gate_up_bf16, rows, S::kHidden, b->shared_gate_up_rows,
-		b->shared_gate_up_rows, 0u, sms, b->row_exact, stream);
+		b->shared_gate_up_rows, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( b->shared_intermediate == 128u && LmIsAligned16(b->gate_up_bf16) && LmIsAligned16(b->intermediate_bf16) )
 		LM_LAUNCH_DEPENDENT((GlmSiluMulPacked128Kernel), (rows + 15u) / 16u, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, rows);
 	else
 		LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->shared_intermediate, false);
-	status = GlmLinear<S>(b->intermediate_bf16, b->weights->shared_down, b->shared_out_bf16, rows, b->shared_intermediate, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream);
+	status = GlmLinear<S>(b->intermediate_bf16, b->weights->shared_down, b->shared_out_bf16, rows, b->shared_intermediate, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if constexpr ( (S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 || S::kExpertCodec == SPARK_WEIGHT_CODEC_BF16) && S::kHidden % 128u == 0u )
-		if ( rows > 1u && b->expert_intermediate == 128u && b->expert_w1_weight != 0 && (!GlmExpertScaled<S> || b->expert_w1_scale != 0) &&
+		if ( (rows > 1u || b->single_sequence_rows != 0u) && b->expert_intermediate == 128u && b->expert_w1_weight != 0 && (!GlmExpertScaled<S> || b->expert_w1_scale != 0) &&
 			b->expert_w2_weight != 0 && (!GlmExpertScaled<S> || b->expert_w2_scale != 0) &&
 			LmIsAligned16(b->expert_w1_weight) && LmIsAligned16(b->expert_w2_weight) && LmIsAligned16(b->normed_bf16) &&
 			LmIsAligned16(b->intermediate_bf16) && LmIsAligned16(b->expert_out_bf16) )
 		{
-			if ( b->row_exact == 0u && rows >= GlmStreamExpertW1Rows<S>() )
+			if ( b->row_exact == 0u && (b->single_sequence_rows != 0u || rows >= GlmStreamExpertW1Rows<S>()) )
 			{
 				status = GlmMoeMmaW1ActLaunch<S>(b, packed_rows, sms, stream);
 				if ( status == LM_LAUNCH_ERR_SHAPE )
@@ -1783,7 +1788,7 @@ static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed
 			}
 			if ( status != LM_LAUNCH_OK )
 				return status;
-			if ( b->row_exact == 0u && rows >= GLM_STREAM_EXPERT_W2_ROWS )
+			if ( b->row_exact == 0u && (b->single_sequence_rows != 0u || rows >= GLM_STREAM_EXPERT_W2_ROWS) )
 				status = GlmMoeMmaW2K128Launch<S>(b, packed_rows, sms, stream);
 			else if ( rows <= 12u )
 				status = GlmExpertsDown<S>(b, rows, packed_rows, sms, stream);
@@ -2019,15 +2024,6 @@ struct GlmModel : CudaStage<GlmModel<G>>
 	{
 		return SparkKvShardSectionLayoutBuild(SparkKvShardGatherKeys(state->shard, old_bound), S::kSlotBytes, S::kUnitBytes, S::kSlotAlign,
 			state->max_rows / S::kSlotAlign * S::kSlotAlign);
-	}
-
-	static uint32_t RowRegime(void *context, uint32_t row)
-	{
-		const GlmRegime *regime = (const GlmRegime *)context;
-		const uint32_t tokens = regime->positions[row] + 1u;
-		if ( tokens > S::kSelected )
-			return 2u;
-		return LmLatentAttentionContextSplits(tokens, GLM_SPLIT_THRESHOLD) != 0u ? 1u : 0u;
 	}
 
 	static uint32_t SelectionRegime(void *context, uint32_t row)
@@ -2979,16 +2975,6 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		return status;
 	}
 
-	static uint32_t GatherCheaper(const State *state, const GlmWave *wave)
-	{
-		uint32_t query_units, indexing_units, partial_units;
-		uint64_t candidate_offset;
-		const uint64_t peers = state->tp_degree > 1u ? state->tp_degree - 1u : 0u;
-		ScatterSizes(state, wave->rows, &query_units, &indexing_units, &partial_units, &candidate_offset);
-		return SparkKvShardExchangeCostNs(wave->latent.chunks, peers * wave->latent.keys * S::kSlotBytes) <=
-			SparkKvShardExchangeCostNs(2u, peers * ((uint64_t)indexing_units + partial_units) * S::kUnitBytes) ? 1u : 0u;
-	}
-
 	static void Measure(const State *state, GlmWave *wave, const uint32_t *host_positions)
 	{
 		uint32_t row;
@@ -3002,20 +2988,13 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		for ( row = 0u; row < wave->rows; row++ )
 			if ( host_positions[wave->first + row] + 1u > wave->context )
 				wave->context = host_positions[wave->first + row] + 1u;
-		wave->gather = wave->rows > LM_SKINNY_ROWS ? 1u : 0u;
-		if ( wave->gather != 0u )
-		{
-			const uint32_t old_bound = OldBound(host_positions + wave->first, wave->rows);
-			wave->old_bound = old_bound != UINT32_MAX ? old_bound : wave->context;
-			wave->latent = GatherLayout(state, wave->old_bound);
-			wave->select_keep = GlmShardKeep<S>(state->shard, wave->context);
-			wave->select_slice = (wave->rows + state->tp_degree - 1u) / state->tp_degree;
-			wave->select_rows = wave->select_slice * state->tp_degree;
-			if ( wave->rows > state->scatter_rows || GatherCheaper(state, wave) != 0u )
-				return;
-			wave->gather = 0u;
-		}
-		ScatterSizes(state, wave->rows, &wave->query_units, &wave->indexing_units, &wave->partial_units, &wave->candidate_offset);
+		wave->gather = 1u;
+		const uint32_t old_bound = OldBound(host_positions + wave->first, wave->rows);
+		wave->old_bound = old_bound != UINT32_MAX ? old_bound : wave->context;
+		wave->latent = GatherLayout(state, wave->old_bound);
+		wave->select_keep = GlmShardKeep<S>(state->shard, wave->context);
+		wave->select_slice = (wave->rows + state->tp_degree - 1u) / state->tp_degree;
+		wave->select_rows = wave->select_slice * state->tp_degree;
 	}
 
 	static SparkStatus WaveBegin(State *state, Frame &frame)
@@ -3178,11 +3157,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		wave->ordered = frame.ordered;
 		wave->exact = frame.exact;
 		if ( frame.ordered != 0u )
-		{
 			wave->rows = SparkRowLayoutPackedSpanWaveRowCount(frame.first, rows, state->host_slots, SelectionRegime, &frame.regime, state->max_rows, 1u);
-			if ( wave->rows <= LM_SKINNY_ROWS )
-				wave->rows = SparkRowLayoutPackedSpanWaveRowCount(frame.first, rows, state->host_slots, RowRegime, &frame.regime, state->max_rows, 1u);
-		}
 		else
 			wave->rows = rows - frame.first < state->scatter_rows ? rows - frame.first : state->scatter_rows;
 		if ( wave->rows == 0u )

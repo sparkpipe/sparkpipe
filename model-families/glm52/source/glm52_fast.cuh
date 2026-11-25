@@ -1204,65 +1204,64 @@ static int32_t GlmMoeMmaSetup(Kernel kernel, uint32_t shared_bytes, uint32_t sms
 	return LM_LAUNCH_OK;
 }
 
+template<class S, uint32_t TILE_M, uint32_t WARPS_M, uint32_t TAG>
+static int32_t GlmMoeMmaW1LaunchTile(const GlmBuffers *b, uint32_t sms, SparkGpuStream stream)
+{
+	uint32_t blocks = sms;
+	if constexpr ( S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
+	{
+		constexpr uint32_t sh = 2u * (TILE_M * 256u + 2u * 64u * 128u);
+		if ( GlmMoeMmaSetup<S, TAG>(GlmMoeMmaW1ActFp8Kernel<S, TILE_M, WARPS_M>, sh, sms, &blocks) != LM_LAUNCH_OK )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActFp8Kernel<S, TILE_M, WARPS_M>), blocks, 256u, sh, stream,
+			(const uint8_t *)b->expert_w1_weight, (const float *)b->expert_w1_scale, b->normed_bf16, b->group_row_offset,
+			b->group_tile_prefix_w1, b->route_source_token, b->intermediate_bf16);
+	}
+	else
+	{
+		constexpr uint32_t sh = 2u * (TILE_M * 128u + 2u * 64u * 128u);
+		if ( GlmMoeMmaSetup<S, TAG + 3u>(GlmMoeMmaW1ActBf16Kernel<S, TILE_M, WARPS_M>, sh, sms, &blocks) != LM_LAUNCH_OK )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActBf16Kernel<S, TILE_M, WARPS_M>), blocks, 256u, sh, stream,
+			(const uint16_t *)b->expert_w1_weight, b->normed_bf16, b->group_row_offset, b->group_tile_prefix_w1,
+			b->route_source_token, b->intermediate_bf16);
+	}
+	return GlmLaunched();
+}
+
 template<class S>
 static int32_t GlmMoeMmaW1ActLaunch(const GlmBuffers *b, uint32_t packed_rows, uint32_t sms, SparkGpuStream stream)
 {
 	const uint32_t mean = (packed_rows + S::kExperts - 1u) / S::kExperts;
 	const uint32_t tile_m = mean > 32u ? 64u : mean > 16u ? 32u : 16u;
-	uint32_t blocks = sms;
 	LM_LAUNCH_DEPENDENT((GlmBuildTilePrefixKernel), 1u, 32u, 0, stream, b->group_row_offset, b->group_tile_prefix_w1, S::kExperts, tile_m, 2u);
+	if ( tile_m == 64u )
+		return GlmMoeMmaW1LaunchTile<S, 64u, 4u, 1u>(b, sms, stream);
+	if ( tile_m == 32u )
+		return GlmMoeMmaW1LaunchTile<S, 32u, 2u, 2u>(b, sms, stream);
+	return GlmMoeMmaW1LaunchTile<S, 16u, 1u, 3u>(b, sms, stream);
+}
+
+template<class S, uint32_t TILE_M, uint32_t WARPS_M, uint32_t TAG>
+static int32_t GlmMoeMmaW2LaunchTile(const GlmBuffers *b, uint32_t sms, SparkGpuStream stream)
+{
+	uint32_t blocks = sms;
 	if constexpr ( S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
 	{
-		if ( tile_m == 64u )
-		{
-			constexpr uint32_t sh = 2u * (64u * 256u + 2u * 64u * 128u);
-			if ( GlmMoeMmaSetup<S, 1u>(GlmMoeMmaW1ActFp8Kernel<S, 64u, 4u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActFp8Kernel<S, 64u, 4u>), blocks, 256u, sh, stream,
-				(const uint8_t *)b->expert_w1_weight, (const float *)b->expert_w1_scale, b->normed_bf16, b->group_row_offset,
-				b->group_tile_prefix_w1, b->route_source_token, b->intermediate_bf16);
-		}
-		else if ( tile_m == 32u )
-		{
-			constexpr uint32_t sh = 2u * (32u * 256u + 2u * 64u * 128u);
-			if ( GlmMoeMmaSetup<S, 2u>(GlmMoeMmaW1ActFp8Kernel<S, 32u, 2u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActFp8Kernel<S, 32u, 2u>), blocks, 256u, sh, stream,
-				(const uint8_t *)b->expert_w1_weight, (const float *)b->expert_w1_scale, b->normed_bf16, b->group_row_offset,
-				b->group_tile_prefix_w1, b->route_source_token, b->intermediate_bf16);
-		}
-		else
-		{
-			constexpr uint32_t sh = 2u * (16u * 256u + 2u * 64u * 128u);
-			if ( GlmMoeMmaSetup<S, 3u>(GlmMoeMmaW1ActFp8Kernel<S, 16u, 1u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActFp8Kernel<S, 16u, 1u>), blocks, 256u, sh, stream,
-				(const uint8_t *)b->expert_w1_weight, (const float *)b->expert_w1_scale, b->normed_bf16, b->group_row_offset,
-				b->group_tile_prefix_w1, b->route_source_token, b->intermediate_bf16);
-		}
+		constexpr uint32_t sh = 2u * (TILE_M * 256u + 128u * 128u);
+		if ( GlmMoeMmaSetup<S, TAG>(GlmMoeMmaW2K128Fp8Kernel<S, TILE_M, WARPS_M>, sh, sms, &blocks) != LM_LAUNCH_OK )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Fp8Kernel<S, TILE_M, WARPS_M>), blocks, 256u, sh, stream,
+			(const uint8_t *)b->expert_w2_weight, (const float *)b->expert_w2_scale, b->intermediate_bf16, b->group_row_offset,
+			b->group_tile_prefix_w2, b->expert_out_bf16);
 	}
 	else
 	{
-		if ( tile_m == 64u )
-		{
-			constexpr uint32_t sh = 2u * (64u * 128u + 2u * 64u * 128u);
-			if ( GlmMoeMmaSetup<S, 4u>(GlmMoeMmaW1ActBf16Kernel<S, 64u, 4u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActBf16Kernel<S, 64u, 4u>), blocks, 256u, sh, stream,
-				(const uint16_t *)b->expert_w1_weight, b->normed_bf16, b->group_row_offset, b->group_tile_prefix_w1,
-				b->route_source_token, b->intermediate_bf16);
-		}
-		else if ( tile_m == 32u )
-		{
-			constexpr uint32_t sh = 2u * (32u * 128u + 2u * 64u * 128u);
-			if ( GlmMoeMmaSetup<S, 5u>(GlmMoeMmaW1ActBf16Kernel<S, 32u, 2u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW1ActBf16Kernel<S, 32u, 2u>), blocks, 256u, sh, stream,
-				(const uint16_t *)b->expert_w1_weight, b->normed_bf16, b->group_row_offset, b->group_tile_prefix_w1,
-				b->route_source_token, b->intermediate_bf16);
-		}
-		else
-			return LM_LAUNCH_ERR_SHAPE;
+		constexpr uint32_t sh = 2u * (TILE_M * 128u + 128u * 128u);
+		if ( GlmMoeMmaSetup<S, TAG + 3u>(GlmMoeMmaW2K128Bf16Kernel<S, TILE_M, WARPS_M>, sh, sms, &blocks) != LM_LAUNCH_OK )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Bf16Kernel<S, TILE_M, WARPS_M>), blocks, 256u, sh, stream,
+			(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2, b->expert_out_bf16);
 	}
 	return GlmLaunched();
 }
@@ -1272,61 +1271,10 @@ static int32_t GlmMoeMmaW2K128Launch(const GlmBuffers *b, uint32_t packed_rows, 
 {
 	const uint32_t mean = (packed_rows + S::kExperts - 1u) / S::kExperts;
 	const uint32_t tile_m = mean > 32u ? 64u : mean > 16u ? 32u : 16u;
-	uint32_t blocks = sms;
 	LM_LAUNCH_DEPENDENT((GlmBuildTilePrefixKernel), 1u, 32u, 0, stream, b->group_row_offset, b->group_tile_prefix_w2, S::kExperts, tile_m, S::kHidden / 128u);
-	if constexpr ( S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
-	{
-		if ( tile_m == 64u )
-		{
-			constexpr uint32_t sh = 2u * (64u * 256u + 128u * 128u);
-			if ( GlmMoeMmaSetup<S, 11u>(GlmMoeMmaW2K128Fp8Kernel<S, 64u, 4u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Fp8Kernel<S, 64u, 4u>), blocks, 256u, sh, stream,
-				(const uint8_t *)b->expert_w2_weight, (const float *)b->expert_w2_scale, b->intermediate_bf16, b->group_row_offset,
-				b->group_tile_prefix_w2, b->expert_out_bf16);
-		}
-		else if ( tile_m == 32u )
-		{
-			constexpr uint32_t sh = 2u * (32u * 256u + 128u * 128u);
-			if ( GlmMoeMmaSetup<S, 12u>(GlmMoeMmaW2K128Fp8Kernel<S, 32u, 2u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Fp8Kernel<S, 32u, 2u>), blocks, 256u, sh, stream,
-				(const uint8_t *)b->expert_w2_weight, (const float *)b->expert_w2_scale, b->intermediate_bf16, b->group_row_offset,
-				b->group_tile_prefix_w2, b->expert_out_bf16);
-		}
-		else
-		{
-			constexpr uint32_t sh = 2u * (16u * 256u + 128u * 128u);
-			if ( GlmMoeMmaSetup<S, 13u>(GlmMoeMmaW2K128Fp8Kernel<S, 16u, 1u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Fp8Kernel<S, 16u, 1u>), blocks, 256u, sh, stream,
-				(const uint8_t *)b->expert_w2_weight, (const float *)b->expert_w2_scale, b->intermediate_bf16, b->group_row_offset,
-				b->group_tile_prefix_w2, b->expert_out_bf16);
-		}
-	}
-	else
-	{
-		if ( tile_m == 64u )
-		{
-			constexpr uint32_t sh = 2u * (64u * 128u + 128u * 128u);
-			if ( GlmMoeMmaSetup<S, 14u>(GlmMoeMmaW2K128Bf16Kernel<S, 64u, 4u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Bf16Kernel<S, 64u, 4u>), blocks, 256u, sh, stream,
-				(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2, b->expert_out_bf16);
-		}
-		else if ( tile_m == 32u )
-		{
-			constexpr uint32_t sh = 2u * (32u * 128u + 128u * 128u);
-			if ( GlmMoeMmaSetup<S, 15u>(GlmMoeMmaW2K128Bf16Kernel<S, 32u, 2u>, sh, sms, &blocks) != LM_LAUNCH_OK )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Bf16Kernel<S, 32u, 2u>), blocks, 256u, sh, stream,
-				(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2, b->expert_out_bf16);
-		}
-		else
-		{
-			return LmStreamGemmGrouped<LmBf16Format>(b->expert_w2_weight, LmScaleTensorNone(), b->intermediate_bf16, b->expert_out_bf16,
-				b->group_row_offset, 0, S::kExperts, packed_rows, b->expert_intermediate, S::kHidden, sms, stream);
-		}
-	}
-	return GlmLaunched();
+	if ( tile_m == 64u )
+		return GlmMoeMmaW2LaunchTile<S, 64u, 4u, 11u>(b, sms, stream);
+	if ( tile_m == 32u )
+		return GlmMoeMmaW2LaunchTile<S, 32u, 2u, 12u>(b, sms, stream);
+	return GlmMoeMmaW2LaunchTile<S, 16u, 1u, 13u>(b, sms, stream);
 }
