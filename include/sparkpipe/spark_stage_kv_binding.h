@@ -353,6 +353,11 @@ struct SparkStageKvBinding
 	SparkKvPageStore state_store;
 	uint8_t *state_staging;
 	SparkDeviceBuffer *lane_state_slots;
+	SparkDeviceBuffer staged_bounce[2];
+	uint8_t *staged_map;
+	uint64_t staged_map_bytes;
+	uint64_t staged_slot_stride;
+	uint8_t *lane_staged_in_map;
 	uint64_t *lane_state_use_epoch;
 	uint32_t *lane_state_in_use;
 	uint64_t lane_state_epoch;

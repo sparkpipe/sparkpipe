@@ -15,11 +15,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <unistd.h>
-#if defined(__linux__)
-#include <sys/mman.h>
-#endif
 
 #define SPARK_KV_PAGE_STORE_JOB_FREE 0u
 #define SPARK_KV_PAGE_STORE_JOB_QUEUED 1u
@@ -31,6 +29,10 @@
 #define SPARK_KV_PAGE_STORE_PAGE_WRITE_FAILED 3u
 #define SPARK_KV_PAGE_STORE_READ_ARENA 1u
 #define SPARK_KV_PAGE_STORE_READ_BUFFER 2u
+#define SPARK_KV_PAGE_STORE_STRIPE_COUNT 8u
+#define SPARK_KV_PAGE_STORE_STRIPE_DIGEST_BYTES 16u
+#define SPARK_KV_PAGE_STORE_PARALLEL_MIN_BYTES (1024u * 1024u)
+#define SPARK_KV_PAGE_STORE_STRIPE_CHUNK_BYTES (256u * 1024u)
 
 typedef struct SparkKvPageStoreJob
 {
@@ -54,7 +56,16 @@ typedef struct SparkKvPageStoreJob
 }
 SparkKvPageStoreJob;
 
-typedef struct SparkKvPageStoreWorker
+typedef struct SparkKvPageStoreWorker SparkKvPageStoreWorker;
+
+typedef struct SparkKvPageStoreStripeHelper
+{
+	SparkKvPageStoreWorker *worker;
+	uint32_t stripe;
+}
+SparkKvPageStoreStripeHelper;
+
+struct SparkKvPageStoreWorker
 {
 	pthread_t thread;
 	pthread_mutex_t mutex;
@@ -71,8 +82,23 @@ typedef struct SparkKvPageStoreWorker
 	uint32_t *backing_slots_by_logical_page;
 	uint32_t *logical_pages_by_backing_slot;
 	uint8_t *slot_reclaim_pending;
-}
-SparkKvPageStoreWorker;
+	uint8_t *mapped_base;
+	uint64_t mapped_bytes;
+	pthread_t helpers[SPARK_KV_PAGE_STORE_STRIPE_COUNT - 1u];
+	SparkKvPageStoreStripeHelper helper_args[SPARK_KV_PAGE_STORE_STRIPE_COUNT - 1u];
+	pthread_mutex_t pool_mutex;
+	pthread_cond_t pool_work;
+	pthread_cond_t pool_done;
+	uint32_t pool_sync_initialized;
+	uint32_t pool_helper_count;
+	uint32_t pool_stop;
+	uint64_t pool_generation;
+	uint32_t pool_completed;
+	uint8_t *pool_dst;
+	const uint8_t *pool_src;
+	uint64_t pool_bytes;
+	uint8_t pool_stripe_digests[SPARK_KV_PAGE_STORE_STRIPE_COUNT][SPARK_KV_PAGE_STORE_STRIPE_DIGEST_BYTES];
+};
 
 static uint32_t SparkKvPageStoreConfigurationIsValid(
 	const SparkKvPageStoreConfiguration *configuration)
@@ -373,16 +399,176 @@ static SparkStatus SparkKvPageStoreReadExact(
 
 _Static_assert(SPARK_KV_PAGE_STORE_DIGEST_BYTES == SPARK_SHA256_DIGEST_BYTES,"a record digest has room for a SHA-256");
 
+static void SparkKvPageStoreStripeRange(
+	uint64_t bytes,
+	uint32_t stripe,
+	uint64_t *begin_out,
+	uint64_t *length_out)
+{
+	uint64_t stride = (bytes + SPARK_KV_PAGE_STORE_STRIPE_COUNT - 1u) / SPARK_KV_PAGE_STORE_STRIPE_COUNT;
+	uint64_t begin = (uint64_t)stripe * stride;
+	if ( begin >= bytes )
+	{
+		*begin_out = bytes;
+		*length_out = 0u;
+		return;
+	}
+	*begin_out = begin;
+	*length_out = begin + stride < bytes ? stride : bytes - begin;
+}
+
+static void SparkKvPageStoreStripeRun(
+	uint8_t *destination,
+	const uint8_t *source,
+	uint64_t bytes,
+	uint32_t stripe,
+	uint8_t digest[SPARK_KV_PAGE_STORE_STRIPE_DIGEST_BYTES])
+{
+	SparkCk128Context fast;
+	uint64_t begin,length,offset,chunk;
+	SparkKvPageStoreStripeRange(bytes,stripe,&begin,&length);
+	SparkCk128Initialize(&fast);
+	for (offset=0u; offset<length; offset+=chunk)
+	{
+		chunk = length - offset < SPARK_KV_PAGE_STORE_STRIPE_CHUNK_BYTES ?
+			length - offset : SPARK_KV_PAGE_STORE_STRIPE_CHUNK_BYTES;
+		if ( destination != 0 )
+			memcpy(destination + begin + offset,source + begin + offset,(size_t)chunk);
+		SparkCk128Update(&fast,source + begin + offset,(size_t)chunk);
+	}
+	SparkCk128Finalize(&fast,digest);
+}
+
+static void SparkKvPageStoreFinalizeStripes(
+	const uint8_t stripe_digests[SPARK_KV_PAGE_STORE_STRIPE_COUNT][SPARK_KV_PAGE_STORE_STRIPE_DIGEST_BYTES],
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+	SparkCk128Context fast;
+	memset(digest,0,SPARK_SHA256_DIGEST_BYTES);
+	SparkCk128Initialize(&fast);
+	SparkCk128Update(&fast,stripe_digests,
+		sizeof(uint8_t) * SPARK_KV_PAGE_STORE_STRIPE_COUNT * SPARK_KV_PAGE_STORE_STRIPE_DIGEST_BYTES);
+	SparkCk128Finalize(&fast,digest);
+}
+
+static void *SparkKvPageStoreStripeHelperMain(void *context)
+{
+	SparkKvPageStoreStripeHelper *arg = (SparkKvPageStoreStripeHelper *)context;
+	SparkKvPageStoreWorker *worker = arg->worker;
+	uint64_t seen = 0u;
+	for (;;)
+	{
+		uint8_t *dst;
+		const uint8_t *src;
+		uint64_t bytes;
+		(void)pthread_mutex_lock(&worker->pool_mutex);
+		while ( worker->pool_stop == 0u && worker->pool_generation == seen )
+			(void)pthread_cond_wait(&worker->pool_work,&worker->pool_mutex);
+		if ( worker->pool_stop != 0u )
+		{
+			(void)pthread_mutex_unlock(&worker->pool_mutex);
+			break;
+		}
+		seen = worker->pool_generation;
+		dst = worker->pool_dst;
+		src = worker->pool_src;
+		bytes = worker->pool_bytes;
+		(void)pthread_mutex_unlock(&worker->pool_mutex);
+		SparkKvPageStoreStripeRun(dst,src,bytes,arg->stripe,
+			worker->pool_stripe_digests[arg->stripe]);
+		(void)pthread_mutex_lock(&worker->pool_mutex);
+		worker->pool_completed++;
+		if ( worker->pool_completed == worker->pool_helper_count )
+			(void)pthread_cond_signal(&worker->pool_done);
+		(void)pthread_mutex_unlock(&worker->pool_mutex);
+	}
+	return(0);
+}
+
+static void SparkKvPageStorePoolEnsure(SparkKvPageStoreWorker *worker)
+{
+	uint32_t index;
+	if ( worker->pool_sync_initialized != 0u )
+		return;
+	if ( pthread_mutex_init(&worker->pool_mutex,0) != 0 )
+		return;
+	if ( pthread_cond_init(&worker->pool_work,0) != 0 )
+	{
+		(void)pthread_mutex_destroy(&worker->pool_mutex);
+		return;
+	}
+	if ( pthread_cond_init(&worker->pool_done,0) != 0 )
+	{
+		(void)pthread_cond_destroy(&worker->pool_work);
+		(void)pthread_mutex_destroy(&worker->pool_mutex);
+		return;
+	}
+	worker->pool_sync_initialized = 1u;
+	for (index=0u; index<SPARK_KV_PAGE_STORE_STRIPE_COUNT - 1u; index++)
+	{
+		worker->helper_args[index].worker = worker;
+		worker->helper_args[index].stripe = index + 1u;
+		if ( pthread_create(&worker->helpers[index],0,SparkKvPageStoreStripeHelperMain,
+			&worker->helper_args[index]) != 0 )
+			break;
+		worker->pool_helper_count++;
+	}
+}
+
+static void SparkKvPageStoreParallelCopyDigest(
+	SparkKvPageStoreWorker *worker,
+	uint8_t *destination,
+	const uint8_t *source,
+	uint64_t bytes,
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+	uint32_t stripe;
+	SparkKvPageStorePoolEnsure(worker);
+	if ( worker->pool_helper_count == 0u )
+	{
+		for (stripe=0u; stripe<SPARK_KV_PAGE_STORE_STRIPE_COUNT; stripe++)
+			SparkKvPageStoreStripeRun(destination,source,bytes,stripe,
+				worker->pool_stripe_digests[stripe]);
+		SparkKvPageStoreFinalizeStripes(worker->pool_stripe_digests,digest);
+		return;
+	}
+	(void)pthread_mutex_lock(&worker->pool_mutex);
+	worker->pool_dst = destination;
+	worker->pool_src = source;
+	worker->pool_bytes = bytes;
+	worker->pool_completed = 0u;
+	worker->pool_generation++;
+	(void)pthread_cond_broadcast(&worker->pool_work);
+	(void)pthread_mutex_unlock(&worker->pool_mutex);
+	SparkKvPageStoreStripeRun(destination,source,bytes,0u,worker->pool_stripe_digests[0]);
+	for (stripe=worker->pool_helper_count + 1u; stripe<SPARK_KV_PAGE_STORE_STRIPE_COUNT; stripe++)
+		SparkKvPageStoreStripeRun(destination,source,bytes,stripe,
+			worker->pool_stripe_digests[stripe]);
+	(void)pthread_mutex_lock(&worker->pool_mutex);
+	while ( worker->pool_completed < worker->pool_helper_count )
+		(void)pthread_cond_wait(&worker->pool_done,&worker->pool_mutex);
+	(void)pthread_mutex_unlock(&worker->pool_mutex);
+	SparkKvPageStoreFinalizeStripes(worker->pool_stripe_digests,digest);
+}
+
 static void SparkKvPageStoreDigest(const SparkKvPageStore *store,const uint8_t *page,uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
 {
 	SparkSha256Context context;
 	if ( (store->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u )
 	{
-		SparkCk128Context fast;
-		memset(digest,0,SPARK_SHA256_DIGEST_BYTES);
-		SparkCk128Initialize(&fast);
-		SparkCk128Update(&fast,page,(size_t)store->page_bytes);
-		SparkCk128Finalize(&fast,digest);
+		if ( store->page_bytes >= SPARK_KV_PAGE_STORE_PARALLEL_MIN_BYTES && store->worker_state != 0 )
+		{
+			SparkKvPageStoreParallelCopyDigest((SparkKvPageStoreWorker *)store->worker_state,
+				0,page,store->page_bytes,digest);
+			return;
+		}
+		{
+			SparkCk128Context fast;
+			memset(digest,0,SPARK_SHA256_DIGEST_BYTES);
+			SparkCk128Initialize(&fast);
+			SparkCk128Update(&fast,page,(size_t)store->page_bytes);
+			SparkCk128Finalize(&fast,digest);
+		}
 		return;
 	}
 	SparkSha256Initialize(&context);
@@ -394,16 +580,34 @@ static SparkStatus SparkKvPageStoreExecuteWrite(
 	SparkKvPageStore *store,
 	SparkKvPageStoreJob *job)
 {
+	SparkKvPageStoreWorker *worker;
 	uint8_t *staging;
 	uint64_t offset;
 	SparkStatus status;
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	offset = (uint64_t)job->backing_slot_index * store->page_bytes;
+	if ( (store->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u &&
+		worker != 0 && worker->mapped_base != 0 && store->copy_function == 0 &&
+		job->value_bytes == 0u && job->key_bytes == store->page_bytes )
+	{
+		if ( job->key_device_address == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( store->page_bytes >= SPARK_KV_PAGE_STORE_PARALLEL_MIN_BYTES )
+			SparkKvPageStoreParallelCopyDigest(worker,worker->mapped_base + offset,
+				(const uint8_t *)job->key_device_address,store->page_bytes,job->digest);
+		else
+		{
+			memcpy(worker->mapped_base + offset,(const void *)job->key_device_address,(size_t)store->page_bytes);
+			SparkKvPageStoreDigest(store,(const uint8_t *)job->key_device_address,job->digest);
+		}
+		return(SPARK_STATUS_OK);
+	}
 	staging = (uint8_t *)store->staging_address;
 	status = SparkKvPageStoreCopy(store,job->direction,
 		job->key_device_address,staging,job->key_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvPageStoreCopy(store,job->direction,
 			job->value_device_address,staging + job->key_bytes,job->value_bytes);
-	offset = (uint64_t)job->backing_slot_index * store->page_bytes;
 	if ( status == SPARK_STATUS_OK )
 		SparkKvPageStoreDigest(store,staging,job->digest);
 	if ( status == SPARK_STATUS_OK )
@@ -416,11 +620,36 @@ static SparkStatus SparkKvPageStoreExecuteRead(
 	SparkKvPageStore *store,
 	SparkKvPageStoreJob *job)
 {
+	SparkKvPageStoreWorker *worker;
 	uint8_t *staging;
 	uint64_t offset;
 	SparkStatus status;
-	staging = (uint8_t *)store->staging_address;
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
 	offset = (uint64_t)job->backing_slot_index * store->page_bytes;
+	if ( (store->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u &&
+		worker != 0 && worker->mapped_base != 0 &&
+		(job->read_kind == SPARK_KV_PAGE_STORE_READ_BUFFER ||
+		 (store->copy_function == 0 && job->value_bytes == 0u && job->key_bytes == store->page_bytes)) )
+	{
+		uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+		if ( job->key_device_address == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( store->page_bytes >= SPARK_KV_PAGE_STORE_PARALLEL_MIN_BYTES )
+			SparkKvPageStoreParallelCopyDigest(worker,(uint8_t *)job->key_device_address,
+				worker->mapped_base + offset,store->page_bytes,digest);
+		else
+		{
+			memcpy((void *)job->key_device_address,worker->mapped_base + offset,(size_t)store->page_bytes);
+			SparkKvPageStoreDigest(store,(const uint8_t *)job->key_device_address,digest);
+		}
+		if ( memcmp(digest,job->digest,sizeof(digest)) != 0 )
+		{
+			job->storage_failed = 1u;
+			SPARK_FAIL(SPARK_STATUS_HASH_MISMATCH);
+		}
+		return(SPARK_STATUS_OK);
+	}
+	staging = (uint8_t *)store->staging_address;
 	status = SparkKvPageStoreReadExact(store,offset,staging,
 		store->page_bytes);
 	if ( status != SPARK_STATUS_OK )
@@ -669,6 +898,7 @@ static void *SparkKvPageStoreWorkerMain(void *context)
 static void SparkKvPageStoreWorkerDestroy(SparkKvPageStore *store)
 {
 	SparkKvPageStoreWorker *worker;
+	uint32_t index;
 	worker = store != 0 ? (SparkKvPageStoreWorker *)store->worker_state : 0;
 	if ( worker == 0 )
 		return;
@@ -680,6 +910,23 @@ static void SparkKvPageStoreWorkerDestroy(SparkKvPageStore *store)
 		(void)pthread_mutex_unlock(&worker->mutex);
 		(void)pthread_join(worker->thread,0);
 	}
+	if ( worker->pool_sync_initialized != 0u )
+	{
+		if ( worker->pool_helper_count != 0u )
+		{
+			(void)pthread_mutex_lock(&worker->pool_mutex);
+			worker->pool_stop = 1u;
+			(void)pthread_cond_broadcast(&worker->pool_work);
+			(void)pthread_mutex_unlock(&worker->pool_mutex);
+			for (index=0u; index<worker->pool_helper_count; index++)
+				(void)pthread_join(worker->helpers[index],0);
+		}
+		(void)pthread_cond_destroy(&worker->pool_done);
+		(void)pthread_cond_destroy(&worker->pool_work);
+		(void)pthread_mutex_destroy(&worker->pool_mutex);
+	}
+	if ( worker->mapped_base != 0 )
+		(void)munmap(worker->mapped_base,(size_t)worker->mapped_bytes);
 	if ( worker->condition_initialized != 0u )
 		(void)pthread_cond_destroy(&worker->condition);
 	if ( worker->mutex_initialized != 0u )
@@ -723,6 +970,19 @@ static SparkStatus SparkKvPageStoreWorkerInitialize(SparkKvPageStore *store)
 		(uint64_t)store->logical_page_capacity * sizeof(uint32_t));
 	memset(worker->logical_pages_by_backing_slot,0xff,
 		(uint64_t)worker->backing_slot_capacity * sizeof(uint32_t));
+	if ( (store->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u )
+	{
+		uint64_t mapped_bytes = backing_slot_capacity * store->page_bytes;
+		if ( mapped_bytes != 0u && mapped_bytes <= SIZE_MAX )
+		{
+			void *mapped = mmap(0,(size_t)mapped_bytes,PROT_READ | PROT_WRITE,MAP_SHARED,store->file_descriptor,0);
+			if ( mapped != MAP_FAILED )
+			{
+				worker->mapped_base = (uint8_t *)mapped;
+				worker->mapped_bytes = mapped_bytes;
+			}
+		}
+	}
 	worker->mutex_initialized = 1u;
 	if ( pthread_cond_init(&worker->condition,0) != 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
