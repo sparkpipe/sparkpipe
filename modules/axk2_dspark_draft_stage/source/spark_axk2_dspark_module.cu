@@ -10,7 +10,7 @@
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
-#include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/drafter_blackwell.cuh"
 #include "runtime/launch.h"
 
 #include <math.h>
@@ -49,7 +49,6 @@
 #define AXK2_WARP 32u
 #define AXK2_WARPS (AXK2_THREADS / AXK2_WARP)
 #define AXK2_PICK_THREADS 1024u
-#define AXK2_TOPK_THREADS 512u
 #define AXK2_ATTN_TILE 32u
 #define AXK2_ATTN_THREADS (AXK2_BLOCK * AXK2_WARP)
 #define AXK2_ATTN_VEC4S (AXK2_HEAD_DIM / 8u)
@@ -94,14 +93,18 @@ typedef struct Axk2Sequence
 typedef struct Axk2Draft
 {
 	uint64_t seed;
+	uint16_t *cache;
 	uint32_t positions[AXK2_BLOCK];
 	uint32_t anchor;
 	uint32_t mask;
+	uint32_t position;
 	uint32_t top_k;
 	float inverse_temperature;
 	float nucleus;
+	float scale;
 	uint32_t start;
 	uint32_t block_at;
+	uint32_t drafts;
 	uint32_t masked;
 	uint8_t valid[AXK2_WINDOW];
 } Axk2Draft;
@@ -139,7 +142,7 @@ typedef struct Axk2Forward
 	uint16_t *mlp;
 	uint16_t *y;
 	uint16_t *logits;
-	float *logits_f32;
+	SparkDrafterTopkBf16Workspace topk_ws;
 	uint32_t *candidates;
 	float *markov_row;
 } Axk2Forward;
@@ -148,6 +151,7 @@ typedef struct Axk2State
 {
 	SparkWeightdLazyPack *pack;
 	SparkGpuStream stream;
+	SparkDrafterGraphCache graphs;
 	uint32_t multiprocessors;
 	uint32_t mask_token;
 	float epsilon;
@@ -233,7 +237,7 @@ void Axk2RopeTableKernel(float *__restrict__ inverse, double theta, double facto
 	}
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
 void Axk2RmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[AXK2_WARPS];
@@ -251,12 +255,38 @@ void Axk2RmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restric
 		const float normalized = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input[row * dimension + index]) * scale));
 		output[row * dimension + index] = LmFloatToBf16(normalized * LmBf16ToFloat(weight[index]));
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_HEAD_THREADS, 1)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
+void Axk2ResidualRmsKernel(const uint16_t *__restrict__ base, const uint16_t *__restrict__ addend, const uint16_t *__restrict__ weight,
+	uint16_t *__restrict__ residual, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduction[AXK2_WARPS];
+	const uint64_t row = blockIdx.x;
+	const uint64_t base_offset = row * dimension;
+	float total = 0.0f, scale;
+	for ( uint32_t index = threadIdx.x; index < dimension; index += AXK2_THREADS )
+	{
+		const uint16_t sum_bf16 = LmFloatToBf16(LmBf16ToFloat(base[base_offset + index]) + LmBf16ToFloat(addend[base_offset + index]));
+		const float value = LmBf16ToFloat(sum_bf16);
+		residual[base_offset + index] = sum_bf16;
+		total += value * value;
+	}
+	total = LmBlockSum<AXK2_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)dimension + epsilon);
+	for ( uint32_t index = threadIdx.x; index < dimension; index += AXK2_THREADS )
+	{
+		const float normalized = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(residual[base_offset + index]) * scale));
+		output[base_offset + index] = LmFloatToBf16(normalized * LmBf16ToFloat(weight[index]));
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(AXK2_HEAD_THREADS, 4)
 void Axk2HeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const float *__restrict__ inverse,
 	const uint32_t *__restrict__ positions, uint32_t heads, float epsilon, float rope_gain, uint16_t *__restrict__ output, uint16_t *__restrict__ cache_keys,
-	uint32_t block_at, uint32_t use_ring)
+	const Axk2Draft *__restrict__ draft, uint32_t layer)
 {
 	__shared__ float reduction[AXK2_HEAD_THREADS / AXK2_WARP];
 	__shared__ float normed[AXK2_HEAD_DIM];
@@ -272,46 +302,61 @@ void Axk2HeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *
 		float cosine, sine, rotated;
 		Axk2Rotation(position, inverse[lane % AXK2_HALF], rope_gain, &cosine, &sine);
 		rotated = lane < AXK2_HALF ? normed[lane] * cosine - normed[lane + AXK2_HALF] * sine : normed[lane] * cosine + normed[lane - AXK2_HALF] * sine;
-		if ( cache_keys != 0 )
-		{
-			const uint32_t column = use_ring != 0u ? position % AXK2_WINDOW : block_at + row;
-			cache_keys[((uint64_t)head * AXK2_COLUMNS + column) * AXK2_HEAD_DIM + lane] = LmFloatToBf16(rotated);
-		}
-		else
+		if ( output != 0 )
 			output[((uint64_t)row * heads + head) * AXK2_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+		else
+		{
+			uint16_t *dst_keys = draft != 0 ? draft->cache + (uint64_t)(2u * layer) * AXK2_LAYER_KV : cache_keys;
+			const uint32_t column = draft != 0 ? draft->block_at + row : position % AXK2_WINDOW;
+			dst_keys[((uint64_t)head * AXK2_COLUMNS + column) * AXK2_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
-void Axk2StoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, uint32_t block_at, uint16_t *__restrict__ cache)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
+void Axk2StoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, const Axk2Draft *__restrict__ draft,
+	uint32_t layer, uint16_t *__restrict__ cache)
 {
-	const uint32_t row = blockIdx.x, column = positions != 0 ? positions[row] % AXK2_WINDOW : block_at + row;
-	for ( uint32_t index = threadIdx.x; index < AXK2_KV_WIDTH; index += AXK2_THREADS )
-		cache[((uint64_t)(index / AXK2_HEAD_DIM) * AXK2_COLUMNS + column) * AXK2_HEAD_DIM + index % AXK2_HEAD_DIM] = values[(uint64_t)row * AXK2_KV_WIDTH + index];
+	const uint32_t row = blockIdx.x;
+	const uint32_t column = draft != 0 ? draft->block_at + row : positions[row] % AXK2_WINDOW;
+	uint16_t *dst = draft != 0 ? draft->cache + (uint64_t)(2u * layer + 1u) * AXK2_LAYER_KV : cache;
+	for ( uint32_t vec = threadIdx.x; vec < AXK2_KV_WIDTH / 8u; vec += AXK2_THREADS )
+	{
+		const uint32_t index = vec * 8u;
+		const uint32_t head = index / AXK2_HEAD_DIM;
+		const uint32_t col = index % AXK2_HEAD_DIM;
+		*(uint4 *)(dst + ((uint64_t)head * AXK2_COLUMNS + column) * AXK2_HEAD_DIM + col) =
+			*(const uint4 *)(values + (uint64_t)row * AXK2_KV_WIDTH + index);
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
 void Axk2EmbedKernel(const uint16_t *__restrict__ embed, const Axk2Draft *__restrict__ draft, uint16_t *__restrict__ hidden)
 {
 	const uint32_t row = blockIdx.x, token = row == 0u ? draft->anchor : draft->mask;
-	for ( uint32_t index = threadIdx.x; index < AXK2_HIDDEN; index += AXK2_THREADS )
-		hidden[(uint64_t)row * AXK2_HIDDEN + index] = embed[(uint64_t)token * AXK2_HIDDEN + index];
+	const uint4 *src = (const uint4 *)(embed + (uint64_t)token * AXK2_HIDDEN);
+	uint4 *dst = (uint4 *)(hidden + (uint64_t)row * AXK2_HIDDEN);
+	for ( uint32_t vec = threadIdx.x; vec < AXK2_HIDDEN / 8u; vec += AXK2_THREADS )
+		dst[vec] = src[vec];
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_ATTN_THREADS, 1)
-void Axk2AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ keys, const uint16_t *__restrict__ values,
-	const Axk2Draft *__restrict__ draft, float scale, uint16_t *__restrict__ output)
+__global__ __launch_bounds__(AXK2_ATTN_THREADS, 2)
+void Axk2AttentionKernel(const uint16_t *__restrict__ q, const Axk2Draft *__restrict__ draft, uint32_t layer, float scale, uint16_t *__restrict__ output)
 {
-	__shared__ uint32_t s_k[AXK2_ATTN_TILE][AXK2_HALF + 1u];
-	__shared__ uint32_t s_v[AXK2_ATTN_TILE][AXK2_HALF + 1u];
+	__shared__ __align__(16) uint32_t s_k[2][AXK2_ATTN_TILE][AXK2_HALF];
+	__shared__ __align__(16) uint32_t s_v[2][AXK2_ATTN_TILE][AXK2_HALF];
 	__shared__ float s_scores[AXK2_BLOCK][AXK2_ATTN_TILE];
 	__shared__ uint8_t s_vis[AXK2_ATTN_TILE];
+	LmDependentWait();
 	const uint32_t head = blockIdx.x;
 	const uint32_t warp = threadIdx.x / AXK2_WARP, lane = threadIdx.x % AXK2_WARP;
 	const uint32_t start = draft->start, block_at = draft->block_at, masked = draft->masked;
 	const uint32_t tiles = start < block_at ? (block_at - start + AXK2_ATTN_TILE - 1u) / AXK2_ATTN_TILE : 0u;
-	const uint16_t *head_keys = keys + (uint64_t)head * AXK2_COLUMNS * AXK2_HEAD_DIM;
-	const uint16_t *head_values = values + (uint64_t)head * AXK2_COLUMNS * AXK2_HEAD_DIM;
+	const uint16_t *head_keys = draft->cache + (uint64_t)(2u * layer) * AXK2_LAYER_KV + (uint64_t)head * AXK2_COLUMNS * AXK2_HEAD_DIM;
+	const uint16_t *head_values = head_keys + AXK2_LAYER_KV;
 	const uint16_t *q_row = q + ((uint64_t)warp * AXK2_HEADS + head) * AXK2_HEAD_DIM;
 	const uint32_t qp0 = *(const uint32_t *)(q_row + 2u * lane);
 	const float q0 = LmBf16ToFloat((uint16_t)(qp0 & 0xffffu));
@@ -319,102 +364,125 @@ void Axk2AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restr
 	float q2 = 0.0f, q3 = 0.0f;
 	float running_max = -INFINITY, running_sum = 0.0f, acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
 	uint16_t *out_row = output + (uint64_t)warp * AXK2_Q_WIDTH + (uint64_t)head * AXK2_HEAD_DIM;
+	const uint32_t blk_stage = tiles & 1u;
 	if ( lane < AXK2_HALF - AXK2_WARP )
 	{
 		const uint32_t qp1 = *(const uint32_t *)(q_row + 2u * (AXK2_WARP + lane));
 		q2 = LmBf16ToFloat((uint16_t)(qp1 & 0xffffu));
 		q3 = LmBf16ToFloat((uint16_t)(qp1 >> 16u));
 	}
-	for ( uint32_t tile = 0u; tile < tiles; tile++ )
+	if ( tiles > 0u )
 	{
-		const uint32_t tile_first = start + tile * AXK2_ATTN_TILE;
-		const uint32_t tile_keys = block_at - tile_first < AXK2_ATTN_TILE ? block_at - tile_first : AXK2_ATTN_TILE;
-		for ( uint32_t idx = threadIdx.x; idx < tile_keys * AXK2_ATTN_VEC4S; idx += AXK2_ATTN_THREADS )
+		const uint32_t t0_keys = block_at - start < AXK2_ATTN_TILE ? block_at - start : AXK2_ATTN_TILE;
+		for ( uint32_t idx = threadIdx.x; idx < t0_keys * AXK2_ATTN_VEC4S; idx += AXK2_ATTN_THREADS )
 		{
 			const uint32_t load_key = idx / AXK2_ATTN_VEC4S, load_chunk = idx % AXK2_ATTN_VEC4S;
-			const uint32_t col = tile_first + load_key;
-			const uint4 kv_k = *(const uint4 *)(head_keys + (uint64_t)col * AXK2_HEAD_DIM + load_chunk * 8u);
-			const uint4 kv_v = *(const uint4 *)(head_values + (uint64_t)col * AXK2_HEAD_DIM + load_chunk * 8u);
-			s_k[load_key][load_chunk * 4u + 0u] = kv_k.x;
-			s_k[load_key][load_chunk * 4u + 1u] = kv_k.y;
-			s_k[load_key][load_chunk * 4u + 2u] = kv_k.z;
-			s_k[load_key][load_chunk * 4u + 3u] = kv_k.w;
-			s_v[load_key][load_chunk * 4u + 0u] = kv_v.x;
-			s_v[load_key][load_chunk * 4u + 1u] = kv_v.y;
-			s_v[load_key][load_chunk * 4u + 2u] = kv_v.z;
-			s_v[load_key][load_chunk * 4u + 3u] = kv_v.w;
+			const uint64_t off = (uint64_t)(start + load_key) * AXK2_HEAD_DIM + load_chunk * 8u;
+			SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[0][load_key][load_chunk * 4u]), head_keys + off, 16u);
+			SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[0][load_key][load_chunk * 4u]), head_values + off, 16u);
 		}
-		if ( threadIdx.x < AXK2_ATTN_TILE )
-			s_vis[threadIdx.x] = threadIdx.x < tile_keys && (masked == 0u || draft->valid[tile_first + threadIdx.x] != 0u) ? 1u : 0u;
-		__syncthreads();
-		for ( uint32_t t = 0u; t < tile_keys; t++ )
+		SparkDrafterCommitGroup();
+		for ( uint32_t tile = 0u; tile < tiles; tile++ )
 		{
-			const uint32_t kp0 = s_k[t][lane];
-			float dot = fmaf(q0, LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1 * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
-			if ( lane < AXK2_HALF - AXK2_WARP )
+			const uint32_t cur = tile & 1u, nxt = cur ^ 1u;
+			const uint32_t tile_first = start + tile * AXK2_ATTN_TILE;
+			const uint32_t tile_keys = block_at - tile_first < AXK2_ATTN_TILE ? block_at - tile_first : AXK2_ATTN_TILE;
+			if ( tile + 1u < tiles )
 			{
-				const uint32_t kp1 = s_k[t][AXK2_WARP + lane];
-				dot = fmaf(q2, LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), fmaf(q3, LmBf16ToFloat((uint16_t)(kp1 >> 16u)), dot));
+				const uint32_t next_first = tile_first + AXK2_ATTN_TILE;
+				const uint32_t next_keys = block_at - next_first < AXK2_ATTN_TILE ? block_at - next_first : AXK2_ATTN_TILE;
+				for ( uint32_t idx = threadIdx.x; idx < next_keys * AXK2_ATTN_VEC4S; idx += AXK2_ATTN_THREADS )
+				{
+					const uint32_t load_key = idx / AXK2_ATTN_VEC4S, load_chunk = idx % AXK2_ATTN_VEC4S;
+					const uint64_t off = (uint64_t)(next_first + load_key) * AXK2_HEAD_DIM + load_chunk * 8u;
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[nxt][load_key][load_chunk * 4u]), head_keys + off, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[nxt][load_key][load_chunk * 4u]), head_values + off, 16u);
+				}
+				SparkDrafterCommitGroup();
 			}
-			dot = Axk2WarpSum(dot);
-			if ( lane == 0u )
-				s_scores[warp][t] = s_vis[t] != 0u ? dot * scale : -INFINITY;
-		}
-		__syncwarp();
-		{
-			const float sc = lane < tile_keys ? s_scores[warp][lane] : -INFINITY;
-			const float tile_max = Axk2WarpMax(sc);
-			const float next_max = fmaxf(running_max, tile_max);
-			const float rescale = running_max == -INFINITY ? 0.0f : expf(running_max - next_max);
-			const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
-			const float tile_sum = Axk2WarpSum(weight);
-			running_sum = running_sum * rescale + tile_sum;
-			running_max = next_max;
-			acc0 *= rescale;
-			acc1 *= rescale;
-			acc2 *= rescale;
-			acc3 *= rescale;
-			s_scores[warp][lane] = weight;
-		}
-		__syncwarp();
-		for ( uint32_t t = 0u; t < tile_keys; t++ )
-		{
-			const float wt = s_scores[warp][t];
-			const uint32_t vp0 = s_v[t][lane];
-			acc0 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0);
-			acc1 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1);
-			if ( lane < AXK2_HALF - AXK2_WARP )
+			else
 			{
-				const uint32_t vp1 = s_v[t][AXK2_WARP + lane];
-				acc2 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2);
-				acc3 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3);
+				if ( threadIdx.x < AXK2_BLOCK * AXK2_ATTN_VEC4S )
+				{
+					const uint32_t load_key = threadIdx.x / AXK2_ATTN_VEC4S, load_chunk = threadIdx.x % AXK2_ATTN_VEC4S;
+					const uint64_t off = (uint64_t)(block_at + load_key) * AXK2_HEAD_DIM + load_chunk * 8u;
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[nxt][load_key][load_chunk * 4u]), head_keys + off, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[nxt][load_key][load_chunk * 4u]), head_values + off, 16u);
+				}
+				SparkDrafterCommitGroup();
 			}
+			SparkDrafterWaitGroup<1>();
+			if ( threadIdx.x < AXK2_ATTN_TILE )
+				s_vis[threadIdx.x] = threadIdx.x < tile_keys && (masked == 0u || draft->valid[tile_first + threadIdx.x] != 0u) ? 1u : 0u;
+			__syncthreads();
+			for ( uint32_t t = 0u; t < tile_keys; t++ )
+			{
+				const uint32_t kp0 = s_k[cur][t][lane];
+				float dot = fmaf(q0, LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1 * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
+				if ( lane < AXK2_HALF - AXK2_WARP )
+				{
+					const uint32_t kp1 = s_k[cur][t][AXK2_WARP + lane];
+					dot = fmaf(q2, LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), fmaf(q3, LmBf16ToFloat((uint16_t)(kp1 >> 16u)), dot));
+				}
+				dot = Axk2WarpSum(dot);
+				if ( lane == 0u )
+					s_scores[warp][t] = s_vis[t] != 0u ? dot * scale : -INFINITY;
+			}
+			__syncwarp();
+			{
+				const float sc = lane < tile_keys ? s_scores[warp][lane] : -INFINITY;
+				const float tile_max = Axk2WarpMax(sc);
+				const float next_max = fmaxf(running_max, tile_max);
+				const float rescale = running_max == -INFINITY ? 0.0f : expf(running_max - next_max);
+				const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
+				const float tile_sum = Axk2WarpSum(weight);
+				running_sum = running_sum * rescale + tile_sum;
+				running_max = next_max;
+				acc0 *= rescale;
+				acc1 *= rescale;
+				acc2 *= rescale;
+				acc3 *= rescale;
+				s_scores[warp][lane] = weight;
+			}
+			__syncwarp();
+			for ( uint32_t t = 0u; t < tile_keys; t++ )
+			{
+				const float wt = s_scores[warp][t];
+				const uint32_t vp0 = s_v[cur][t][lane];
+				acc0 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0);
+				acc1 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1);
+				if ( lane < AXK2_HALF - AXK2_WARP )
+				{
+					const uint32_t vp1 = s_v[cur][t][AXK2_WARP + lane];
+					acc2 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2);
+					acc3 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3);
+				}
+			}
+			__syncthreads();
 		}
+		SparkDrafterWaitGroup<0>();
 		__syncthreads();
 	}
-	if ( threadIdx.x < AXK2_BLOCK * AXK2_ATTN_VEC4S )
+	else
 	{
-		const uint32_t load_key = threadIdx.x / AXK2_ATTN_VEC4S, load_chunk = threadIdx.x % AXK2_ATTN_VEC4S;
-		const uint32_t col = block_at + load_key;
-		const uint4 kv_k = *(const uint4 *)(head_keys + (uint64_t)col * AXK2_HEAD_DIM + load_chunk * 8u);
-		const uint4 kv_v = *(const uint4 *)(head_values + (uint64_t)col * AXK2_HEAD_DIM + load_chunk * 8u);
-		s_k[load_key][load_chunk * 4u + 0u] = kv_k.x;
-		s_k[load_key][load_chunk * 4u + 1u] = kv_k.y;
-		s_k[load_key][load_chunk * 4u + 2u] = kv_k.z;
-		s_k[load_key][load_chunk * 4u + 3u] = kv_k.w;
-		s_v[load_key][load_chunk * 4u + 0u] = kv_v.x;
-		s_v[load_key][load_chunk * 4u + 1u] = kv_v.y;
-		s_v[load_key][load_chunk * 4u + 2u] = kv_v.z;
-		s_v[load_key][load_chunk * 4u + 3u] = kv_v.w;
+		if ( threadIdx.x < AXK2_BLOCK * AXK2_ATTN_VEC4S )
+		{
+			const uint32_t load_key = threadIdx.x / AXK2_ATTN_VEC4S, load_chunk = threadIdx.x % AXK2_ATTN_VEC4S;
+			const uint64_t off = (uint64_t)(block_at + load_key) * AXK2_HEAD_DIM + load_chunk * 8u;
+			SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[0][load_key][load_chunk * 4u]), head_keys + off, 16u);
+			SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[0][load_key][load_chunk * 4u]), head_values + off, 16u);
+		}
+		SparkDrafterCommitGroup();
+		SparkDrafterWaitGroup<0>();
+		__syncthreads();
 	}
-	__syncthreads();
 	for ( uint32_t t = 0u; t <= warp; t++ )
 	{
-		const uint32_t kp0 = s_k[t][lane];
+		const uint32_t kp0 = s_k[blk_stage][t][lane];
 		float dot = fmaf(q0, LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1 * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
 		if ( lane < AXK2_HALF - AXK2_WARP )
 		{
-			const uint32_t kp1 = s_k[t][AXK2_WARP + lane];
+			const uint32_t kp1 = s_k[blk_stage][t][AXK2_WARP + lane];
 			dot = fmaf(q2, LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), fmaf(q3, LmBf16ToFloat((uint16_t)(kp1 >> 16u)), dot));
 		}
 		dot = Axk2WarpSum(dot);
@@ -441,12 +509,12 @@ void Axk2AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restr
 	for ( uint32_t t = 0u; t <= warp; t++ )
 	{
 		const float wt = s_scores[warp][t];
-		const uint32_t vp0 = s_v[t][lane];
+		const uint32_t vp0 = s_v[blk_stage][t][lane];
 		acc0 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0);
 		acc1 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1);
 		if ( lane < AXK2_HALF - AXK2_WARP )
 		{
-			const uint32_t vp1 = s_v[t][AXK2_WARP + lane];
+			const uint32_t vp1 = s_v[blk_stage][t][AXK2_WARP + lane];
 			acc2 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2);
 			acc3 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3);
 		}
@@ -458,38 +526,49 @@ void Axk2AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restr
 		out_row[2u * (AXK2_WARP + lane)] = LmFloatToBf16(acc2 / running_sum);
 		out_row[2u * (AXK2_WARP + lane) + 1u] = LmFloatToBf16(acc3 / running_sum);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
 void Axk2ResidualKernel(const uint16_t *__restrict__ base, const uint16_t *__restrict__ addend, uint16_t *__restrict__ output, uint32_t count)
 {
 	for ( uint32_t index = blockIdx.x * AXK2_THREADS + threadIdx.x; index < count; index += gridDim.x * AXK2_THREADS )
 		output[index] = LmFloatToBf16(LmBf16ToFloat(base[index]) + LmBf16ToFloat(addend[index]));
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
 void Axk2SwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t count)
 {
-	for ( uint32_t index = blockIdx.x * AXK2_THREADS + threadIdx.x; index < count; index += gridDim.x * AXK2_THREADS )
+	const uint4 *g4 = (const uint4 *)gate;
+	const uint4 *u4 = (const uint4 *)up;
+	uint4 *o4 = (uint4 *)output;
+	for ( uint32_t vec = blockIdx.x * AXK2_THREADS + threadIdx.x; vec < count / 8u; vec += gridDim.x * AXK2_THREADS )
 	{
-		const float g = LmBf16ToFloat(gate[index]);
-		output[index] = LmFloatToBf16(g / (1.0f + expf(-g)) * LmBf16ToFloat(up[index]));
+		const uint4 gv = g4[vec], uv = u4[vec];
+		const uint32_t ga[4] = {gv.x, gv.y, gv.z, gv.w};
+		const uint32_t ua[4] = {uv.x, uv.y, uv.z, uv.w};
+		uint32_t oa[4];
+		for ( uint32_t i = 0u; i < 4u; i++ )
+		{
+			const float g0 = LmBf16ToFloat((uint16_t)(ga[i] & 0xffffu));
+			const float g1 = LmBf16ToFloat((uint16_t)(ga[i] >> 16u));
+			const uint16_t r0 = LmFloatToBf16(g0 / (1.0f + expf(-g0)) * LmBf16ToFloat((uint16_t)(ua[i] & 0xffffu)));
+			const uint16_t r1 = LmFloatToBf16(g1 / (1.0f + expf(-g1)) * LmBf16ToFloat((uint16_t)(ua[i] >> 16u)));
+			oa[i] = (uint32_t)r0 | ((uint32_t)r1 << 16u);
+		}
+		o4[vec] = make_uint4(oa[0], oa[1], oa[2], oa[3]);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
-void Axk2WidenKernel(const uint16_t *__restrict__ input, float *__restrict__ output, uint32_t count)
-{
-	for ( uint32_t index = blockIdx.x * AXK2_THREADS + threadIdx.x; index < count; index += gridDim.x * AXK2_THREADS )
-		output[index] = LmBf16ToFloat(input[index]);
-}
-
-__global__ __launch_bounds__(AXK2_THREADS, 1)
-void Axk2MarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
-	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
+void Axk2MarkovRowKernel(uint32_t step, const Axk2Draft *__restrict__ draft, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
 {
 	__shared__ float vector[AXK2_MARKOV];
-	const uint32_t previous = step == 0u ? anchor : tokens[step - 1u];
+	LmDependentWait();
+	const uint32_t previous = step == 0u ? draft->anchor : tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / AXK2_WARP, lane = threadIdx.x % AXK2_WARP;
 	for ( uint32_t index = threadIdx.x; index < AXK2_MARKOV; index += AXK2_THREADS )
 		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * AXK2_MARKOV + index]);
@@ -503,8 +582,9 @@ void Axk2MarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restr
 			sum += LmBf16ToFloat(edge[element]) * vector[element];
 		sum = Axk2WarpSum(sum);
 		if ( lane == 0u )
-			row[slot] = logits[(uint64_t)step * AXK2_DRAFT_VOCAB + candidate] + sum;
+			row[slot] = LmBf16ToFloat(logits[(uint64_t)step * AXK2_DRAFT_VOCAB + candidate]) + sum;
 	}
+	LmDependentRelease();
 }
 
 static __device__ __forceinline__ unsigned long long Axk2RowKey(const float *row, uint32_t slot)
@@ -529,10 +609,9 @@ static __device__ __forceinline__ void Axk2Top2Insert(unsigned long long candida
 }
 
 __global__ __launch_bounds__(AXK2_PICK_THREADS, 1)
-void Axk2MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsigned long long seed, float inverse_temperature, float nucleus,
-	uint32_t top_k, const float *__restrict__ row, const uint32_t *__restrict__ candidates, const int64_t *__restrict__ d2t,
-	const uint16_t *__restrict__ y, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ confidence_weight,
-	const uint16_t *__restrict__ confidence_bias, Axk2Picks *__restrict__ picks)
+void Axk2MarkovPickKernel(uint32_t step, const Axk2Draft *__restrict__ draft, const float *__restrict__ row, const uint32_t *__restrict__ candidates,
+	const int64_t *__restrict__ d2t, const uint16_t *__restrict__ y, const uint16_t *__restrict__ markov_previous,
+	const uint16_t *__restrict__ confidence_weight, const uint16_t *__restrict__ confidence_bias, Axk2Picks *__restrict__ picks)
 {
 	__shared__ unsigned long long keys[AXK2_CANDIDATES];
 	__shared__ unsigned long long best[AXK2_PICK_THREADS / AXK2_WARP];
@@ -541,6 +620,10 @@ void Axk2MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, uns
 	__shared__ uint32_t chosen;
 	__shared__ uint32_t alt_chosen;
 	__shared__ float peak_scaled;
+	LmDependentWait();
+	const uint32_t anchor = draft->anchor, position = draft->position, top_k = draft->top_k;
+	const unsigned long long seed = (unsigned long long)draft->seed;
+	const float inverse_temperature = draft->inverse_temperature, nucleus = draft->nucleus;
 	const uint32_t previous = step == 0u ? anchor : picks->tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / AXK2_WARP, lane = threadIdx.x % AXK2_WARP;
 	const float scale = inverse_temperature > 0.0f ? inverse_temperature : 1.0f;
@@ -652,126 +735,138 @@ void Axk2MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, uns
 		picks->alt_tokens[step] = Axk2DraftToTarget(d2t, candidates[step * AXK2_CANDIDATES + alt_chosen]);
 		picks->alt_scores[step] = denom > 0.0f ? expf(row[alt_chosen] * scale - peak_scaled) / denom : 0.0f;
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(AXK2_WARP, 1)
-void Axk2BranchSelectKernel(Axk2Picks *__restrict__ picks, uint32_t drafts, float min_score)
+void Axk2BranchSelectKernel(Axk2Picks *__restrict__ picks, const Axk2Draft *__restrict__ draft, float min_score)
 {
+	LmDependentWait();
 	uint32_t used = 0u;
-	if ( threadIdx.x != 0u )
-		return;
-	for ( uint32_t branch = 0u; branch < AXK2_BRANCHES; branch++ )
+	if ( threadIdx.x == 0u )
 	{
-		picks->branch_fork[branch] = AXK2_BLOCK;
-		picks->branch_len[branch] = 0u;
-	}
-	for ( uint32_t step = 0u; step + 1u < drafts; step++ )
-	{
-		const float score = picks->alt_scores[step];
-		uint32_t pos = used;
-		if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
-			continue;
-		while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+		const uint32_t drafts = draft->drafts;
+		for ( uint32_t branch = 0u; branch < AXK2_BRANCHES; branch++ )
 		{
+			picks->branch_fork[branch] = AXK2_BLOCK;
+			picks->branch_len[branch] = 0u;
+		}
+		for ( uint32_t step = 0u; step + 1u < drafts; step++ )
+		{
+			const float score = picks->alt_scores[step];
+			uint32_t pos = used;
+			if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
+				continue;
+			while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+			{
+				if ( pos < AXK2_BRANCHES )
+				{
+					picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
+					picks->branch_len[pos] = picks->branch_len[pos - 1u];
+					picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
+					picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				}
+				pos--;
+			}
 			if ( pos < AXK2_BRANCHES )
 			{
-				picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
-				picks->branch_len[pos] = picks->branch_len[pos - 1u];
-				picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
-				picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				picks->branch_fork[pos] = step;
+				picks->branch_len[pos] = 1u;
+				picks->branch_tokens[pos][0] = picks->alt_tokens[step];
+				picks->branch_scores[pos][0] = score;
+				if ( used < AXK2_BRANCHES )
+					used++;
 			}
-			pos--;
-		}
-		if ( pos < AXK2_BRANCHES )
-		{
-			picks->branch_fork[pos] = step;
-			picks->branch_len[pos] = 1u;
-			picks->branch_tokens[pos][0] = picks->alt_tokens[step];
-			picks->branch_scores[pos][0] = score;
-			if ( used < AXK2_BRANCHES )
-				used++;
 		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(AXK2_THREADS, 1)
-void Axk2BranchRowKernel(uint32_t offset, uint32_t drafts, const Axk2Picks *__restrict__ picks, const uint32_t *__restrict__ candidates,
-	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
+__global__ __launch_bounds__(AXK2_THREADS, 2)
+void Axk2BranchRowKernel(uint32_t offset, const Axk2Draft *__restrict__ draft, const Axk2Picks *__restrict__ picks, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
 {
 	__shared__ float vector[AXK2_MARKOV];
+	LmDependentWait();
+	const uint32_t drafts = draft->drafts;
 	const uint32_t branch = blockIdx.y, fork = picks->branch_fork[branch], step = fork + offset;
 	const uint32_t warp = threadIdx.x / AXK2_WARP, lane = threadIdx.x % AXK2_WARP;
-	uint32_t previous;
-	float *row;
-	if ( fork >= drafts || step >= drafts )
-		return;
-	previous = picks->branch_tokens[branch][offset - 1u];
-	row = rows + (uint64_t)branch * AXK2_CANDIDATES;
-	for ( uint32_t index = threadIdx.x; index < AXK2_MARKOV; index += AXK2_THREADS )
-		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * AXK2_MARKOV + index]);
-	__syncthreads();
-	for ( uint32_t slot = blockIdx.x * AXK2_WARPS + warp; slot < AXK2_CANDIDATES; slot += gridDim.x * AXK2_WARPS )
+	if ( fork < drafts && step < drafts )
 	{
-		const uint32_t candidate = candidates[step * AXK2_CANDIDATES + slot];
-		const uint16_t *edge = markov_next + (uint64_t)candidate * AXK2_MARKOV;
-		float sum = 0.0f;
-		for ( uint32_t element = lane; element < AXK2_MARKOV; element += AXK2_WARP )
-			sum += LmBf16ToFloat(edge[element]) * vector[element];
-		sum = Axk2WarpSum(sum);
-		if ( lane == 0u )
-			row[slot] = logits[(uint64_t)step * AXK2_DRAFT_VOCAB + candidate] + sum;
+		const uint32_t previous = picks->branch_tokens[branch][offset - 1u];
+		float *row = rows + (uint64_t)branch * AXK2_CANDIDATES;
+		for ( uint32_t index = threadIdx.x; index < AXK2_MARKOV; index += AXK2_THREADS )
+			vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * AXK2_MARKOV + index]);
+		__syncthreads();
+		for ( uint32_t slot = blockIdx.x * AXK2_WARPS + warp; slot < AXK2_CANDIDATES; slot += gridDim.x * AXK2_WARPS )
+		{
+			const uint32_t candidate = candidates[step * AXK2_CANDIDATES + slot];
+			const uint16_t *edge = markov_next + (uint64_t)candidate * AXK2_MARKOV;
+			float sum = 0.0f;
+			for ( uint32_t element = lane; element < AXK2_MARKOV; element += AXK2_WARP )
+				sum += LmBf16ToFloat(edge[element]) * vector[element];
+			sum = Axk2WarpSum(sum);
+			if ( lane == 0u )
+				row[slot] = LmBf16ToFloat(logits[(uint64_t)step * AXK2_DRAFT_VOCAB + candidate]) + sum;
+		}
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(AXK2_PICK_THREADS, 1)
-void Axk2BranchPickKernel(uint32_t offset, uint32_t drafts, float scale, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
+void Axk2BranchPickKernel(uint32_t offset, const Axk2Draft *__restrict__ draft, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
 	const int64_t *__restrict__ d2t, Axk2Picks *__restrict__ picks)
 {
 	__shared__ unsigned long long best[AXK2_PICK_THREADS / AXK2_WARP];
 	__shared__ float reduction[AXK2_PICK_THREADS / AXK2_WARP];
 	__shared__ uint32_t chosen;
 	__shared__ float peak_scaled;
+	LmDependentWait();
+	const uint32_t drafts = draft->drafts;
+	const float scale = draft->scale;
 	const uint32_t branch = blockIdx.x, fork = picks->branch_fork[branch], step = fork + offset;
 	const uint32_t warp = threadIdx.x / AXK2_WARP, lane = threadIdx.x % AXK2_WARP;
-	const float *row = rows + (uint64_t)branch * AXK2_CANDIDATES;
-	unsigned long long first = 0ull;
-	float denom = 0.0f;
-	if ( fork >= drafts || step >= drafts )
-		return;
-	for ( uint32_t index = threadIdx.x; index < AXK2_CANDIDATES; index += AXK2_PICK_THREADS )
+	if ( fork < drafts && step < drafts )
 	{
-		const unsigned long long key = Axk2RowKey(row, index);
-		if ( key > first )
-			first = key;
+		const float *row = rows + (uint64_t)branch * AXK2_CANDIDATES;
+		unsigned long long first = 0ull;
+		float denom = 0.0f;
+		for ( uint32_t index = threadIdx.x; index < AXK2_CANDIDATES; index += AXK2_PICK_THREADS )
+		{
+			const unsigned long long key = Axk2RowKey(row, index);
+			if ( key > first )
+				first = key;
+		}
+		for ( uint32_t mask = AXK2_WARP / 2u; mask > 0u; mask >>= 1u )
+		{
+			const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
+			if ( other > first )
+				first = other;
+		}
+		if ( lane == 0u )
+			best[warp] = first;
+		__syncthreads();
+		if ( threadIdx.x == 0u )
+		{
+			first = best[0];
+			for ( uint32_t index = 1u; index < AXK2_PICK_THREADS / AXK2_WARP; index++ )
+				if ( best[index] > first )
+					first = best[index];
+			chosen = Axk2KeySlot(first);
+			peak_scaled = row[chosen] * scale;
+		}
+		__syncthreads();
+		for ( uint32_t index = threadIdx.x; index < AXK2_CANDIDATES; index += AXK2_PICK_THREADS )
+			denom += expf(row[index] * scale - peak_scaled);
+		denom = LmBlockSum<AXK2_PICK_THREADS>(denom, reduction);
+		if ( threadIdx.x == 0u )
+		{
+			picks->branch_tokens[branch][offset] = Axk2DraftToTarget(d2t, candidates[step * AXK2_CANDIDATES + chosen]);
+			picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
+			picks->branch_len[branch] = offset + 1u;
+		}
 	}
-	for ( uint32_t mask = AXK2_WARP / 2u; mask > 0u; mask >>= 1u )
-	{
-		const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
-		if ( other > first )
-			first = other;
-	}
-	if ( lane == 0u )
-		best[warp] = first;
-	__syncthreads();
-	if ( threadIdx.x == 0u )
-	{
-		first = best[0];
-		for ( uint32_t index = 1u; index < AXK2_PICK_THREADS / AXK2_WARP; index++ )
-			if ( best[index] > first )
-				first = best[index];
-		chosen = Axk2KeySlot(first);
-		peak_scaled = row[chosen] * scale;
-	}
-	__syncthreads();
-	for ( uint32_t index = threadIdx.x; index < AXK2_CANDIDATES; index += AXK2_PICK_THREADS )
-		denom += expf(row[index] * scale - peak_scaled);
-	denom = LmBlockSum<AXK2_PICK_THREADS>(denom, reduction);
-	if ( threadIdx.x == 0u )
-	{
-		picks->branch_tokens[branch][offset] = Axk2DraftToTarget(d2t, candidates[step * AXK2_CANDIDATES + chosen]);
-		picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
-		picks->branch_len[branch] = offset + 1u;
-	}
+	LmDependentRelease();
 }
 
 static SparkStatus Axk2Refuse(SparkDrafterModuleBind *bind, SparkStatus status, const char *format, const char *detail)
@@ -1071,7 +1166,8 @@ static SparkStatus Axk2Scratch(Axk2State *state, uint64_t context_bytes)
 		!AXK2_DEVICE(forward->residual, AXK2_BLOCK * AXK2_HIDDEN) || !AXK2_DEVICE(forward->gate, AXK2_BLOCK * AXK2_MLP) ||
 		!AXK2_DEVICE(forward->up, AXK2_BLOCK * AXK2_MLP) || !AXK2_DEVICE(forward->act, AXK2_BLOCK * AXK2_MLP) ||
 		!AXK2_DEVICE(forward->mlp, AXK2_BLOCK * AXK2_HIDDEN) || !AXK2_DEVICE(forward->y, AXK2_BLOCK * AXK2_HIDDEN) ||
-		!AXK2_DEVICE(forward->logits, (uint64_t)AXK2_BLOCK * AXK2_DRAFT_VOCAB) || !AXK2_DEVICE(forward->logits_f32, (uint64_t)AXK2_BLOCK * AXK2_DRAFT_VOCAB) ||
+		!AXK2_DEVICE(forward->logits, (uint64_t)AXK2_BLOCK * AXK2_DRAFT_VOCAB) ||
+		SparkDrafterTopkBf16Alloc(&forward->topk_ws, AXK2_BLOCK) != SPARK_STATUS_OK ||
 		!AXK2_DEVICE(forward->candidates, AXK2_BLOCK * AXK2_CANDIDATES) || !AXK2_DEVICE(forward->markov_row, AXK2_BRANCHES * AXK2_CANDIDATES) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for ( uint32_t index = 0u; index < state->capacity; index++ )
@@ -1149,8 +1245,10 @@ static SparkStatus Axk2IngestRows(Axk2State *state, Axk2Sequence *sequence, uint
 		if ( status != SPARK_STATUS_OK )
 			break;
 		LM_LAUNCH((Axk2HeadNormRopeKernel), rows * AXK2_KV_HEADS, AXK2_HEAD_THREADS, 0, state->stream, state->keys_raw, state->layers[layer].k_norm,
-			state->rope_inverse, state->positions, AXK2_KV_HEADS, state->epsilon, state->rope_gain, (uint16_t *)0, Axk2Keys(sequence, layer), 0u, 1u);
-		LM_LAUNCH((Axk2StoreValuesKernel), rows, AXK2_THREADS, 0, state->stream, state->values_raw, state->positions, 0u, Axk2Values(sequence, layer));
+			state->rope_inverse, state->positions, AXK2_KV_HEADS, state->epsilon, state->rope_gain, (uint16_t *)0, Axk2Keys(sequence, layer),
+			(const Axk2Draft *)0, layer);
+		LM_LAUNCH((Axk2StoreValuesKernel), rows, AXK2_THREADS, 0, state->stream, state->values_raw, state->positions, (const Axk2Draft *)0, layer,
+			Axk2Values(sequence, layer));
 	}
 	if ( status == SPARK_STATUS_OK && SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_INTERNAL_ERROR;
@@ -1335,38 +1433,41 @@ static void Axk2Span(Axk2Sequence *sequence, uint64_t checked, uint64_t position
 }
 
 static SparkStatus Axk2Prepare(Axk2State *state, Axk2Sequence *sequence, uint32_t anchor, uint64_t position, uint64_t checked,
-	const SparkRowSampling *sampling)
+	const SparkRowSampling *sampling, uint32_t drafts)
 {
 	Axk2Draft *draft = state->forward.host_draft;
 	if ( anchor >= AXK2_VOCAB || position + AXK2_BLOCK > UINT32_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(draft, 0, offsetof(Axk2Draft, valid));
+	draft->cache = sequence->cache;
 	for ( uint32_t row = 0u; row < AXK2_BLOCK; row++ )
 		draft->positions[row] = (uint32_t)(position + row);
 	draft->anchor = anchor;
 	draft->mask = state->mask_token;
+	draft->position = (uint32_t)position;
 	draft->seed = sampling->seed;
 	draft->inverse_temperature = sampling->inverse_temperature;
 	draft->nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
+	draft->scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
 	draft->top_k = sampling->top_k;
+	draft->drafts = drafts;
 	Axk2Span(sequence, checked, position, draft);
 	if ( SparkGpuMemcpyAsync(state->forward.draft, draft, sizeof(*draft), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus Axk2RunForward(Axk2State *state, const Axk2Sequence *sequence, uint32_t layers)
+static SparkStatus Axk2RunForward(Axk2State *state, uint32_t layers)
 {
 	Axk2Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
 	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(Axk2Draft, positions));
-	const uint32_t block_at = state->forward.host_draft->block_at;
 	SparkStatus status = SPARK_STATUS_OK;
 	LM_LAUNCH((Axk2EmbedKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, state->embed, forward->draft, forward->hidden);
+	LM_LAUNCH((Axk2RmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->hidden, state->layers[0].input_norm, forward->x, AXK2_HIDDEN, state->epsilon);
 	for ( uint32_t layer = 0u; layer < layers && status == SPARK_STATUS_OK; layer++ )
 	{
 		const Axk2Layer *weights = &state->layers[layer];
-		LM_LAUNCH((Axk2RmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->hidden, weights->input_norm, forward->x, AXK2_HIDDEN, state->epsilon);
 		status = Axk2Gemm(state, weights->q, forward->x, forward->q, AXK2_BLOCK, AXK2_HIDDEN, AXK2_Q_WIDTH);
 		if ( status == SPARK_STATUS_OK )
 			status = Axk2Gemm(state, weights->k, forward->x, forward->k, AXK2_BLOCK, AXK2_HIDDEN, AXK2_KV_WIDTH);
@@ -1375,18 +1476,17 @@ static SparkStatus Axk2RunForward(Axk2State *state, const Axk2Sequence *sequence
 		if ( status != SPARK_STATUS_OK )
 			break;
 		LM_LAUNCH((Axk2HeadNormRopeKernel), AXK2_BLOCK * AXK2_HEADS, AXK2_HEAD_THREADS, 0, stream, forward->q, weights->q_norm, state->rope_inverse, positions,
-			AXK2_HEADS, state->epsilon, state->rope_gain, forward->q_roped, (uint16_t *)0, 0u, 0u);
+			AXK2_HEADS, state->epsilon, state->rope_gain, forward->q_roped, (uint16_t *)0, (const Axk2Draft *)0, layer);
 		LM_LAUNCH((Axk2HeadNormRopeKernel), AXK2_BLOCK * AXK2_KV_HEADS, AXK2_HEAD_THREADS, 0, stream, forward->k, weights->k_norm, state->rope_inverse,
-			positions, AXK2_KV_HEADS, state->epsilon, state->rope_gain, (uint16_t *)0, Axk2Keys(sequence, layer), block_at, 0u);
-		LM_LAUNCH((Axk2StoreValuesKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->v, (const uint32_t *)0, block_at, Axk2Values(sequence, layer));
-		LM_LAUNCH((Axk2AttentionKernel), AXK2_HEADS, AXK2_ATTN_THREADS, 0, stream, forward->q_roped, Axk2Keys(sequence, layer), Axk2Values(sequence, layer),
-			forward->draft, state->softmax_scale, forward->attended);
+			positions, AXK2_KV_HEADS, state->epsilon, state->rope_gain, (uint16_t *)0, (uint16_t *)0, forward->draft, layer);
+		LM_LAUNCH((Axk2StoreValuesKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->v, (const uint32_t *)0, forward->draft, layer, (uint16_t *)0);
+		LM_LAUNCH_DEPENDENT((Axk2AttentionKernel), AXK2_HEADS, AXK2_ATTN_THREADS, 0, stream, forward->q_roped, forward->draft, layer, state->softmax_scale,
+			forward->attended);
 		status = Axk2Gemm(state, weights->o, forward->attended, forward->projected, AXK2_BLOCK, AXK2_Q_WIDTH, AXK2_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((Axk2ResidualKernel), 2u * state->multiprocessors, AXK2_THREADS, 0, stream, forward->hidden, forward->projected, forward->residual,
-			AXK2_BLOCK * AXK2_HIDDEN);
-		LM_LAUNCH((Axk2RmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->residual, weights->post_norm, forward->x, AXK2_HIDDEN, state->epsilon);
+		LM_LAUNCH((Axk2ResidualRmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->hidden, forward->projected, weights->post_norm, forward->residual,
+			forward->x, AXK2_HIDDEN, state->epsilon);
 		status = Axk2Gemm(state, weights->gate, forward->x, forward->gate, AXK2_BLOCK, AXK2_HIDDEN, AXK2_MLP);
 		if ( status == SPARK_STATUS_OK )
 			status = Axk2Gemm(state, weights->up, forward->x, forward->up, AXK2_BLOCK, AXK2_HIDDEN, AXK2_MLP);
@@ -1396,47 +1496,49 @@ static SparkStatus Axk2RunForward(Axk2State *state, const Axk2Sequence *sequence
 		status = Axk2Gemm(state, weights->down, forward->act, forward->mlp, AXK2_BLOCK, AXK2_MLP, AXK2_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((Axk2ResidualKernel), 2u * state->multiprocessors, AXK2_THREADS, 0, stream, forward->residual, forward->mlp, forward->hidden,
-			AXK2_BLOCK * AXK2_HIDDEN);
+		if ( layer + 1u < layers )
+			LM_LAUNCH((Axk2ResidualRmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->residual, forward->mlp, state->layers[layer + 1u].input_norm,
+				forward->hidden, forward->x, AXK2_HIDDEN, state->epsilon);
+		else if ( layers == AXK2_LAYERS )
+			LM_LAUNCH((Axk2ResidualRmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->residual, forward->mlp, state->norm, forward->hidden,
+				forward->y, AXK2_HIDDEN, state->epsilon);
+		else
+			LM_LAUNCH((Axk2ResidualKernel), 2u * state->multiprocessors, AXK2_THREADS, 0, stream, forward->residual, forward->mlp, forward->hidden,
+				AXK2_BLOCK * AXK2_HIDDEN);
 	}
-	if ( status != SPARK_STATUS_OK || layers < AXK2_LAYERS )
+	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Axk2RmsKernel), AXK2_BLOCK, AXK2_THREADS, 0, stream, forward->hidden, state->norm, forward->y, AXK2_HIDDEN, state->epsilon);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus Axk2Heads(Axk2State *state, uint32_t anchor_token, uint64_t position, const SparkRowSampling *sampling, uint32_t drafts, uint32_t tree)
+static SparkStatus Axk2Heads(Axk2State *state, uint32_t branch_steps, uint32_t tree_enabled)
 {
 	Axk2Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
-	const float nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
 	SparkStatus status = Axk2Gemm(state, state->head, forward->y, forward->logits, AXK2_BLOCK, AXK2_HIDDEN, AXK2_DRAFT_VOCAB);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Axk2WidenKernel), 4u * state->multiprocessors, AXK2_THREADS, 0, stream, forward->logits, forward->logits_f32, AXK2_BLOCK * AXK2_DRAFT_VOCAB);
-	if ( LmTopkExactRowsLaunch<AXK2_TOPK_THREADS>(forward->logits_f32, AXK2_BLOCK, AXK2_DRAFT_VOCAB, AXK2_CANDIDATES, forward->candidates, stream) !=
-		SPARK_GPU_SUCCESS )
+	if ( SparkDrafterTopkBf16Launch(forward->logits, AXK2_BLOCK, AXK2_DRAFT_VOCAB, AXK2_CANDIDATES, &forward->topk_ws, forward->candidates, stream) !=
+		SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t step = 0u; step < AXK2_BLOCK; step++ )
 	{
-		LM_LAUNCH((Axk2MarkovRowKernel), AXK2_CANDIDATES / AXK2_WARPS, AXK2_THREADS, 0, stream, step, anchor_token, forward->picks->tokens,
-			forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
-		LM_LAUNCH((Axk2MarkovPickKernel), 1u, AXK2_PICK_THREADS, 0, stream, step, anchor_token, (uint32_t)position, (unsigned long long)sampling->seed,
-			sampling->inverse_temperature, nucleus, sampling->top_k, forward->markov_row, forward->candidates, state->d2t, forward->y,
-			state->markov_previous, state->confidence_weight, state->confidence_bias, forward->picks);
+		LM_LAUNCH_DEPENDENT((Axk2MarkovRowKernel), AXK2_CANDIDATES / AXK2_WARPS, AXK2_THREADS, 0, stream, step, forward->draft, forward->picks->tokens,
+			forward->candidates, forward->logits, state->markov_previous, state->markov_next, forward->markov_row);
+		LM_LAUNCH_DEPENDENT((Axk2MarkovPickKernel), 1u, AXK2_PICK_THREADS, 0, stream, step, forward->draft, forward->markov_row, forward->candidates,
+			state->d2t, forward->y, state->markov_previous, state->confidence_weight, state->confidence_bias, forward->picks);
 	}
-	if ( tree != 0u && drafts >= 2u )
+	if ( tree_enabled != 0u )
 	{
-		const float scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
-		LM_LAUNCH((Axk2BranchSelectKernel), 1u, AXK2_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
-		for ( uint32_t offset = 1u; offset < AXK2_BRANCH_LEN && offset < drafts; offset++ )
+		LM_LAUNCH_DEPENDENT((Axk2BranchSelectKernel), 1u, AXK2_WARP, 0, stream, forward->picks, forward->draft, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
+		for ( uint32_t offset = 1u; offset < branch_steps; offset++ )
 		{
-			LM_LAUNCH((Axk2BranchRowKernel), dim3(AXK2_CANDIDATES / AXK2_WARPS, AXK2_BRANCHES), AXK2_THREADS, 0, stream, offset, drafts,
-				forward->picks, forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
-			LM_LAUNCH((Axk2BranchPickKernel), AXK2_BRANCHES, AXK2_PICK_THREADS, 0, stream, offset, drafts, scale, forward->markov_row, forward->candidates,
-				state->d2t, forward->picks);
+			LM_LAUNCH_DEPENDENT((Axk2BranchRowKernel), dim3(AXK2_CANDIDATES / AXK2_WARPS, AXK2_BRANCHES), AXK2_THREADS, 0, stream, offset, forward->draft,
+				forward->picks, forward->candidates, forward->logits, state->markov_previous, state->markov_next, forward->markov_row);
+			LM_LAUNCH_DEPENDENT((Axk2BranchPickKernel), AXK2_BRANCHES, AXK2_PICK_THREADS, 0, stream, offset, forward->draft, forward->markov_row,
+				forward->candidates, state->d2t, forward->picks);
 		}
 	}
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(Axk2Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
@@ -1458,8 +1560,9 @@ static void Axk2ForwardFree(Axk2Forward *forward)
 	void *buffers[] = {
 		forward->draft, forward->picks, forward->hidden, forward->x, forward->q, forward->q_roped, forward->k, forward->v,
 		forward->attended, forward->projected, forward->residual, forward->gate, forward->up, forward->act, forward->mlp, forward->y,
-		forward->logits, forward->logits_f32, forward->candidates, forward->markov_row,
+		forward->logits, forward->candidates, forward->markov_row,
 	};
+	SparkDrafterTopkBf16Free(&forward->topk_ws);
 	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
 		(void)SparkGpuFree(buffers[index]);
 	if ( forward->host_draft != 0 )
@@ -1476,6 +1579,7 @@ static SparkStatus Axk2Close(void *opaque)
 		return SPARK_STATUS_OK;
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamSynchronize(state->stream);
+	SparkDrafterGraphCacheDestroy(&state->graphs);
 	Axk2ForwardFree(&state->forward);
 	{
 		void *buffers[] = {
@@ -1599,13 +1703,21 @@ static SparkStatus Axk2Propose(void *opaque, const SparkDraftServerRequest *requ
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	{
 		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		const uint32_t tree_enabled = tree != 0u && drafts >= 2u ? 1u : 0u;
+		const uint32_t branch_steps = drafts < AXK2_BRANCH_LEN ? drafts : AXK2_BRANCH_LEN;
 		SparkDraftTreeBranch branches[AXK2_BLOCK];
 		uint32_t branch_count = 0u;
-		status = Axk2Prepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling);
+		status = Axk2Prepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling, drafts);
 		if ( status == SPARK_STATUS_OK )
-			status = Axk2RunForward(state, sequence, AXK2_LAYERS);
-		if ( status == SPARK_STATUS_OK )
-			status = Axk2Heads(state, request->anchor_token_id, request->position, &request->sampling, drafts, tree);
+		{
+			const uint64_t graph_key = ((uint64_t)tree_enabled << 8u) | (uint64_t)branch_steps;
+			status = SparkDrafterGraphRun(&state->graphs, state->stream, graph_key, [&]() -> SparkStatus {
+				SparkStatus inner = Axk2RunForward(state, AXK2_LAYERS);
+				if ( inner == SPARK_STATUS_OK )
+					inner = Axk2Heads(state, branch_steps, tree_enabled);
+				return inner;
+			});
+		}
 		status = Axk2Settle(state, status);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -1693,9 +1805,9 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_axk2_dspark_
 		if ( Axk2Held(sequence, at) == 0u )
 			checked = at + 1u;
 	memset(&greedy, 0, sizeof(greedy));
-	status = Axk2Prepare(state, sequence, anchor, position, checked, &greedy);
+	status = Axk2Prepare(state, sequence, anchor, position, checked, &greedy, 0u);
 	if ( status == SPARK_STATUS_OK )
-		status = Axk2RunForward(state, sequence, AXK2_LAYERS);
+		status = Axk2RunForward(state, AXK2_LAYERS);
 	status = Axk2Settle(state, status);
 	if ( elapsed_ns != 0 )
 		*elapsed_ns = SparkMonotonicNs() - started;
@@ -1719,9 +1831,9 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_axk2_dspark_
 		if ( Axk2Held(sequence, at) == 0u )
 			checked = at + 1u;
 	memset(&greedy, 0, sizeof(greedy));
-	status = Axk2Prepare(state, sequence, anchor, position, checked, &greedy);
+	status = Axk2Prepare(state, sequence, anchor, position, checked, &greedy, 0u);
 	if ( status == SPARK_STATUS_OK )
-		status = Axk2RunForward(state, sequence, layers);
+		status = Axk2RunForward(state, layers);
 	status = Axk2Settle(state, status);
 	if ( status == SPARK_STATUS_OK )
 		status = Axk2Readback(hidden, state->forward.hidden, (size_t)AXK2_BLOCK * AXK2_HIDDEN * sizeof(uint16_t));

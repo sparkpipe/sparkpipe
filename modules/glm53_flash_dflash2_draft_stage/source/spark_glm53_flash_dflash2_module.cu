@@ -11,7 +11,7 @@
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
-#include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/drafter_blackwell.cuh"
 #include "runtime/launch.h"
 
 #include <math.h>
@@ -98,6 +98,7 @@ typedef struct G53FSequence
 
 typedef struct G53FDraft
 {
+	uint16_t *cache;
 	uint64_t seed;
 	uint32_t positions[G53F_BLOCK];
 	uint32_t anchor;
@@ -109,7 +110,8 @@ typedef struct G53FDraft
 	uint32_t start;
 	uint32_t block_at;
 	uint32_t masked;
-	uint32_t reserved;
+	uint32_t splits;
+	uint32_t tree;
 	uint8_t valid[G53F_WINDOW];
 } G53FDraft;
 
@@ -144,7 +146,7 @@ typedef struct G53FForward
 	uint16_t *mlp;
 	uint16_t *y;
 	uint16_t *logits;
-	float *logits_f32;
+	SparkDrafterTopkBf16Workspace topk_ws;
 	uint16_t *sel_hidden;
 	uint32_t *candidates;
 	float *unary;
@@ -171,6 +173,7 @@ typedef struct G53FState
 	const uint16_t *successors;
 	G53FLayer layers[G53F_LAYERS];
 	G53FForward forward;
+	SparkDrafterGraphCache graphs;
 	uint16_t *host_taps;
 	uint32_t *host_positions;
 	uint16_t *taps;
@@ -225,65 +228,91 @@ void G53FRopeTableKernel(float *__restrict__ inverse, float theta)
 		inverse[threadIdx.x] = 1.0f / powf(theta, (float)(2u * threadIdx.x) / (float)G53F_HEAD_DIM);
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
+__global__ __launch_bounds__(G53F_THREADS, 2)
 void G53FRmsF32Kernel(const float *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[G53F_WARPS];
 	const uint64_t row = blockIdx.x;
+	const float *src = input + row * dimension;
+	uint16_t *dst = output + row * dimension;
 	float total = 0.0f, scale;
 	for ( uint32_t index = threadIdx.x; index < dimension; index += G53F_THREADS )
 	{
-		const float value = input[row * dimension + index];
+		const float value = src[index];
 		total += value * value;
 	}
 	total = LmBlockSum<G53F_THREADS>(total, reduction);
 	scale = rsqrtf(total / (float)dimension + epsilon);
 	for ( uint32_t index = threadIdx.x; index < dimension; index += G53F_THREADS )
-		output[row * dimension + index] = LmFloatToBf16(input[row * dimension + index] * scale * LmBf16ToFloat(weight[index]));
+		dst[index] = LmFloatToBf16(src[index] * scale * LmBf16ToFloat(__ldg(weight + index)));
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_HEAD_DIM, 1)
+__global__ __launch_bounds__(G53F_HEAD_DIM, 4)
 void G53FHeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const float *__restrict__ inverse,
 	const uint32_t *__restrict__ positions, uint32_t heads, float epsilon, uint16_t *__restrict__ output, uint16_t *__restrict__ cache_keys,
-	uint32_t block_at, uint32_t use_ring)
+	const G53FDraft *__restrict__ draft, uint64_t layer_offset, uint32_t use_ring)
 {
+	if ( draft != 0 && output == 0 )
+		LmDependentWait();
 	__shared__ float reduction[G53F_HEAD_DIM / G53F_WARP];
 	__shared__ float normed[G53F_HEAD_DIM];
 	const uint32_t row = blockIdx.x / heads, head = blockIdx.x % heads, lane = threadIdx.x;
 	const uint32_t position = positions[row];
-	const float value = LmBf16ToFloat(input[((uint64_t)row * heads + head) * G53F_HEAD_DIM + lane]);
+	const float value = LmBf16ToFloat(__ldg(input + ((uint64_t)row * heads + head) * G53F_HEAD_DIM + lane));
 	float scale, cosine, sine, rotated;
 	scale = rsqrtf(LmBlockSum<G53F_HEAD_DIM>(value * value, reduction) / (float)G53F_HEAD_DIM + epsilon);
-	normed[lane] = value * scale * LmBf16ToFloat(weight[lane]);
+	normed[lane] = value * scale * LmBf16ToFloat(__ldg(weight + lane));
 	__syncthreads();
-	G53FRotation(position, inverse[lane % G53F_HALF], &cosine, &sine);
+	G53FRotation(position, __ldg(inverse + (lane % G53F_HALF)), &cosine, &sine);
 	rotated = lane < G53F_HALF ? normed[lane] * cosine - normed[lane + G53F_HALF] * sine : normed[lane] * cosine + normed[lane - G53F_HALF] * sine;
-	if ( cache_keys != 0 )
+	if ( output == 0 )
 	{
-		const uint32_t column = use_ring != 0u ? position % G53F_WINDOW : block_at + row;
-		cache_keys[((uint64_t)head * G53F_COLUMNS + column) * G53F_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+		uint16_t *dst_keys = cache_keys != 0 ? cache_keys : draft->cache + layer_offset;
+		const uint32_t column = use_ring != 0u ? position % G53F_WINDOW : draft->block_at + row;
+		dst_keys[((uint64_t)head * G53F_COLUMNS + column) * G53F_HEAD_DIM + lane] = LmFloatToBf16(rotated);
 	}
 	else
 		output[((uint64_t)row * heads + head) * G53F_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
-void G53FStoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, uint32_t block_at, uint16_t *__restrict__ cache)
+__global__ __launch_bounds__(G53F_THREADS, 2)
+void G53FStoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, const G53FDraft *__restrict__ draft,
+	uint64_t layer_offset, uint16_t *__restrict__ cache)
 {
-	const uint32_t row = blockIdx.x, column = positions != 0 ? positions[row] % G53F_WINDOW : block_at + row;
-	for ( uint32_t index = threadIdx.x; index < G53F_KV_WIDTH; index += G53F_THREADS )
-		cache[((uint64_t)(index / G53F_HEAD_DIM) * G53F_COLUMNS + column) * G53F_HEAD_DIM + index % G53F_HEAD_DIM] = values[(uint64_t)row * G53F_KV_WIDTH + index];
+	if ( draft != 0 )
+		LmDependentWait();
+	const uint32_t row = blockIdx.x;
+	const uint32_t column = positions != 0 ? positions[row] % G53F_WINDOW : draft->block_at + row;
+	uint16_t *dst = cache != 0 ? cache : draft->cache + layer_offset;
+	const uint4 *vsrc = (const uint4 *)(values + (uint64_t)row * G53F_KV_WIDTH);
+	for ( uint32_t v = threadIdx.x; v < G53F_KV_WIDTH / 8u; v += G53F_THREADS )
+	{
+		const uint32_t head = v >> 4u, chunk = v & 15u;
+		*(uint4 *)(dst + ((uint64_t)head * G53F_COLUMNS + column) * G53F_HEAD_DIM + chunk * 8u) = __ldg(vsrc + v);
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
+__global__ __launch_bounds__(G53F_THREADS, 2)
 void G53FEmbedKernel(const uint16_t *__restrict__ embed, const G53FDraft *__restrict__ draft, float *__restrict__ hidden)
 {
 	const uint32_t row = blockIdx.x, token = row == 0u ? draft->anchor : draft->mask;
-	for ( uint32_t index = threadIdx.x; index < G53F_HIDDEN; index += G53F_THREADS )
-		hidden[(uint64_t)row * G53F_HIDDEN + index] = LmBf16ToFloat(embed[(uint64_t)token * G53F_HIDDEN + index]);
+	const uint4 *src = (const uint4 *)(embed + (uint64_t)token * G53F_HIDDEN);
+	float4 *dst = (float4 *)(hidden + (uint64_t)row * G53F_HIDDEN);
+	for ( uint32_t index = threadIdx.x; index < G53F_HIDDEN / 8u; index += G53F_THREADS )
+	{
+		const uint4 p = __ldg(src + index);
+		dst[2u * index] = make_float4(__uint_as_float(p.x << 16u), __uint_as_float(p.x & 0xffff0000u),
+			__uint_as_float(p.y << 16u), __uint_as_float(p.y & 0xffff0000u));
+		dst[2u * index + 1u] = make_float4(__uint_as_float(p.z << 16u), __uint_as_float(p.z & 0xffff0000u),
+			__uint_as_float(p.w << 16u), __uint_as_float(p.w & 0xffff0000u));
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
+__global__ __launch_bounds__(G53F_THREADS, 2)
 void G53FConvPrepareKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
 	uint16_t *__restrict__ output)
 {
@@ -291,21 +320,25 @@ void G53FConvPrepareKernel(const uint16_t *__restrict__ input, const uint16_t *_
 	const uint16_t *base0 = base, *base1 = base + G53F_HIDDEN;
 	const uint16_t *delta0 = delta + (uint64_t)row * G53F_CONV_WIDTH;
 	const uint16_t *delta1 = delta0 + G53F_CONV_GROUPS;
+	const uint16_t *in_cur = input + (uint64_t)row * G53F_HIDDEN;
+	const uint16_t *in_prev = row > 0u ? input + (uint64_t)(row - 1u) * G53F_HIDDEN : (const uint16_t *)0;
+	uint16_t *out_row = output + (uint64_t)row * G53F_HIDDEN;
 	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
 	{
 		const uint32_t group = col / G53F_CONV_GROUP;
-		const float c0 = LmBf16ToFloat(base0[col]) + LmBf16ToFloat(delta0[group]);
-		float acc = c0 * LmBf16ToFloat(input[(uint64_t)row * G53F_HIDDEN + col]);
-		if ( row > 0u )
+		const float c0 = LmBf16ToFloat(__ldg(base0 + col)) + LmBf16ToFloat(__ldg(delta0 + group));
+		float acc = c0 * LmBf16ToFloat(__ldg(in_cur + col));
+		if ( in_prev != 0 )
 		{
-			const float c1 = LmBf16ToFloat(base1[col]) + LmBf16ToFloat(delta1[group]);
-			acc = fmaf(c1, LmBf16ToFloat(input[(uint64_t)(row - 1u) * G53F_HIDDEN + col]), acc);
+			const float c1 = LmBf16ToFloat(__ldg(base1 + col)) + LmBf16ToFloat(__ldg(delta1 + group));
+			acc = fmaf(c1, LmBf16ToFloat(__ldg(in_prev + col)), acc);
 		}
-		output[(uint64_t)row * G53F_HIDDEN + col] = LmFloatToBf16(acc);
+		out_row[col] = LmFloatToBf16(acc);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
+__global__ __launch_bounds__(G53F_THREADS, 2)
 void G53FConvFinishResidualKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
 	float *__restrict__ hidden)
 {
@@ -313,144 +346,204 @@ void G53FConvFinishResidualKernel(const uint16_t *__restrict__ input, const uint
 	const uint16_t *base0 = base + 2u * G53F_HIDDEN, *base1 = base + 3u * G53F_HIDDEN;
 	const uint16_t *delta0 = delta + (uint64_t)row * G53F_CONV_WIDTH + 2u * G53F_CONV_GROUPS;
 	const uint16_t *delta1 = delta0 + G53F_CONV_GROUPS;
+	const uint16_t *in_cur = input + (uint64_t)row * G53F_HIDDEN;
+	const uint16_t *in_prev = row > 0u ? input + (uint64_t)(row - 1u) * G53F_HIDDEN : (const uint16_t *)0;
+	float *hid_row = hidden + (uint64_t)row * G53F_HIDDEN;
 	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
 	{
 		const uint32_t group = col / G53F_CONV_GROUP;
-		const float c0 = LmBf16ToFloat(base0[col]) + LmBf16ToFloat(delta0[group]);
-		float acc = c0 * LmBf16ToFloat(input[(uint64_t)row * G53F_HIDDEN + col]);
-		if ( row > 0u )
+		const float c0 = LmBf16ToFloat(__ldg(base0 + col)) + LmBf16ToFloat(__ldg(delta0 + group));
+		float acc = c0 * LmBf16ToFloat(__ldg(in_cur + col));
+		if ( in_prev != 0 )
 		{
-			const float c1 = LmBf16ToFloat(base1[col]) + LmBf16ToFloat(delta1[group]);
-			acc = fmaf(c1, LmBf16ToFloat(input[(uint64_t)(row - 1u) * G53F_HIDDEN + col]), acc);
+			const float c1 = LmBf16ToFloat(__ldg(base1 + col)) + LmBf16ToFloat(__ldg(delta1 + group));
+			acc = fmaf(c1, LmBf16ToFloat(__ldg(in_prev + col)), acc);
 		}
-		hidden[(uint64_t)row * G53F_HIDDEN + col] += acc;
+		hid_row[col] += acc;
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_ATTN_THREADS, 1)
-void G53FAttentionSplitKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ keys, const uint16_t *__restrict__ values,
+__global__ __launch_bounds__(G53F_THREADS, 2)
+void G53FConvFinishResidualRmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
+	float *__restrict__ hidden, const uint16_t *__restrict__ weight, uint16_t *__restrict__ normed, float epsilon)
+{
+	__shared__ float reduction[G53F_WARPS];
+	const uint32_t row = blockIdx.x;
+	const uint16_t *base0 = base + 2u * G53F_HIDDEN, *base1 = base + 3u * G53F_HIDDEN;
+	const uint16_t *delta0 = delta + (uint64_t)row * G53F_CONV_WIDTH + 2u * G53F_CONV_GROUPS;
+	const uint16_t *delta1 = delta0 + G53F_CONV_GROUPS;
+	const uint16_t *in_cur = input + (uint64_t)row * G53F_HIDDEN;
+	const uint16_t *in_prev = row > 0u ? input + (uint64_t)(row - 1u) * G53F_HIDDEN : (const uint16_t *)0;
+	float *hid_row = hidden + (uint64_t)row * G53F_HIDDEN;
+	uint16_t *out_row = normed + (uint64_t)row * G53F_HIDDEN;
+	float total = 0.0f, scale;
+	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
+	{
+		const uint32_t group = col / G53F_CONV_GROUP;
+		const float c0 = LmBf16ToFloat(__ldg(base0 + col)) + LmBf16ToFloat(__ldg(delta0 + group));
+		float acc = c0 * LmBf16ToFloat(__ldg(in_cur + col));
+		if ( in_prev != 0 )
+		{
+			const float c1 = LmBf16ToFloat(__ldg(base1 + col)) + LmBf16ToFloat(__ldg(delta1 + group));
+			acc = fmaf(c1, LmBf16ToFloat(__ldg(in_prev + col)), acc);
+		}
+		const float value = hid_row[col] + acc;
+		hid_row[col] = value;
+		total += value * value;
+	}
+	total = LmBlockSum<G53F_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)G53F_HIDDEN + epsilon);
+	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
+		out_row[col] = LmFloatToBf16(hid_row[col] * scale * LmBf16ToFloat(__ldg(weight + col)));
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(G53F_ATTN_THREADS, 2)
+void G53FAttentionSplitKernel(const uint16_t *__restrict__ q, uint64_t keys_offset, uint64_t values_offset,
 	const G53FDraft *__restrict__ draft, float scale, float *__restrict__ partials)
 {
-	__shared__ uint32_t s_k[G53F_ATTN_TILE][G53F_HALF + 1u];
-	__shared__ uint32_t s_v[G53F_ATTN_TILE][G53F_HALF + 1u];
+	LmDependentWait();
+	constexpr uint32_t STRIDE = G53F_HALF + 4u;
+	__shared__ __align__(16) uint32_t s_k[2][G53F_ATTN_TILE][STRIDE];
+	__shared__ __align__(16) uint32_t s_v[2][G53F_ATTN_TILE][STRIDE];
 	__shared__ float s_scores[G53F_BLOCK][G53F_ATTN_TILE];
-	__shared__ uint8_t s_vis[G53F_ATTN_TILE];
-	const uint32_t head = blockIdx.x, kv_head = head / G53F_GROUP, split = blockIdx.y;
+	__shared__ uint8_t s_vis[2][G53F_ATTN_TILE];
+	const uint32_t kv_head = blockIdx.x, split = blockIdx.y;
 	const uint32_t warp = threadIdx.x / G53F_WARP, lane = threadIdx.x % G53F_WARP;
 	const uint32_t warp_bit = 1u << warp;
 	const uint32_t first = draft->start + split * G53F_SPLIT_KEYS, end = draft->block_at;
 	const uint32_t stop = first + G53F_SPLIT_KEYS < end ? first + G53F_SPLIT_KEYS : end;
 	const uint32_t tiles = first < stop ? (stop - first + G53F_ATTN_TILE - 1u) / G53F_ATTN_TILE : 0u;
 	const uint32_t masked = draft->masked;
-	const uint16_t *head_keys = keys + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
-	const uint16_t *head_values = values + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
-	const uint16_t *q_row = q + ((uint64_t)warp * G53F_HEADS + head) * G53F_HEAD_DIM;
-	const uint32_t qp0 = *(const uint32_t *)(q_row + 2u * lane);
-	const uint32_t qp1 = *(const uint32_t *)(q_row + G53F_HALF + 2u * lane);
-	const float q0 = LmBf16ToFloat((uint16_t)(qp0 & 0xffffu));
-	const float q1 = LmBf16ToFloat((uint16_t)(qp0 >> 16u));
-	const float q2 = LmBf16ToFloat((uint16_t)(qp1 & 0xffffu));
-	const float q3 = LmBf16ToFloat((uint16_t)(qp1 >> 16u));
-	float running_max = -INFINITY, running_sum = 0.0f, acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-	float *out = partials + (((uint64_t)head * G53F_SPLITS + split) * G53F_BLOCK + warp) * (G53F_HEAD_DIM + 2u);
-	for ( uint32_t tile = 0u; tile < tiles; tile++ )
+	const uint16_t *head_keys = draft->cache + keys_offset + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
+	const uint16_t *head_values = draft->cache + values_offset + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
+	float q0[G53F_GROUP], q1[G53F_GROUP], q2[G53F_GROUP], q3[G53F_GROUP];
+	float running_max[G53F_GROUP], running_sum[G53F_GROUP];
+	float acc0[G53F_GROUP], acc1[G53F_GROUP], acc2[G53F_GROUP], acc3[G53F_GROUP];
+#pragma unroll
+	for ( uint32_t g = 0u; g < G53F_GROUP; g++ )
 	{
-		const uint32_t tile_first = first + tile * G53F_ATTN_TILE;
+		const uint32_t head = kv_head * G53F_GROUP + g;
+		const uint16_t *q_row = q + ((uint64_t)warp * G53F_HEADS + head) * G53F_HEAD_DIM;
+		const uint32_t qp0 = __ldg((const uint32_t *)(q_row + 2u * lane));
+		const uint32_t qp1 = __ldg((const uint32_t *)(q_row + G53F_HALF + 2u * lane));
+		q0[g] = LmBf16ToFloat((uint16_t)(qp0 & 0xffffu));
+		q1[g] = LmBf16ToFloat((uint16_t)(qp0 >> 16u));
+		q2[g] = LmBf16ToFloat((uint16_t)(qp1 & 0xffffu));
+		q3[g] = LmBf16ToFloat((uint16_t)(qp1 >> 16u));
+		running_max[g] = -INFINITY;
+		running_sum[g] = 0.0f;
+		acc0[g] = acc1[g] = acc2[g] = acc3[g] = 0.0f;
+	}
+	auto stage = [&](uint32_t tile_idx, uint32_t buf)
+	{
+		const uint32_t tile_first = first + tile_idx * G53F_ATTN_TILE;
+#pragma unroll
 		for ( uint32_t item = threadIdx.x; item < G53F_ATTN_TILE * 16u; item += G53F_ATTN_THREADS )
 		{
 			const uint32_t load_key = item >> 4u, load_chunk = item & 15u;
 			const uint32_t col = tile_first + load_key;
-			if ( col < stop )
-			{
-				const uint4 kv_k = *(const uint4 *)(head_keys + (uint64_t)col * G53F_HEAD_DIM + load_chunk * 8u);
-				const uint4 kv_v = *(const uint4 *)(head_values + (uint64_t)col * G53F_HEAD_DIM + load_chunk * 8u);
-				s_k[load_key][load_chunk * 4u + 0u] = kv_k.x;
-				s_k[load_key][load_chunk * 4u + 1u] = kv_k.y;
-				s_k[load_key][load_chunk * 4u + 2u] = kv_k.z;
-				s_k[load_key][load_chunk * 4u + 3u] = kv_k.w;
-				s_v[load_key][load_chunk * 4u + 0u] = kv_v.x;
-				s_v[load_key][load_chunk * 4u + 1u] = kv_v.y;
-				s_v[load_key][load_chunk * 4u + 2u] = kv_v.z;
-				s_v[load_key][load_chunk * 4u + 3u] = kv_v.w;
-			}
-			else
-			{
-				s_k[load_key][load_chunk * 4u + 0u] = 0u;
-				s_k[load_key][load_chunk * 4u + 1u] = 0u;
-				s_k[load_key][load_chunk * 4u + 2u] = 0u;
-				s_k[load_key][load_chunk * 4u + 3u] = 0u;
-				s_v[load_key][load_chunk * 4u + 0u] = 0u;
-				s_v[load_key][load_chunk * 4u + 1u] = 0u;
-				s_v[load_key][load_chunk * 4u + 2u] = 0u;
-				s_v[load_key][load_chunk * 4u + 3u] = 0u;
-			}
+			const uint32_t bytes = col < stop ? 16u : 0u;
+			const uint32_t safe_col = col < stop ? col : 0u;
+			SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[buf][load_key][load_chunk * 4u]),
+				head_keys + (uint64_t)safe_col * G53F_HEAD_DIM + load_chunk * 8u, bytes);
+			SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[buf][load_key][load_chunk * 4u]),
+				head_values + (uint64_t)safe_col * G53F_HEAD_DIM + load_chunk * 8u, bytes);
 		}
+		SparkDrafterCommitGroup();
 		if ( threadIdx.x < G53F_ATTN_TILE )
 		{
 			const uint32_t col = tile_first + threadIdx.x;
-			s_vis[threadIdx.x] = col < stop ? (masked == 0u ? (uint8_t)0xffu : draft->valid[col]) : (uint8_t)0u;
+			s_vis[buf][threadIdx.x] = col < stop ? (masked == 0u ? (uint8_t)0xffu : draft->valid[col]) : (uint8_t)0u;
 		}
-		__syncthreads();
-		for ( uint32_t t = 0u; t < G53F_ATTN_TILE; t++ )
-		{
-			const uint32_t kp0 = s_k[t][lane];
-			const uint32_t kp1 = s_k[t][G53F_WARP + lane];
-			const float d0 = fmaf(q0, LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1 * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
-			const float d1 = fmaf(q2, LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), q3 * LmBf16ToFloat((uint16_t)(kp1 >> 16u)));
-			const float dot = G53FWarpSum(d0 + d1);
-			if ( lane == 0u )
-				s_scores[warp][t] = (s_vis[t] & warp_bit) != 0u ? dot * scale : -INFINITY;
-		}
-		__syncwarp();
-		{
-			const float sc = s_scores[warp][lane];
-			const float tile_max = G53FWarpMax(sc);
-			const float next_max = fmaxf(running_max, tile_max);
-			const float rescale = running_max == -INFINITY ? 0.0f : expf(running_max - next_max);
-			const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
-			const float tile_sum = G53FWarpSum(weight);
-			running_sum = running_sum * rescale + tile_sum;
-			running_max = next_max;
-			acc0 *= rescale;
-			acc1 *= rescale;
-			acc2 *= rescale;
-			acc3 *= rescale;
-			s_scores[warp][lane] = weight;
-		}
-		__syncwarp();
-		for ( uint32_t t = 0u; t < G53F_ATTN_TILE; t++ )
-		{
-			const float wt = s_scores[warp][t];
-			const uint32_t vp0 = s_v[t][lane];
-			const uint32_t vp1 = s_v[t][G53F_WARP + lane];
-			acc0 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0);
-			acc1 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1);
-			acc2 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2);
-			acc3 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3);
-		}
-		__syncthreads();
-	}
-	out[2u * lane] = acc0;
-	out[2u * lane + 1u] = acc1;
-	out[G53F_HALF + 2u * lane] = acc2;
-	out[G53F_HALF + 2u * lane + 1u] = acc3;
-	if ( lane == 0u )
+	};
+	if ( tiles != 0u )
+		stage(0u, 0u);
+	for ( uint32_t tile = 0u; tile < tiles; tile++ )
 	{
-		out[G53F_HEAD_DIM] = running_max;
-		out[G53F_HEAD_DIM + 1u] = running_sum;
+		const uint32_t buf = tile & 1u;
+		if ( tile + 1u < tiles )
+		{
+			stage(tile + 1u, buf ^ 1u);
+			SparkDrafterWaitGroup<1u>();
+		}
+		else
+			SparkDrafterWaitGroup<0u>();
+		__syncthreads();
+#pragma unroll
+		for ( uint32_t g = 0u; g < G53F_GROUP; g++ )
+		{
+			for ( uint32_t t = 0u; t < G53F_ATTN_TILE; t++ )
+			{
+				const uint32_t kp0 = s_k[buf][t][lane];
+				const uint32_t kp1 = s_k[buf][t][G53F_WARP + lane];
+				const float d0 = fmaf(q0[g], LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1[g] * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
+				const float d1 = fmaf(q2[g], LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), q3[g] * LmBf16ToFloat((uint16_t)(kp1 >> 16u)));
+				const float dot = G53FWarpSum(d0 + d1);
+				if ( lane == 0u )
+					s_scores[warp][t] = (s_vis[buf][t] & warp_bit) != 0u ? dot * scale : -INFINITY;
+			}
+			__syncwarp();
+			{
+				const float sc = s_scores[warp][lane];
+				const float tile_max = G53FWarpMax(sc);
+				const float next_max = fmaxf(running_max[g], tile_max);
+				const float rescale = running_max[g] == -INFINITY ? 0.0f : expf(running_max[g] - next_max);
+				const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
+				const float tile_sum = G53FWarpSum(weight);
+				running_sum[g] = running_sum[g] * rescale + tile_sum;
+				running_max[g] = next_max;
+				acc0[g] *= rescale;
+				acc1[g] *= rescale;
+				acc2[g] *= rescale;
+				acc3[g] *= rescale;
+				s_scores[warp][lane] = weight;
+			}
+			__syncwarp();
+			for ( uint32_t t = 0u; t < G53F_ATTN_TILE; t++ )
+			{
+				const float wt = s_scores[warp][t];
+				const uint32_t vp0 = s_v[buf][t][lane];
+				const uint32_t vp1 = s_v[buf][t][G53F_WARP + lane];
+				acc0[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0[g]);
+				acc1[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1[g]);
+				acc2[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2[g]);
+				acc3[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3[g]);
+			}
+			__syncwarp();
+		}
+		__syncthreads();
 	}
+#pragma unroll
+	for ( uint32_t g = 0u; g < G53F_GROUP; g++ )
+	{
+		const uint32_t head = kv_head * G53F_GROUP + g;
+		float *out = partials + (((uint64_t)head * G53F_SPLITS + split) * G53F_BLOCK + warp) * (G53F_HEAD_DIM + 2u);
+		out[2u * lane] = acc0[g];
+		out[2u * lane + 1u] = acc1[g];
+		out[G53F_HALF + 2u * lane] = acc2[g];
+		out[G53F_HALF + 2u * lane + 1u] = acc3[g];
+		if ( lane == 0u )
+		{
+			out[G53F_HEAD_DIM] = running_max[g];
+			out[G53F_HEAD_DIM + 1u] = running_sum[g];
+		}
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_HEAD_DIM, 1)
-void G53FAttentionMergeKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ keys, const uint16_t *__restrict__ values,
-	const G53FDraft *__restrict__ draft, float scale, const float *__restrict__ partials, uint32_t splits, uint16_t *__restrict__ output)
+__global__ __launch_bounds__(G53F_HEAD_DIM, 4)
+void G53FAttentionMergeKernel(const uint16_t *__restrict__ q, uint64_t keys_offset, uint64_t values_offset,
+	const G53FDraft *__restrict__ draft, float scale, const float *__restrict__ partials, uint16_t *__restrict__ output)
 {
+	LmDependentWait();
 	__shared__ float reduction[G53F_HEAD_DIM / G53F_WARP];
 	const uint32_t row = blockIdx.x / G53F_HEADS, head = blockIdx.x % G53F_HEADS, kv_head = head / G53F_GROUP, lane = threadIdx.x;
-	const uint32_t block_at = draft->block_at;
-	const float own = LmBf16ToFloat(q[((uint64_t)row * G53F_HEADS + head) * G53F_HEAD_DIM + lane]);
-	const uint16_t *head_keys = keys + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
-	const uint16_t *head_values = values + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
+	const uint32_t block_at = draft->block_at, splits = draft->splits;
+	const float own = LmBf16ToFloat(__ldg(q + ((uint64_t)row * G53F_HEADS + head) * G53F_HEAD_DIM + lane));
+	const uint16_t *head_keys = draft->cache + keys_offset + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
+	const uint16_t *head_values = draft->cache + values_offset + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
 	float top = -INFINITY, sum = 0.0f, accumulated = 0.0f;
 	for ( uint32_t split = 0u; split < splits; split++ )
 	{
@@ -467,44 +560,40 @@ void G53FAttentionMergeKernel(const uint16_t *__restrict__ q, const uint16_t *__
 	}
 	for ( uint32_t key = 0u; key < G53F_BLOCK; key++ )
 	{
-		const float score = LmBlockSum<G53F_HEAD_DIM>(own * LmBf16ToFloat(head_keys[(uint64_t)(block_at + key) * G53F_HEAD_DIM + lane]), reduction) * scale;
+		const float score = LmBlockSum<G53F_HEAD_DIM>(own * LmBf16ToFloat(__ldg(head_keys + (uint64_t)(block_at + key) * G53F_HEAD_DIM + lane)), reduction) * scale;
 		const float next = fmaxf(top, score), carry = top == -INFINITY ? 0.0f : expf(top - next), weight = expf(score - next);
 		sum = sum * carry + weight;
-		accumulated = accumulated * carry + weight * LmBf16ToFloat(head_values[(uint64_t)(block_at + key) * G53F_HEAD_DIM + lane]);
+		accumulated = accumulated * carry + weight * LmBf16ToFloat(__ldg(head_values + (uint64_t)(block_at + key) * G53F_HEAD_DIM + lane));
 		top = next;
 	}
 	output[(uint64_t)row * G53F_Q_WIDTH + head * G53F_HEAD_DIM + lane] = LmFloatToBf16(accumulated / sum);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
+__global__ __launch_bounds__(G53F_THREADS, 2)
 void G53FSwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t count)
 {
 	for ( uint32_t index = blockIdx.x * G53F_THREADS + threadIdx.x; index < count; index += gridDim.x * G53F_THREADS )
 	{
-		const float g = LmBf16ToFloat(gate[index]);
-		output[index] = LmFloatToBf16(g / (1.0f + expf(-g)) * LmBf16ToFloat(up[index]));
+		const float g = LmBf16ToFloat(__ldg(gate + index));
+		output[index] = LmFloatToBf16(g / (1.0f + expf(-g)) * LmBf16ToFloat(__ldg(up + index)));
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
-void G53FWidenKernel(const uint16_t *__restrict__ input, float *__restrict__ output, uint32_t count)
+__global__ __launch_bounds__(G53F_THREADS, 2)
+void G53FLogitsSummaryKernel(const uint16_t *__restrict__ logits, uint32_t *__restrict__ candidates, float *__restrict__ unary, float *__restrict__ tail)
 {
-	for ( uint32_t index = blockIdx.x * G53F_THREADS + threadIdx.x; index < count; index += gridDim.x * G53F_THREADS )
-		output[index] = LmBf16ToFloat(input[index]);
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 1)
-void G53FLogitsSummaryKernel(const float *__restrict__ logits, uint32_t *__restrict__ candidates, float *__restrict__ unary, float *__restrict__ tail)
-{
+	LmDependentWait();
 	__shared__ float s_max[G53F_WARPS];
 	__shared__ float s_sum[G53F_WARPS];
 	__shared__ uint32_t s_tok[G53F_TOP_K];
 	__shared__ float s_val[G53F_TOP_K];
 	const uint32_t step = blockIdx.x, warp = threadIdx.x / G53F_WARP, lane = threadIdx.x % G53F_WARP;
-	const float *row = logits + (uint64_t)step * G53F_VOCAB;
+	const uint16_t *row = logits + (uint64_t)step * G53F_VOCAB;
 	float local_max = -INFINITY, local_sum = 0.0f, row_max, row_sum, total;
 	for ( uint32_t index = threadIdx.x; index < G53F_VOCAB; index += G53F_THREADS )
-		local_max = fmaxf(local_max, row[index]);
+		local_max = fmaxf(local_max, LmBf16ToFloat(__ldg(row + index)));
 	local_max = G53FWarpMax(local_max);
 	if ( lane == 0u )
 		s_max[warp] = local_max;
@@ -519,14 +608,14 @@ void G53FLogitsSummaryKernel(const float *__restrict__ logits, uint32_t *__restr
 	__syncthreads();
 	row_max = s_max[0];
 	for ( uint32_t index = threadIdx.x; index < G53F_VOCAB; index += G53F_THREADS )
-		local_sum += expf(row[index] - row_max);
+		local_sum += expf(LmBf16ToFloat(__ldg(row + index)) - row_max);
 	row_sum = LmBlockSum<G53F_THREADS>(local_sum, s_sum);
 	total = row_max + logf(row_sum);
 	if ( threadIdx.x < G53F_TOP_K )
 	{
 		const uint32_t tok = candidates[step * G53F_TOP_K + threadIdx.x];
 		s_tok[threadIdx.x] = tok;
-		s_val[threadIdx.x] = row[tok];
+		s_val[threadIdx.x] = LmBf16ToFloat(__ldg(row + tok));
 	}
 	__syncthreads();
 	if ( threadIdx.x == 0u )
@@ -560,45 +649,49 @@ void G53FLogitsSummaryKernel(const float *__restrict__ logits, uint32_t *__restr
 		ratio = fminf(expf(lse_unary - total), 1.0f - 1e-7f);
 		tail[step] = total + log1pf(-ratio);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
+__global__ __launch_bounds__(G53F_THREADS, 2)
 void G53FLatticeKernel(const G53FDraft *__restrict__ draft, const uint32_t *__restrict__ candidates, const float *__restrict__ unary,
 	const uint16_t *__restrict__ sel_hidden, const uint16_t *__restrict__ predecessors, const uint16_t *__restrict__ successors, float *__restrict__ edges)
 {
+	LmDependentWait();
 	__shared__ float gate[G53F_SELECTOR_RANK];
 	const uint32_t step = blockIdx.x / G53F_TOP_K, prev_slot = blockIdx.x % G53F_TOP_K;
 	const uint32_t warp = threadIdx.x / G53F_WARP, lane = threadIdx.x % G53F_WARP;
-	uint32_t prev_token;
-	if ( step == 0u && prev_slot != 0u )
-		return;
-	prev_token = step == 0u ? draft->anchor : candidates[(step - 1u) * G53F_TOP_K + prev_slot];
-	for ( uint32_t r = threadIdx.x; r < G53F_SELECTOR_RANK; r += G53F_THREADS )
-		gate[r] = LmBf16ToFloat(predecessors[(uint64_t)prev_token * G53F_SELECTOR_RANK + r]) *
-			LmBf16ToFloat(sel_hidden[(uint64_t)step * G53F_SELECTOR_RANK + r]);
-	__syncthreads();
-	for ( uint32_t c = warp; c < G53F_TOP_K; c += G53F_WARPS )
+	if ( step != 0u || prev_slot == 0u )
 	{
-		const uint32_t succ_token = candidates[step * G53F_TOP_K + c];
-		const uint16_t *succ_row = successors + (uint64_t)succ_token * G53F_SELECTOR_RANK;
-		float dot = 0.0f;
-		for ( uint32_t r = lane; r < G53F_SELECTOR_RANK; r += G53F_WARP )
-			dot = fmaf(gate[r], LmBf16ToFloat(succ_row[r]), dot);
-		dot = G53FWarpSum(dot);
-		if ( lane == 0u )
-			edges[(step * G53F_TOP_K + prev_slot) * G53F_TOP_K + c] = unary[step * G53F_TOP_K + c] + dot;
+		const uint32_t prev_token = step == 0u ? draft->anchor : candidates[(step - 1u) * G53F_TOP_K + prev_slot];
+		for ( uint32_t r = threadIdx.x; r < G53F_SELECTOR_RANK; r += G53F_THREADS )
+			gate[r] = LmBf16ToFloat(__ldg(predecessors + (uint64_t)prev_token * G53F_SELECTOR_RANK + r)) *
+				LmBf16ToFloat(__ldg(sel_hidden + (uint64_t)step * G53F_SELECTOR_RANK + r));
+		__syncthreads();
+		for ( uint32_t c = warp; c < G53F_TOP_K; c += G53F_WARPS )
+		{
+			const uint32_t succ_token = candidates[step * G53F_TOP_K + c];
+			const uint16_t *succ_row = successors + (uint64_t)succ_token * G53F_SELECTOR_RANK;
+			float dot = 0.0f;
+			for ( uint32_t r = lane; r < G53F_SELECTOR_RANK; r += G53F_WARP )
+				dot = fmaf(gate[r], LmBf16ToFloat(__ldg(succ_row + r)), dot);
+			dot = G53FWarpSum(dot);
+			if ( lane == 0u )
+				edges[(step * G53F_TOP_K + prev_slot) * G53F_TOP_K + c] = unary[step * G53F_TOP_K + c] + dot;
+		}
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(G53F_WARP, 1)
 void G53FWalkKernel(const G53FDraft *__restrict__ draft, const uint32_t *__restrict__ candidates, const float *__restrict__ tail,
-	const float *__restrict__ edges, uint32_t tree, G53FPicks *__restrict__ picks)
+	const float *__restrict__ edges, G53FPicks *__restrict__ picks)
 {
+	LmDependentWait();
 	const uint32_t lane = threadIdx.x;
 	const uint32_t active = (1u << G53F_TOP_K) - 1u;
+	const uint32_t tree = draft->tree;
 	uint32_t previous = 0u;
-	if ( lane >= G53F_TOP_K )
-		return;
+	if ( lane < G53F_TOP_K )
 	for ( uint32_t step = 0u; step < G53F_DRAFTS; step++ )
 	{
 		const float row_val = edges[(step * G53F_TOP_K + previous) * G53F_TOP_K + lane];
@@ -712,6 +805,7 @@ void G53FWalkKernel(const G53FDraft *__restrict__ draft, const uint32_t *__restr
 		}
 		previous = choice;
 	}
+	LmDependentRelease();
 }
 
 static SparkStatus G53FRefuse(SparkDrafterModuleBind *bind, SparkStatus status, const char *format, const char *detail)
@@ -955,7 +1049,7 @@ static SparkStatus G53FScratch(G53FState *state, uint64_t context_bytes)
 		!G53F_DEVICE(forward->gate, G53F_BLOCK * G53F_MLP) || !G53F_DEVICE(forward->up, G53F_BLOCK * G53F_MLP) ||
 		!G53F_DEVICE(forward->act, G53F_BLOCK * G53F_MLP) || !G53F_DEVICE(forward->mlp, G53F_BLOCK * G53F_HIDDEN) ||
 		!G53F_DEVICE(forward->y, G53F_BLOCK * G53F_HIDDEN) || !G53F_DEVICE(forward->logits, (uint64_t)G53F_DRAFTS * G53F_VOCAB) ||
-		!G53F_DEVICE(forward->logits_f32, (uint64_t)G53F_DRAFTS * G53F_VOCAB) || !G53F_DEVICE(forward->sel_hidden, G53F_DRAFTS * G53F_SELECTOR_RANK) ||
+		SparkDrafterTopkBf16Alloc(&forward->topk_ws, G53F_DRAFTS) != SPARK_STATUS_OK || !G53F_DEVICE(forward->sel_hidden, G53F_DRAFTS * G53F_SELECTOR_RANK) ||
 		!G53F_DEVICE(forward->candidates, G53F_DRAFTS * G53F_TOP_K) || !G53F_DEVICE(forward->unary, G53F_DRAFTS * G53F_TOP_K) ||
 		!G53F_DEVICE(forward->tail, G53F_DRAFTS) || !G53F_DEVICE(forward->edges, G53F_DRAFTS * G53F_TOP_K * G53F_TOP_K) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1043,8 +1137,9 @@ static SparkStatus G53FIngestRows(G53FState *state, G53FSequence *sequence, uint
 		if ( status != SPARK_STATUS_OK )
 			break;
 		LM_LAUNCH((G53FHeadNormRopeKernel), rows * G53F_KV_HEADS, G53F_HEAD_DIM, 0, state->stream, state->keys_raw, state->layers[layer].k_norm,
-			state->rope_inverse, state->positions, G53F_KV_HEADS, state->epsilon, (uint16_t *)0, G53FKeys(sequence, layer), 0u, 1u);
-		LM_LAUNCH((G53FStoreValuesKernel), rows, G53F_THREADS, 0, state->stream, state->values_raw, state->positions, 0u, G53FValues(sequence, layer));
+			state->rope_inverse, state->positions, G53F_KV_HEADS, state->epsilon, (uint16_t *)0, G53FKeys(sequence, layer), (const G53FDraft *)0, 0u, 1u);
+		LM_LAUNCH((G53FStoreValuesKernel), rows, G53F_THREADS, 0, state->stream, state->values_raw, state->positions, (const G53FDraft *)0, 0u,
+			G53FValues(sequence, layer));
 	}
 	if ( status == SPARK_STATUS_OK && SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_INTERNAL_ERROR;
@@ -1228,12 +1323,14 @@ static void G53FSpan(G53FSequence *sequence, uint64_t checked, uint64_t position
 }
 
 static SparkStatus G53FPrepare(G53FState *state, G53FSequence *sequence, uint32_t anchor, uint64_t position, uint64_t checked,
-	const SparkRowSampling *sampling)
+	const SparkRowSampling *sampling, uint32_t tree, uint32_t *splits_out)
 {
 	G53FDraft *draft = state->forward.host_draft;
+	uint32_t span, splits;
 	if ( anchor >= G53F_VOCAB || position + G53F_BLOCK > UINT32_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(draft, 0, offsetof(G53FDraft, valid));
+	draft->cache = sequence->cache;
 	for ( uint32_t row = 0u; row < G53F_BLOCK; row++ )
 		draft->positions[row] = (uint32_t)(position + row);
 	draft->anchor = anchor;
@@ -1243,26 +1340,31 @@ static SparkStatus G53FPrepare(G53FState *state, G53FSequence *sequence, uint32_
 	draft->inverse_temperature = sampling->inverse_temperature;
 	draft->nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
 	draft->top_k = sampling->top_k;
+	draft->tree = tree;
 	G53FSpan(sequence, checked, position, draft);
+	span = draft->block_at - draft->start;
+	splits = (span + G53F_SPLIT_KEYS - 1u) / G53F_SPLIT_KEYS;
+	draft->splits = splits;
+	if ( splits_out != 0 )
+		*splits_out = splits;
 	if ( SparkGpuMemcpyAsync(state->forward.draft, draft, sizeof(*draft), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus G53FRunForward(G53FState *state, const G53FSequence *sequence, uint32_t layers)
+static SparkStatus G53FRunForward(G53FState *state, uint32_t layers, uint32_t splits)
 {
 	G53FForward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
 	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(G53FDraft, positions));
-	const uint32_t block_at = state->forward.host_draft->block_at;
-	const uint32_t span = block_at - state->forward.host_draft->start;
-	const uint32_t splits = (span + G53F_SPLIT_KEYS - 1u) / G53F_SPLIT_KEYS;
 	SparkStatus status = SPARK_STATUS_OK;
 	LM_LAUNCH((G53FEmbedKernel), G53F_BLOCK, G53F_THREADS, 0, stream, state->embed, forward->draft, forward->hidden);
+	LM_LAUNCH((G53FRmsF32Kernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->hidden, state->layers[0].input_norm, forward->x, G53F_HIDDEN, state->epsilon);
 	for ( uint32_t layer = 0u; layer < layers && status == SPARK_STATUS_OK; layer++ )
 	{
 		const G53FLayer *weights = &state->layers[layer];
-		LM_LAUNCH((G53FRmsF32Kernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->hidden, weights->input_norm, forward->x, G53F_HIDDEN, state->epsilon);
+		const uint64_t keys_offset = (uint64_t)(2u * layer) * G53F_LAYER_KV;
+		const uint64_t values_offset = (uint64_t)(2u * layer + 1u) * G53F_LAYER_KV;
 		status = G53FGemm(state, weights->attn_conv_proj, forward->x, forward->conv_coeff, G53F_BLOCK, G53F_HIDDEN, G53F_CONV_WIDTH);
 		if ( status != SPARK_STATUS_OK )
 			break;
@@ -1275,21 +1377,24 @@ static SparkStatus G53FRunForward(G53FState *state, const G53FSequence *sequence
 		if ( status != SPARK_STATUS_OK )
 			break;
 		LM_LAUNCH((G53FHeadNormRopeKernel), G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, forward->q, weights->q_norm, state->rope_inverse, positions,
-			G53F_HEADS, state->epsilon, forward->q_roped, (uint16_t *)0, 0u, 0u);
-		LM_LAUNCH((G53FHeadNormRopeKernel), G53F_BLOCK * G53F_KV_HEADS, G53F_HEAD_DIM, 0, stream, forward->k, weights->k_norm, state->rope_inverse, positions,
-			G53F_KV_HEADS, state->epsilon, (uint16_t *)0, G53FKeys(sequence, layer), block_at, 0u);
-		LM_LAUNCH((G53FStoreValuesKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->v, (const uint32_t *)0, block_at, G53FValues(sequence, layer));
-		if ( splits != 0u )
-			LM_LAUNCH((G53FAttentionSplitKernel), dim3(G53F_HEADS, splits), G53F_ATTN_THREADS, 0, stream, forward->q_roped, G53FKeys(sequence, layer),
-				G53FValues(sequence, layer), forward->draft, state->softmax_scale, forward->partials);
-		LM_LAUNCH((G53FAttentionMergeKernel), G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, forward->q_roped, G53FKeys(sequence, layer),
-			G53FValues(sequence, layer), forward->draft, state->softmax_scale, forward->partials, splits, forward->attended);
+			G53F_HEADS, state->epsilon, forward->q_roped, (uint16_t *)0, forward->draft, 0u, 0u);
+		if ( LM_LAUNCH_DEPENDENT((G53FHeadNormRopeKernel), G53F_BLOCK * G53F_KV_HEADS, G53F_HEAD_DIM, 0, stream, forward->k, weights->k_norm,
+			state->rope_inverse, positions, G53F_KV_HEADS, state->epsilon, (uint16_t *)0, (uint16_t *)0, forward->draft, keys_offset, 0u) != SPARK_GPU_SUCCESS ||
+			LM_LAUNCH_DEPENDENT((G53FStoreValuesKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->v, (const uint32_t *)0, forward->draft,
+				values_offset, (uint16_t *)0) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( splits != 0u &&
+			LM_LAUNCH_DEPENDENT((G53FAttentionSplitKernel), dim3(G53F_KV_HEADS, splits), G53F_ATTN_THREADS, 0, stream, forward->q_roped, keys_offset,
+				values_offset, forward->draft, state->softmax_scale, forward->partials) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( LM_LAUNCH_DEPENDENT((G53FAttentionMergeKernel), G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, forward->q_roped, keys_offset,
+			values_offset, forward->draft, state->softmax_scale, forward->partials, forward->attended) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = G53FGemm(state, weights->o, forward->attended, forward->projected, G53F_BLOCK, G53F_Q_WIDTH, G53F_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FConvFinishResidualKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->projected, weights->attn_conv_base, forward->conv_coeff,
-			forward->hidden);
-		LM_LAUNCH((G53FRmsF32Kernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->hidden, weights->post_norm, forward->x, G53F_HIDDEN, state->epsilon);
+		LM_LAUNCH((G53FConvFinishResidualRmsKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->projected, weights->attn_conv_base, forward->conv_coeff,
+			forward->hidden, weights->post_norm, forward->x, state->epsilon);
 		status = G53FGemm(state, weights->mlp_conv_proj, forward->x, forward->conv_coeff, G53F_BLOCK, G53F_HIDDEN, G53F_CONV_WIDTH);
 		if ( status != SPARK_STATUS_OK )
 			break;
@@ -1303,17 +1408,24 @@ static SparkStatus G53FRunForward(G53FState *state, const G53FSequence *sequence
 		status = G53FGemm(state, weights->down, forward->act, forward->mlp, G53F_BLOCK, G53F_MLP, G53F_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FConvFinishResidualKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff, forward->hidden);
+		if ( layer + 1u < layers )
+			LM_LAUNCH((G53FConvFinishResidualRmsKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff,
+				forward->hidden, state->layers[layer + 1u].input_norm, forward->x, state->epsilon);
+		else if ( layers == G53F_LAYERS )
+			LM_LAUNCH((G53FConvFinishResidualRmsKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff,
+				forward->hidden, state->norm, forward->y, state->epsilon);
+		else
+			LM_LAUNCH((G53FConvFinishResidualKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff,
+				forward->hidden);
 	}
-	if ( status != SPARK_STATUS_OK || layers < G53F_LAYERS )
+	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((G53FRmsF32Kernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->hidden, state->norm, forward->y, G53F_HIDDEN, state->epsilon);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus G53FHeads(G53FState *state, uint32_t tree)
+static SparkStatus G53FHeads(G53FState *state)
 {
 	G53FForward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
@@ -1323,13 +1435,16 @@ static SparkStatus G53FHeads(G53FState *state, uint32_t tree)
 		status = G53FGemm(state, state->selector_hidden, rows, forward->sel_hidden, G53F_DRAFTS, G53F_HIDDEN, G53F_SELECTOR_RANK);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((G53FWidenKernel), 4u * state->multiprocessors, G53F_THREADS, 0, stream, forward->logits, forward->logits_f32, G53F_DRAFTS * G53F_VOCAB);
-	if ( LmTopkExactRowsLaunch<G53F_TOPK_THREADS>(forward->logits_f32, G53F_DRAFTS, G53F_VOCAB, G53F_TOP_K, forward->candidates, stream) != SPARK_GPU_SUCCESS )
+	status = SparkDrafterTopkBf16Launch(forward->logits, G53F_DRAFTS, G53F_VOCAB, G53F_TOP_K, &forward->topk_ws, forward->candidates, stream);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( LM_LAUNCH_DEPENDENT((G53FLogitsSummaryKernel), G53F_DRAFTS, G53F_THREADS, 0, stream, forward->logits, forward->candidates, forward->unary,
+		forward->tail) != SPARK_GPU_SUCCESS ||
+		LM_LAUNCH_DEPENDENT((G53FLatticeKernel), G53F_DRAFTS * G53F_TOP_K, G53F_THREADS, 0, stream, forward->draft, forward->candidates, forward->unary,
+			forward->sel_hidden, state->predecessors, state->successors, forward->edges) != SPARK_GPU_SUCCESS ||
+		LM_LAUNCH_DEPENDENT((G53FWalkKernel), 1u, G53F_WARP, 0, stream, forward->draft, forward->candidates, forward->tail, forward->edges,
+			forward->picks) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	LM_LAUNCH((G53FLogitsSummaryKernel), G53F_DRAFTS, G53F_THREADS, 0, stream, forward->logits_f32, forward->candidates, forward->unary, forward->tail);
-	LM_LAUNCH((G53FLatticeKernel), G53F_DRAFTS * G53F_TOP_K, G53F_THREADS, 0, stream, forward->draft, forward->candidates, forward->unary, forward->sel_hidden,
-		state->predecessors, state->successors, forward->edges);
-	LM_LAUNCH((G53FWalkKernel), 1u, G53F_WARP, 0, stream, forward->draft, forward->candidates, forward->tail, forward->edges, tree, forward->picks);
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(G53FPicks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
@@ -1349,10 +1464,11 @@ static void G53FForwardFree(G53FForward *forward)
 	void *buffers[] = {
 		forward->draft, forward->picks, forward->hidden, forward->x, forward->conv_coeff, forward->prepared, forward->q, forward->q_roped, forward->k,
 		forward->v, forward->partials, forward->attended, forward->projected, forward->gate, forward->up, forward->act, forward->mlp, forward->y,
-		forward->logits, forward->logits_f32, forward->sel_hidden, forward->candidates, forward->unary, forward->tail, forward->edges,
+		forward->logits, forward->sel_hidden, forward->candidates, forward->unary, forward->tail, forward->edges,
 	};
 	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
 		(void)SparkGpuFree(buffers[index]);
+	SparkDrafterTopkBf16Free(&forward->topk_ws);
 	if ( forward->host_draft != 0 )
 		(void)SparkGpuFreeHost(forward->host_draft);
 	if ( forward->host_picks != 0 )
@@ -1367,6 +1483,7 @@ static SparkStatus G53FClose(void *opaque)
 		return SPARK_STATUS_OK;
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamSynchronize(state->stream);
+	SparkDrafterGraphCacheDestroy(&state->graphs);
 	G53FForwardFree(&state->forward);
 	{
 		void *buffers[] = {
@@ -1490,13 +1607,21 @@ static SparkStatus G53FPropose(void *opaque, const SparkDraftServerRequest *requ
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	{
 		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		uint32_t splits = 0u;
 		SparkDraftTreeBranch branches[G53F_DRAFTS];
 		uint32_t branch_count = 0u;
-		status = G53FPrepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling);
+		status = G53FPrepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling, tree, &splits);
 		if ( status == SPARK_STATUS_OK )
-			status = G53FRunForward(state, sequence, G53F_LAYERS);
-		if ( status == SPARK_STATUS_OK )
-			status = G53FHeads(state, tree);
+		{
+			const uint64_t key = (uint64_t)splits;
+			status = SparkDrafterGraphRun(&state->graphs, state->stream, key, [&]() -> SparkStatus
+			{
+				SparkStatus inner = G53FRunForward(state, G53F_LAYERS, splits);
+				if ( inner == SPARK_STATUS_OK )
+					inner = G53FHeads(state);
+				return inner;
+			});
+		}
 		status = G53FSettle(state, status);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -1571,9 +1696,12 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_glm53_flash_
 		if ( G53FHeld(sequence, at) == 0u )
 			checked = at + 1u;
 	memset(&greedy, 0, sizeof(greedy));
-	status = G53FPrepare(state, sequence, anchor, position, checked, &greedy);
-	if ( status == SPARK_STATUS_OK )
-		status = G53FRunForward(state, sequence, G53F_LAYERS);
+	{
+		uint32_t splits = 0u;
+		status = G53FPrepare(state, sequence, anchor, position, checked, &greedy, 0u, &splits);
+		if ( status == SPARK_STATUS_OK )
+			status = G53FRunForward(state, G53F_LAYERS, splits);
+	}
 	status = G53FSettle(state, status);
 	if ( elapsed_ns != 0 )
 		*elapsed_ns = SparkMonotonicNs() - started;
@@ -1597,9 +1725,12 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_glm53_flash_
 		if ( G53FHeld(sequence, at) == 0u )
 			checked = at + 1u;
 	memset(&greedy, 0, sizeof(greedy));
-	status = G53FPrepare(state, sequence, anchor, position, checked, &greedy);
-	if ( status == SPARK_STATUS_OK )
-		status = G53FRunForward(state, sequence, layers);
+	{
+		uint32_t splits = 0u;
+		status = G53FPrepare(state, sequence, anchor, position, checked, &greedy, 0u, &splits);
+		if ( status == SPARK_STATUS_OK )
+			status = G53FRunForward(state, layers, splits);
+	}
 	status = G53FSettle(state, status);
 	if ( status == SPARK_STATUS_OK )
 		status = G53FReadback(hidden, state->forward.hidden, (size_t)G53F_BLOCK * G53F_HIDDEN * sizeof(float));

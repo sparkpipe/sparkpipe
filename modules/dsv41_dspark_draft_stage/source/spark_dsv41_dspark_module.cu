@@ -11,6 +11,7 @@
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/drafter_blackwell.cuh"
 #include "runtime/launch.h"
 
 #include <math.h>
@@ -129,16 +130,25 @@ typedef struct Ds41Sequence
 
 typedef struct Ds41Draft
 {
+	const uint16_t *ring;
 	uint64_t seed;
 	uint32_t positions[DS41_BLOCK];
 	uint32_t anchor;
 	uint32_t noise;
 	uint32_t greedy;
+	uint32_t tree;
 	uint32_t top_k;
 	float inverse_temperature;
 	float nucleus;
 	uint8_t valid[DS41_WINDOW];
 } Ds41Draft;
+
+typedef struct Ds41RoutePlan
+{
+	uint32_t expert[DS41_PAIRS];
+	uint32_t count[DS41_PAIRS];
+	uint32_t pairs[DS41_PAIRS][DS41_BLOCK];
+} Ds41RoutePlan;
 
 typedef struct Ds41Picks
 {
@@ -186,6 +196,7 @@ typedef struct Ds41Forward
 	uint16_t *attn_out;
 	float *route_weight;
 	uint32_t *route_expert;
+	Ds41RoutePlan *route_plan;
 	float *gate_scores;
 	uint16_t *pair_gate;
 	uint16_t *pair_up;
@@ -232,6 +243,7 @@ typedef struct Ds41State
 	uint8_t *rows_scales;
 	uint64_t rows_scales_bytes;
 	Ds41Forward forward;
+	SparkDrafterGraphCache graphs;
 	uint16_t *host_taps;
 	uint32_t *host_positions;
 	uint16_t *taps;
@@ -291,9 +303,21 @@ static __device__ __forceinline__ uint16_t Ds41QdqLane(float value)
 
 static __device__ __forceinline__ void Ds41SoftmaxMerge(float *top, float *sum, float other_top, float other_sum)
 {
-	const float joined = fmaxf(*top, other_top);
-	*sum = (*top == -INFINITY ? 0.0f : *sum * expf(*top - joined)) + (other_top == -INFINITY ? 0.0f : other_sum * expf(other_top - joined));
-	*top = joined;
+	if ( other_top == -INFINITY )
+		return;
+	if ( *top == -INFINITY )
+	{
+		*top = other_top;
+		*sum = other_sum;
+		return;
+	}
+	if ( other_top <= *top )
+		*sum += other_sum * expf(other_top - *top);
+	else
+	{
+		*sum = *sum * expf(*top - other_top) + other_sum;
+		*top = other_top;
+	}
 }
 
 static __device__ __forceinline__ uint32_t Ds41KeyToken(unsigned long long key)
@@ -343,10 +367,11 @@ void Ds41RopeTableKernel(float *__restrict__ inverse, float theta)
 		inverse[threadIdx.x] = 1.0f / powf(theta, (float)(2u * threadIdx.x) / (float)DS41_ROPE);
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41QdqKernel(const uint16_t *__restrict__ input, uint16_t *__restrict__ output, uint32_t rows, uint32_t parts, uint32_t part_width,
 	uint32_t to_part_major)
 {
+	LmDependentWait();
 	const uint64_t groups = (uint64_t)rows * parts * part_width / DS41_QDQ;
 	const uint32_t lane = threadIdx.x % DS41_WARP;
 	for ( uint64_t group = (uint64_t)blockIdx.x * DS41_WARPS + threadIdx.x / DS41_WARP; group < groups; group += (uint64_t)gridDim.x * DS41_WARPS )
@@ -355,33 +380,135 @@ void Ds41QdqKernel(const uint16_t *__restrict__ input, uint16_t *__restrict__ ou
 		const uint64_t row = element / ((uint64_t)parts * part_width), part = (element / part_width) % parts, column = element % part_width;
 		const uint64_t row_major = (row * parts + part) * part_width + column, part_major = (part * rows + row) * part_width + column;
 		const uint64_t source = to_part_major != 0u ? row_major : part_major, target = to_part_major != 0u ? part_major : row_major;
-		output[target] = Ds41QdqLane(LmBf16ToFloat(input[source]));
+		output[target] = Ds41QdqLane(LmBf16ToFloat(__ldg(input + source)));
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41RmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output, uint32_t dimension,
 	float epsilon)
 {
+	LmDependentWait();
 	__shared__ float reduction[DS41_WARPS];
 	const uint16_t *row = input + (uint64_t)blockIdx.x * dimension;
 	uint16_t *out = output + (uint64_t)blockIdx.x * dimension;
 	float total = 0.0f, scale;
 	for ( uint32_t index = threadIdx.x; index < dimension; index += DS41_THREADS )
 	{
-		const float value = LmBf16ToFloat(row[index]);
+		const float value = LmBf16ToFloat(__ldg(row + index));
 		total += value * value;
 	}
 	total = LmBlockSum<DS41_THREADS>(total, reduction);
 	scale = rsqrtf(total / (float)dimension + epsilon);
 	for ( uint32_t index = threadIdx.x; index < dimension; index += DS41_THREADS )
-		out[index] = LmFloatToBf16(LmBf16ToFloat(row[index]) * scale * LmBf16ToFloat(weight[index]));
+		out[index] = LmFloatToBf16(LmBf16ToFloat(__ldg(row + index)) * scale * LmBf16ToFloat(__ldg(weight + index)));
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41RmsQdqKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output_qdq, uint32_t dimension,
+	float epsilon)
+{
+	LmDependentWait();
+	__shared__ float reduction[DS41_WARPS];
+	const uint16_t *row = input + (uint64_t)blockIdx.x * dimension;
+	uint16_t *out = output_qdq + (uint64_t)blockIdx.x * dimension;
+	float total = 0.0f, scale;
+	for ( uint32_t index = threadIdx.x; index < dimension; index += DS41_THREADS )
+	{
+		const float value = LmBf16ToFloat(__ldg(row + index));
+		total += value * value;
+	}
+	total = LmBlockSum<DS41_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)dimension + epsilon);
+	for ( uint32_t index = threadIdx.x; index < dimension; index += DS41_THREADS )
+	{
+		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(__ldg(row + index)) * scale * LmBf16ToFloat(__ldg(weight + index))));
+		out[index] = Ds41QdqLane(normed);
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41CollapseRmsQdqKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre_rows, const uint16_t *__restrict__ weight,
+	uint16_t *__restrict__ out_x, uint16_t *__restrict__ out_xq, float epsilon)
+{
+	LmDependentWait();
+	__shared__ float reduction[DS41_WARPS];
+	__shared__ float pre[DS41_HC];
+	const uint32_t row = blockIdx.x;
+	const uint16_t *src = streams + (uint64_t)row * DS41_HC_FLAT;
+	if ( threadIdx.x < DS41_HC )
+		pre[threadIdx.x] = pre_rows[(uint64_t)row * DS41_HC + threadIdx.x];
+	__syncthreads();
+	float total = 0.0f, scale;
+	for ( uint32_t index = threadIdx.x; index < DS41_HIDDEN; index += DS41_THREADS )
+	{
+		float collapsed = 0.0f;
+#pragma unroll
+		for ( uint32_t s = 0u; s < DS41_HC; s++ )
+			collapsed = fmaf(pre[s], LmBf16ToFloat(__ldg(src + (uint64_t)s * DS41_HIDDEN + index)), collapsed);
+		const float cbf = LmBf16ToFloat(LmFloatToBf16(collapsed));
+		total += cbf * cbf;
+	}
+	total = LmBlockSum<DS41_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)DS41_HIDDEN + epsilon);
+	for ( uint32_t index = threadIdx.x; index < DS41_HIDDEN; index += DS41_THREADS )
+	{
+		float collapsed = 0.0f;
+#pragma unroll
+		for ( uint32_t s = 0u; s < DS41_HC; s++ )
+			collapsed = fmaf(pre[s], LmBf16ToFloat(__ldg(src + (uint64_t)s * DS41_HIDDEN + index)), collapsed);
+		const float cbf = LmBf16ToFloat(LmFloatToBf16(collapsed));
+		const uint16_t normed_bf = LmFloatToBf16(cbf * scale * LmBf16ToFloat(__ldg(weight + index)));
+		if ( out_x != 0 )
+			out_x[(uint64_t)row * DS41_HIDDEN + index] = normed_bf;
+		if ( out_xq != 0 )
+			out_xq[(uint64_t)row * DS41_HIDDEN + index] = Ds41QdqLane(LmBf16ToFloat(normed_bf));
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41CollapseRmsKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre_rows, const uint16_t *__restrict__ weight,
+	uint16_t *__restrict__ out_hidden, uint16_t *__restrict__ out_normed, float epsilon)
+{
+	LmDependentWait();
+	__shared__ float reduction[DS41_WARPS];
+	__shared__ float pre[DS41_HC];
+	const uint32_t row = blockIdx.x;
+	const uint16_t *src = streams + (uint64_t)row * DS41_HC_FLAT;
+	if ( threadIdx.x < DS41_HC )
+		pre[threadIdx.x] = pre_rows[(uint64_t)row * DS41_HC + threadIdx.x];
+	__syncthreads();
+	float total = 0.0f, scale;
+	for ( uint32_t index = threadIdx.x; index < DS41_HIDDEN; index += DS41_THREADS )
+	{
+		float collapsed = 0.0f;
+#pragma unroll
+		for ( uint32_t s = 0u; s < DS41_HC; s++ )
+			collapsed = fmaf(pre[s], LmBf16ToFloat(__ldg(src + (uint64_t)s * DS41_HIDDEN + index)), collapsed);
+		const uint16_t cbf_u16 = LmFloatToBf16(collapsed);
+		out_hidden[(uint64_t)row * DS41_HIDDEN + index] = cbf_u16;
+		const float cbf = LmBf16ToFloat(cbf_u16);
+		total += cbf * cbf;
+	}
+	total = LmBlockSum<DS41_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)DS41_HIDDEN + epsilon);
+	for ( uint32_t index = threadIdx.x; index < DS41_HIDDEN; index += DS41_THREADS )
+	{
+		const float cbf = LmBf16ToFloat(out_hidden[(uint64_t)row * DS41_HIDDEN + index]);
+		out_normed[(uint64_t)row * DS41_HIDDEN + index] = LmFloatToBf16(cbf * scale * LmBf16ToFloat(__ldg(weight + index)));
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41KeyRowsKernel(const uint16_t *__restrict__ raw, const uint16_t *__restrict__ norm, const float *__restrict__ inverse,
 	const uint32_t *__restrict__ positions, float epsilon, uint16_t *__restrict__ ring, uint16_t *__restrict__ rows_out)
 {
+	LmDependentWait();
 	__shared__ float reduction[DS41_WARPS];
 	__shared__ float key[DS41_HEAD_DIM];
 	const uint16_t *row = raw + (uint64_t)blockIdx.x * DS41_HEAD_DIM;
@@ -410,15 +537,16 @@ void Ds41KeyRowsKernel(const uint16_t *__restrict__ raw, const uint16_t *__restr
 	__syncthreads();
 	for ( uint32_t index = threadIdx.x; index < DS41_HEAD_DIM; index += DS41_THREADS )
 		out[index] = Ds41QdqLane(key[index]);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41RopeKernel(uint16_t *__restrict__ data, const Ds41Draft *__restrict__ draft, const float *__restrict__ inverse, uint32_t heads,
 	float direction)
 {
+	LmDependentWait();
 	const uint32_t pair = threadIdx.x % (DS41_ROPE / 2u), item = blockIdx.x * (DS41_THREADS / (DS41_ROPE / 2u)) + threadIdx.x / (DS41_ROPE / 2u);
-	if ( item >= DS41_BLOCK * heads )
-		return;
+	if ( item < DS41_BLOCK * heads )
 	{
 		uint16_t *row = data + (uint64_t)item * DS41_HEAD_DIM + DS41_NOPE + 2u * pair;
 		const float even = LmBf16ToFloat(row[0]), odd = LmBf16ToFloat(row[1]);
@@ -428,20 +556,32 @@ void Ds41RopeKernel(uint16_t *__restrict__ data, const Ds41Draft *__restrict__ d
 		row[0] = LmFloatToBf16(even * cosine - odd * sine);
 		row[1] = LmFloatToBf16(even * sine + odd * cosine);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41EmbedKernel(const uint16_t *__restrict__ embed, const Ds41Draft *__restrict__ draft, uint16_t *__restrict__ streams)
 {
+	LmDependentWait();
 	const uint32_t row = blockIdx.x, token = row == 0u ? draft->anchor : draft->noise;
-	for ( uint32_t index = threadIdx.x; index < DS41_HC_FLAT; index += DS41_THREADS )
-		streams[(uint64_t)row * DS41_HC_FLAT + index] = embed[(uint64_t)token * DS41_HIDDEN + index % DS41_HIDDEN];
+	const uint4 *src = (const uint4 *)(embed + (uint64_t)token * DS41_HIDDEN);
+	uint4 *dst = (uint4 *)(streams + (uint64_t)row * DS41_HC_FLAT);
+	constexpr uint32_t VECS = DS41_HIDDEN / 8u;
+	for ( uint32_t index = threadIdx.x; index < VECS; index += DS41_THREADS )
+	{
+		const uint4 v = __ldg(src + index);
+#pragma unroll
+		for ( uint32_t s = 0u; s < DS41_HC; s++ )
+			dst[(uint64_t)s * VECS + index] = v;
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41HcPostKernel(const uint16_t *__restrict__ output, const uint16_t *__restrict__ residual, const float *__restrict__ post_rows,
 	const float *__restrict__ comb_rows, uint16_t *__restrict__ streams)
 {
+	LmDependentWait();
 	__shared__ float post[DS41_HC];
 	__shared__ float comb[DS41_HC * DS41_HC];
 	const uint32_t row = blockIdx.y;
@@ -452,11 +592,11 @@ void Ds41HcPostKernel(const uint16_t *__restrict__ output, const uint16_t *__res
 	__syncthreads();
 	for ( uint32_t element = blockIdx.x * DS41_THREADS + threadIdx.x; element < DS41_HIDDEN; element += gridDim.x * DS41_THREADS )
 	{
-		const float y = LmBf16ToFloat(output[(uint64_t)row * DS41_HIDDEN + element]);
+		const float y = LmBf16ToFloat(__ldg(output + (uint64_t)row * DS41_HIDDEN + element));
 		float source[DS41_HC];
 #pragma unroll
 		for ( uint32_t stream = 0u; stream < DS41_HC; stream++ )
-			source[stream] = LmBf16ToFloat(residual[((uint64_t)row * DS41_HC + stream) * DS41_HIDDEN + element]);
+			source[stream] = LmBf16ToFloat(__ldg(residual + ((uint64_t)row * DS41_HC + stream) * DS41_HIDDEN + element));
 #pragma unroll
 		for ( uint32_t stream = 0u; stream < DS41_HC; stream++ )
 		{
@@ -467,22 +607,75 @@ void Ds41HcPostKernel(const uint16_t *__restrict__ output, const uint16_t *__res
 			streams[((uint64_t)row * DS41_HC + stream) * DS41_HIDDEN + element] = LmFloatToBf16(post[stream] * y + mixed);
 		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
-void Ds41AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ ring, const uint16_t *__restrict__ block_keys,
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41WoAKernel(const uint8_t *__restrict__ weight, const uint8_t *__restrict__ rows_scale, const uint16_t *__restrict__ grouped,
+	uint16_t *__restrict__ projected)
+{
+	LmDependentWait();
+	constexpr uint32_t CHUNKS = DS41_GROUP_WIDTH / 16u;
+	constexpr uint32_t GROUPS = DS41_GROUP_WIDTH / DS41_QDQ;
+	constexpr uint32_t STEPS = CHUNKS / DS41_WARP;
+	const uint32_t group = blockIdx.y, warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP;
+	const uint32_t local_row = blockIdx.x * DS41_WARPS + warp;
+	const uint64_t global_row = (uint64_t)group * DS41_O_RANK + local_row;
+	const uint8_t *w_row = weight + global_row * DS41_GROUP_WIDTH;
+	const uint8_t *s_row = rows_scale + global_row * GROUPS;
+	const uint16_t *in_group = grouped + (uint64_t)group * DS41_BLOCK * DS41_GROUP_WIDTH;
+	float dot[DS41_BLOCK];
+#pragma unroll
+	for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
+		dot[row] = 0.0f;
+	uint4 next_w = __ldg((const uint4 *)(w_row + (uint64_t)lane * 16u));
+	uint8_t next_s = __ldg(s_row + (lane >> 1u));
+#pragma unroll 1
+	for ( uint32_t step = 0u; step < STEPS; step++ )
+	{
+		const uint32_t chunk = lane + step * DS41_WARP, following = chunk + DS41_WARP;
+		const uint4 packed = next_w;
+		const uint8_t sc_code = next_s;
+		if ( step + 1u < STEPS )
+		{
+			next_w = __ldg((const uint4 *)(w_row + (uint64_t)following * 16u));
+			next_s = __ldg(s_row + (following >> 1u));
+		}
+		const float factor = LmUe8m0ToFloat(sc_code);
+		const LmSkinnyFormat<LmMxfp8>::Decoded decoded = LmSkinnyFormat<LmMxfp8>::Decode(packed);
+#pragma unroll
+		for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
+		{
+			const LmSkinnyFormat<LmMxfp8>::Activation act = LmSkinnyFormat<LmMxfp8>::Load(in_group + (uint64_t)row * DS41_GROUP_WIDTH + (uint64_t)chunk * 16u);
+			dot[row] += LmSkinnyFormat<LmMxfp8>::ChunkDecoded(decoded, act) * factor;
+		}
+	}
+#pragma unroll
+	for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
+	{
+		const float total = Ds41WarpSum(dot[row]);
+		if ( lane == 0u )
+			projected[((uint64_t)group * DS41_BLOCK + row) * DS41_O_RANK + local_row] = LmFloatToBf16(total);
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41AttentionKernel(const uint16_t *__restrict__ q, uint32_t stage, const uint16_t *__restrict__ block_keys,
 	const Ds41Draft *__restrict__ draft, const float *__restrict__ sink, float scale, uint16_t *__restrict__ output)
 {
+	LmDependentWait();
 	constexpr uint32_t KEYS = DS41_WINDOW + DS41_BLOCK;
 	constexpr uint32_t PER = DS41_HEAD_DIM / DS41_WARP;
 	__shared__ float query[DS41_HEAD_DIM];
 	__shared__ float scores[KEYS];
 	__shared__ float reduction[DS41_WARPS];
+	const uint16_t *ring = draft->ring + (uint64_t)stage * DS41_STAGE_RING;
 	const uint32_t head = blockIdx.x, row = blockIdx.y, warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP;
 	const uint16_t *own = q + ((uint64_t)row * DS41_HEADS + head) * DS41_HEAD_DIM;
 	float top = -INFINITY, total = 0.0f, low = 0.0f, high = 0.0f;
 	for ( uint32_t index = threadIdx.x; index < DS41_HEAD_DIM; index += DS41_THREADS )
-		query[index] = LmBf16ToFloat(own[index]);
+		query[index] = LmBf16ToFloat(__ldg(own + index));
 	__syncthreads();
 	for ( uint32_t key = warp; key < KEYS; key += DS41_WARPS )
 	{
@@ -496,7 +689,7 @@ void Ds41AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restr
 		}
 #pragma unroll
 		for ( uint32_t part = 0u; part < PER; part++ )
-			dot += query[part * DS41_WARP + lane] * LmBf16ToFloat(source[part * DS41_WARP + lane]);
+			dot += query[part * DS41_WARP + lane] * LmBf16ToFloat(__ldg(source + part * DS41_WARP + lane));
 		dot = Ds41WarpSum(dot);
 		if ( lane == 0u )
 			scores[key] = dot * scale;
@@ -516,27 +709,29 @@ void Ds41AttentionKernel(const uint16_t *__restrict__ q, const uint16_t *__restr
 	for ( uint32_t key = threadIdx.x; key < KEYS; key += DS41_THREADS )
 	{
 		const float weight = expf(scores[key] - top);
-		scores[key] = weight;
+		scores[key] = LmBf16ToFloat(LmFloatToBf16(weight));
 		total += weight;
 	}
 	total = LmBlockSum<DS41_THREADS>(total, reduction);
 	total += expf(sink[head] - top);
 	for ( uint32_t key = 0u; key < KEYS; key++ )
 	{
-		const float weight = LmBf16ToFloat(LmFloatToBf16(scores[key]));
+		const float weight = scores[key];
 		const uint16_t *source = key < DS41_WINDOW ? ring + (uint64_t)key * DS41_HEAD_DIM : block_keys + (uint64_t)(key - DS41_WINDOW) * DS41_HEAD_DIM;
 		if ( weight == 0.0f )
 			continue;
-		low += weight * LmBf16ToFloat(source[threadIdx.x]);
-		high += weight * LmBf16ToFloat(source[threadIdx.x + DS41_THREADS]);
+		low += weight * LmBf16ToFloat(__ldg(source + threadIdx.x));
+		high += weight * LmBf16ToFloat(__ldg(source + threadIdx.x + DS41_THREADS));
 	}
 	output[((uint64_t)row * DS41_HEADS + head) * DS41_HEAD_DIM + threadIdx.x] = LmFloatToBf16(low / total);
 	output[((uint64_t)row * DS41_HEADS + head) * DS41_HEAD_DIM + threadIdx.x + DS41_THREADS] = LmFloatToBf16(high / total);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41GateScoreKernel(const uint16_t *__restrict__ x, const uint16_t *__restrict__ gate, float *__restrict__ scores)
 {
+	LmDependentWait();
 	constexpr uint32_t STEPS = DS41_HIDDEN / (DS41_WARP * 8u);
 	const uint32_t warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP, expert = blockIdx.x * DS41_WARPS + warp;
 	const uint16_t *weights = gate + (uint64_t)expert * DS41_HIDDEN;
@@ -569,13 +764,16 @@ void Ds41GateScoreKernel(const uint16_t *__restrict__ x, const uint16_t *__restr
 		if ( lane == 0u )
 			scores[row * DS41_EXPERTS + expert] = sqrtf(total > DS41_SOFTPLUS_THRESHOLD ? total : log1pf(expf(total)));
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_WARP, 1)
+__global__ __launch_bounds__(DS41_BLOCK * DS41_WARP, 1)
 void Ds41GateTopKernel(const float *__restrict__ scores_rows, const float *__restrict__ bias, float route_scale, uint32_t *__restrict__ route_expert,
-	float *__restrict__ route_weight)
+	float *__restrict__ route_weight, Ds41RoutePlan *__restrict__ plan)
 {
-	const uint32_t row = blockIdx.x, lane = threadIdx.x;
+	LmDependentWait();
+	__shared__ uint32_t sh_expert[DS41_PAIRS];
+	const uint32_t row = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP;
 	const float *scores = scores_rows + (uint64_t)row * DS41_EXPERTS;
 	uint32_t first = 0u, second = 0u, third = 0u;
 #pragma unroll
@@ -603,84 +801,60 @@ void Ds41GateTopKernel(const float *__restrict__ scores_rows, const float *__res
 		const uint32_t expert = lane == 0u ? first : lane == 1u ? second : third;
 		const float picked = lane == 0u ? a : lane == 1u ? b : c;
 		route_expert[row * DS41_ACTIVE + lane] = expert;
+		sh_expert[row * DS41_ACTIVE + lane] = expert;
 		route_weight[row * DS41_ACTIVE + lane] = picked / (a + b + c + DS41_ROUTE_EPSILON) * route_scale;
 	}
-}
-
-static __device__ __forceinline__ void Ds41Mxfp4Decode(uint4 packed, float *weights)
-{
-	const uint32_t words[4] = {packed.x, packed.y, packed.z, packed.w};
-#pragma unroll
-	for ( uint32_t word = 0u; word < 4u; word++ )
-#pragma unroll
-		for ( uint32_t byte = 0u; byte < 4u; byte++ )
+	__syncthreads();
+	if ( threadIdx.x < DS41_PAIRS )
+	{
+		const uint32_t unique_index = threadIdx.x;
+		uint32_t unique = 0u, count = 0u, expert = 0xffffffffu;
+		for ( uint32_t pair = 0u; pair < DS41_PAIRS; pair++ )
 		{
-			const uint32_t code = (words[word] >> (8u * byte)) & 0xffu;
-			weights[8u * word + 2u * byte] = LmE2m1ToFloatPure(code & 15u);
-			weights[8u * word + 2u * byte + 1u] = LmE2m1ToFloatPure(code >> 4u);
+			uint32_t seen = 0u;
+			for ( uint32_t earlier = 0u; earlier < pair; earlier++ )
+				seen |= sh_expert[earlier] == sh_expert[pair] ? 1u : 0u;
+			if ( seen == 0u && unique++ == unique_index )
+				expert = sh_expert[pair];
 		}
-}
-
-static __device__ __forceinline__ float Ds41Mxfp4Dot(const float *weights, const uint16_t *input)
-{
-	float total = 0.0f;
-#pragma unroll
-	for ( uint32_t word = 0u; word < 4u; word++ )
-	{
-		const uint4 loaded = *(const uint4 *)(input + 8u * word);
-		const uint32_t values[4] = {loaded.x, loaded.y, loaded.z, loaded.w};
-#pragma unroll
-		for ( uint32_t byte = 0u; byte < 4u; byte++ )
-			total += weights[8u * word + 2u * byte] * __uint_as_float(values[byte] << 16u) +
-				weights[8u * word + 2u * byte + 1u] * __uint_as_float(values[byte] & 0xffff0000u);
+		for ( uint32_t pair = 0u; pair < DS41_PAIRS && expert != 0xffffffffu; pair++ )
+			if ( sh_expert[pair] == expert )
+				plan->pairs[unique_index][count++] = pair;
+		plan->expert[unique_index] = expert;
+		plan->count[unique_index] = count;
 	}
-	return total;
+	LmDependentRelease();
 }
 
-static __device__ __forceinline__ uint32_t Ds41ExpertPairs(const uint32_t *__restrict__ route_expert, uint32_t unique_index, uint32_t *pairs,
-	uint32_t *expert_out)
-{
-	uint32_t unique = 0u, count = 0u, expert = 0xffffffffu;
-	for ( uint32_t pair = 0u; pair < DS41_PAIRS; pair++ )
-	{
-		uint32_t seen = 0u;
-		for ( uint32_t earlier = 0u; earlier < pair; earlier++ )
-			seen |= route_expert[earlier] == route_expert[pair] ? 1u : 0u;
-		if ( seen == 0u && unique++ == unique_index )
-			expert = route_expert[pair];
-	}
-	for ( uint32_t pair = 0u; pair < DS41_PAIRS && expert != 0xffffffffu; pair++ )
-		if ( route_expert[pair] == expert )
-			pairs[count++] = pair;
-	*expert_out = expert;
-	return count;
-}
-
-template<uint32_t INPUT, uint32_t OUTPUTS, uint32_t ROW_DIVISOR>
+template<uint32_t INPUT, uint32_t OUTPUTS, uint32_t ROW_DIVISOR, bool USE_SMEM>
 static __device__ __forceinline__ void Ds41ExpertRows(const uint16_t *__restrict__ input, const uint8_t *const *__restrict__ table,
-	const uint32_t *__restrict__ route_expert, uint32_t first_part, uint32_t second_part, uint16_t *first_out, uint16_t *second_out)
+	const Ds41RoutePlan *__restrict__ plan, uint32_t first_part, uint32_t second_part, uint16_t *first_out, uint16_t *second_out)
 {
+	LmDependentWait();
 	constexpr uint32_t CHUNKS = INPUT / DS41_QDQ;
 	constexpr uint32_t PER_LANE = (CHUNKS + DS41_WARP - 1u) / DS41_WARP;
 	extern __shared__ __align__(16) uint16_t ds41_expert_rows[];
-	__shared__ uint32_t pairs[DS41_BLOCK];
-	__shared__ uint32_t shared_count;
-	__shared__ uint32_t shared_expert;
+	__shared__ uint32_t s_pairs[DS41_BLOCK];
 	const uint32_t warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP;
-	uint32_t count, expert;
-	if ( threadIdx.x == 0u )
-		shared_count = Ds41ExpertPairs(route_expert, blockIdx.x, pairs, &shared_expert);
-	__syncthreads();
-	count = shared_count;
-	expert = shared_expert;
+	const uint32_t count = plan->count[blockIdx.x];
 	if ( count == 0u )
-		return;
-	for ( uint32_t index = threadIdx.x; index < count * (INPUT / 8u); index += DS41_THREADS )
 	{
-		const uint32_t row = index / (INPUT / 8u), column = index % (INPUT / 8u);
-		((uint4 *)ds41_expert_rows)[index] = __ldg((const uint4 *)(input + (uint64_t)(pairs[row] / ROW_DIVISOR) * INPUT) + column);
+		LmDependentRelease();
+		return;
 	}
+	const uint32_t expert = plan->expert[blockIdx.x];
+	if ( threadIdx.x < count )
+		s_pairs[threadIdx.x] = plan->pairs[blockIdx.x][threadIdx.x];
 	__syncthreads();
+	if constexpr ( USE_SMEM )
+	{
+		for ( uint32_t index = threadIdx.x; index < count * (INPUT / 8u); index += DS41_THREADS )
+		{
+			const uint32_t row = index / (INPUT / 8u), column = index % (INPUT / 8u);
+			((uint4 *)ds41_expert_rows)[index] = __ldg((const uint4 *)(input + (uint64_t)(s_pairs[row] / ROW_DIVISOR) * INPUT) + column);
+		}
+		__syncthreads();
+	}
 #pragma unroll 1
 	for ( uint32_t item = warp; item < OUTPUTS * DS41_EXPERT_NEURONS; item += DS41_WARPS )
 	{
@@ -690,6 +864,7 @@ static __device__ __forceinline__ void Ds41ExpertRows(const uint16_t *__restrict
 		const uint8_t *weight = parts[1] + (uint64_t)neuron * (INPUT / 2u), *scale = parts[0] + (uint64_t)neuron * CHUNKS;
 		float dot[DS41_BLOCK];
 		uint4 next = lane < CHUNKS ? __ldg((const uint4 *)(weight + (uint64_t)lane * (DS41_QDQ / 2u))) : make_uint4(0u, 0u, 0u, 0u);
+		uint8_t next_scale = lane < CHUNKS ? __ldg(scale + lane) : 0u;
 #pragma unroll
 		for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
 			dot[row] = 0.0f;
@@ -698,17 +873,45 @@ static __device__ __forceinline__ void Ds41ExpertRows(const uint16_t *__restrict
 		{
 			const uint32_t chunk = lane + step * DS41_WARP, following = chunk + DS41_WARP;
 			const uint4 packed = next;
-			float weights[DS41_QDQ], factor;
+			const uint8_t sc_code = next_scale;
 			if ( chunk >= CHUNKS )
 				break;
 			if ( following < CHUNKS )
+			{
 				next = __ldg((const uint4 *)(weight + (uint64_t)following * (DS41_QDQ / 2u)));
-			factor = LmUe8m0ToFloat(scale[chunk]);
-			Ds41Mxfp4Decode(packed, weights);
+				next_scale = __ldg(scale + following);
+			}
+			const float factor = LmUe8m0ToFloat(sc_code);
+			const LmSkinnyE2m1HalfDecoded d0 = LmSkinnyDecodeE2m1Half(packed.x, packed.y);
+			const LmSkinnyE2m1HalfDecoded d1 = LmSkinnyDecodeE2m1Half(packed.z, packed.w);
 #pragma unroll
 			for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
 				if ( row < count )
-					dot[row] += Ds41Mxfp4Dot(weights, ds41_expert_rows + (uint64_t)row * INPUT + chunk * DS41_QDQ) * factor;
+				{
+					const uint16_t *src_row = USE_SMEM ? (ds41_expert_rows + (uint64_t)row * INPUT)
+						: (input + (uint64_t)(s_pairs[row] / ROW_DIVISOR) * INPUT);
+					const uint16_t *at = src_row + chunk * DS41_QDQ;
+					const uint4 a0 = USE_SMEM ? *((const uint4 *)at) : __ldg((const uint4 *)at);
+					const uint4 a1 = USE_SMEM ? *((const uint4 *)at + 1) : __ldg((const uint4 *)at + 1);
+					const uint4 a2 = USE_SMEM ? *((const uint4 *)at + 2) : __ldg((const uint4 *)at + 2);
+					const uint4 a3 = USE_SMEM ? *((const uint4 *)at + 3) : __ldg((const uint4 *)at + 3);
+					const uint32_t v0[4] = {a0.x, a0.y, a0.z, a0.w}, v1[4] = {a1.x, a1.y, a1.z, a1.w};
+					const uint32_t v2[4] = {a2.x, a2.y, a2.z, a2.w}, v3[4] = {a3.x, a3.y, a3.z, a3.w};
+					float part = 0.0f;
+#pragma unroll
+					for ( uint32_t b = 0u; b < 4u; b++ )
+						part += d0.pair[b].x * __uint_as_float(v0[b] << 16u) + d0.pair[b].y * __uint_as_float(v0[b] & 0xffff0000u);
+#pragma unroll
+					for ( uint32_t b = 0u; b < 4u; b++ )
+						part += d0.pair[4u + b].x * __uint_as_float(v1[b] << 16u) + d0.pair[4u + b].y * __uint_as_float(v1[b] & 0xffff0000u);
+#pragma unroll
+					for ( uint32_t b = 0u; b < 4u; b++ )
+						part += d1.pair[b].x * __uint_as_float(v2[b] << 16u) + d1.pair[b].y * __uint_as_float(v2[b] & 0xffff0000u);
+#pragma unroll
+					for ( uint32_t b = 0u; b < 4u; b++ )
+						part += d1.pair[4u + b].x * __uint_as_float(v3[b] << 16u) + d1.pair[4u + b].y * __uint_as_float(v3[b] & 0xffff0000u);
+					dot[row] += part * factor;
+				}
 		}
 #pragma unroll
 		for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
@@ -716,62 +919,68 @@ static __device__ __forceinline__ void Ds41ExpertRows(const uint16_t *__restrict
 			{
 				const float total = Ds41WarpSum(dot[row]);
 				if ( lane == 0u )
-					output[(uint64_t)pairs[row] * (OUTPUTS == 2u ? DS41_MOE : DS41_HIDDEN) + neuron] = LmFloatToBf16(total);
+					output[(uint64_t)s_pairs[row] * (OUTPUTS == 2u ? DS41_MOE : DS41_HIDDEN) + neuron] = LmFloatToBf16(total);
 			}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
-void Ds41ExpertUpKernel(const uint16_t *__restrict__ xq, const uint8_t *const *__restrict__ table, const uint32_t *__restrict__ route_expert,
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41ExpertUpKernel(const uint16_t *__restrict__ xq, const uint8_t *const *__restrict__ table, const Ds41RoutePlan *__restrict__ plan,
 	uint16_t *__restrict__ gate_out, uint16_t *__restrict__ up_out)
 {
-	Ds41ExpertRows<DS41_HIDDEN, 2u, DS41_ACTIVE>(xq, table, route_expert, DS41_W1_PART, DS41_W3_PART, gate_out, up_out);
+	Ds41ExpertRows<DS41_HIDDEN, 2u, DS41_ACTIVE, false>(xq, table, plan, DS41_W1_PART, DS41_W3_PART, gate_out, up_out);
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
-void Ds41ExpertDownKernel(const uint16_t *__restrict__ hidden, const uint8_t *const *__restrict__ table, const uint32_t *__restrict__ route_expert,
+__global__ __launch_bounds__(DS41_THREADS, 2)
+void Ds41ExpertDownKernel(const uint16_t *__restrict__ hidden, const uint8_t *const *__restrict__ table, const Ds41RoutePlan *__restrict__ plan,
 	uint16_t *__restrict__ down_out)
 {
-	Ds41ExpertRows<DS41_MOE, 1u, 1u>(hidden, table, route_expert, DS41_W2_PART, DS41_W2_PART, down_out, down_out);
+	Ds41ExpertRows<DS41_MOE, 1u, 1u, true>(hidden, table, plan, DS41_W2_PART, DS41_W2_PART, down_out, down_out);
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41SwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ route_weight, float limit,
 	uint32_t rows, uint16_t *__restrict__ output)
 {
+	LmDependentWait();
 	const uint64_t groups = (uint64_t)rows * DS41_MOE / DS41_QDQ;
 	const uint32_t lane = threadIdx.x % DS41_WARP;
 	for ( uint64_t group = (uint64_t)blockIdx.x * DS41_WARPS + threadIdx.x / DS41_WARP; group < groups; group += (uint64_t)gridDim.x * DS41_WARPS )
 	{
 		const uint64_t element = group * DS41_QDQ + lane, row = element / DS41_MOE;
-		const float g = fminf(LmBf16ToFloat(gate[element]), limit);
-		const float u = fminf(fmaxf(LmBf16ToFloat(up[element]), -limit), limit);
+		const float g = fminf(LmBf16ToFloat(__ldg(gate + element)), limit);
+		const float u = fminf(fmaxf(LmBf16ToFloat(__ldg(up + element)), -limit), limit);
 		float value = g / (1.0f + expf(-g)) * u;
 		if ( route_weight != 0 )
 			value = route_weight[row] * value;
 		output[element] = Ds41QdqLane(LmBf16ToFloat(LmFloatToBf16(value)));
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41MoeSumKernel(const uint16_t *__restrict__ pair_down, const uint16_t *__restrict__ shared, uint16_t *__restrict__ output)
 {
+	LmDependentWait();
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t element = blockIdx.x * DS41_THREADS + threadIdx.x; element < DS41_HIDDEN; element += gridDim.x * DS41_THREADS )
 	{
 		float total = 0.0f;
 #pragma unroll
 		for ( uint32_t slot = 0u; slot < DS41_ACTIVE; slot++ )
-			total += LmBf16ToFloat(pair_down[((uint64_t)row * DS41_ACTIVE + slot) * DS41_HIDDEN + element]);
-		total += LmBf16ToFloat(shared[(uint64_t)row * DS41_HIDDEN + element]);
+			total += LmBf16ToFloat(__ldg(pair_down + ((uint64_t)row * DS41_ACTIVE + slot) * DS41_HIDDEN + element));
+		total += LmBf16ToFloat(__ldg(shared + (uint64_t)row * DS41_HIDDEN + element));
 		output[(uint64_t)row * DS41_HIDDEN + element] = LmFloatToBf16(total);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41MarkovRowKernel(uint32_t step, const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks, const float *__restrict__ logits,
 	const uint16_t *__restrict__ markov_embed, const uint16_t *__restrict__ markov_head, float *__restrict__ row, float *__restrict__ partials)
 {
+	LmDependentWait();
 	constexpr uint32_t PER = DS41_MARKOV / DS41_WARP;
 	__shared__ float embedding[DS41_MARKOV];
 	__shared__ unsigned long long best[DS41_WARPS];
@@ -779,11 +988,12 @@ void Ds41MarkovRowKernel(uint32_t step, const Ds41Draft *__restrict__ draft, Ds4
 	__shared__ float tops[DS41_WARPS];
 	__shared__ float sums[DS41_WARPS];
 	const uint32_t warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP, previous = Ds41Previous(draft, picks, step);
-	const float scale = draft->greedy != 0u ? 1.0f : draft->inverse_temperature;
+	const uint32_t greedy = draft->greedy, need_softmax = greedy == 0u || draft->tree != 0u ? 1u : 0u;
+	const float scale = greedy != 0u ? 1.0f : draft->inverse_temperature;
 	unsigned long long first = 0ull, second = 0ull;
 	float top = -INFINITY, sum = 0.0f;
 	for ( uint32_t index = threadIdx.x; index < DS41_MARKOV; index += DS41_THREADS )
-		embedding[index] = LmBf16ToFloat(markov_embed[(uint64_t)previous * DS41_MARKOV + index]);
+		embedding[index] = LmBf16ToFloat(__ldg(markov_embed + (uint64_t)previous * DS41_MARKOV + index));
 	__syncthreads();
 	for ( uint32_t token = blockIdx.x * DS41_WARPS + warp; token < DS41_VOCAB; token += gridDim.x * DS41_WARPS )
 	{
@@ -797,14 +1007,21 @@ void Ds41MarkovRowKernel(uint32_t step, const Ds41Draft *__restrict__ draft, Ds4
 			dot += __uint_as_float(words[word] & 0xffff0000u) * embedding[lane * PER + 2u * word + 1u];
 		}
 		dot = Ds41WarpSum(dot);
-		value = logits[(uint64_t)step * DS41_VOCAB + token] + dot;
 		if ( lane == 0u )
 		{
-			const unsigned long long candidate = ((unsigned long long)SparkMathSampleOrdered(value) << 32u) | (unsigned long long)(0xffffffffu - token);
-			row[token] = value;
-			if ( draft->greedy != 0u )
-				Ds41Top2Insert(candidate, &first, &second);
-			Ds41SoftmaxMerge(&top, &sum, value * scale, 1.0f);
+			value = __ldg(logits + (uint64_t)step * DS41_VOCAB + token) + dot;
+			if ( greedy == 0u )
+				row[token] = value;
+			else
+			{
+				const unsigned long long candidate = ((unsigned long long)SparkMathSampleOrdered(value) << 32u) | (unsigned long long)(0xffffffffu - token);
+				if ( need_softmax != 0u )
+					Ds41Top2Insert(candidate, &first, &second);
+				else if ( candidate > first )
+					first = candidate;
+			}
+			if ( need_softmax != 0u )
+				Ds41SoftmaxMerge(&top, &sum, value * scale, 1.0f);
 		}
 	}
 	if ( lane == 0u )
@@ -819,30 +1036,44 @@ void Ds41MarkovRowKernel(uint32_t step, const Ds41Draft *__restrict__ draft, Ds4
 	{
 		for ( uint32_t index = 1u; index < DS41_WARPS; index++ )
 		{
-			Ds41SoftmaxMerge(&top, &sum, tops[index], sums[index]);
-			if ( draft->greedy != 0u )
+			if ( need_softmax != 0u )
+				Ds41SoftmaxMerge(&top, &sum, tops[index], sums[index]);
+			if ( greedy != 0u )
 			{
-				Ds41Top2Insert(best[index], &first, &second);
-				Ds41Top2Insert(second_best[index], &first, &second);
+				if ( need_softmax != 0u )
+				{
+					Ds41Top2Insert(best[index], &first, &second);
+					Ds41Top2Insert(second_best[index], &first, &second);
+				}
+				else if ( best[index] > first )
+					first = best[index];
 			}
 		}
-		partials[((uint64_t)step * gridDim.x + blockIdx.x) * 2u] = top;
-		partials[((uint64_t)step * gridDim.x + blockIdx.x) * 2u + 1u] = sum;
-		if ( draft->greedy != 0u )
+		if ( need_softmax != 0u )
+		{
+			partials[((uint64_t)step * gridDim.x + blockIdx.x) * 2u] = top;
+			partials[((uint64_t)step * gridDim.x + blockIdx.x) * 2u + 1u] = sum;
+		}
+		if ( greedy != 0u )
 		{
 			const unsigned long long prev = atomicMax(&picks->keys[step], first);
-			const unsigned long long loser = prev > first ? first : prev;
-			const unsigned long long runner = loser > second ? loser : second;
-			if ( runner != 0ull )
-				atomicMax(&picks->alt_keys[step], runner);
+			if ( need_softmax != 0u )
+			{
+				const unsigned long long loser = prev > first ? first : prev;
+				const unsigned long long runner = loser > second ? loser : second;
+				if ( runner != 0ull )
+					atomicMax(&picks->alt_keys[step], runner);
+			}
 		}
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(DS41_PICK_THREADS, 1)
 void Ds41SampleKernel(uint32_t step, const Ds41Draft *__restrict__ draft, const float *__restrict__ row, const uint32_t *__restrict__ candidates,
 	const float *__restrict__ partials, uint32_t blocks, Ds41Picks *__restrict__ picks)
 {
+	LmDependentWait();
 	__shared__ float values[DS41_SAMPLED];
 	__shared__ uint32_t tokens[DS41_SAMPLED];
 	__shared__ float sorted_values[DS41_SAMPLED];
@@ -909,88 +1140,104 @@ void Ds41SampleKernel(uint32_t step, const Ds41Draft *__restrict__ draft, const 
 		picks->alt_tokens[step] = sorted_tokens[runner];
 		picks->alt_scores[step] = sum > 0.0f ? expf(sorted_values[runner] - top) / sum : 0.0f;
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41ConfidenceKernel(const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks, const uint16_t *__restrict__ hidden,
 	const uint16_t *__restrict__ markov_embed, const uint16_t *__restrict__ weight, const float *__restrict__ partials, uint32_t blocks)
 {
+	LmDependentWait();
 	__shared__ float reduction[DS41_WARPS];
 	const uint32_t slot = blockIdx.x, previous = Ds41Previous(draft, picks, slot);
 	float dot = 0.0f;
 	for ( uint32_t index = threadIdx.x; index < DS41_CONFIDENCE; index += DS41_THREADS )
 	{
-		const float feature = index < DS41_HIDDEN ? LmBf16ToFloat(hidden[(uint64_t)slot * DS41_HIDDEN + index])
-			: LmBf16ToFloat(markov_embed[(uint64_t)previous * DS41_MARKOV + index - DS41_HIDDEN]);
-		dot += feature * LmBf16ToFloat(weight[index]);
+		const float feature = index < DS41_HIDDEN ? LmBf16ToFloat(__ldg(hidden + (uint64_t)slot * DS41_HIDDEN + index))
+			: LmBf16ToFloat(__ldg(markov_embed + (uint64_t)previous * DS41_MARKOV + index - DS41_HIDDEN));
+		dot += feature * LmBf16ToFloat(__ldg(weight + index));
 	}
 	dot = LmBlockSum<DS41_THREADS>(dot, reduction);
 	if ( threadIdx.x == 0u )
 		picks->scores[slot] = 1.0f / (1.0f + expf(-dot));
 	if ( draft->greedy != 0u )
 	{
-		const float top = Ds41KeyValue(picks->keys[slot]);
-		const float alt = Ds41KeyValue(picks->alt_keys[slot]);
-		const float *step_partials = partials + (uint64_t)slot * 2u * blocks;
-		float sum = 0.0f;
-		for ( uint32_t block = threadIdx.x; block < blocks; block += DS41_THREADS )
-			if ( step_partials[2u * block] != -INFINITY )
-				sum += step_partials[2u * block + 1u] * expf(step_partials[2u * block] - top);
-		sum = LmBlockSum<DS41_THREADS>(sum, reduction);
-		if ( threadIdx.x == 0u )
+		if ( draft->tree != 0u )
+		{
+			const float top = Ds41KeyValue(picks->keys[slot]);
+			const float alt = Ds41KeyValue(picks->alt_keys[slot]);
+			const float *step_partials = partials + (uint64_t)slot * 2u * blocks;
+			float sum = 0.0f;
+			for ( uint32_t block = threadIdx.x; block < blocks; block += DS41_THREADS )
+				if ( step_partials[2u * block] != -INFINITY )
+					sum += step_partials[2u * block + 1u] * expf(step_partials[2u * block] - top);
+			sum = LmBlockSum<DS41_THREADS>(sum, reduction);
+			if ( threadIdx.x == 0u )
+			{
+				picks->tokens[slot] = Ds41KeyToken(picks->keys[slot]);
+				picks->alt_tokens[slot] = Ds41KeyToken(picks->alt_keys[slot]);
+				picks->alt_scores[slot] = sum > 0.0f ? expf(alt - top) / sum : 0.0f;
+			}
+		}
+		else if ( threadIdx.x == 0u )
 		{
 			picks->tokens[slot] = Ds41KeyToken(picks->keys[slot]);
-			picks->alt_tokens[slot] = Ds41KeyToken(picks->alt_keys[slot]);
-			picks->alt_scores[slot] = sum > 0.0f ? expf(alt - top) / sum : 0.0f;
+			picks->alt_tokens[slot] = 0u;
+			picks->alt_scores[slot] = 0.0f;
 		}
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(DS41_WARP, 1)
 void Ds41BranchSelectKernel(Ds41Picks *__restrict__ picks, uint32_t drafts, float min_score)
 {
+	LmDependentWait();
 	uint32_t used = 0u;
-	if ( threadIdx.x != 0u )
-		return;
-	for ( uint32_t branch = 0u; branch < DS41_BRANCHES; branch++ )
+	if ( threadIdx.x == 0u )
 	{
-		picks->branch_keys[branch] = 0ull;
-		picks->branch_fork[branch] = DS41_BLOCK;
-		picks->branch_len[branch] = 0u;
-	}
-	for ( uint32_t step = 0u; step + 1u < drafts; step++ )
-	{
-		const float score = picks->alt_scores[step];
-		uint32_t pos = used;
-		if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
-			continue;
-		while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+		for ( uint32_t branch = 0u; branch < DS41_BRANCHES; branch++ )
 		{
+			picks->branch_keys[branch] = 0ull;
+			picks->branch_fork[branch] = DS41_BLOCK;
+			picks->branch_len[branch] = 0u;
+		}
+		for ( uint32_t step = 0u; step + 1u < drafts; step++ )
+		{
+			const float score = picks->alt_scores[step];
+			uint32_t pos = used;
+			if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
+				continue;
+			while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+			{
+				if ( pos < DS41_BRANCHES )
+				{
+					picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
+					picks->branch_len[pos] = picks->branch_len[pos - 1u];
+					picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
+					picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				}
+				pos--;
+			}
 			if ( pos < DS41_BRANCHES )
 			{
-				picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
-				picks->branch_len[pos] = picks->branch_len[pos - 1u];
-				picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
-				picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				picks->branch_fork[pos] = step;
+				picks->branch_len[pos] = 1u;
+				picks->branch_tokens[pos][0] = picks->alt_tokens[step];
+				picks->branch_scores[pos][0] = score;
+				if ( used < DS41_BRANCHES )
+					used++;
 			}
-			pos--;
-		}
-		if ( pos < DS41_BRANCHES )
-		{
-			picks->branch_fork[pos] = step;
-			picks->branch_len[pos] = 1u;
-			picks->branch_tokens[pos][0] = picks->alt_tokens[step];
-			picks->branch_scores[pos][0] = score;
-			if ( used < DS41_BRANCHES )
-				used++;
 		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41BranchRowKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks,
 	const float *__restrict__ logits, const uint16_t *__restrict__ markov_embed, const uint16_t *__restrict__ markov_head, float *__restrict__ partials)
 {
+	LmDependentWait();
 	constexpr uint32_t PER = DS41_MARKOV / DS41_WARP;
 	__shared__ float embedding[DS41_BRANCHES][DS41_MARKOV];
 	__shared__ unsigned long long best[DS41_BRANCHES][DS41_WARPS];
@@ -1014,11 +1261,14 @@ void Ds41BranchRowKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__re
 			const uint32_t previous = picks->branch_tokens[b][offset - 1u];
 			any = 1u;
 			for ( uint32_t index = threadIdx.x; index < DS41_MARKOV; index += DS41_THREADS )
-				embedding[b][index] = LmBf16ToFloat(markov_embed[(uint64_t)previous * DS41_MARKOV + index]);
+				embedding[b][index] = LmBf16ToFloat(__ldg(markov_embed + (uint64_t)previous * DS41_MARKOV + index));
 		}
 	}
 	if ( any == 0u )
+	{
+		LmDependentRelease();
 		return;
+	}
 	__syncthreads();
 	for ( uint32_t token = blockIdx.x * DS41_WARPS + warp; token < DS41_VOCAB; token += gridDim.x * DS41_WARPS )
 	{
@@ -1039,7 +1289,7 @@ void Ds41BranchRowKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__re
 			dot = Ds41WarpSum(dot);
 			if ( lane == 0u )
 			{
-				const float value = logits[(uint64_t)steps[b] * DS41_VOCAB + token] + dot;
+				const float value = __ldg(logits + (uint64_t)steps[b] * DS41_VOCAB + token) + dot;
 				const unsigned long long candidate = ((unsigned long long)SparkMathSampleOrdered(value) << 32u) | (unsigned long long)(0xffffffffu - token);
 				if ( candidate > first[b] )
 					first[b] = candidate;
@@ -1072,16 +1322,17 @@ void Ds41BranchRowKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__re
 			partials[((uint64_t)b * gridDim.x + blockIdx.x) * 2u + 1u] = sum[b];
 			atomicMax(&picks->branch_keys[b], first[b]);
 		}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(DS41_THREADS, 1)
+__global__ __launch_bounds__(DS41_THREADS, 2)
 void Ds41BranchReduceKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks,
 	const float *__restrict__ partials, uint32_t blocks)
 {
+	LmDependentWait();
 	__shared__ float reduction[DS41_WARPS];
 	const uint32_t branch = blockIdx.x, fork = picks->branch_fork[branch], step = fork + offset;
-	if ( fork >= drafts || step >= drafts )
-		return;
+	if ( fork < drafts && step < drafts )
 	{
 		const float scale = draft->greedy != 0u ? 1.0f : draft->inverse_temperature;
 		const unsigned long long key = picks->branch_keys[branch];
@@ -1100,6 +1351,7 @@ void Ds41BranchReduceKernel(uint32_t offset, uint32_t drafts, const Ds41Draft *_
 			picks->branch_keys[branch] = 0ull;
 		}
 	}
+	LmDependentRelease();
 }
 
 static SparkStatus Ds41DeviceOpen(void)
@@ -1416,7 +1668,6 @@ static SparkStatus Ds41Scratch(Ds41State *state, uint64_t context_bytes)
 	if ( state->sequences == 0 ||
 		SparkGpuStreamCreateWithFlags(&state->stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
 		SparkGpuDeviceGetAttribute(&multiprocessors, SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT, 0) != SPARK_GPU_SUCCESS ||
-		SparkGpuFuncSetAttribute(Ds41ExpertUpKernel, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)DS41_UP_SHARED_BYTES) != SPARK_GPU_SUCCESS ||
 		SparkGpuMallocHost((void **)&state->host_taps, (size_t)DS41_INGEST_ROWS * DS41_TAP_WIDTH * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMallocHost((void **)&state->host_positions, (size_t)DS41_INGEST_ROWS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMallocHost((void **)&forward->host_draft, sizeof(Ds41Draft)) != SPARK_GPU_SUCCESS ||
@@ -1440,7 +1691,7 @@ static SparkStatus Ds41Scratch(Ds41State *state, uint64_t context_bytes)
 		!DS41_DEVICE(forward->grouped, (uint64_t)DS41_BLOCK * DS41_QUERY_WIDTH) || !DS41_DEVICE(forward->projected, DS41_BLOCK * DS41_O_WIDTH) ||
 		!DS41_DEVICE(forward->projected_quant, DS41_BLOCK * DS41_O_WIDTH) || !DS41_DEVICE(forward->attn_out, DS41_BLOCK * DS41_HIDDEN) ||
 		!DS41_DEVICE(forward->route_weight, DS41_PAIRS) || !DS41_DEVICE(forward->route_expert, DS41_PAIRS) ||
-		!DS41_DEVICE(forward->gate_scores, DS41_BLOCK * DS41_EXPERTS) ||
+		!DS41_DEVICE(forward->route_plan, 1u) || !DS41_DEVICE(forward->gate_scores, DS41_BLOCK * DS41_EXPERTS) ||
 		!DS41_DEVICE(forward->pair_gate, DS41_PAIRS * DS41_MOE) || !DS41_DEVICE(forward->pair_up, DS41_PAIRS * DS41_MOE) ||
 		!DS41_DEVICE(forward->pair_hidden, DS41_PAIRS * DS41_MOE) || !DS41_DEVICE(forward->pair_down, DS41_PAIRS * DS41_HIDDEN) ||
 		!DS41_DEVICE(forward->shared_gate, DS41_BLOCK * DS41_MOE) || !DS41_DEVICE(forward->shared_up, DS41_BLOCK * DS41_MOE) ||
@@ -1521,7 +1772,7 @@ static void Ds41Qdq(Ds41State *state, const uint16_t *input, uint16_t *output, u
 	const uint64_t groups = (uint64_t)rows * parts * part_width / DS41_QDQ;
 	const uint64_t blocks = (groups + DS41_WARPS - 1u) / DS41_WARPS;
 	const uint32_t grid = blocks < 4u * state->multiprocessors ? (uint32_t)blocks : 4u * state->multiprocessors;
-	LM_LAUNCH((Ds41QdqKernel), grid, DS41_THREADS, 0, state->stream, input, output, rows, parts, part_width, to_part_major);
+	(void)LM_LAUNCH_DEPENDENT((Ds41QdqKernel), grid, DS41_THREADS, 0, state->stream, input, output, rows, parts, part_width, to_part_major);
 }
 
 static SparkStatus Ds41IngestRows(Ds41State *state, Ds41Sequence *sequence, uint32_t rows)
@@ -1531,13 +1782,12 @@ static SparkStatus Ds41IngestRows(Ds41State *state, Ds41Sequence *sequence, uint
 	status = Ds41Linear(state, &state->main_proj, 0u, DS41_HIDDEN, state->taps_quant, state->main_raw, rows);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Ds41RmsKernel), rows, DS41_THREADS, 0, state->stream, state->main_raw, state->main_norm, state->main, DS41_HIDDEN, state->epsilon);
-	Ds41Qdq(state, state->main, state->main_quant, rows, 1u, DS41_HIDDEN, 0u);
+	(void)LM_LAUNCH_DEPENDENT((Ds41RmsQdqKernel), rows, DS41_THREADS, 0, state->stream, state->main_raw, state->main_norm, state->main_quant, DS41_HIDDEN, state->epsilon);
 	for ( uint32_t stage = 0u; stage < DS41_STAGES && status == SPARK_STATUS_OK; stage++ )
 	{
 		status = Ds41Linear(state, &state->stages[stage].wkv, 0u, DS41_HEAD_DIM, state->main_quant, state->key_raw, rows);
 		if ( status == SPARK_STATUS_OK )
-			LM_LAUNCH((Ds41KeyRowsKernel), rows, DS41_THREADS, 0, state->stream, state->key_raw, state->stages[stage].kv_norm, state->rope_inverse,
+			(void)LM_LAUNCH_DEPENDENT((Ds41KeyRowsKernel), rows, DS41_THREADS, 0, state->stream, state->key_raw, state->stages[stage].kv_norm, state->rope_inverse,
 				state->positions, state->epsilon, sequence->ring + (uint64_t)stage * DS41_STAGE_RING, (uint16_t *)0);
 	}
 	if ( status == SPARK_STATUS_OK && SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
@@ -1657,38 +1907,34 @@ static SparkStatus Ds41FillFromDonors(Ds41State *state, Ds41Sequence *sequence, 
 	}
 }
 
-static SparkStatus Ds41Attention(Ds41State *state, uint32_t stage, const uint16_t *ring)
+static SparkStatus Ds41Attention(Ds41State *state, uint32_t stage)
 {
 	Ds41Forward *forward = &state->forward;
 	const Ds41Stage *s = &state->stages[stage];
 	const SparkGpuStream stream = state->stream;
 	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(Ds41Draft, positions));
 	SparkStatus status;
-	Ds41Qdq(state, forward->x, forward->xq, DS41_BLOCK, 1u, DS41_HIDDEN, 0u);
 	status = Ds41Linear(state, &s->wq_a, 0u, DS41_QUERY_RANK, forward->xq, forward->q_raw, DS41_BLOCK);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Ds41RmsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->q_raw, s->q_norm, forward->q_normed, DS41_QUERY_RANK, state->epsilon);
-	Ds41Qdq(state, forward->q_normed, forward->q_quant, DS41_BLOCK, 1u, DS41_QUERY_RANK, 0u);
+	(void)LM_LAUNCH_DEPENDENT((Ds41RmsQdqKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->q_raw, s->q_norm, forward->q_quant, DS41_QUERY_RANK, state->epsilon);
 	status = Ds41Linear(state, &s->wq_b, 0u, DS41_QUERY_WIDTH, forward->q_quant, forward->q, DS41_BLOCK);
 	if ( status == SPARK_STATUS_OK )
 		status = Ds41Linear(state, &s->wkv, 0u, DS41_HEAD_DIM, forward->xq, forward->kv_raw, DS41_BLOCK);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Ds41RopeKernel), (DS41_BLOCK * DS41_HEADS * (DS41_ROPE / 2u) + DS41_THREADS - 1u) / DS41_THREADS, DS41_THREADS, 0, stream, forward->q,
+	(void)LM_LAUNCH_DEPENDENT((Ds41RopeKernel), (DS41_BLOCK * DS41_HEADS * (DS41_ROPE / 2u) + DS41_THREADS - 1u) / DS41_THREADS, DS41_THREADS, 0, stream, forward->q,
 		forward->draft, state->rope_inverse, DS41_HEADS, 1.0f);
-	LM_LAUNCH((Ds41KeyRowsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->kv_raw, s->kv_norm, state->rope_inverse, positions, state->epsilon,
+	(void)LM_LAUNCH_DEPENDENT((Ds41KeyRowsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->kv_raw, s->kv_norm, state->rope_inverse, positions, state->epsilon,
 		(uint16_t *)0, forward->kv);
-	LM_LAUNCH((Ds41AttentionKernel), dim3(DS41_HEADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->q, ring, forward->kv, forward->draft, s->sink,
+	(void)LM_LAUNCH_DEPENDENT((Ds41AttentionKernel), dim3(DS41_HEADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->q, stage, forward->kv, forward->draft, s->sink,
 		state->softmax_scale, forward->attended);
-	LM_LAUNCH((Ds41RopeKernel), (DS41_BLOCK * DS41_HEADS * (DS41_ROPE / 2u) + DS41_THREADS - 1u) / DS41_THREADS, DS41_THREADS, 0, stream,
+	(void)LM_LAUNCH_DEPENDENT((Ds41RopeKernel), (DS41_BLOCK * DS41_HEADS * (DS41_ROPE / 2u) + DS41_THREADS - 1u) / DS41_THREADS, DS41_THREADS, 0, stream,
 		forward->attended, forward->draft, state->rope_inverse, DS41_HEADS, -1.0f);
 	Ds41Qdq(state, forward->attended, forward->grouped, DS41_BLOCK, DS41_GROUPS, DS41_GROUP_WIDTH, 1u);
-	for ( uint32_t group = 0u; group < DS41_GROUPS && status == SPARK_STATUS_OK; group++ )
-		status = Ds41Linear(state, &s->wo_a, (uint64_t)group * DS41_O_RANK, DS41_O_RANK, forward->grouped + (uint64_t)group * DS41_BLOCK * DS41_GROUP_WIDTH,
-			forward->projected + (uint64_t)group * DS41_BLOCK * DS41_O_RANK, DS41_BLOCK);
-	if ( status != SPARK_STATUS_OK )
-		return status;
+	if ( LM_LAUNCH_DEPENDENT((Ds41WoAKernel), dim3(DS41_O_RANK / DS41_WARPS, DS41_GROUPS), DS41_THREADS, 0, stream, s->wo_a.weight, s->wo_a.rows_scale,
+		forward->grouped, forward->projected) != SPARK_GPU_SUCCESS )
+		return SPARK_STATUS_INTERNAL_ERROR;
 	Ds41Qdq(state, forward->projected, forward->projected_quant, DS41_BLOCK, DS41_GROUPS, DS41_O_RANK, 0u);
 	return Ds41Linear(state, &s->wo_b, 0u, DS41_HIDDEN, forward->projected_quant, forward->attn_out, DS41_BLOCK);
 }
@@ -1700,27 +1946,26 @@ static SparkStatus Ds41Moe(Ds41State *state, uint32_t stage)
 	const SparkGpuStream stream = state->stream;
 	const uint32_t swiglu_blocks = (DS41_PAIRS * DS41_MOE / DS41_QDQ + DS41_WARPS - 1u) / DS41_WARPS;
 	SparkStatus status;
-	LM_LAUNCH((Ds41GateScoreKernel), DS41_EXPERTS / DS41_WARPS, DS41_THREADS, 0, stream, forward->x, s->gate, forward->gate_scores);
-	LM_LAUNCH((Ds41GateTopKernel), DS41_BLOCK, DS41_WARP, 0, stream, forward->gate_scores, s->gate_bias, state->route_scale, forward->route_expert,
-		forward->route_weight);
-	Ds41Qdq(state, forward->x, forward->xq, DS41_BLOCK, 1u, DS41_HIDDEN, 0u);
-	LM_LAUNCH((Ds41ExpertUpKernel), dim3(DS41_PAIRS, DS41_MOE / DS41_EXPERT_NEURONS), DS41_THREADS, DS41_UP_SHARED_BYTES, stream, forward->xq,
-		s->experts, forward->route_expert, forward->pair_gate, forward->pair_up);
-	LM_LAUNCH((Ds41SwigluKernel), swiglu_blocks, DS41_THREADS, 0, stream, forward->pair_gate, forward->pair_up, forward->route_weight, state->swiglu_limit,
+	(void)LM_LAUNCH_DEPENDENT((Ds41GateScoreKernel), DS41_EXPERTS / DS41_WARPS, DS41_THREADS, 0, stream, forward->x, s->gate, forward->gate_scores);
+	(void)LM_LAUNCH_DEPENDENT((Ds41GateTopKernel), 1u, DS41_BLOCK * DS41_WARP, 0, stream, forward->gate_scores, s->gate_bias, state->route_scale, forward->route_expert,
+		forward->route_weight, forward->route_plan);
+	(void)LM_LAUNCH_DEPENDENT((Ds41ExpertUpKernel), dim3(DS41_PAIRS, DS41_MOE / DS41_EXPERT_NEURONS), DS41_THREADS, 0, stream, forward->xq,
+		s->experts, forward->route_plan, forward->pair_gate, forward->pair_up);
+	(void)LM_LAUNCH_DEPENDENT((Ds41SwigluKernel), swiglu_blocks, DS41_THREADS, 0, stream, forward->pair_gate, forward->pair_up, forward->route_weight, state->swiglu_limit,
 		DS41_PAIRS, forward->pair_hidden);
-	LM_LAUNCH((Ds41ExpertDownKernel), dim3(DS41_PAIRS, DS41_HIDDEN / DS41_EXPERT_NEURONS), DS41_THREADS, DS41_DOWN_SHARED_BYTES, stream,
-		forward->pair_hidden, s->experts, forward->route_expert, forward->pair_down);
+	(void)LM_LAUNCH_DEPENDENT((Ds41ExpertDownKernel), dim3(DS41_PAIRS, DS41_HIDDEN / DS41_EXPERT_NEURONS), DS41_THREADS, DS41_DOWN_SHARED_BYTES, stream,
+		forward->pair_hidden, s->experts, forward->route_plan, forward->pair_down);
 	status = Ds41Linear(state, &s->shared_w1, 0u, DS41_MOE, forward->xq, forward->shared_gate, DS41_BLOCK);
 	if ( status == SPARK_STATUS_OK )
 		status = Ds41Linear(state, &s->shared_w3, 0u, DS41_MOE, forward->xq, forward->shared_up, DS41_BLOCK);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Ds41SwigluKernel), (DS41_BLOCK * DS41_MOE / DS41_QDQ + DS41_WARPS - 1u) / DS41_WARPS, DS41_THREADS, 0, stream, forward->shared_gate,
+	(void)LM_LAUNCH_DEPENDENT((Ds41SwigluKernel), (DS41_BLOCK * DS41_MOE / DS41_QDQ + DS41_WARPS - 1u) / DS41_WARPS, DS41_THREADS, 0, stream, forward->shared_gate,
 		forward->shared_up, (const float *)0, state->swiglu_limit, DS41_BLOCK, forward->shared_hidden);
 	status = Ds41Linear(state, &s->shared_w2, 0u, DS41_HIDDEN, forward->shared_hidden, forward->shared_out, DS41_BLOCK);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Ds41MoeSumKernel), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->pair_down, forward->shared_out,
+	(void)LM_LAUNCH_DEPENDENT((Ds41MoeSumKernel), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->pair_down, forward->shared_out,
 		forward->moe_out);
 	return SPARK_STATUS_OK;
 }
@@ -1732,19 +1977,14 @@ static SparkStatus Ds41Mixes(Ds41State *state, const uint16_t *streams, const fl
 		DS41_SINKHORN, state->hc_epsilon, state->stream) == LM_LAUNCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static void Ds41Collapse(Ds41State *state, const uint16_t *streams, const float *pre, uint16_t *output)
-{
-	LM_LAUNCH((LmHcCollapseKernel<DS41_HC>), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, state->stream, streams, pre, output, DS41_HIDDEN);
-}
-
-static SparkStatus Ds41RunForward(Ds41State *state, const uint16_t *ring_base, uint32_t stages, const uint16_t **streams_out, const float **pre_out)
+static SparkStatus Ds41RunForward(Ds41State *state, uint32_t stages, const uint16_t **streams_out, const float **pre_out)
 {
 	Ds41Forward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
 	const float *pre = forward->pre_initial;
 	uint32_t current = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
-	LM_LAUNCH((Ds41EmbedKernel), DS41_BLOCK, DS41_THREADS, 0, stream, state->embed, forward->draft, forward->streams[0]);
+	(void)LM_LAUNCH_DEPENDENT((Ds41EmbedKernel), DS41_BLOCK, DS41_THREADS, 0, stream, state->embed, forward->draft, forward->streams[0]);
 	for ( uint32_t stage = 0u; stage < stages && status == SPARK_STATUS_OK; stage++ )
 	{
 		const Ds41Stage *s = &state->stages[stage];
@@ -1752,24 +1992,24 @@ static SparkStatus Ds41RunForward(Ds41State *state, const uint16_t *ring_base, u
 			forward->attn_comb);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		Ds41Collapse(state, forward->streams[current], pre, forward->collapsed);
-		LM_LAUNCH((Ds41RmsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->collapsed, s->attn_norm, forward->x, DS41_HIDDEN, state->epsilon);
-		status = Ds41Attention(state, stage, ring_base + (uint64_t)stage * DS41_STAGE_RING);
+		(void)LM_LAUNCH_DEPENDENT((Ds41CollapseRmsQdqKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->streams[current], pre, s->attn_norm,
+			(uint16_t *)0, forward->xq, state->epsilon);
+		status = Ds41Attention(state, stage);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((Ds41HcPostKernel), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->attn_out, forward->streams[current],
+		(void)LM_LAUNCH_DEPENDENT((Ds41HcPostKernel), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->attn_out, forward->streams[current],
 			forward->attn_post, forward->attn_comb, forward->streams[1u - current]);
 		current = 1u - current;
 		status = Ds41Mixes(state, forward->streams[current], s->hc_ffn_fn, s->hc_ffn_scale, s->hc_ffn_base, forward->ffn_pre[stage % 2u], forward->ffn_post,
 			forward->ffn_comb);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		Ds41Collapse(state, forward->streams[current], forward->attn_pre, forward->collapsed);
-		LM_LAUNCH((Ds41RmsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->collapsed, s->ffn_norm, forward->x, DS41_HIDDEN, state->epsilon);
+		(void)LM_LAUNCH_DEPENDENT((Ds41CollapseRmsQdqKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->streams[current], forward->attn_pre, s->ffn_norm,
+			forward->x, forward->xq, state->epsilon);
 		status = Ds41Moe(state, stage);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((Ds41HcPostKernel), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->moe_out, forward->streams[current],
+		(void)LM_LAUNCH_DEPENDENT((Ds41HcPostKernel), dim3(DS41_HIDDEN / DS41_THREADS, DS41_BLOCK), DS41_THREADS, 0, stream, forward->moe_out, forward->streams[current],
 			forward->ffn_post, forward->ffn_comb, forward->streams[1u - current]);
 		current = 1u - current;
 		pre = forward->ffn_pre[stage % 2u];
@@ -1782,8 +2022,8 @@ static SparkStatus Ds41RunForward(Ds41State *state, const uint16_t *ring_base, u
 		*pre_out = pre;
 	if ( stages < DS41_STAGES )
 		return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-	Ds41Collapse(state, forward->streams[current], pre, forward->hidden);
-	LM_LAUNCH((Ds41RmsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->hidden, state->final_norm, forward->normed, DS41_HIDDEN, state->epsilon);
+	(void)LM_LAUNCH_DEPENDENT((Ds41CollapseRmsKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->streams[current], pre, state->final_norm,
+		forward->hidden, forward->normed, state->epsilon);
 	if ( LmDenseRows<LmBf16Format>(state->head, LmScaleTensorNone(), forward->normed, (uint16_t *)0, forward->logits, DS41_BLOCK, DS41_HIDDEN, DS41_VOCAB, 0u,
 		state->multiprocessors, stream) != LM_LAUNCH_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
@@ -1800,26 +2040,26 @@ static SparkStatus Ds41Heads(Ds41State *state, uint32_t greedy, uint32_t drafts,
 		return SPARK_STATUS_IO_ERROR;
 	for ( uint32_t step = 0u; step < DS41_BLOCK; step++ )
 	{
-		LM_LAUNCH((Ds41MarkovRowKernel), blocks, DS41_THREADS, 0, stream, step, forward->draft, forward->picks, forward->logits, state->markov_embed,
+		(void)LM_LAUNCH_DEPENDENT((Ds41MarkovRowKernel), blocks, DS41_THREADS, 0, stream, step, forward->draft, forward->picks, forward->logits, state->markov_embed,
 			state->markov_head, forward->row, forward->softmax_partials);
 		if ( greedy != 0u )
 			continue;
 		if ( LmTopkExactLaunch<DS41_TOPK_THREADS>(forward->row, 1u, DS41_VOCAB, DS41_SAMPLED, DS41_TOPK_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS,
 			forward->topk_values, forward->topk_positions, entries, forward->candidates, stream) != SPARK_GPU_SUCCESS )
 			return SPARK_STATUS_INTERNAL_ERROR;
-		LM_LAUNCH((Ds41SampleKernel), 1u, DS41_PICK_THREADS, 0, stream, step, forward->draft, forward->row, forward->candidates,
+		(void)LM_LAUNCH_DEPENDENT((Ds41SampleKernel), 1u, DS41_PICK_THREADS, 0, stream, step, forward->draft, forward->row, forward->candidates,
 			forward->softmax_partials + (uint64_t)step * 2u * blocks, blocks, forward->picks);
 	}
-	LM_LAUNCH((Ds41ConfidenceKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->draft, forward->picks, forward->hidden, state->markov_embed,
+	(void)LM_LAUNCH_DEPENDENT((Ds41ConfidenceKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->draft, forward->picks, forward->hidden, state->markov_embed,
 		state->confidence, forward->softmax_partials, blocks);
 	if ( tree != 0u && drafts >= 2u )
 	{
-		LM_LAUNCH((Ds41BranchSelectKernel), 1u, DS41_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
+		(void)LM_LAUNCH_DEPENDENT((Ds41BranchSelectKernel), 1u, DS41_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
 		for ( uint32_t offset = 1u; offset < DS41_BRANCH_LEN && offset < drafts; offset++ )
 		{
-			LM_LAUNCH((Ds41BranchRowKernel), blocks, DS41_THREADS, 0, stream, offset, drafts, forward->draft, forward->picks, forward->logits,
+			(void)LM_LAUNCH_DEPENDENT((Ds41BranchRowKernel), blocks, DS41_THREADS, 0, stream, offset, drafts, forward->draft, forward->picks, forward->logits,
 				state->markov_embed, state->markov_head, forward->softmax_partials);
-			LM_LAUNCH((Ds41BranchReduceKernel), DS41_BRANCHES, DS41_THREADS, 0, stream, offset, drafts, forward->draft, forward->picks,
+			(void)LM_LAUNCH_DEPENDENT((Ds41BranchReduceKernel), DS41_BRANCHES, DS41_THREADS, 0, stream, offset, drafts, forward->draft, forward->picks,
 				forward->softmax_partials, blocks);
 		}
 	}
@@ -1828,12 +2068,14 @@ static SparkStatus Ds41Heads(Ds41State *state, uint32_t greedy, uint32_t drafts,
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static SparkStatus Ds41Prepare(Ds41State *state, const Ds41Sequence *sequence, uint32_t anchor, uint64_t position, const SparkRowSampling *sampling)
+static SparkStatus Ds41FillDraft(Ds41State *state, const Ds41Sequence *sequence, uint32_t anchor, uint64_t position, uint32_t tree,
+	const SparkRowSampling *sampling)
 {
 	Ds41Draft *draft = state->forward.host_draft;
 	if ( anchor >= DS41_VOCAB || position + DS41_BLOCK > UINT32_MAX )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(draft, 0, sizeof(*draft));
+	draft->ring = sequence->ring;
 	for ( uint32_t row = 0u; row < DS41_BLOCK; row++ )
 		draft->positions[row] = (uint32_t)(position + row);
 	for ( uint32_t slot = 0u; slot < DS41_WINDOW; slot++ )
@@ -1844,12 +2086,21 @@ static SparkStatus Ds41Prepare(Ds41State *state, const Ds41Sequence *sequence, u
 	draft->anchor = anchor;
 	draft->noise = state->noise_token;
 	draft->greedy = sampling->inverse_temperature > 0.0f ? 0u : 1u;
+	draft->tree = tree;
 	draft->seed = sampling->seed;
 	draft->inverse_temperature = sampling->inverse_temperature;
 	draft->nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
 	draft->top_k = sampling->top_k;
-	return SparkGpuMemcpyAsync(state->forward.draft, draft, sizeof(*draft), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) == SPARK_GPU_SUCCESS ?
-		SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus Ds41Prepare(Ds41State *state, const Ds41Sequence *sequence, uint32_t anchor, uint64_t position, const SparkRowSampling *sampling)
+{
+	const SparkStatus status = Ds41FillDraft(state, sequence, anchor, position, 1u, sampling);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	return SparkGpuMemcpyAsync(state->forward.draft, state->forward.host_draft, sizeof(Ds41Draft), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) ==
+		SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
 static SparkStatus Ds41Settle(Ds41State *state, SparkStatus status)
@@ -1865,7 +2116,8 @@ static void Ds41ForwardFree(Ds41Forward *forward)
 		forward->draft, forward->picks, forward->streams[0], forward->streams[1], forward->mix_partials, forward->pre_initial, forward->attn_pre,
 		forward->attn_post, forward->attn_comb, forward->ffn_pre[0], forward->ffn_pre[1], forward->ffn_post, forward->ffn_comb, forward->collapsed,
 		forward->x, forward->xq, forward->q_raw, forward->q_normed, forward->q_quant, forward->q, forward->kv_raw, forward->kv, forward->attended,
-		forward->grouped, forward->projected, forward->projected_quant, forward->attn_out, forward->route_weight, forward->route_expert, forward->gate_scores,
+		forward->grouped, forward->projected, forward->projected_quant, forward->attn_out, forward->route_weight, forward->route_expert,
+		forward->route_plan, forward->gate_scores,
 		forward->pair_gate, forward->pair_up, forward->pair_hidden, forward->pair_down, forward->shared_gate, forward->shared_up, forward->shared_hidden,
 		forward->shared_out, forward->moe_out, forward->hidden, forward->normed, forward->logits, forward->row, forward->candidates,
 		forward->softmax_partials, forward->topk_values, forward->topk_positions,
@@ -1887,6 +2139,7 @@ static SparkStatus Ds41Close(void *opaque)
 		return SPARK_STATUS_OK;
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamSynchronize(state->stream);
+	SparkDrafterGraphCacheDestroy(&state->graphs);
 	Ds41ForwardFree(&state->forward);
 	buffers[0] = state->rings;
 	buffers[1] = state->taps;
@@ -2020,13 +2273,22 @@ static SparkStatus Ds41Propose(void *opaque, const SparkDraftServerRequest *requ
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	{
 		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		const uint32_t greedy = request->sampling.inverse_temperature > 0.0f ? 0u : 1u;
+		const uint64_t graph_key = ((uint64_t)greedy << 32u) | ((uint64_t)tree << 16u) | (uint64_t)drafts;
 		SparkDraftTreeBranch branches[DS41_BLOCK];
 		uint32_t branch_count = 0u;
-		status = Ds41Prepare(state, sequence, request->anchor_token_id, request->position, &request->sampling);
+		status = Ds41FillDraft(state, sequence, request->anchor_token_id, request->position, tree, &request->sampling);
 		if ( status == SPARK_STATUS_OK )
-			status = Ds41RunForward(state, sequence->ring, DS41_STAGES, (const uint16_t **)0, (const float **)0);
-		if ( status == SPARK_STATUS_OK )
-			status = Ds41Heads(state, request->sampling.inverse_temperature > 0.0f ? 0u : 1u, drafts, tree);
+			status = SparkDrafterGraphRun(&state->graphs, state->stream, graph_key, [&]() -> SparkStatus
+			{
+				if ( SparkGpuMemcpyAsync(state->forward.draft, state->forward.host_draft, sizeof(Ds41Draft), SPARK_GPU_COPY_HOST_TO_DEVICE,
+					state->stream) != SPARK_GPU_SUCCESS )
+					return SPARK_STATUS_IO_ERROR;
+				SparkStatus inner = Ds41RunForward(state, DS41_STAGES, (const uint16_t **)0, (const float **)0);
+				if ( inner == SPARK_STATUS_OK )
+					inner = Ds41Heads(state, greedy, drafts, tree);
+				return inner;
+			});
 		status = Ds41Settle(state, status);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -2106,7 +2368,7 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_dsv41_dspark
 	memset(&greedy, 0, sizeof(greedy));
 	status = Ds41Prepare(state, sequence, anchor, position, &greedy);
 	if ( status == SPARK_STATUS_OK )
-		status = Ds41RunForward(state, sequence->ring, DS41_STAGES, (const uint16_t **)0, (const float **)0);
+		status = Ds41RunForward(state, DS41_STAGES, (const uint16_t **)0, (const float **)0);
 	status = Ds41Settle(state, status);
 	if ( elapsed_ns != 0 )
 		*elapsed_ns = SparkMonotonicNs() - started;
@@ -2131,7 +2393,7 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_dsv41_dspark
 	memset(&greedy, 0, sizeof(greedy));
 	status = Ds41Prepare(state, sequence, anchor, position, &greedy);
 	if ( status == SPARK_STATUS_OK )
-		status = Ds41RunForward(state, sequence->ring, stages, &streams_at, &pre_at);
+		status = Ds41RunForward(state, stages, &streams_at, &pre_at);
 	status = Ds41Settle(state, status);
 	if ( status == SPARK_STATUS_OK )
 		status = Ds41Readback(streams, streams_at, (size_t)DS41_BLOCK * DS41_HC_FLAT * sizeof(uint16_t));

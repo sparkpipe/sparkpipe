@@ -10,7 +10,7 @@
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
-#include "inference/kernels/topk_exact.cuh"
+#include "inference/kernels/drafter_blackwell.cuh"
 #include "runtime/launch.h"
 
 #include <math.h>
@@ -48,11 +48,11 @@
 #define Q38M_WARP 32u
 #define Q38M_WARPS (Q38M_THREADS / Q38M_WARP)
 #define Q38M_PICK_THREADS 1024u
-#define Q38M_TOPK_THREADS 512u
 #define Q38M_SPLIT_KEYS 256u
 #define Q38M_SPLITS ((Q38M_WINDOW + Q38M_SPLIT_KEYS - 1u) / Q38M_SPLIT_KEYS)
 #define Q38M_ATTN_TILE 32u
-#define Q38M_ATTN_THREADS (Q38M_BLOCK * Q38M_WARP)
+#define Q38M_ATTN_Q_GROUP 4u
+#define Q38M_ATTN_Q_GROUPS (Q38M_GROUP / Q38M_ATTN_Q_GROUP)
 #define Q38M_SEQUENCES_MAX 256u
 #define Q38M_LAYER_KV ((uint64_t)Q38M_KV_HEADS * Q38M_COLUMNS * Q38M_HEAD_DIM)
 #define Q38M_SEQUENCE_ELEMENTS (2u * Q38M_LAYERS * Q38M_LAYER_KV)
@@ -94,14 +94,19 @@ typedef struct Q38MSequence
 typedef struct Q38MDraft
 {
 	uint64_t seed;
+	uint16_t *cache;
 	uint32_t positions[Q38M_BLOCK];
 	uint32_t anchor;
 	uint32_t mask;
+	uint32_t position;
 	uint32_t top_k;
 	float inverse_temperature;
 	float nucleus;
+	float scale;
 	uint32_t start;
 	uint32_t block_at;
+	uint32_t splits;
+	uint32_t drafts;
 	uint32_t masked;
 	uint8_t valid[Q38M_WINDOW];
 } Q38MDraft;
@@ -140,7 +145,7 @@ typedef struct Q38MForward
 	uint16_t *mlp;
 	uint16_t *y;
 	uint16_t *logits;
-	float *logits_f32;
+	SparkDrafterTopkBf16Workspace topk_ws;
 	uint32_t *candidates;
 	float *markov_row;
 } Q38MForward;
@@ -149,6 +154,7 @@ typedef struct Q38MState
 {
 	SparkWeightdLazyPack *pack;
 	SparkGpuStream stream;
+	SparkDrafterGraphCache graphs;
 	uint32_t multiprocessors;
 	uint32_t mask_token;
 	float epsilon;
@@ -228,7 +234,7 @@ void Q38MYarnTableKernel(float *__restrict__ inverse, double base, double factor
 	}
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
 void Q38MRmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[Q38M_WARPS];
@@ -246,12 +252,38 @@ void Q38MRmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restric
 		const float normalized = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input[row * dimension + index]) * scale));
 		output[row * dimension + index] = LmFloatToBf16(normalized * LmBf16ToFloat(weight[index]));
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_HEAD_DIM, 1)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
+void Q38MResidualRmsKernel(const uint16_t *__restrict__ base, const uint16_t *__restrict__ addend, const uint16_t *__restrict__ weight,
+	uint16_t *__restrict__ residual, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduction[Q38M_WARPS];
+	const uint64_t row = blockIdx.x;
+	const uint64_t base_offset = row * dimension;
+	float total = 0.0f, scale;
+	for ( uint32_t index = threadIdx.x; index < dimension; index += Q38M_THREADS )
+	{
+		const uint16_t sum_bf16 = LmFloatToBf16(LmBf16ToFloat(base[base_offset + index]) + LmBf16ToFloat(addend[base_offset + index]));
+		const float value = LmBf16ToFloat(sum_bf16);
+		residual[base_offset + index] = sum_bf16;
+		total += value * value;
+	}
+	total = LmBlockSum<Q38M_THREADS>(total, reduction);
+	scale = rsqrtf(total / (float)dimension + epsilon);
+	for ( uint32_t index = threadIdx.x; index < dimension; index += Q38M_THREADS )
+	{
+		const float normalized = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(residual[base_offset + index]) * scale));
+		output[base_offset + index] = LmFloatToBf16(normalized * LmBf16ToFloat(weight[index]));
+	}
+	LmDependentRelease();
+}
+
+__global__ __launch_bounds__(Q38M_HEAD_DIM, 4)
 void Q38MHeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const float *__restrict__ inverse, float rope_gain,
 	const uint32_t *__restrict__ positions, uint32_t heads, float epsilon, uint16_t *__restrict__ output, uint16_t *__restrict__ cache_keys,
-	uint32_t block_at, uint32_t use_ring)
+	const Q38MDraft *__restrict__ draft, uint32_t layer)
 {
 	__shared__ float reduction[Q38M_HEAD_DIM / Q38M_WARP];
 	__shared__ float normed[Q38M_HEAD_DIM];
@@ -264,151 +296,204 @@ void Q38MHeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *
 	__syncthreads();
 	Q38MRotation(position, inverse[lane % Q38M_HALF], rope_gain, &cosine, &sine);
 	rotated = lane < Q38M_HALF ? normed[lane] * cosine - normed[lane + Q38M_HALF] * sine : normed[lane] * cosine + normed[lane - Q38M_HALF] * sine;
-	if ( cache_keys != 0 )
-	{
-		const uint32_t column = use_ring != 0u ? position % Q38M_WINDOW : block_at + row;
-		cache_keys[((uint64_t)head * Q38M_COLUMNS + column) * Q38M_HEAD_DIM + lane] = LmFloatToBf16(rotated);
-	}
-	else
+	if ( output != 0 )
 		output[((uint64_t)row * heads + head) * Q38M_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+	else
+	{
+		uint16_t *dst_keys = draft != 0 ? draft->cache + (uint64_t)(2u * layer) * Q38M_LAYER_KV : cache_keys;
+		const uint32_t column = draft != 0 ? draft->block_at + row : position % Q38M_WINDOW;
+		dst_keys[((uint64_t)head * Q38M_COLUMNS + column) * Q38M_HEAD_DIM + lane] = LmFloatToBf16(rotated);
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
-void Q38MStoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, uint32_t block_at, uint16_t *__restrict__ cache)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
+void Q38MStoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, const Q38MDraft *__restrict__ draft,
+	uint32_t layer, uint16_t *__restrict__ cache)
 {
-	const uint32_t row = blockIdx.x, column = positions != 0 ? positions[row] % Q38M_WINDOW : block_at + row;
-	for ( uint32_t index = threadIdx.x; index < Q38M_KV_WIDTH; index += Q38M_THREADS )
-		cache[((uint64_t)(index / Q38M_HEAD_DIM) * Q38M_COLUMNS + column) * Q38M_HEAD_DIM + index % Q38M_HEAD_DIM] = values[(uint64_t)row * Q38M_KV_WIDTH + index];
+	const uint32_t row = blockIdx.x;
+	const uint32_t column = draft != 0 ? draft->block_at + row : positions[row] % Q38M_WINDOW;
+	uint16_t *dst = draft != 0 ? draft->cache + (uint64_t)(2u * layer + 1u) * Q38M_LAYER_KV : cache;
+	for ( uint32_t vec = threadIdx.x; vec < Q38M_KV_WIDTH / 8u; vec += Q38M_THREADS )
+	{
+		const uint32_t index = vec * 8u;
+		const uint32_t head = index / Q38M_HEAD_DIM;
+		const uint32_t col = index % Q38M_HEAD_DIM;
+		*(uint4 *)(dst + ((uint64_t)head * Q38M_COLUMNS + column) * Q38M_HEAD_DIM + col) =
+			*(const uint4 *)(values + (uint64_t)row * Q38M_KV_WIDTH + index);
+	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
 void Q38MEmbedKernel(const uint16_t *__restrict__ embed, const Q38MDraft *__restrict__ draft, uint16_t *__restrict__ hidden)
 {
 	const uint32_t row = blockIdx.x, token = row == 0u ? draft->anchor : draft->mask;
-	for ( uint32_t index = threadIdx.x; index < Q38M_HIDDEN; index += Q38M_THREADS )
-		hidden[(uint64_t)row * Q38M_HIDDEN + index] = embed[(uint64_t)token * Q38M_HIDDEN + index];
+	const uint4 *src = (const uint4 *)(embed + (uint64_t)token * Q38M_HIDDEN);
+	uint4 *dst = (uint4 *)(hidden + (uint64_t)row * Q38M_HIDDEN);
+	for ( uint32_t vec = threadIdx.x; vec < Q38M_HIDDEN / 8u; vec += Q38M_THREADS )
+		dst[vec] = src[vec];
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_ATTN_THREADS, 1)
-void Q38MAttentionSplitKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ keys, const uint16_t *__restrict__ values,
-	const Q38MDraft *__restrict__ draft, float scale, float *__restrict__ partials)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
+void Q38MAttentionSplitKernel(const uint16_t *__restrict__ q, const Q38MDraft *__restrict__ draft, uint32_t layer, float scale,
+	float *__restrict__ partials)
 {
-	__shared__ uint32_t s_k[Q38M_ATTN_TILE][Q38M_HALF + 1u];
-	__shared__ uint32_t s_v[Q38M_ATTN_TILE][Q38M_HALF + 1u];
+	__shared__ __align__(16) uint32_t s_k[2][Q38M_ATTN_TILE][Q38M_HALF];
+	__shared__ __align__(16) uint32_t s_v[2][Q38M_ATTN_TILE][Q38M_HALF];
 	__shared__ float s_scores[Q38M_BLOCK][Q38M_ATTN_TILE];
 	__shared__ uint8_t s_vis[Q38M_ATTN_TILE];
-	const uint32_t head = blockIdx.x, kv_head = head / Q38M_GROUP, split = blockIdx.y;
+	LmDependentWait();
+	const uint32_t kv_head = blockIdx.x / Q38M_ATTN_Q_GROUPS, q_group = blockIdx.x % Q38M_ATTN_Q_GROUPS, split = blockIdx.y;
 	const uint32_t warp = threadIdx.x / Q38M_WARP, lane = threadIdx.x % Q38M_WARP;
+	const uint32_t q_head_base = kv_head * Q38M_GROUP + q_group * Q38M_ATTN_Q_GROUP;
 	const uint32_t first = draft->start + split * Q38M_SPLIT_KEYS, end = draft->block_at;
 	const uint32_t stop = first + Q38M_SPLIT_KEYS < end ? first + Q38M_SPLIT_KEYS : end;
 	const uint32_t tiles = first < stop ? (stop - first + Q38M_ATTN_TILE - 1u) / Q38M_ATTN_TILE : 0u;
 	const uint32_t masked = draft->masked;
-	const uint16_t *head_keys = keys + (uint64_t)kv_head * Q38M_COLUMNS * Q38M_HEAD_DIM;
-	const uint16_t *head_values = values + (uint64_t)kv_head * Q38M_COLUMNS * Q38M_HEAD_DIM;
-	const uint16_t *q_row = q + ((uint64_t)warp * Q38M_HEADS + head) * Q38M_HEAD_DIM;
-	const uint32_t qp0 = *(const uint32_t *)(q_row + 2u * lane);
-	const uint32_t qp1 = *(const uint32_t *)(q_row + Q38M_HALF + 2u * lane);
-	const float q0 = LmBf16ToFloat((uint16_t)(qp0 & 0xffffu));
-	const float q1 = LmBf16ToFloat((uint16_t)(qp0 >> 16u));
-	const float q2 = LmBf16ToFloat((uint16_t)(qp1 & 0xffffu));
-	const float q3 = LmBf16ToFloat((uint16_t)(qp1 >> 16u));
-	float running_max = -INFINITY, running_sum = 0.0f, acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-	float *out = partials + (((uint64_t)head * Q38M_SPLITS + split) * Q38M_BLOCK + warp) * (Q38M_HEAD_DIM + 2u);
-	for ( uint32_t tile = 0u; tile < tiles; tile++ )
+	const uint16_t *head_keys = draft->cache + (uint64_t)(2u * layer) * Q38M_LAYER_KV + (uint64_t)kv_head * Q38M_COLUMNS * Q38M_HEAD_DIM;
+	const uint16_t *head_values = head_keys + Q38M_LAYER_KV;
+	const uint32_t load_key = threadIdx.x >> 3u, load_chunk = threadIdx.x & 7u;
+	float q0[Q38M_ATTN_Q_GROUP], q1[Q38M_ATTN_Q_GROUP], q2[Q38M_ATTN_Q_GROUP], q3[Q38M_ATTN_Q_GROUP];
+	float running_max[Q38M_ATTN_Q_GROUP], running_sum[Q38M_ATTN_Q_GROUP];
+	float acc0[Q38M_ATTN_Q_GROUP], acc1[Q38M_ATTN_Q_GROUP], acc2[Q38M_ATTN_Q_GROUP], acc3[Q38M_ATTN_Q_GROUP];
+	if ( warp < Q38M_BLOCK )
 	{
-		const uint32_t tile_first = first + tile * Q38M_ATTN_TILE;
-		for ( uint32_t item = threadIdx.x; item < Q38M_ATTN_TILE * 16u; item += Q38M_ATTN_THREADS )
+#pragma unroll
+		for ( uint32_t g = 0u; g < Q38M_ATTN_Q_GROUP; g++ )
 		{
-			const uint32_t load_key = item >> 4u, load_chunk = item & 15u;
-			const uint32_t col = tile_first + load_key;
+			const uint16_t *q_row = q + ((uint64_t)warp * Q38M_HEADS + q_head_base + g) * Q38M_HEAD_DIM;
+			const uint32_t qp0 = *(const uint32_t *)(q_row + 2u * lane);
+			const uint32_t qp1 = *(const uint32_t *)(q_row + Q38M_HALF + 2u * lane);
+			q0[g] = LmBf16ToFloat((uint16_t)(qp0 & 0xffffu));
+			q1[g] = LmBf16ToFloat((uint16_t)(qp0 >> 16u));
+			q2[g] = LmBf16ToFloat((uint16_t)(qp1 & 0xffffu));
+			q3[g] = LmBf16ToFloat((uint16_t)(qp1 >> 16u));
+			running_max[g] = -INFINITY;
+			running_sum[g] = 0.0f;
+			acc0[g] = 0.0f;
+			acc1[g] = 0.0f;
+			acc2[g] = 0.0f;
+			acc3[g] = 0.0f;
+		}
+	}
+	if ( tiles > 0u )
+	{
+		{
+			const uint32_t col = first + load_key;
 			if ( col < stop )
 			{
-				const uint4 kv_k = *(const uint4 *)(head_keys + (uint64_t)col * Q38M_HEAD_DIM + load_chunk * 8u);
-				const uint4 kv_v = *(const uint4 *)(head_values + (uint64_t)col * Q38M_HEAD_DIM + load_chunk * 8u);
-				s_k[load_key][load_chunk * 4u + 0u] = kv_k.x;
-				s_k[load_key][load_chunk * 4u + 1u] = kv_k.y;
-				s_k[load_key][load_chunk * 4u + 2u] = kv_k.z;
-				s_k[load_key][load_chunk * 4u + 3u] = kv_k.w;
-				s_v[load_key][load_chunk * 4u + 0u] = kv_v.x;
-				s_v[load_key][load_chunk * 4u + 1u] = kv_v.y;
-				s_v[load_key][load_chunk * 4u + 2u] = kv_v.z;
-				s_v[load_key][load_chunk * 4u + 3u] = kv_v.w;
+				const uint64_t off = (uint64_t)col * Q38M_HEAD_DIM + load_chunk * 16u;
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[0][load_key][load_chunk * 8u]), head_keys + off, 16u);
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[0][load_key][load_chunk * 8u + 4u]), head_keys + off + 8u, 16u);
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[0][load_key][load_chunk * 8u]), head_values + off, 16u);
+				SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[0][load_key][load_chunk * 8u + 4u]), head_values + off + 8u, 16u);
+			}
+			SparkDrafterCommitGroup();
+		}
+		for ( uint32_t tile = 0u; tile < tiles; tile++ )
+		{
+			const uint32_t cur = tile & 1u, nxt = cur ^ 1u;
+			const uint32_t tile_first = first + tile * Q38M_ATTN_TILE;
+			const uint32_t tile_keys = stop - tile_first < Q38M_ATTN_TILE ? stop - tile_first : Q38M_ATTN_TILE;
+			if ( tile + 1u < tiles )
+			{
+				const uint32_t col = tile_first + Q38M_ATTN_TILE + load_key;
+				if ( col < stop )
+				{
+					const uint64_t off = (uint64_t)col * Q38M_HEAD_DIM + load_chunk * 16u;
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[nxt][load_key][load_chunk * 8u]), head_keys + off, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_k[nxt][load_key][load_chunk * 8u + 4u]), head_keys + off + 8u, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[nxt][load_key][load_chunk * 8u]), head_values + off, 16u);
+					SparkDrafterStage16((uint32_t)__cvta_generic_to_shared(&s_v[nxt][load_key][load_chunk * 8u + 4u]), head_values + off + 8u, 16u);
+				}
+				SparkDrafterCommitGroup();
+				SparkDrafterWaitGroup<1>();
 			}
 			else
+				SparkDrafterWaitGroup<0>();
+			if ( threadIdx.x < Q38M_ATTN_TILE )
+				s_vis[threadIdx.x] = threadIdx.x < tile_keys && (masked == 0u || draft->valid[tile_first + threadIdx.x] != 0u) ? 1u : 0u;
+			__syncthreads();
+			if ( warp < Q38M_BLOCK )
 			{
-				s_k[load_key][load_chunk * 4u + 0u] = 0u;
-				s_k[load_key][load_chunk * 4u + 1u] = 0u;
-				s_k[load_key][load_chunk * 4u + 2u] = 0u;
-				s_k[load_key][load_chunk * 4u + 3u] = 0u;
-				s_v[load_key][load_chunk * 4u + 0u] = 0u;
-				s_v[load_key][load_chunk * 4u + 1u] = 0u;
-				s_v[load_key][load_chunk * 4u + 2u] = 0u;
-				s_v[load_key][load_chunk * 4u + 3u] = 0u;
+#pragma unroll
+				for ( uint32_t g = 0u; g < Q38M_ATTN_Q_GROUP; g++ )
+				{
+					for ( uint32_t t = 0u; t < tile_keys; t++ )
+					{
+						const uint32_t kp0 = s_k[cur][t][lane];
+						const uint32_t kp1 = s_k[cur][t][Q38M_WARP + lane];
+						const float d0 = fmaf(q0[g], LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1[g] * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
+						const float d1 = fmaf(q2[g], LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), q3[g] * LmBf16ToFloat((uint16_t)(kp1 >> 16u)));
+						const float dot = Q38MWarpSum(d0 + d1);
+						if ( lane == 0u )
+							s_scores[warp][t] = s_vis[t] != 0u ? dot * scale : -INFINITY;
+					}
+					__syncwarp();
+					{
+						const float sc = lane < tile_keys ? s_scores[warp][lane] : -INFINITY;
+						const float tile_max = Q38MWarpMax(sc);
+						const float next_max = fmaxf(running_max[g], tile_max);
+						const float rescale = running_max[g] == -INFINITY ? 0.0f : expf(running_max[g] - next_max);
+						const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
+						const float tile_sum = Q38MWarpSum(weight);
+						running_sum[g] = running_sum[g] * rescale + tile_sum;
+						running_max[g] = next_max;
+						acc0[g] *= rescale;
+						acc1[g] *= rescale;
+						acc2[g] *= rescale;
+						acc3[g] *= rescale;
+						s_scores[warp][lane] = weight;
+					}
+					__syncwarp();
+					for ( uint32_t t = 0u; t < tile_keys; t++ )
+					{
+						const float wt = s_scores[warp][t];
+						const uint32_t vp0 = s_v[cur][t][lane];
+						const uint32_t vp1 = s_v[cur][t][Q38M_WARP + lane];
+						acc0[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0[g]);
+						acc1[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1[g]);
+						acc2[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2[g]);
+						acc3[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3[g]);
+					}
+				}
+			}
+			__syncthreads();
+		}
+	}
+	if ( warp < Q38M_BLOCK )
+	{
+#pragma unroll
+		for ( uint32_t g = 0u; g < Q38M_ATTN_Q_GROUP; g++ )
+		{
+			float *out = partials + (((uint64_t)(q_head_base + g) * Q38M_SPLITS + split) * Q38M_BLOCK + warp) * (Q38M_HEAD_DIM + 2u);
+			out[2u * lane] = acc0[g];
+			out[2u * lane + 1u] = acc1[g];
+			out[Q38M_HALF + 2u * lane] = acc2[g];
+			out[Q38M_HALF + 2u * lane + 1u] = acc3[g];
+			if ( lane == 0u )
+			{
+				out[Q38M_HEAD_DIM] = running_max[g];
+				out[Q38M_HEAD_DIM + 1u] = running_sum[g];
 			}
 		}
-		if ( threadIdx.x < Q38M_ATTN_TILE )
-			s_vis[threadIdx.x] = tile_first + threadIdx.x < stop && (masked == 0u || draft->valid[tile_first + threadIdx.x] != 0u) ? 1u : 0u;
-		__syncthreads();
-		for ( uint32_t t = 0u; t < Q38M_ATTN_TILE; t++ )
-		{
-			const uint32_t kp0 = s_k[t][lane];
-			const uint32_t kp1 = s_k[t][Q38M_WARP + lane];
-			const float d0 = fmaf(q0, LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1 * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
-			const float d1 = fmaf(q2, LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), q3 * LmBf16ToFloat((uint16_t)(kp1 >> 16u)));
-			const float dot = Q38MWarpSum(d0 + d1);
-			if ( lane == 0u )
-				s_scores[warp][t] = s_vis[t] != 0u ? dot * scale : -INFINITY;
-		}
-		__syncwarp();
-		{
-			const float sc = s_scores[warp][lane];
-			const float tile_max = Q38MWarpMax(sc);
-			const float next_max = fmaxf(running_max, tile_max);
-			const float rescale = running_max == -INFINITY ? 0.0f : expf(running_max - next_max);
-			const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
-			const float tile_sum = Q38MWarpSum(weight);
-			running_sum = running_sum * rescale + tile_sum;
-			running_max = next_max;
-			acc0 *= rescale;
-			acc1 *= rescale;
-			acc2 *= rescale;
-			acc3 *= rescale;
-			s_scores[warp][lane] = weight;
-		}
-		__syncwarp();
-		for ( uint32_t t = 0u; t < Q38M_ATTN_TILE; t++ )
-		{
-			const float wt = s_scores[warp][t];
-			const uint32_t vp0 = s_v[t][lane];
-			const uint32_t vp1 = s_v[t][Q38M_WARP + lane];
-			acc0 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0);
-			acc1 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1);
-			acc2 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2);
-			acc3 = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 >> 16u)), acc3);
-		}
-		__syncthreads();
 	}
-	out[2u * lane] = acc0;
-	out[2u * lane + 1u] = acc1;
-	out[Q38M_HALF + 2u * lane] = acc2;
-	out[Q38M_HALF + 2u * lane + 1u] = acc3;
-	if ( lane == 0u )
-	{
-		out[Q38M_HEAD_DIM] = running_max;
-		out[Q38M_HEAD_DIM + 1u] = running_sum;
-	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_HEAD_DIM, 1)
-void Q38MAttentionMergeKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__ keys, const uint16_t *__restrict__ values,
-	const Q38MDraft *__restrict__ draft, float scale, const float *__restrict__ partials, uint32_t splits, uint16_t *__restrict__ output)
+__global__ __launch_bounds__(Q38M_HEAD_DIM, 4)
+void Q38MAttentionMergeKernel(const uint16_t *__restrict__ q, const Q38MDraft *__restrict__ draft, uint32_t layer, float scale,
+	const float *__restrict__ partials, uint16_t *__restrict__ output)
 {
 	__shared__ float reduction[Q38M_HEAD_DIM / Q38M_WARP];
+	LmDependentWait();
 	const uint32_t row = blockIdx.x / Q38M_HEADS, head = blockIdx.x % Q38M_HEADS, kv_head = head / Q38M_GROUP, lane = threadIdx.x;
-	const uint32_t block_at = draft->block_at;
+	const uint32_t block_at = draft->block_at, splits = draft->splits;
 	const float own = LmBf16ToFloat(q[((uint64_t)row * Q38M_HEADS + head) * Q38M_HEAD_DIM + lane]);
-	const uint16_t *head_keys = keys + (uint64_t)kv_head * Q38M_COLUMNS * Q38M_HEAD_DIM;
-	const uint16_t *head_values = values + (uint64_t)kv_head * Q38M_COLUMNS * Q38M_HEAD_DIM;
+	const uint16_t *head_keys = draft->cache + (uint64_t)(2u * layer) * Q38M_LAYER_KV + (uint64_t)kv_head * Q38M_COLUMNS * Q38M_HEAD_DIM;
+	const uint16_t *head_values = head_keys + Q38M_LAYER_KV;
 	float top = -INFINITY, sum = 0.0f, accumulated = 0.0f;
 	for ( uint32_t split = 0u; split < splits; split++ )
 	{
@@ -432,38 +517,49 @@ void Q38MAttentionMergeKernel(const uint16_t *__restrict__ q, const uint16_t *__
 		top = next;
 	}
 	output[(uint64_t)row * Q38M_Q_WIDTH + head * Q38M_HEAD_DIM + lane] = LmFloatToBf16(accumulated / sum);
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
 void Q38MResidualKernel(const uint16_t *__restrict__ base, const uint16_t *__restrict__ addend, uint16_t *__restrict__ output, uint32_t count)
 {
 	for ( uint32_t index = blockIdx.x * Q38M_THREADS + threadIdx.x; index < count; index += gridDim.x * Q38M_THREADS )
 		output[index] = LmFloatToBf16(LmBf16ToFloat(base[index]) + LmBf16ToFloat(addend[index]));
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
 void Q38MSwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t count)
 {
-	for ( uint32_t index = blockIdx.x * Q38M_THREADS + threadIdx.x; index < count; index += gridDim.x * Q38M_THREADS )
+	const uint4 *g4 = (const uint4 *)gate;
+	const uint4 *u4 = (const uint4 *)up;
+	uint4 *o4 = (uint4 *)output;
+	for ( uint32_t vec = blockIdx.x * Q38M_THREADS + threadIdx.x; vec < count / 8u; vec += gridDim.x * Q38M_THREADS )
 	{
-		const float g = LmBf16ToFloat(gate[index]);
-		output[index] = LmFloatToBf16(g / (1.0f + expf(-g)) * LmBf16ToFloat(up[index]));
+		const uint4 gv = g4[vec], uv = u4[vec];
+		const uint32_t ga[4] = {gv.x, gv.y, gv.z, gv.w};
+		const uint32_t ua[4] = {uv.x, uv.y, uv.z, uv.w};
+		uint32_t oa[4];
+		for ( uint32_t i = 0u; i < 4u; i++ )
+		{
+			const float g0 = LmBf16ToFloat((uint16_t)(ga[i] & 0xffffu));
+			const float g1 = LmBf16ToFloat((uint16_t)(ga[i] >> 16u));
+			const uint16_t r0 = LmFloatToBf16(g0 / (1.0f + expf(-g0)) * LmBf16ToFloat((uint16_t)(ua[i] & 0xffffu)));
+			const uint16_t r1 = LmFloatToBf16(g1 / (1.0f + expf(-g1)) * LmBf16ToFloat((uint16_t)(ua[i] >> 16u)));
+			oa[i] = (uint32_t)r0 | ((uint32_t)r1 << 16u);
+		}
+		o4[vec] = make_uint4(oa[0], oa[1], oa[2], oa[3]);
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
-void Q38MWidenKernel(const uint16_t *__restrict__ input, float *__restrict__ output, uint32_t count)
-{
-	for ( uint32_t index = blockIdx.x * Q38M_THREADS + threadIdx.x; index < count; index += gridDim.x * Q38M_THREADS )
-		output[index] = LmBf16ToFloat(input[index]);
-}
-
-__global__ __launch_bounds__(Q38M_THREADS, 1)
-void Q38MMarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
-	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
+void Q38MMarkovRowKernel(uint32_t step, const Q38MDraft *__restrict__ draft, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
 {
 	__shared__ float vector[Q38M_MARKOV];
-	const uint32_t previous = step == 0u ? anchor : tokens[step - 1u];
+	LmDependentWait();
+	const uint32_t previous = step == 0u ? draft->anchor : tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / Q38M_WARP, lane = threadIdx.x % Q38M_WARP;
 	for ( uint32_t index = threadIdx.x; index < Q38M_MARKOV; index += Q38M_THREADS )
 		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * Q38M_MARKOV + index]);
@@ -477,8 +573,9 @@ void Q38MMarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restr
 			sum += LmBf16ToFloat(edge[element]) * vector[element];
 		sum = Q38MWarpSum(sum);
 		if ( lane == 0u )
-			row[slot] = logits[(uint64_t)step * Q38M_VOCAB + candidate] + sum;
+			row[slot] = LmBf16ToFloat(logits[(uint64_t)step * Q38M_VOCAB + candidate]) + sum;
 	}
+	LmDependentRelease();
 }
 
 static __device__ __forceinline__ unsigned long long Q38MRowKey(const float *row, uint32_t slot)
@@ -503,10 +600,9 @@ static __device__ __forceinline__ void Q38MTop2Insert(unsigned long long candida
 }
 
 __global__ __launch_bounds__(Q38M_PICK_THREADS, 1)
-void Q38MMarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsigned long long seed, float inverse_temperature, float nucleus,
-	uint32_t top_k, const float *__restrict__ row, const uint32_t *__restrict__ candidates, const uint16_t *__restrict__ y,
-	const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ confidence_weight, const uint16_t *__restrict__ confidence_bias,
-	Q38MPicks *__restrict__ picks)
+void Q38MMarkovPickKernel(uint32_t step, const Q38MDraft *__restrict__ draft, const float *__restrict__ row, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ y, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ confidence_weight,
+	const uint16_t *__restrict__ confidence_bias, Q38MPicks *__restrict__ picks)
 {
 	__shared__ unsigned long long keys[Q38M_CANDIDATES];
 	__shared__ unsigned long long best[Q38M_PICK_THREADS / Q38M_WARP];
@@ -515,6 +611,10 @@ void Q38MMarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, uns
 	__shared__ uint32_t chosen;
 	__shared__ uint32_t alt_chosen;
 	__shared__ float peak_scaled;
+	LmDependentWait();
+	const uint32_t anchor = draft->anchor, position = draft->position, top_k = draft->top_k;
+	const unsigned long long seed = (unsigned long long)draft->seed;
+	const float inverse_temperature = draft->inverse_temperature, nucleus = draft->nucleus;
 	const uint32_t previous = step == 0u ? anchor : picks->tokens[step - 1u];
 	const uint32_t warp = threadIdx.x / Q38M_WARP, lane = threadIdx.x % Q38M_WARP;
 	const float scale = inverse_temperature > 0.0f ? inverse_temperature : 1.0f;
@@ -626,126 +726,138 @@ void Q38MMarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, uns
 		picks->alt_tokens[step] = candidates[step * Q38M_CANDIDATES + alt_chosen];
 		picks->alt_scores[step] = denom > 0.0f ? expf(row[alt_chosen] * scale - peak_scaled) / denom : 0.0f;
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(Q38M_WARP, 1)
-void Q38MBranchSelectKernel(Q38MPicks *__restrict__ picks, uint32_t drafts, float min_score)
+void Q38MBranchSelectKernel(Q38MPicks *__restrict__ picks, const Q38MDraft *__restrict__ draft, float min_score)
 {
+	LmDependentWait();
 	uint32_t used = 0u;
-	if ( threadIdx.x != 0u )
-		return;
-	for ( uint32_t branch = 0u; branch < Q38M_BRANCHES; branch++ )
+	if ( threadIdx.x == 0u )
 	{
-		picks->branch_fork[branch] = Q38M_BLOCK;
-		picks->branch_len[branch] = 0u;
-	}
-	for ( uint32_t step = 0u; step + 1u < drafts; step++ )
-	{
-		const float score = picks->alt_scores[step];
-		uint32_t pos = used;
-		if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
-			continue;
-		while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+		const uint32_t drafts = draft->drafts;
+		for ( uint32_t branch = 0u; branch < Q38M_BRANCHES; branch++ )
 		{
+			picks->branch_fork[branch] = Q38M_BLOCK;
+			picks->branch_len[branch] = 0u;
+		}
+		for ( uint32_t step = 0u; step + 1u < drafts; step++ )
+		{
+			const float score = picks->alt_scores[step];
+			uint32_t pos = used;
+			if ( picks->alt_tokens[step] == picks->tokens[step] || !(score >= min_score) )
+				continue;
+			while ( pos > 0u && score > picks->branch_scores[pos - 1u][0] )
+			{
+				if ( pos < Q38M_BRANCHES )
+				{
+					picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
+					picks->branch_len[pos] = picks->branch_len[pos - 1u];
+					picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
+					picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				}
+				pos--;
+			}
 			if ( pos < Q38M_BRANCHES )
 			{
-				picks->branch_fork[pos] = picks->branch_fork[pos - 1u];
-				picks->branch_len[pos] = picks->branch_len[pos - 1u];
-				picks->branch_tokens[pos][0] = picks->branch_tokens[pos - 1u][0];
-				picks->branch_scores[pos][0] = picks->branch_scores[pos - 1u][0];
+				picks->branch_fork[pos] = step;
+				picks->branch_len[pos] = 1u;
+				picks->branch_tokens[pos][0] = picks->alt_tokens[step];
+				picks->branch_scores[pos][0] = score;
+				if ( used < Q38M_BRANCHES )
+					used++;
 			}
-			pos--;
-		}
-		if ( pos < Q38M_BRANCHES )
-		{
-			picks->branch_fork[pos] = step;
-			picks->branch_len[pos] = 1u;
-			picks->branch_tokens[pos][0] = picks->alt_tokens[step];
-			picks->branch_scores[pos][0] = score;
-			if ( used < Q38M_BRANCHES )
-				used++;
 		}
 	}
+	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(Q38M_THREADS, 1)
-void Q38MBranchRowKernel(uint32_t offset, uint32_t drafts, const Q38MPicks *__restrict__ picks, const uint32_t *__restrict__ candidates,
-	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
+__global__ __launch_bounds__(Q38M_THREADS, 2)
+void Q38MBranchRowKernel(uint32_t offset, const Q38MDraft *__restrict__ draft, const Q38MPicks *__restrict__ picks, const uint32_t *__restrict__ candidates,
+	const uint16_t *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ rows)
 {
 	__shared__ float vector[Q38M_MARKOV];
+	LmDependentWait();
+	const uint32_t drafts = draft->drafts;
 	const uint32_t branch = blockIdx.y, fork = picks->branch_fork[branch], step = fork + offset;
 	const uint32_t warp = threadIdx.x / Q38M_WARP, lane = threadIdx.x % Q38M_WARP;
-	uint32_t previous;
-	float *row;
-	if ( fork >= drafts || step >= drafts )
-		return;
-	previous = picks->branch_tokens[branch][offset - 1u];
-	row = rows + (uint64_t)branch * Q38M_CANDIDATES;
-	for ( uint32_t index = threadIdx.x; index < Q38M_MARKOV; index += Q38M_THREADS )
-		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * Q38M_MARKOV + index]);
-	__syncthreads();
-	for ( uint32_t slot = blockIdx.x * Q38M_WARPS + warp; slot < Q38M_CANDIDATES; slot += gridDim.x * Q38M_WARPS )
+	if ( fork < drafts && step < drafts )
 	{
-		const uint32_t candidate = candidates[step * Q38M_CANDIDATES + slot];
-		const uint16_t *edge = markov_next + (uint64_t)candidate * Q38M_MARKOV;
-		float sum = 0.0f;
-		for ( uint32_t element = lane; element < Q38M_MARKOV; element += Q38M_WARP )
-			sum += LmBf16ToFloat(edge[element]) * vector[element];
-		sum = Q38MWarpSum(sum);
-		if ( lane == 0u )
-			row[slot] = logits[(uint64_t)step * Q38M_VOCAB + candidate] + sum;
+		const uint32_t previous = picks->branch_tokens[branch][offset - 1u];
+		float *row = rows + (uint64_t)branch * Q38M_CANDIDATES;
+		for ( uint32_t index = threadIdx.x; index < Q38M_MARKOV; index += Q38M_THREADS )
+			vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * Q38M_MARKOV + index]);
+		__syncthreads();
+		for ( uint32_t slot = blockIdx.x * Q38M_WARPS + warp; slot < Q38M_CANDIDATES; slot += gridDim.x * Q38M_WARPS )
+		{
+			const uint32_t candidate = candidates[step * Q38M_CANDIDATES + slot];
+			const uint16_t *edge = markov_next + (uint64_t)candidate * Q38M_MARKOV;
+			float sum = 0.0f;
+			for ( uint32_t element = lane; element < Q38M_MARKOV; element += Q38M_WARP )
+				sum += LmBf16ToFloat(edge[element]) * vector[element];
+			sum = Q38MWarpSum(sum);
+			if ( lane == 0u )
+				row[slot] = LmBf16ToFloat(logits[(uint64_t)step * Q38M_VOCAB + candidate]) + sum;
+		}
 	}
+	LmDependentRelease();
 }
 
 __global__ __launch_bounds__(Q38M_PICK_THREADS, 1)
-void Q38MBranchPickKernel(uint32_t offset, uint32_t drafts, float scale, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
+void Q38MBranchPickKernel(uint32_t offset, const Q38MDraft *__restrict__ draft, const float *__restrict__ rows, const uint32_t *__restrict__ candidates,
 	Q38MPicks *__restrict__ picks)
 {
 	__shared__ unsigned long long best[Q38M_PICK_THREADS / Q38M_WARP];
 	__shared__ float reduction[Q38M_PICK_THREADS / Q38M_WARP];
 	__shared__ uint32_t chosen;
 	__shared__ float peak_scaled;
+	LmDependentWait();
+	const uint32_t drafts = draft->drafts;
+	const float scale = draft->scale;
 	const uint32_t branch = blockIdx.x, fork = picks->branch_fork[branch], step = fork + offset;
 	const uint32_t warp = threadIdx.x / Q38M_WARP, lane = threadIdx.x % Q38M_WARP;
-	const float *row = rows + (uint64_t)branch * Q38M_CANDIDATES;
-	unsigned long long first = 0ull;
-	float denom = 0.0f;
-	if ( fork >= drafts || step >= drafts )
-		return;
-	for ( uint32_t index = threadIdx.x; index < Q38M_CANDIDATES; index += Q38M_PICK_THREADS )
+	if ( fork < drafts && step < drafts )
 	{
-		const unsigned long long key = Q38MRowKey(row, index);
-		if ( key > first )
-			first = key;
+		const float *row = rows + (uint64_t)branch * Q38M_CANDIDATES;
+		unsigned long long first = 0ull;
+		float denom = 0.0f;
+		for ( uint32_t index = threadIdx.x; index < Q38M_CANDIDATES; index += Q38M_PICK_THREADS )
+		{
+			const unsigned long long key = Q38MRowKey(row, index);
+			if ( key > first )
+				first = key;
+		}
+		for ( uint32_t mask = Q38M_WARP / 2u; mask > 0u; mask >>= 1u )
+		{
+			const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
+			if ( other > first )
+				first = other;
+		}
+		if ( lane == 0u )
+			best[warp] = first;
+		__syncthreads();
+		if ( threadIdx.x == 0u )
+		{
+			first = best[0];
+			for ( uint32_t index = 1u; index < Q38M_PICK_THREADS / Q38M_WARP; index++ )
+				if ( best[index] > first )
+					first = best[index];
+			chosen = Q38MKeySlot(first);
+			peak_scaled = row[chosen] * scale;
+		}
+		__syncthreads();
+		for ( uint32_t index = threadIdx.x; index < Q38M_CANDIDATES; index += Q38M_PICK_THREADS )
+			denom += expf(row[index] * scale - peak_scaled);
+		denom = LmBlockSum<Q38M_PICK_THREADS>(denom, reduction);
+		if ( threadIdx.x == 0u )
+		{
+			picks->branch_tokens[branch][offset] = candidates[step * Q38M_CANDIDATES + chosen];
+			picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
+			picks->branch_len[branch] = offset + 1u;
+		}
 	}
-	for ( uint32_t mask = Q38M_WARP / 2u; mask > 0u; mask >>= 1u )
-	{
-		const unsigned long long other = __shfl_xor_sync(0xffffffffu, first, mask);
-		if ( other > first )
-			first = other;
-	}
-	if ( lane == 0u )
-		best[warp] = first;
-	__syncthreads();
-	if ( threadIdx.x == 0u )
-	{
-		first = best[0];
-		for ( uint32_t index = 1u; index < Q38M_PICK_THREADS / Q38M_WARP; index++ )
-			if ( best[index] > first )
-				first = best[index];
-		chosen = Q38MKeySlot(first);
-		peak_scaled = row[chosen] * scale;
-	}
-	__syncthreads();
-	for ( uint32_t index = threadIdx.x; index < Q38M_CANDIDATES; index += Q38M_PICK_THREADS )
-		denom += expf(row[index] * scale - peak_scaled);
-	denom = LmBlockSum<Q38M_PICK_THREADS>(denom, reduction);
-	if ( threadIdx.x == 0u )
-	{
-		picks->branch_tokens[branch][offset] = candidates[step * Q38M_CANDIDATES + chosen];
-		picks->branch_scores[branch][offset] = denom > 0.0f ? 1.0f / denom : 0.0f;
-		picks->branch_len[branch] = offset + 1u;
-	}
+	LmDependentRelease();
 }
 
 static SparkStatus Q38MRefuse(SparkDrafterModuleBind *bind, SparkStatus status, const char *format, const char *detail)
@@ -1008,7 +1120,8 @@ static SparkStatus Q38MScratch(Q38MState *state, uint64_t context_bytes)
 		!Q38M_DEVICE(forward->residual, Q38M_BLOCK * Q38M_HIDDEN) || !Q38M_DEVICE(forward->gate, Q38M_BLOCK * Q38M_MLP) ||
 		!Q38M_DEVICE(forward->up, Q38M_BLOCK * Q38M_MLP) || !Q38M_DEVICE(forward->act, Q38M_BLOCK * Q38M_MLP) ||
 		!Q38M_DEVICE(forward->mlp, Q38M_BLOCK * Q38M_HIDDEN) || !Q38M_DEVICE(forward->y, Q38M_BLOCK * Q38M_HIDDEN) ||
-		!Q38M_DEVICE(forward->logits, (uint64_t)Q38M_BLOCK * Q38M_VOCAB) || !Q38M_DEVICE(forward->logits_f32, (uint64_t)Q38M_BLOCK * Q38M_VOCAB) ||
+		!Q38M_DEVICE(forward->logits, (uint64_t)Q38M_BLOCK * Q38M_VOCAB) ||
+		SparkDrafterTopkBf16Alloc(&forward->topk_ws, Q38M_BLOCK) != SPARK_STATUS_OK ||
 		!Q38M_DEVICE(forward->candidates, Q38M_BLOCK * Q38M_CANDIDATES) || !Q38M_DEVICE(forward->markov_row, Q38M_BRANCHES * Q38M_CANDIDATES) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for ( uint32_t index = 0u; index < state->capacity; index++ )
@@ -1086,8 +1199,10 @@ static SparkStatus Q38MIngestRows(Q38MState *state, Q38MSequence *sequence, uint
 		if ( status != SPARK_STATUS_OK )
 			break;
 		LM_LAUNCH((Q38MHeadNormRopeKernel), rows * Q38M_KV_HEADS, Q38M_HEAD_DIM, 0, state->stream, state->keys_raw, state->layers[layer].k_norm,
-			state->rope_inverse, state->rope_gain, state->positions, Q38M_KV_HEADS, state->epsilon, (uint16_t *)0, Q38MKeys(sequence, layer), 0u, 1u);
-		LM_LAUNCH((Q38MStoreValuesKernel), rows, Q38M_THREADS, 0, state->stream, state->values_raw, state->positions, 0u, Q38MValues(sequence, layer));
+			state->rope_inverse, state->rope_gain, state->positions, Q38M_KV_HEADS, state->epsilon, (uint16_t *)0, Q38MKeys(sequence, layer),
+			(const Q38MDraft *)0, layer);
+		LM_LAUNCH((Q38MStoreValuesKernel), rows, Q38M_THREADS, 0, state->stream, state->values_raw, state->positions, (const Q38MDraft *)0, layer,
+			Q38MValues(sequence, layer));
 	}
 	if ( status == SPARK_STATUS_OK && SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_INTERNAL_ERROR;
@@ -1272,40 +1387,44 @@ static void Q38MSpan(Q38MSequence *sequence, uint64_t checked, uint64_t position
 }
 
 static SparkStatus Q38MPrepare(Q38MState *state, Q38MSequence *sequence, uint32_t anchor, uint64_t position, uint64_t checked,
-	const SparkRowSampling *sampling)
+	const SparkRowSampling *sampling, uint32_t drafts)
 {
 	Q38MDraft *draft = state->forward.host_draft;
+	uint32_t span;
 	if ( anchor >= Q38M_VOCAB || position + Q38M_BLOCK > UINT32_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(draft, 0, offsetof(Q38MDraft, valid));
+	draft->cache = sequence->cache;
 	for ( uint32_t row = 0u; row < Q38M_BLOCK; row++ )
 		draft->positions[row] = (uint32_t)(position + row);
 	draft->anchor = anchor;
 	draft->mask = state->mask_token;
+	draft->position = (uint32_t)position;
 	draft->seed = sampling->seed;
 	draft->inverse_temperature = sampling->inverse_temperature;
 	draft->nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
+	draft->scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
 	draft->top_k = sampling->top_k;
+	draft->drafts = drafts;
 	Q38MSpan(sequence, checked, position, draft);
+	span = draft->block_at - draft->start;
+	draft->splits = (span + Q38M_SPLIT_KEYS - 1u) / Q38M_SPLIT_KEYS;
 	if ( SparkGpuMemcpyAsync(state->forward.draft, draft, sizeof(*draft), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus Q38MRunForward(Q38MState *state, const Q38MSequence *sequence, uint32_t layers)
+static SparkStatus Q38MRunForward(Q38MState *state, uint32_t layers, uint32_t splits)
 {
 	Q38MForward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
 	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(Q38MDraft, positions));
-	const uint32_t block_at = state->forward.host_draft->block_at;
-	const uint32_t span = block_at - state->forward.host_draft->start;
-	const uint32_t splits = (span + Q38M_SPLIT_KEYS - 1u) / Q38M_SPLIT_KEYS;
 	SparkStatus status = SPARK_STATUS_OK;
 	LM_LAUNCH((Q38MEmbedKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, state->embed, forward->draft, forward->hidden);
+	LM_LAUNCH((Q38MRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->hidden, state->layers[0].input_norm, forward->x, Q38M_HIDDEN, state->epsilon);
 	for ( uint32_t layer = 0u; layer < layers && status == SPARK_STATUS_OK; layer++ )
 	{
 		const Q38MLayer *weights = &state->layers[layer];
-		LM_LAUNCH((Q38MRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->hidden, weights->input_norm, forward->x, Q38M_HIDDEN, state->epsilon);
 		status = Q38MGemm(state, weights->q, forward->x, forward->q, Q38M_BLOCK, Q38M_HIDDEN, Q38M_Q_WIDTH);
 		if ( status == SPARK_STATUS_OK )
 			status = Q38MGemm(state, weights->k, forward->x, forward->k, Q38M_BLOCK, Q38M_HIDDEN, Q38M_KV_WIDTH);
@@ -1314,21 +1433,20 @@ static SparkStatus Q38MRunForward(Q38MState *state, const Q38MSequence *sequence
 		if ( status != SPARK_STATUS_OK )
 			break;
 		LM_LAUNCH((Q38MHeadNormRopeKernel), Q38M_BLOCK * Q38M_HEADS, Q38M_HEAD_DIM, 0, stream, forward->q, weights->q_norm, state->rope_inverse,
-			state->rope_gain, positions, Q38M_HEADS, state->epsilon, forward->q_roped, (uint16_t *)0, 0u, 0u);
+			state->rope_gain, positions, Q38M_HEADS, state->epsilon, forward->q_roped, (uint16_t *)0, (const Q38MDraft *)0, layer);
 		LM_LAUNCH((Q38MHeadNormRopeKernel), Q38M_BLOCK * Q38M_KV_HEADS, Q38M_HEAD_DIM, 0, stream, forward->k, weights->k_norm, state->rope_inverse,
-			state->rope_gain, positions, Q38M_KV_HEADS, state->epsilon, (uint16_t *)0, Q38MKeys(sequence, layer), block_at, 0u);
-		LM_LAUNCH((Q38MStoreValuesKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->v, (const uint32_t *)0, block_at, Q38MValues(sequence, layer));
+			state->rope_gain, positions, Q38M_KV_HEADS, state->epsilon, (uint16_t *)0, (uint16_t *)0, forward->draft, layer);
+		LM_LAUNCH((Q38MStoreValuesKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->v, (const uint32_t *)0, forward->draft, layer, (uint16_t *)0);
 		if ( splits != 0u )
-			LM_LAUNCH((Q38MAttentionSplitKernel), dim3(Q38M_HEADS, splits), Q38M_ATTN_THREADS, 0, stream, forward->q_roped, Q38MKeys(sequence, layer),
-				Q38MValues(sequence, layer), forward->draft, state->softmax_scale, forward->partials);
-		LM_LAUNCH((Q38MAttentionMergeKernel), Q38M_BLOCK * Q38M_HEADS, Q38M_HEAD_DIM, 0, stream, forward->q_roped, Q38MKeys(sequence, layer),
-			Q38MValues(sequence, layer), forward->draft, state->softmax_scale, forward->partials, splits, forward->attended);
+			LM_LAUNCH_DEPENDENT((Q38MAttentionSplitKernel), dim3(Q38M_KV_HEADS * Q38M_ATTN_Q_GROUPS, splits), Q38M_THREADS, 0, stream, forward->q_roped,
+				forward->draft, layer, state->softmax_scale, forward->partials);
+		LM_LAUNCH_DEPENDENT((Q38MAttentionMergeKernel), Q38M_BLOCK * Q38M_HEADS, Q38M_HEAD_DIM, 0, stream, forward->q_roped, forward->draft, layer,
+			state->softmax_scale, forward->partials, forward->attended);
 		status = Q38MGemm(state, weights->o, forward->attended, forward->projected, Q38M_BLOCK, Q38M_Q_WIDTH, Q38M_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((Q38MResidualKernel), 2u * state->multiprocessors, Q38M_THREADS, 0, stream, forward->hidden, forward->projected, forward->residual,
-			Q38M_BLOCK * Q38M_HIDDEN);
-		LM_LAUNCH((Q38MRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->residual, weights->post_norm, forward->x, Q38M_HIDDEN, state->epsilon);
+		LM_LAUNCH((Q38MResidualRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->hidden, forward->projected, weights->post_norm, forward->residual,
+			forward->x, Q38M_HIDDEN, state->epsilon);
 		status = Q38MGemm(state, weights->gate, forward->x, forward->gate, Q38M_BLOCK, Q38M_HIDDEN, Q38M_MLP);
 		if ( status == SPARK_STATUS_OK )
 			status = Q38MGemm(state, weights->up, forward->x, forward->up, Q38M_BLOCK, Q38M_HIDDEN, Q38M_MLP);
@@ -1338,47 +1456,49 @@ static SparkStatus Q38MRunForward(Q38MState *state, const Q38MSequence *sequence
 		status = Q38MGemm(state, weights->down, forward->act, forward->mlp, Q38M_BLOCK, Q38M_MLP, Q38M_HIDDEN);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((Q38MResidualKernel), 2u * state->multiprocessors, Q38M_THREADS, 0, stream, forward->residual, forward->mlp, forward->hidden,
-			Q38M_BLOCK * Q38M_HIDDEN);
+		if ( layer + 1u < layers )
+			LM_LAUNCH((Q38MResidualRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->residual, forward->mlp, state->layers[layer + 1u].input_norm,
+				forward->hidden, forward->x, Q38M_HIDDEN, state->epsilon);
+		else if ( layers == Q38M_LAYERS )
+			LM_LAUNCH((Q38MResidualRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->residual, forward->mlp, state->norm, forward->hidden,
+				forward->y, Q38M_HIDDEN, state->epsilon);
+		else
+			LM_LAUNCH((Q38MResidualKernel), 2u * state->multiprocessors, Q38M_THREADS, 0, stream, forward->residual, forward->mlp, forward->hidden,
+				Q38M_BLOCK * Q38M_HIDDEN);
 	}
-	if ( status != SPARK_STATUS_OK || layers < Q38M_LAYERS )
+	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Q38MRmsKernel), Q38M_BLOCK, Q38M_THREADS, 0, stream, forward->hidden, state->norm, forward->y, Q38M_HIDDEN, state->epsilon);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus Q38MHeads(Q38MState *state, uint32_t anchor_token, uint64_t position, const SparkRowSampling *sampling, uint32_t drafts, uint32_t tree)
+static SparkStatus Q38MHeads(Q38MState *state, uint32_t branch_steps, uint32_t tree_enabled)
 {
 	Q38MForward *forward = &state->forward;
 	const SparkGpuStream stream = state->stream;
-	const float nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
 	SparkStatus status = Q38MGemm(state, state->head, forward->y, forward->logits, Q38M_BLOCK, Q38M_HIDDEN, Q38M_VOCAB);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((Q38MWidenKernel), 4u * state->multiprocessors, Q38M_THREADS, 0, stream, forward->logits, forward->logits_f32, Q38M_BLOCK * Q38M_VOCAB);
-	if ( LmTopkExactRowsLaunch<Q38M_TOPK_THREADS>(forward->logits_f32, Q38M_BLOCK, Q38M_VOCAB, Q38M_CANDIDATES, forward->candidates, stream) !=
-		SPARK_GPU_SUCCESS )
+	if ( SparkDrafterTopkBf16Launch(forward->logits, Q38M_BLOCK, Q38M_VOCAB, Q38M_CANDIDATES, &forward->topk_ws, forward->candidates, stream) !=
+		SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t step = 0u; step < Q38M_BLOCK; step++ )
 	{
-		LM_LAUNCH((Q38MMarkovRowKernel), Q38M_CANDIDATES / Q38M_WARPS, Q38M_THREADS, 0, stream, step, anchor_token, forward->picks->tokens,
-			forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
-		LM_LAUNCH((Q38MMarkovPickKernel), 1u, Q38M_PICK_THREADS, 0, stream, step, anchor_token, (uint32_t)position, (unsigned long long)sampling->seed,
-			sampling->inverse_temperature, nucleus, sampling->top_k, forward->markov_row, forward->candidates, forward->y, state->markov_previous,
-			state->confidence_weight, state->confidence_bias, forward->picks);
+		LM_LAUNCH_DEPENDENT((Q38MMarkovRowKernel), Q38M_CANDIDATES / Q38M_WARPS, Q38M_THREADS, 0, stream, step, forward->draft, forward->picks->tokens,
+			forward->candidates, forward->logits, state->markov_previous, state->markov_next, forward->markov_row);
+		LM_LAUNCH_DEPENDENT((Q38MMarkovPickKernel), 1u, Q38M_PICK_THREADS, 0, stream, step, forward->draft, forward->markov_row, forward->candidates,
+			forward->y, state->markov_previous, state->confidence_weight, state->confidence_bias, forward->picks);
 	}
-	if ( tree != 0u && drafts >= 2u )
+	if ( tree_enabled != 0u )
 	{
-		const float scale = sampling->inverse_temperature > 0.0f ? sampling->inverse_temperature : 1.0f;
-		LM_LAUNCH((Q38MBranchSelectKernel), 1u, Q38M_WARP, 0, stream, forward->picks, drafts, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
-		for ( uint32_t offset = 1u; offset < Q38M_BRANCH_LEN && offset < drafts; offset++ )
+		LM_LAUNCH_DEPENDENT((Q38MBranchSelectKernel), 1u, Q38M_WARP, 0, stream, forward->picks, forward->draft, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE);
+		for ( uint32_t offset = 1u; offset < branch_steps; offset++ )
 		{
-			LM_LAUNCH((Q38MBranchRowKernel), dim3(Q38M_CANDIDATES / Q38M_WARPS, Q38M_BRANCHES), Q38M_THREADS, 0, stream, offset, drafts,
-				forward->picks, forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
-			LM_LAUNCH((Q38MBranchPickKernel), Q38M_BRANCHES, Q38M_PICK_THREADS, 0, stream, offset, drafts, scale, forward->markov_row, forward->candidates,
-				forward->picks);
+			LM_LAUNCH_DEPENDENT((Q38MBranchRowKernel), dim3(Q38M_CANDIDATES / Q38M_WARPS, Q38M_BRANCHES), Q38M_THREADS, 0, stream, offset, forward->draft,
+				forward->picks, forward->candidates, forward->logits, state->markov_previous, state->markov_next, forward->markov_row);
+			LM_LAUNCH_DEPENDENT((Q38MBranchPickKernel), Q38M_BRANCHES, Q38M_PICK_THREADS, 0, stream, offset, forward->draft, forward->markov_row,
+				forward->candidates, forward->picks);
 		}
 	}
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(Q38MPicks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
@@ -1400,8 +1520,9 @@ static void Q38MForwardFree(Q38MForward *forward)
 	void *buffers[] = {
 		forward->draft, forward->picks, forward->hidden, forward->x, forward->q, forward->q_roped, forward->k, forward->v, forward->partials,
 		forward->attended, forward->projected, forward->residual, forward->gate, forward->up, forward->act, forward->mlp, forward->y,
-		forward->logits, forward->logits_f32, forward->candidates, forward->markov_row,
+		forward->logits, forward->candidates, forward->markov_row,
 	};
+	SparkDrafterTopkBf16Free(&forward->topk_ws);
 	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
 		(void)SparkGpuFree(buffers[index]);
 	if ( forward->host_draft != 0 )
@@ -1418,6 +1539,7 @@ static SparkStatus Q38MClose(void *opaque)
 		return SPARK_STATUS_OK;
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamSynchronize(state->stream);
+	SparkDrafterGraphCacheDestroy(&state->graphs);
 	Q38MForwardFree(&state->forward);
 	{
 		void *buffers[] = {
@@ -1541,13 +1663,22 @@ static SparkStatus Q38MPropose(void *opaque, const SparkDraftServerRequest *requ
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	{
 		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
+		const uint32_t tree_enabled = tree != 0u && drafts >= 2u ? 1u : 0u;
+		const uint32_t branch_steps = drafts < Q38M_BRANCH_LEN ? drafts : Q38M_BRANCH_LEN;
 		SparkDraftTreeBranch branches[Q38M_BLOCK];
 		uint32_t branch_count = 0u;
-		status = Q38MPrepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling);
+		status = Q38MPrepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling, drafts);
 		if ( status == SPARK_STATUS_OK )
-			status = Q38MRunForward(state, sequence, Q38M_LAYERS);
-		if ( status == SPARK_STATUS_OK )
-			status = Q38MHeads(state, request->anchor_token_id, request->position, &request->sampling, drafts, tree);
+		{
+			const uint32_t splits = state->forward.host_draft->splits;
+			const uint64_t graph_key = ((uint64_t)splits << 16u) | ((uint64_t)tree_enabled << 8u) | (uint64_t)branch_steps;
+			status = SparkDrafterGraphRun(&state->graphs, state->stream, graph_key, [&]() -> SparkStatus {
+				SparkStatus inner = Q38MRunForward(state, Q38M_LAYERS, splits);
+				if ( inner == SPARK_STATUS_OK )
+					inner = Q38MHeads(state, branch_steps, tree_enabled);
+				return inner;
+			});
+		}
 		status = Q38MSettle(state, status);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -1635,9 +1766,9 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_qwen38_max_d
 		if ( Q38MHeld(sequence, at) == 0u )
 			checked = at + 1u;
 	memset(&greedy, 0, sizeof(greedy));
-	status = Q38MPrepare(state, sequence, anchor, position, checked, &greedy);
+	status = Q38MPrepare(state, sequence, anchor, position, checked, &greedy, 0u);
 	if ( status == SPARK_STATUS_OK )
-		status = Q38MRunForward(state, sequence, Q38M_LAYERS);
+		status = Q38MRunForward(state, Q38M_LAYERS, state->forward.host_draft->splits);
 	status = Q38MSettle(state, status);
 	if ( elapsed_ns != 0 )
 		*elapsed_ns = SparkMonotonicNs() - started;
@@ -1661,9 +1792,9 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_qwen38_max_d
 		if ( Q38MHeld(sequence, at) == 0u )
 			checked = at + 1u;
 	memset(&greedy, 0, sizeof(greedy));
-	status = Q38MPrepare(state, sequence, anchor, position, checked, &greedy);
+	status = Q38MPrepare(state, sequence, anchor, position, checked, &greedy, 0u);
 	if ( status == SPARK_STATUS_OK )
-		status = Q38MRunForward(state, sequence, layers);
+		status = Q38MRunForward(state, layers, state->forward.host_draft->splits);
 	status = Q38MSettle(state, status);
 	if ( status == SPARK_STATUS_OK )
 		status = Q38MReadback(hidden, state->forward.hidden, (size_t)Q38M_BLOCK * Q38M_HIDDEN * sizeof(uint16_t));

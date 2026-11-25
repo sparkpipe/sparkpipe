@@ -1,0 +1,2 @@
++1710
+Blackwell (sm_120a/sm_121a) optimizations across all 8 native CUDA drafter modules and shared inference/kernels/drafter_blackwell.cuh: 16-slot LRU CUDA Graph capture/launch cache, 3-pass vectorized parallel BF16 Top-K (eliminating FP32 widen + single-block topk), double-buffered cp.async GQA-grouped attention, fused Residual+RMSNorm kernels, smart PDL dependent launches, and vectorized uint4 loads/stores.
