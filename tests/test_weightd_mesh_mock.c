@@ -1357,6 +1357,135 @@ static void test_permutation_schedule(uint32_t local_rank)
     (void)local_rank;
 }
 
+static void test_e14_rdma_verbs_fastpath(uint32_t local_rank)
+{
+    const uint32_t all_peers = ((1u << SPARK_WEIGHTD_MESH_RANKS_PER_BAND) - 1u) & ~(1u << local_rank);
+    const uint32_t band = 4u;
+    const uint64_t seq = (UINT64_C(40) << 32u) | 1u;
+    const uint64_t slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
+    const uint64_t slot_base = ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    const uint64_t payload_word = UINT64_C(0x1122334455667788);
+    SparkWeightdMeshRoute route = {0};
+    uint32_t first, last, i, peer, inline_payloads = 0u, signaled_tails = 0u;
+    uint32_t unsignaled_bcast = 0u, signaled_seq = 0u;
+
+    route.fields.peer_mask = all_peers;
+    *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base) = payload_word;
+    *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u) = seq;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_post_route(band, local_rank, seq, 8u, route) == SPARK_STATUS_OK,
+        "e14: 8-byte small payload route posts");
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS * 2u,
+        "e14: 8-byte route posts chained payload and tail per peer");
+    for ( i = first; i < last; i += 2u )
+    {
+        SparkStubIbvPostedWork pwork, twork;
+        CHECK(spark_stub_ibv_posted(i, &pwork) == 0 && spark_stub_ibv_posted(i + 1u, &twork) == 0,
+            "e14: paired payload and tail WRs recorded");
+        if ( (pwork.wr_id & 3u) == 2u && (pwork.flags & IBV_SEND_INLINE) != 0u &&
+             (pwork.flags & IBV_SEND_SIGNALED) == 0u && pwork.length == 8u &&
+             pwork.inline_word == payload_word )
+            inline_payloads++;
+        if ( (twork.wr_id & 3u) == 3u && (twork.flags & IBV_SEND_INLINE) != 0u &&
+             (twork.flags & IBV_SEND_SIGNALED) != 0u && twork.length == 8u &&
+             twork.inline_word == seq && twork.qp_number == pwork.qp_number &&
+             twork.wqe_index == pwork.wqe_index + 1u )
+            signaled_tails++;
+    }
+    CHECK(inline_payloads == TEST_MESH_PEERS && signaled_tails == TEST_MESH_PEERS,
+        "e14: 8-byte payloads use inline WRs chained unsignaled before signaled inline tails");
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork w;
+        if ( spark_stub_ibv_posted(i, &w) == 0 && (w.flags & IBV_SEND_SIGNALED) != 0u )
+            CHECK(spark_stub_ibv_complete(w.wr_id, IBV_WC_SUCCESS) == 0, "e14: tail CQE injected");
+    }
+    SparkWeightdMeshDrainCq();
+    CHECK(test_shipped(band, local_rank) == seq,
+        "e14: O(1) QPN CQ drain advances shipped on signaled tails alone");
+
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshBroadcast(all_peers, 0u, 64u, 0u, seq + 7u, 64u) == TEST_MESH_PEERS,
+        "e14: broadcast with seq posts to all 15 peers in Latin-square order");
+    last = spark_stub_ibv_posted_count();
+    CHECK(last - first == TEST_MESH_PEERS * 2u,
+        "e14: broadcast with seq emits payload and seq WRs per peer");
+    for ( i = 0u; i < TEST_MESH_PEERS; i++ )
+    {
+        uint32_t expected_rank = SparkWeightdMeshSchedulePeer(local_rank, SPARK_WEIGHTD_MESH_RANKS_PER_BAND, i + 1u);
+        uint32_t expected_peer = expected_rank < local_rank ? expected_rank : expected_rank - 1u;
+        CHECK(weightd_mesh.ring_order[i] == expected_peer,
+            "e14: broadcast rings doorbells in conflict-free Latin-square peer order");
+    }
+    for ( i = first; i < last; i += 2u )
+    {
+        SparkStubIbvPostedWork pwork, swork;
+        CHECK(spark_stub_ibv_posted(i, &pwork) == 0 && spark_stub_ibv_posted(i + 1u, &swork) == 0,
+            "e14: broadcast payload and seq WRs captured");
+        if ( (pwork.flags & IBV_SEND_SIGNALED) == 0u && pwork.length == 64u )
+            unsignaled_bcast++;
+        if ( (swork.flags & IBV_SEND_SIGNALED) != 0u && (swork.flags & IBV_SEND_INLINE) != 0u &&
+             swork.inline_word == seq + 7u && swork.qp_number == pwork.qp_number &&
+             swork.wqe_index == pwork.wqe_index + 1u )
+            signaled_seq++;
+    }
+    CHECK(unsignaled_bcast == TEST_MESH_PEERS && signaled_seq == TEST_MESH_PEERS,
+        "e14: broadcast chains unsignaled payload before signaled inline seq WR");
+    for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+        CHECK(weightd_mesh.send_pending[peer] == 2u && weightd_mesh.rpc_pending[peer] == 2u,
+            "e14: chained broadcast tracks both payload and seq SQ occupancy");
+    for ( i = first; i < last; i++ )
+    {
+        SparkStubIbvPostedWork w;
+        if ( spark_stub_ibv_posted(i, &w) == 0 && (w.flags & IBV_SEND_SIGNALED) != 0u )
+            CHECK(spark_stub_ibv_complete(w.wr_id, IBV_WC_SUCCESS) == 0, "e14: broadcast seq CQE injected");
+    }
+    SparkWeightdMeshDrainCq();
+    for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+        CHECK(weightd_mesh.send_pending[peer] == 0u && weightd_mesh.rpc_pending[peer] == 0u,
+            "e14: single signaled seq CQE retires both chained broadcast WRs");
+
+    {
+        uint64_t unique_bf[TEST_MESH_PEERS][64];
+        volatile uint64_t *saved_db[TEST_MESH_PEERS];
+        uint32_t saved_comb[TEST_MESH_PEERS];
+        uint32_t saved_unique = weightd_mesh.bf_all_unique;
+        uint64_t barriers_before = weightd_mesh.timing.ring_barriers;
+        memset(unique_bf, 0, sizeof(unique_bf));
+        for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+        {
+            saved_db[peer] = weightd_mesh.send_queues[peer].doorbell;
+            saved_comb[peer] = weightd_mesh.send_queues[peer].combining_bytes;
+            weightd_mesh.send_queues[peer].doorbell = &unique_bf[peer][0];
+            weightd_mesh.send_queues[peer].combining_bytes = 256u;
+            weightd_mesh.send_queues[peer].bf_offset = 0u;
+        }
+        SparkWeightdMeshRebuildFastMaps();
+        CHECK(weightd_mesh.bf_all_unique == 1u,
+            "e14: distinct per-QP BlueFlame registers enable zero-barrier fast path");
+        first = spark_stub_ibv_posted_count();
+        CHECK(test_post_route(band, local_rank, seq + 1u, 64u, route) == SPARK_STATUS_OK,
+            "e14: round 1 on unique BF registers posts");
+        CHECK(weightd_mesh.timing.ring_barriers == barriers_before &&
+              weightd_mesh.send_queues[0].bf_offset == 256u && unique_bf[0][0] != 0u,
+            "e14: round 1 rings offset 0 with zero barriers and toggles bf_offset to 256");
+        CHECK(test_post_route(band, local_rank, seq + 2u, 64u, route) == SPARK_STATUS_OK,
+            "e14: round 2 on unique BF registers posts");
+        CHECK(weightd_mesh.timing.ring_barriers == barriers_before &&
+              weightd_mesh.send_queues[0].bf_offset == 0u && unique_bf[0][32] != 0u,
+            "e14: round 2 ping-pongs to offset 256 with zero barriers and toggles back to 0");
+        test_complete_range(first, spark_stub_ibv_posted_count());
+        for ( peer = 0u; peer < TEST_MESH_PEERS; peer++ )
+        {
+            weightd_mesh.send_queues[peer].doorbell = saved_db[peer];
+            weightd_mesh.send_queues[peer].combining_bytes = saved_comb[peer];
+            weightd_mesh.send_queues[peer].bf_offset = 0u;
+        }
+        weightd_mesh.bf_all_unique = saved_unique;
+    }
+}
+
 typedef struct TestMeshActivityThread
 {
     SparkWeightdServer *server;
@@ -3264,6 +3393,7 @@ int main(void)
     test_peer_halves(local_rank);
     test_pair_first_routes(local_rank);
     test_permutation_schedule(local_rank);
+    test_e14_rdma_verbs_fastpath(local_rank);
     test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not

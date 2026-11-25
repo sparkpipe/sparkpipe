@@ -19,6 +19,9 @@
 #define WEIGHT_STREAM_MAX_CHUNKS (1u << WEIGHT_STREAM_CHUNK_BITS)
 #define WEIGHT_STREAM_READY_CHUNK (WEIGHT_STREAM_MAX_CHUNKS - 1u)
 #define WEIGHT_STREAM_READY_WR (UINT64_C(1) << 32)
+#define WEIGHT_STREAM_RETIRE_SHIFT 33u
+#define WEIGHT_STREAM_INLINE_BYTES 64u
+#define WEIGHT_STREAM_SIGNAL_STRIDE 8u
 
 typedef struct WeightStreamLink
 {
@@ -142,6 +145,7 @@ static SparkStatus WeightStreamCreateQp(WeightStreamLink *link, uint32_t peer, u
 	init.cap.max_recv_wr = SPARK_WEIGHT_STREAM_RECEIVE_DEPTH;
 	init.cap.max_send_sge = 1;
 	init.cap.max_recv_sge = 1;
+	init.cap.max_inline_data = WEIGHT_STREAM_INLINE_BYTES;
 	link->qps[peer] = ibv_create_qp(link->pd,&init);
 	if ( link->qps[peer] == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -154,12 +158,20 @@ static SparkStatus WeightStreamCreateQp(WeightStreamLink *link, uint32_t peer, u
 
 static SparkStatus WeightStreamPostReceives(struct ibv_qp *qp, uint32_t count)
 {
-	struct ibv_recv_wr request,*bad;
-	uint32_t index;
-	memset(&request,0,sizeof(request));
-	for (index=0u; index<count; index++)
-		if ( ibv_post_recv(qp,&request,&bad) != 0 )
+	struct ibv_recv_wr requests[WEIGHT_STREAM_POLL],*bad;
+	uint32_t posted = 0u,batch,index;
+	while ( posted < count )
+	{
+		batch = count - posted;
+		if ( batch > WEIGHT_STREAM_POLL )
+			batch = WEIGHT_STREAM_POLL;
+		memset(requests,0,batch * sizeof(requests[0]));
+		for (index=0u; index + 1u < batch; index++)
+			requests[index].next = &requests[index + 1u];
+		if ( ibv_post_recv(qp,&requests[0],&bad) != 0 )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		posted += batch;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -325,7 +337,14 @@ void SparkWeightStreamClose(SparkWeightStream *stream)
 		WeightStreamCloseAll(stream);
 }
 
-static SparkStatus WeightStreamWrite(SparkWeightStream *stream, uint32_t peer, uint64_t local_offset, uint64_t remote_offset, uint64_t length, uint32_t immediate)
+static uint32_t WeightStreamSignalStride(uint32_t depth)
+{
+	const uint32_t half = depth / 2u;
+	return half == 0u ? 1u : (half > WEIGHT_STREAM_SIGNAL_STRIDE ? WEIGHT_STREAM_SIGNAL_STRIDE : half);
+}
+
+static SparkStatus WeightStreamWrite(SparkWeightStream *stream, uint32_t peer, uint64_t local_offset, uint64_t remote_offset, uint64_t length,
+	uint32_t immediate, uint32_t signaled, uint32_t retire)
 {
 	WeightStreamLink *link = &stream->links[WeightStreamLinkOf(stream,peer)];
 	const SparkWeightStreamEndpoint *remote = WeightStreamEndpointOf(stream,peer);
@@ -338,11 +357,11 @@ static SparkStatus WeightStreamWrite(SparkWeightStream *stream, uint32_t peer, u
 	scatter.length = (uint32_t)length;
 	scatter.lkey = link->mr->lkey;
 	memset(&request,0,sizeof(request));
-	request.wr_id = peer;
+	request.wr_id = ((uint64_t)retire << WEIGHT_STREAM_RETIRE_SHIFT) | (uint64_t)peer;
 	request.sg_list = &scatter;
 	request.num_sge = 1;
 	request.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-	request.send_flags = IBV_SEND_SIGNALED;
+	request.send_flags = (signaled != 0u ? IBV_SEND_SIGNALED : 0) | (length <= WEIGHT_STREAM_INLINE_BYTES ? IBV_SEND_INLINE : 0);
 	request.imm_data = htonl(immediate);
 	request.wr.rdma.remote_addr = remote->address + remote_offset;
 	request.wr.rdma.rkey = remote->rkey;
@@ -418,12 +437,16 @@ static SparkStatus WeightStreamPoll(SparkWeightStream *stream, WeightStreamCall 
 {
 	WeightStreamLink *link = &stream->links[link_index];
 	struct ibv_wc done[WEIGHT_STREAM_POLL];
+	uint32_t repost[SPARK_WEIGHT_STREAM_MAX_RANKS];
 	SparkStatus status;
-	uint32_t peer;
+	uint32_t peer,repost_mask = 0u;
 	int count,item;
 	count = ibv_poll_cq(link->cq,WEIGHT_STREAM_POLL,done);
 	if ( count < 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( count == 0 )
+		return SPARK_STATUS_OK;
+	memset(repost,0,sizeof(repost));
 	for (item=0; item<count; item++)
 	{
 		if ( done[item].status != IBV_WC_SUCCESS )
@@ -434,22 +457,34 @@ static SparkStatus WeightStreamPoll(SparkWeightStream *stream, WeightStreamCall 
 		}
 		if ( done[item].opcode != IBV_WC_RECV_RDMA_WITH_IMM )
 		{
-			link->outstanding[(uint32_t)done[item].wr_id]--;
+			const uint32_t retire = (uint32_t)(done[item].wr_id >> WEIGHT_STREAM_RETIRE_SHIFT);
+			const uint32_t drop = retire != 0u ? retire : 1u;
+			link->outstanding[(uint32_t)done[item].wr_id] -= drop;
 			if ( (done[item].wr_id & WEIGHT_STREAM_READY_WR) == 0u )
-				call->done[link_index]++;
+				call->done[link_index] += drop;
 			continue;
 		}
 		for (peer=0u; peer<stream->config.ranks; peer++)
 			if ( link->qps[peer] != 0 && link->qps[peer]->qp_num == done[item].qp_num )
 				break;
-		if ( peer == stream->config.ranks || WeightStreamPostReceives(link->qps[peer],1u) != SPARK_STATUS_OK )
+		if ( peer == stream->config.ranks )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		repost[peer]++;
+		repost_mask |= 1u << peer;
 		{
 			const uint32_t immediate = ntohl(done[item].imm_data);
 			status = WeightStreamTag(immediate) == (call->tag & 0xffu) ? WeightStreamArrive(call,immediate,link_index) : WeightStreamStash(stream,immediate,link_index);
 			if ( status != SPARK_STATUS_OK )
 				return status;
 		}
+	}
+	while ( repost_mask != 0u )
+	{
+		peer = (uint32_t)__builtin_ctz(repost_mask);
+		repost_mask &= repost_mask - 1u;
+		status = WeightStreamPostReceives(link->qps[peer],repost[peer]);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 	}
 	return SPARK_STATUS_OK;
 }
@@ -494,11 +529,13 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 {
 	const SparkWeightStreamConfig *config = &stream->config;
 	const uint32_t chunks = (uint32_t)((bytes + config->chunk_bytes - 1u) / config->chunk_bytes);
-	uint32_t next_chunk[SPARK_WEIGHT_STREAM_MAX_RANKS],expected[2] = {0u,0u},peer,step,moved;
+	const uint32_t stride = WeightStreamSignalStride(config->depth);
+	uint32_t next_chunk[SPARK_WEIGHT_STREAM_MAX_RANKS],unsignaled[SPARK_WEIGHT_STREAM_MAX_RANKS],expected[2] = {0u,0u},peer,step,moved,polls = 0u;
 	uint64_t start,mine;
 	WeightStreamCall call;
 	SparkStatus status;
 	memset(next_chunk,0,sizeof(next_chunk));
+	memset(unsignaled,0,sizeof(unsignaled));
 	for (peer=0u; peer<config->ranks; peer++)
 		if ( peer != config->rank )
 			expected[WeightStreamLinkOf(stream,peer)] += chunks;
@@ -523,11 +560,15 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 			{
 				peer = WeightStreamSchedulePeer(config->rank,config->ranks,step);
 				const uint32_t link = WeightStreamLinkOf(stream,peer),chunk = next_chunk[peer];
+				uint32_t signaled,retire;
 				if ( chunk >= chunks || (call.ready[link] & (1u << peer)) == 0u || stream->links[link].outstanding[peer] >= config->depth )
 					continue;
+				signaled = unsignaled[peer] + 1u >= stride || chunk + 1u == chunks ? 1u : 0u;
+				retire = signaled != 0u ? unsignaled[peer] + 1u : 1u;
 				status = WeightStreamWrite(stream,peer,send_offset + (uint64_t)peer * send_pitch + (uint64_t)chunk * config->chunk_bytes,
 					landing_offset + (uint64_t)config->rank * bytes + (uint64_t)chunk * config->chunk_bytes,WeightStreamChunkLength(bytes,config->chunk_bytes,chunk),
-					WeightStreamImmediate(tag,config->rank,0u,chunk));
+					WeightStreamImmediate(tag,config->rank,0u,chunk),signaled,retire);
+				unsignaled[peer] = signaled != 0u ? 0u : unsignaled[peer] + 1u;
 				next_chunk[peer]++;
 				moved++;
 			}
@@ -537,7 +578,7 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 			status = WeightStreamPollAll(stream,&call);
 		if ( status != SPARK_STATUS_OK )
 			return WeightStreamFail(stream,status);
-		if ( SparkMonotonicNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
+		if ( (++polls & 63u) == 0u && SparkMonotonicNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
 		{
 			fprintf(stderr,"weight_stream: rank %u transfer tag %u stalled: done %u/%u + %u/%u got %u/%u + %u/%u ready 0x%x + 0x%x\n",config->rank,tag,
 				call.done[WEIGHT_STREAM_FABRIC],expected[WEIGHT_STREAM_FABRIC],call.done[WEIGHT_STREAM_PAIR],expected[WEIGHT_STREAM_PAIR],call.got[WEIGHT_STREAM_FABRIC],
@@ -594,8 +635,8 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 	uint64_t landing_offset, uint64_t pair_landing_offset, uint32_t tag, SparkWeightStreamBlock *block)
 {
 	const SparkWeightStreamConfig *config = stream != 0 ? &stream->config : 0;
-	uint32_t ranks,rank,partner,k,source,per_half,holds_own,target_pair,send_half,targets[2],target_count = 0u,sent[2] = {0u,0u},writers[2],writer_count = 0u;
-	uint32_t expect_done[2] = {0u,0u},expect_got[2] = {0u,0u},index,moved;
+	uint32_t ranks,rank,partner,k,source,per_half,holds_own,target_pair,send_half,targets[2],target_count = 0u,sent[2] = {0u,0u},unsignaled[2] = {0u,0u},writers[2],writer_count = 0u;
+	uint32_t expect_done[2] = {0u,0u},expect_got[2] = {0u,0u},index,moved,stride,polls = 0u;
 	uint64_t half,send_base,start;
 	WeightStreamCall call;
 	SparkStatus status;
@@ -604,6 +645,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	ranks = config->ranks;
 	rank = config->rank;
+	stride = WeightStreamSignalStride(config->depth);
 	partner = WeightStreamPartner(stream);
 	k = step % ranks;
 	source = SparkWeightStreamRotationSource(rank,ranks,step);
@@ -648,13 +690,17 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 			for (index=0u; index<target_count; index++)
 			{
 				const uint32_t target = targets[index],link = WeightStreamLinkOf(stream,target);
+				uint32_t signaled,retire;
 				if ( sent[index] >= per_half || (call.ready[link] & (1u << target)) == 0u || stream->links[link].outstanding[target] >= config->depth )
 					continue;
+				signaled = unsignaled[index] + 1u >= stride || sent[index] + 1u == per_half ? 1u : 0u;
+				retire = signaled != 0u ? unsignaled[index] + 1u : 1u;
 				status = WeightStreamWrite(stream,target,send_base + (uint64_t)sent[index] * config->chunk_bytes,
 					(target == partner ? pair_landing_offset : landing_offset) + (uint64_t)send_half * half + (uint64_t)sent[index] * config->chunk_bytes,WeightStreamChunkLength(half,config->chunk_bytes,sent[index]),
-					WeightStreamImmediate(tag,rank,send_half,sent[index]));
+					WeightStreamImmediate(tag,rank,send_half,sent[index]),signaled,retire);
 				if ( status != SPARK_STATUS_OK )
 					return WeightStreamFail(stream,status);
+				unsignaled[index] = signaled != 0u ? 0u : unsignaled[index] + 1u;
 				sent[index]++;
 				moved++;
 			}
@@ -667,7 +713,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 		status = WeightStreamPollAll(stream,&call);
 		if ( status != SPARK_STATUS_OK )
 			return WeightStreamFail(stream,status);
-		if ( SparkMonotonicNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
+		if ( (++polls & 63u) == 0u && SparkMonotonicNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
 		{
 			fprintf(stderr,"weight_stream: rank %u rotation step %u (block of rank %u) stalled: sent %u + %u done %u/%u + %u/%u got %u/%u + %u/%u ready 0x%x + 0x%x\n",rank,step,
 				source,sent[0],sent[1],call.done[WEIGHT_STREAM_FABRIC],expect_done[WEIGHT_STREAM_FABRIC],call.done[WEIGHT_STREAM_PAIR],expect_done[WEIGHT_STREAM_PAIR],
