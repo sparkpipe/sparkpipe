@@ -292,7 +292,8 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 	const uint64_t kda_heads = Glm5NextRankHeads(G5N_KDA_HEADS, state->tp_degree), rank_qk = kda_heads * G5N_KDA_KEY;
 	const uint64_t mla_heads = Glm5NextRankHeads(G5N_HEADS, state->tp_degree);
 	const uint64_t q_width = mla_heads * G5N_NOPE > rank_qk ? mla_heads * G5N_NOPE : rank_qk;
-	const uint64_t query_latent = R * mla_heads * G5N_LATENT > query_stride ? R * mla_heads * G5N_LATENT : query_stride;
+	const uint64_t query_latent = (R * mla_heads * G5N_LATENT > query_stride ? R * mla_heads * G5N_LATENT : query_stride) + gather_floats * 2u;
+	const uint64_t shard_query_elems = query_stride + gather_floats * 2u;
 	const uint64_t gate_up = P * (2u * G5N_EXPERT_INTER / D) > R * (2u * G5N_DENSE_INTER / D) ? P * (2u * G5N_EXPERT_INTER / D) : R * (2u * G5N_DENSE_INTER / D);
 	const uint64_t inter = P * (G5N_EXPERT_INTER / D) > R * (G5N_DENSE_INTER / D) ? P * (G5N_EXPERT_INTER / D) : R * (G5N_DENSE_INTER / D);
 	const uint64_t replay = lane == 0u ? (uint64_t)G5N_KDA_LAYERS * state->verify_rows : 0u;
@@ -311,7 +312,7 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 		{ (void **)&state->index_packed, R * G5N_INDEX_PACKED * 2u },
 		{ (void **)&state->selected_pools, R * (G5N_SELECTED / G5N_KPOOL) * 4u }, { (void **)&state->selected_positions, R * G5N_INDEX_WIDTH * 4u },
 		{ (void **)&state->selection_scores, R * SparkGlm5NextIndexCpPools(state->context_capacity) * 4u },
-		{ (void **)&state->index_local_scores, gather_floats * 4u }, { (void **)&state->index_gathered_scores, D * gather_floats * 4u },
+		{ (void **)&state->index_local_scores, gather_floats * 4u }, { (void **)&state->index_gathered_scores, 0u },
 		{ (void **)&state->fused_qkvb, R * (3u * rank_qk + kda_heads) * 2u }, { (void **)&state->fused_decay_gate, R * 2u * G5N_KDA_LOW_RANK * 2u },
 		{ (void **)&state->kda_decay_latent, R * G5N_KDA_LOW_RANK * 2u }, { (void **)&state->kda_gate_latent, R * G5N_KDA_LOW_RANK * 2u },
 		{ (void **)&state->kda_beta_logit, R * kda_heads * 2u }, { (void **)&state->kda_gate, R * rank_qk * 2u },
@@ -327,7 +328,7 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 		{ (void **)&state->route_source_token, P * 4u }, { (void **)&state->route_packed_row, P * 4u },
 		{ (void **)&state->group_row_offset, (G5N_EXPERTS + 1u) * 4u }, { (void **)&state->group_tile_prefix_w1, (G5N_EXPERTS + 1u) * 4u },
 		{ (void **)&state->group_tile_prefix_w2, (G5N_EXPERTS + 1u) * 4u },
-		{ (void **)&state->shard_query_gathered, D * query_stride * 2u },
+		{ (void **)&state->shard_query_gathered, D * shard_query_elems * 2u },
 		{ (void **)&state->shard_partials, D * partial_stride * 4u }, { (void **)&state->shard_partials_received, D * partial_stride * 4u },
 		{ (void **)&state->kda_state, lane == 0u ? (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_state_slot_bytes : 0u },
 		{ (void **)&state->kda_windows, lane == 0u ? 3u * (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_window_slot_bytes : 0u },
@@ -357,7 +358,7 @@ static uint32_t Glm5NextScratch(Glm5NextModelState *state, void ***fields)
 		(void **)&state->hc_post, (void **)&state->hc_comb, (void **)&state->q_compressed, (void **)&state->q, (void **)&state->query_latent,
 		(void **)&state->index_query, (void **)&state->index_key, (void **)&state->index_head_weight, (void **)&state->index_gate,
 		(void **)&state->index_packed, (void **)&state->selected_pools, (void **)&state->selected_positions, (void **)&state->selection_scores,
-		(void **)&state->index_local_scores, (void **)&state->index_gathered_scores, (void **)&state->fused_qkvb, (void **)&state->fused_decay_gate,
+		(void **)&state->index_local_scores, (void **)&state->fused_qkvb, (void **)&state->fused_decay_gate,
 		(void **)&state->kda_decay_latent, (void **)&state->kda_gate_latent, (void **)&state->kda_beta_logit, (void **)&state->kda_gate,
 		(void **)&state->kda_decay_logit, (void **)&state->kda_retention, (void **)&state->kda_write_gate, (void **)&state->kv_slot,
 		(void **)&state->attention_latent, (void **)&state->attention_value, (void **)&state->attention_out, (void **)&state->gate_up,
@@ -414,7 +415,7 @@ static void Glm5NextFree(Glm5NextModelState *state)
 		state->kv_error, state->streams, state->snapshot, state->normed, state->collapsed,
 		state->streams_mean, state->hc_mixes, state->hc_pre, state->hc_post, state->hc_comb, state->q_compressed, state->q, state->query_latent,
 		state->index_query, state->index_key, state->index_head_weight, state->index_gate, state->index_packed, state->selected_pools,
-		state->selected_positions, state->selection_scores, state->index_local_scores, state->index_gathered_scores, state->fused_qkvb,
+		state->selected_positions, state->selection_scores, state->index_local_scores, state->fused_qkvb,
 		state->fused_decay_gate, state->kda_decay_latent, state->kda_gate_latent, state->kda_beta_logit, state->kda_gate, state->kda_decay_logit,
 		state->kda_retention, state->kda_write_gate, state->kv_slot, state->attention_latent, state->attention_value, state->attention_out,
 		state->gate_up, state->intermediate, state->expert_out, state->shared_out, state->router_logits, state->route_expert, state->route_weight,
@@ -552,7 +553,8 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 	b->index_owner_rank = state->tp_rank;
 	b->index_owner_degree = state->tp_degree;
 	b->index_local_scores = state->index_local_scores;
-	b->index_gathered_scores = state->index_gathered_scores;
+	b->index_gathered_scores = (const float *)state->shard_query_gathered;
+	b->single_sequence = step->sequences == 1u ? 1u : 0u;
 	b->sequence_of_row = step->sequence_of_row;
 	b->context_length = step->context_length;
 	b->positions = step->positions;
@@ -688,24 +690,46 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, sms = step->multiprocessors, layer = b->layer_index, D = state->tp_degree;
+		const uint32_t query_seqs = SparkGlm5NextKvShardQuerySequences(rows, D);
+		const uint32_t local_stride = Glm5NextLocalStride(state, context), candidates = Glm5NextIndexCandidates(rows, local_stride);
+		const uint32_t index_seqs = context > G5N_SELECTED ?
+			SparkGlm5NextIndexCpGatherSequences(rows, candidates != 0u ? 2u * Glm5NextIndexKeep() : local_stride) : 0u;
+		const uint32_t combine = index_seqs == 0u || query_seqs + index_seqs <= state->collective_capacity ? 1u : 0u;
+		Glm5NextLayerBuffers local_b = *b;
 		SparkStatus status;
-		CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
-		CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		if ( status == SPARK_STATUS_OK )
+		if ( combine != 0u )
 		{
-			const uint32_t local_stride = Glm5NextLocalStride(state, context), candidates = Glm5NextIndexCandidates(rows, local_stride);
-			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
-				SparkGlm5NextIndexCpGatherSequences(rows, candidates != 0u ? 2u * Glm5NextIndexKeep() : local_stride),
-				candidates != 0u ? (const void *)b->selection_scores : (const void *)b->index_local_scores, (void *)b->index_gathered_scores);
+			float *index_send = index_seqs != 0u ? (float *)(b->query_latent_bf16 + (uint64_t)query_seqs * G5N_HIDDEN) : (float *)0;
+			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+			status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream, 1u, index_send), "attention head", layer);
+			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+			if ( status == SPARK_STATUS_OK )
+				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, query_seqs + index_seqs,
+					b->query_latent_bf16, b->shard_query_gathered_bf16);
+			if ( status == SPARK_STATUS_OK && index_seqs != 0u )
+			{
+				const uint64_t combined_floats = (uint64_t)(query_seqs + index_seqs) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS;
+				local_b.shard_query_stride = (uint64_t)(query_seqs + index_seqs) * G5N_HIDDEN;
+				status = Launch(Glm5NextIndexSelect(&local_b, rows, context, stream,
+					(const float *)(b->shard_query_gathered_bf16 + (uint64_t)query_seqs * G5N_HIDDEN), combined_floats), "index select", layer);
+			}
+		}
+		else
+		{
+			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+			status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
+			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+			if ( status == SPARK_STATUS_OK )
+				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, index_seqs,
+					candidates != 0u ? (const void *)b->selection_scores : (const void *)b->index_local_scores, (void *)b->index_gathered_scores);
+			if ( status == SPARK_STATUS_OK )
+				status = Launch(Glm5NextAttentionTail(b, rows, context, sms, stream), "attention tail", layer);
+			if ( status == SPARK_STATUS_OK )
+				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, query_seqs,
+					b->query_latent_bf16, b->shard_query_gathered_bf16);
 		}
 		if ( status == SPARK_STATUS_OK )
-			status = Launch(Glm5NextAttentionTail(b, rows, context, sms, stream), "attention tail", layer);
-		if ( status == SPARK_STATUS_OK )
-			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SparkGlm5NextKvShardQuerySequences(rows, D),
-				b->query_latent_bf16, b->shard_query_gathered_bf16);
-		if ( status == SPARK_STATUS_OK )
-			status = Launch(Glm5NextAttentionPartial(b, rows, stream), "attention partial", layer);
+			status = Launch(Glm5NextAttentionPartial(&local_b, rows, stream), "attention partial", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, SparkGlm5NextKvShardPartialSequences(rows, D, UINT32_MAX),
 				b->shard_partials_f32, b->shard_partials_received_f32);
