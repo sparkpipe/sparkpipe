@@ -28,7 +28,13 @@
 <style>
 h1 { max-width: 15ch; }
 .company div { grid-template-columns: 200px minmax(0, 1fr); }
-@media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } }
+.rais-banner { background: linear-gradient(90deg, color-mix(in srgb, var(--signal) 14%, var(--sheet)), var(--sheet) 55%, var(--raise)); border-bottom: 1px solid color-mix(in srgb, var(--signal) 40%, var(--rule)); }
+.rais-banner-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding-block: 12px; }
+.rais-badge { flex: none; font: 700 11px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase; padding: 5px 8px; border-radius: 3px; background: var(--signal); color: var(--signal-ink); }
+.rais-banner-copy { flex: 1 1 360px; margin: 0; font-size: 14px; line-height: 1.45; color: var(--steel); }
+.rais-banner-copy b { color: var(--ink); font-weight: 600; }
+.rais-banner-cta { flex: none; margin-left: auto; }
+@media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } .rais-banner-cta { margin-left: 0; } }
 </style>
 </head>
 <body>
@@ -63,6 +69,13 @@ h1 { max-width: 15ch; }
 </header>
 
 <main id="main">
+<aside class="rais-banner" aria-label="RAIS v1.0 Benchmark Announcement">
+  <div class="wrap rais-banner-inner">
+    <span class="rais-badge">Introducing RAIS v1.0</span>
+    <p class="rais-banner-copy">Open three-roofline inference benchmark across compute, memory &amp; network. Live on 16× DGX Spark: <b class="num">46.7 / 100</b> Certified Fleet RAIS across <b>19 / 19 VALID</b> models — K-EXAONE 2.0 <b class="num">60.0</b>, Kimi K3 <b class="num">57.6</b>, Solar Open 2 <b class="num">53.1</b>, Qwen 3.8 Max <b class="num">52.7</b>, DeepSeek V4.1 Flash <b class="num">46.3</b> (<span class="num">19.2k</span> tok/s cold prefill).</p>
+    <a class="btn small solid rais-banner-cta" href="rais.html">View RAIS v1.0</a>
+  </div>
+</aside>
 <section class="wrap hero">
   <p class="label hero-kicker">For engineers who live in a large codebase</p>
   <h1>Your codebase, warm all week, on a fleet of your own.</h1>
@@ -328,7 +341,7 @@ curl $OPENAI_BASE_URL/chat/completions \
       <div class="bar top"><span>K3, speculation</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, one request</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">For brand-new code, Kimi K3 decodes at 16.2 tok/s for one request today; a draft model trained on your own code is how our engine gets faster on it. Across the full 16-Spark fleet on our open three-roofline <a href="rais.html">RAIS v1.0 scorecard</a>, 18 of 19 canonical models (97.5% fleet weight) certify VALID at <b>46.1 / 100</b> Valid Fleet RAIS — led by K-EXAONE 2.0 (<b>57.0</b>), Kimi K3.1 Pro (<b>54.7</b>), Kimi K3 (<b>54.3</b>), Solar Open 2 (<b>50.9</b>), Qwen 3.8 Max (<b>50.2</b>), and DeepSeek V4.1 Flash (<b>48.2</b>, 10.7k–18.2k tok/s cold prefill). All figures are measured with our engine on Fleet 1; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a> and <span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
+    <p class="caption">For brand-new code, Kimi K3 decodes at 16.2 tok/s for one request today; a draft model trained on your own code is how our engine gets faster on it. Across the full 16-Spark fleet on our open three-roofline <a href="rais.html">RAIS v1.0 scorecard</a>, all 19 of 19 canonical models (100% fleet weight) certify VALID at <b>46.7 / 100</b> Certified Fleet RAIS — led by K-EXAONE 2.0 (<b>60.0</b>), Kimi K3 (<b>57.6</b>), Solar Open 2 (<b>53.1</b>), Qwen 3.8 Max (<b>52.7</b>), Qwen 3.8 27B (<b>49.9</b>), and DeepSeek V4.1 Flash (<b>46.3</b>, 11.0k–19.2k tok/s cold prefill). All figures are measured with our engine on Fleet 1; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a> and <span class="mono">qualification/releases/99fc2a2c1/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
   </div>
 </section>
 
