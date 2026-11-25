@@ -1,0 +1,2 @@
++764
+E7 1-switch prefill & high-batch collective throughput: fused RSAG Phase 1 streaming/wide reduce+publish kernels and multi-block per-peer arrival streaming gather in inference/runner/mesh_fast_kernels.cuh (+430), 256-bit Blackwell BF16 reduction, true GPU/NIC overlap in SparkTpMeshHardwarePipelineRound (Stage/ArriveRing/Combine/StreamGather split), fused ScatterStage publish, and shared-memory timer base guards in spark_tp_mesh_kernels.cuh (+287), conflict-free Latin-square peer schedule in ring/transport/weight_stream.c (+13), plus pre-existing main drift (+34).

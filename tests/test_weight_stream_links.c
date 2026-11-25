@@ -183,6 +183,38 @@ int main(void)
 	spark_stub_ibv_set_port_state(LINKS_FABRIC,IBV_PORT_ACTIVE);
 	spark_stub_ibv_set_port_state(LINKS_PAIR,IBV_PORT_ACTIVE);
 
+	{
+		const uint32_t sizes[] = {2u,3u,4u,6u,8u,16u};
+		uint32_t s;
+		for (s=0u; s<sizeof(sizes) / sizeof(sizes[0]); s++)
+		{
+			const uint32_t n = sizes[s];
+			uint32_t step,r,ok = 1u;
+			for (step=1u; step<n; step++)
+			{
+				uint32_t seen_dst = 0u;
+				for (r=0u; r<n; r++)
+				{
+					uint32_t dst = WeightStreamSchedulePeer(r,n,step);
+					if ( dst >= n || dst == r || (seen_dst & (1u << dst)) != 0u )
+						ok = 0u;
+					seen_dst |= 1u << dst;
+				}
+				if ( seen_dst != ((1u << n) - 1u) )
+					ok = 0u;
+			}
+			for (r=0u; r<n; r++)
+			{
+				uint32_t seen_peer = 0u;
+				for (step=1u; step<n; step++)
+					seen_peer |= 1u << WeightStreamSchedulePeer(r,n,step);
+				if ( seen_peer != (((1u << n) - 1u) & ~(1u << r)) )
+					ok = 0u;
+			}
+			CHECK(ok != 0u,"peer schedule is a conflict-free latin-square permutation");
+		}
+	}
+
 	(void)unlink(log_path);
 	fprintf(stderr,"test_weight_stream_links: %u checks, %u failures\n",links_checks,links_failures);
 	return links_failures != 0u ? 1 : 0;
