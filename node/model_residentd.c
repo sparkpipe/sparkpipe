@@ -1,3 +1,6 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -28,6 +31,7 @@
 #include <sys/statvfs.h>
 #include <sys/un.h>
 #if defined(__linux__)
+#include <sched.h>
 #include <sys/vfs.h>
 #else
 #include <sys/mount.h>
@@ -2691,6 +2695,7 @@ static SparkStatus SparkModelResidentdReadClient(
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( bytes_read < 0 )
 			return(SPARK_STATUS_OK);
+		SparkModelResidentArmQuickAck(runtime->client.fd);
 		runtime->client.input_bytes += (uint32_t)bytes_read;
 		runtime->client.last_activity_ns = SparkMonotonicNs();
 		if ( runtime->client.input_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES && runtime->client.target_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES )
@@ -3653,6 +3658,83 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 	SPARK_RETURN(failed_status != SPARK_STATUS_OK && status == SPARK_STATUS_OK ? (SparkStatus)failed_status : status);
 }
 
+#if defined(__linux__)
+static uint32_t SparkModelResidentdCpuCapacity(uint32_t cpu)
+{
+	char path[96];
+	unsigned int capacity = 0u;
+	FILE *file;
+	(void)snprintf(path,sizeof(path),"/sys/devices/system/cpu/cpu%u/cpu_capacity",cpu);
+	file = fopen(path,"r");
+	if ( file == 0 )
+		return(0u);
+	if ( fscanf(file,"%u",&capacity) != 1 )
+		capacity = 0u;
+	(void)fclose(file);
+	return(capacity);
+}
+
+static void SparkModelResidentdPinBigCores(void)
+{
+	const char *env = getenv("SPARK_RESIDENTD_CPU_AFFINITY");
+	long configured = sysconf(_SC_NPROCESSORS_CONF);
+	uint32_t cpu, cpus, highest = 0u, lowest = UINT32_MAX, capacity, count = 0u, exclude_top = 1u;
+	cpu_set_t current, set;
+	if ( env != 0 && (strcmp(env,"0") == 0 || strcmp(env,"off") == 0 || strcmp(env,"false") == 0) )
+		return;
+	cpus = configured > 0 && configured < CPU_SETSIZE ? (uint32_t)configured : 0u;
+	if ( cpus < 2u || sched_getaffinity(0,sizeof(current),&current) != 0 )
+		return;
+	for ( cpu = 0u; cpu < cpus; cpu++ )
+	{
+		if ( !CPU_ISSET(cpu,&current) )
+			continue;
+		capacity = SparkModelResidentdCpuCapacity(cpu);
+		if ( capacity == 0u )
+			continue;
+		highest = capacity > highest ? capacity : highest;
+		lowest = capacity < lowest ? capacity : lowest;
+	}
+	if ( highest == 0u || highest == lowest )
+		return;
+	CPU_ZERO(&set);
+	for ( cpu = 0u; cpu < cpus; cpu++ )
+	{
+		if ( !CPU_ISSET(cpu,&current) )
+			continue;
+		capacity = SparkModelResidentdCpuCapacity(cpu);
+		if ( capacity * 10u >= highest * 9u && capacity < highest )
+		{
+			CPU_SET(cpu,&set);
+			count++;
+		}
+	}
+	if ( count < 2u )
+	{
+		exclude_top = 0u;
+		count = 0u;
+		CPU_ZERO(&set);
+		for ( cpu = 0u; cpu < cpus; cpu++ )
+		{
+			if ( !CPU_ISSET(cpu,&current) )
+				continue;
+			capacity = SparkModelResidentdCpuCapacity(cpu);
+			if ( capacity * 10u >= highest * 9u )
+			{
+				CPU_SET(cpu,&set);
+				count++;
+			}
+		}
+	}
+	if ( count != 0u )
+		fprintf(stderr,"model_residentd affinity=big_cores cpus=%u highest=%u lowest=%u excluded_top=%u rc=%d\n",count,highest,lowest,exclude_top,sched_setaffinity(0,sizeof(set),&set));
+}
+#else
+static void SparkModelResidentdPinBigCores(void)
+{
+}
+#endif
+
 int main(int argument_count,char **arguments)
 {
 	SparkModelResidentDeployment deployment;
@@ -3679,6 +3761,7 @@ int main(int argument_count,char **arguments)
 	signal(SIGINT,SparkModelResidentdSignal);
 	signal(SIGTERM,SparkModelResidentdSignal);
 	signal(SIGALRM,SparkModelResidentdAlarm);
+	SparkModelResidentdPinBigCores();
 	if ( deployment.weightd_socket_path != 0 &&
 		deployment.weightd_socket_path[0] != '\0' )
 	{

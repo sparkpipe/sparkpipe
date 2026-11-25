@@ -1223,6 +1223,7 @@ static SparkStatus SparkModelResidentClientRead(
 				return(SPARK_STATUS_OK);
 			if ( received <= 0 )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			SparkModelResidentArmQuickAck(client->fd);
 			client->input_bytes += (uint32_t)received;
 			drained = (uint32_t)received < requested ? 1u : 0u;
 			continue;

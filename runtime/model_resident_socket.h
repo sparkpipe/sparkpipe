@@ -18,6 +18,16 @@ static SparkStatus SparkModelResidentConfigureSocket(int fd)
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkModelResidentArmQuickAck(int fd)
+{
+#if defined(TCP_QUICKACK)
+	int enabled = 1;
+	(void)setsockopt(fd,IPPROTO_TCP,TCP_QUICKACK,&enabled,sizeof(enabled));
+#else
+	(void)fd;
+#endif
+}
+
 static SparkStatus SparkModelResidentConfigureTcp(int fd)
 {
 	int enabled = 1, idle = 10, interval = 5, count = 3;
@@ -32,5 +42,6 @@ static SparkStatus SparkModelResidentConfigureTcp(int fd)
 		setsockopt(fd,IPPROTO_TCP,TCP_KEEPINTVL,&interval,sizeof(interval)) != 0 ||
 		setsockopt(fd,IPPROTO_TCP,TCP_KEEPCNT,&count,sizeof(count)) != 0 )
 		return(SPARK_STATUS_IO_ERROR);
+	SparkModelResidentArmQuickAck(fd);
 	return(SPARK_STATUS_OK);
 }
