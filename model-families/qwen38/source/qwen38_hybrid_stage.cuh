@@ -35,8 +35,6 @@
 #define QH_THREADS 256u
 #define QH_SCALE_K 128u
 
-#define QH_INDEX_CHUNK 64u
-
 constexpr uint32_t QwenHybridGatherParts(uint32_t ranks, uint32_t width, uint32_t limit)
 {
 	uint32_t parts = ranks == 1u ? 1u : (width + limit - 1u) / limit;
@@ -75,7 +73,7 @@ struct QwenHybridState : CudaStagePackState
 {
 	const char *linear_kind;
 	uint32_t linear_bytes, ffn_rows, expert_first, gdn_heads, gdn_qk, gdn_v, gdn_channels, attn_rows, attn_width;
-	uint64_t gdn_state_bytes, gdn_window_bytes, record_stride, tap_stride, ple_window_bytes, index_topk_entries;
+	uint64_t gdn_state_bytes, gdn_window_bytes, record_stride, tap_stride, ple_window_bytes;
 	QwenHybridLayer layers[G::kLayers];
 	FILE *dump;
 	int16_t tap_output[G::kLayers];
@@ -87,9 +85,9 @@ struct QwenHybridState : CudaStagePackState
 	uint16_t *ple_embed, *ple_key, *ple_query, *ple_value, *ple_gated, *ple_conv_in, *ple_conv_out, *ple_window;
 	uint16_t *index_qk, *index_query, *index_key, *index_block, *index_tail;
 	float *retention, *write_gate, *send, *received, *router_probs, *route_weight, *packed_weight, *gdn_snapshots, *hc_inject;
-	float *index_scores, *index_topk_values, *index_full_scores;
-	uint32_t *dump_positions, *route_expert, *route_global, *group_row_offset, *route_packed_row, *route_source_token, *tile_prefix_up, *tile_prefix_down;
-	uint32_t *row_lane, *row_ordinal, *index_local_selected, *index_topk_positions, *index_selected, *index_mask;
+	float *index_scores;
+	uint32_t *dump_positions, *route_expert, *route_global, *group_row_offset, *route_packed_row, *route_source_token, *packed_expert, *tile_prefix_up, *tile_prefix_down;
+	uint32_t *row_lane, *row_ordinal, *index_local_selected, *index_mask;
 	uint8_t *gdn_state;
 	const float *final_hc_norm, *ple_norm_key, *ple_norm_query, *ple_norm_conv, *ple_table_scale;
 	const uint16_t *final_hc_down, *final_hc_up, *ple_key_weight, *ple_value_weight, *ple_conv_weight;
@@ -386,24 +384,107 @@ static void QwenGdnSplitExpandGateKernel(const uint16_t *__restrict__ qkv, const
 }
 
 template<bool SIGMOID>
-__global__ __launch_bounds__(QH_VALUE_DIM, 2)
+__global__ __launch_bounds__(QH_THREADS, 4)
 static void QwenGdnHeadRmsNormGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16,
 	const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads,
 	uint32_t gate_row_stride, uint32_t gate_col_offset)
 {
-	__shared__ float reduction[LmBlockWarps<QH_VALUE_DIM>()];
-	const uint32_t head = blockIdx.x, row = blockIdx.y, i = threadIdx.x;
+	static_assert(QH_VALUE_DIM == 128u, "GDN head rms norm gate assumes 128-element value heads");
+	constexpr uint32_t WARPS = QH_THREADS / LM_WARP_LANES;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t head = blockIdx.x * WARPS + warp, row = blockIdx.y;
 	LmDependentWait();
 	LmDependentRelease();
 	if ( row >= rows || head >= heads )
 		return;
 	const uint64_t base = ((uint64_t)row * heads + head) * QH_VALUE_DIM;
 	const uint64_t gbase = (uint64_t)row * gate_row_stride + gate_col_offset + (uint64_t)head * QH_VALUE_DIM;
-	const float in = LmBf16ToFloat(input_bf16[base + i]);
-	const float scale = SparkMathRmsScale(LmBlockSumOnce<QH_VALUE_DIM>(in * in, reduction), (float)QH_VALUE_DIM, QH_EPSILON);
-	const float w = LmBf16ToFloat(weight_bf16[i]);
-	const float g = LmBf16ToFloat(gate_bf16[gbase + i]);
-	output_bf16[base + i] = LmFloatToBf16(SparkMathRoundBf16(SparkMathRoundBf16(in * scale) * w) * (SIGMOID ? SparkMathSigmoidFast(g) : SparkMathSiluFast(g)));
+	float in[4], sq[4];
+	#pragma unroll
+	for ( uint32_t k = 0u; k < 4u; ++k )
+	{
+		const float v = LmBf16ToFloat(input_bf16[base + k * 32u + lane]);
+		in[k] = v;
+		sq[k] = QwenWarpSum(v * v);
+	}
+	const float total = (sq[0] + sq[2]) + (sq[1] + sq[3]);
+	const float scale = SparkMathRmsScale(total, (float)QH_VALUE_DIM, QH_EPSILON);
+	#pragma unroll
+	for ( uint32_t k = 0u; k < 4u; ++k )
+	{
+		const uint32_t i = k * 32u + lane;
+		const float w = LmBf16ToFloat(__ldg(weight_bf16 + i));
+		const float g = LmBf16ToFloat(gate_bf16[gbase + i]);
+		output_bf16[base + i] = LmFloatToBf16(SparkMathRoundBf16(SparkMathRoundBf16(in[k] * scale) * w) *
+			(SIGMOID ? SparkMathSigmoidFast(g) : SparkMathSiluFast(g)));
+	}
+}
+
+template<uint32_t WIDTH, bool HAS_ADD>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenRmsNormKernel(uint16_t *__restrict__ hidden, const uint16_t *__restrict__ partial, const float *__restrict__ weight,
+	uint16_t *__restrict__ normed, float epsilon)
+{
+	static_assert((WIDTH & 7u) == 0u && WIDTH <= QH_THREADS * 32u, "width fits in staged vectorized waves");
+	constexpr uint32_t VEC_SLOTS = (WIDTH + QH_THREADS * 8u - 1u) / (QH_THREADS * 8u);
+	__shared__ float sq_wave[QH_THREADS * 8u];
+	__shared__ float reduction[LmBlockWarps<QH_THREADS>()];
+	const uint64_t base = (uint64_t)blockIdx.x * WIDTH;
+	uint16_t *h_row = hidden + base;
+	const uint16_t *p_row = HAS_ADD ? partial + base : (const uint16_t *)0;
+	uint16_t *n_row = normed + base;
+	uint4 staged[VEC_SLOTS];
+	float total = 0.0f;
+	LmDependentWait();
+	#pragma unroll
+	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
+	{
+		const uint32_t wave_base = slot * QH_THREADS * 8u;
+		const uint32_t offset = wave_base + threadIdx.x * 8u;
+		if ( offset < WIDTH )
+		{
+			float vals[8], sq[8];
+			staged[slot] = LmRmsLoadAdd8<HAS_ADD>(h_row + offset, HAS_ADD ? p_row + offset : (const uint16_t *)0, vals);
+			if constexpr ( HAS_ADD )
+				*(uint4 *)(h_row + offset) = staged[slot];
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				sq[k] = vals[k] * vals[k];
+			LmStoreFloat8(sq_wave + threadIdx.x * 8u, sq);
+		}
+		else
+			staged[slot] = make_uint4(0u, 0u, 0u, 0u);
+		__syncthreads();
+		#pragma unroll
+		for ( uint32_t s = 0u; s < 8u; ++s )
+			if ( wave_base + s * QH_THREADS + threadIdx.x < WIDTH )
+				total += sq_wave[s * QH_THREADS + threadIdx.x];
+		if ( slot + 1u < VEC_SLOTS )
+			__syncthreads();
+	}
+	const float scale = SparkMathRmsScale(LmBlockSumOnce<QH_THREADS>(total, reduction), (float)WIDTH, epsilon);
+	#pragma unroll
+	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
+	{
+		const uint32_t offset = (slot * QH_THREADS + threadIdx.x) * 8u;
+		if ( offset < WIDTH )
+		{
+			float vals[8];
+			LmLoadBf16x8AsFloat(staged[slot], vals);
+			LmRmsStore8(vals, weight, offset, scale, n_row + offset, LmRmsGainOp<false>{});
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 2)
+static void QwenSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension)
+{
+	const uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	LmDependentWait();
+	LmDependentRelease();
+	LmGateUpRowBody<THREADS>(gate_up_bf16 + base, gate_up_bf16 + base + dimension, output_bf16 + (uint64_t)blockIdx.x * dimension, dimension, LmSiluOp{});
 }
 
 static __device__ __forceinline__ uint32_t QwenE2m1PairToBf16(uint32_t byte_val, uint32_t scale_bf16x2)
@@ -428,6 +509,98 @@ static __device__ __forceinline__ void QwenCpAsync16(void *dst, const void *src,
 {
 	const uint32_t smem = (uint32_t)__cvta_generic_to_shared(dst);
 	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
+}
+
+template<class Format, uint32_t LANES, uint32_t ROWS_PER_GROUP, uint32_t NPG>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenExactLinearKernel(const uint8_t *__restrict__ weight, const uint16_t *__restrict__ activation,
+	uint16_t *__restrict__ output, uint32_t rows, uint32_t input_dim, uint32_t output_dim)
+{
+	constexpr uint32_t GROUPS = QH_THREADS / LANES;
+	constexpr uint32_t TILE_ROWS = GROUPS * ROWS_PER_GROUP;
+	constexpr uint32_t ELEMENTS = LmSkinnyFormat<Format>::kElements;
+	constexpr uint32_t TOTAL_W = NPG * LANES;
+	__shared__ __align__(16) uint4 s_w[2][NPG][LANES];
+	const uint32_t n0 = blockIdx.x * NPG;
+	const uint32_t grp = threadIdx.x / LANES;
+	const uint32_t sub = threadIdx.x & (LANES - 1u);
+	const uint32_t warp_first_row = blockIdx.y * TILE_ROWS + grp * ROWS_PER_GROUP;
+	const uint32_t row_cnt = warp_first_row < rows ? (rows - warp_first_row < ROWS_PER_GROUP ? rows - warp_first_row : ROWS_PER_GROUP) : 0u;
+	const uint32_t chunks = input_dim / ELEMENTS;
+	const uint4 *w4 = (const uint4 *)weight;
+	LmDependentWait();
+	auto stage_w = [&](uint32_t st, uint32_t k_base) {
+		if ( threadIdx.x < TOTAL_W )
+		{
+			const uint32_t wn = threadIdx.x / LANES, wc = threadIdx.x & (LANES - 1u);
+			const uint32_t neuron = n0 + wn, c = k_base + wc;
+			const bool ok = neuron < output_dim && c < chunks;
+			const uint4 *src = ok ? (w4 + (uint64_t)neuron * chunks + c) : w4;
+			QwenCpAsync16(&s_w[st][wn][wc], src, ok ? 16u : 0u);
+		}
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+	};
+	stage_w(0u, 0u);
+	float acc[NPG][ROWS_PER_GROUP];
+	#pragma unroll
+	for ( uint32_t n = 0u; n < NPG; ++n )
+		#pragma unroll
+		for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
+			acc[n][r] = 0.0f;
+	for ( uint32_t k_base = 0u; k_base < chunks; k_base += LANES )
+	{
+		const uint32_t cur = (k_base / LANES) & 1u;
+		if ( k_base + LANES < chunks )
+			stage_w(cur ^ 1u, k_base + LANES);
+		if ( k_base + LANES < chunks )
+			asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+		else
+			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		__syncthreads();
+		const uint32_t c = k_base + sub;
+		if ( row_cnt != 0u && c < chunks )
+		{
+			uint4 w[NPG];
+			#pragma unroll
+			for ( uint32_t n = 0u; n < NPG; ++n )
+				w[n] = s_w[cur][n][sub];
+			#pragma unroll
+			for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
+			{
+				const uint32_t row = r < row_cnt ? warp_first_row + r : 0u;
+				const uint4 a = LmSkinnyFormat<LmBf16Format>::Load(activation + (uint64_t)row * input_dim + c * 8u);
+				float af[8];
+				LmSkinnyUnpackBf16x8(a, af);
+				#pragma unroll
+				for ( uint32_t n = 0u; n < NPG; ++n )
+					acc[n][r] = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(w[n], af, 0.0f), acc[n][r]);
+			}
+		}
+		if ( k_base + LANES < chunks )
+			__syncthreads();
+	}
+	if ( row_cnt != 0u )
+	{
+		#pragma unroll
+		for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+			#pragma unroll
+			for ( uint32_t n = 0u; n < NPG; ++n )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
+					acc[n][r] += __shfl_xor_sync(0xffffffffu, acc[n][r], step, LANES);
+		if ( sub == 0u )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < ROWS_PER_GROUP; ++r )
+				if ( r < row_cnt )
+				{
+					const uint64_t row_off = (uint64_t)(warp_first_row + r) * output_dim + n0;
+					#pragma unroll
+					for ( uint32_t n = 0u; n < NPG; ++n )
+						if ( n0 + n < output_dim )
+							output[row_off + n] = LmFloatToBf16(acc[n][r]);
+				}
+	}
+	LmDependentRelease();
 }
 
 template<uint32_t MAX_M_TILES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP, uint32_t SCALE_TILES = 4u>
@@ -458,11 +631,17 @@ static void QwenNvfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t
 	const uint32_t n_block = blockIdx.x % n_blocks;
 	LmDependentWait();
 	if ( group >= groups )
+	{
+		LmDependentRelease();
 		return;
+	}
 	const uint32_t row_begin = group_row_offset[group];
 	const uint32_t row_end = group_row_offset[group + 1u];
 	if ( row_begin >= row_end )
+	{
+		LmDependentRelease();
 		return;
+	}
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
 	const uint32_t n_base = n_block * TILE_N, k_tiles = input_dim / TILE_K;
 	const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u);
@@ -620,6 +799,333 @@ static void QwenNvfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t
 	LmDependentRelease();
 }
 
+static __device__ __forceinline__ float QwenNvfp4HalfDot(const LmSkinnyE2m1HalfDecoded &d, const uint16_t *act, uint32_t half, float sc, float acc)
+{
+	const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act, half);
+	float af[16];
+	LmSkinnyUnpackBf16x8(a.low, af);
+	LmSkinnyUnpackBf16x8(a.high, af + 8);
+	return fmaf(sc, LmSkinnyDotPairs16(d.pair, af), acc);
+}
+
+static __device__ __forceinline__ LmSkinnyE2m1HalfDecoded QwenNvfp4DecodeHalf(uint4 vw, uint32_t half)
+{
+	return half == 0u ? LmSkinnyDecodeE2m1Half(vw.x, vw.y) : LmSkinnyDecodeE2m1Half(vw.z, vw.w);
+}
+
+static __device__ __forceinline__ float2 QwenNvfp4LoadSc(const uint8_t *s_ptr, uint32_t c, float g)
+{
+	return LmSkinnyDecodeUe4m3Raw(LmSkinnyUe4m3Raw{ __ldg(s_ptr + 2u * c), __ldg(s_ptr + 2u * c + 1u) }, g);
+}
+
+template<uint32_t K, uint32_t N, uint32_t GROUPS>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenNvfp4SkinnyW1W3SingleKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
+	const uint8_t *__restrict__ w3, const uint8_t *__restrict__ w3_scale_blob, const uint16_t *__restrict__ activation,
+	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
+	const uint32_t *__restrict__ packed_expert, uint16_t *__restrict__ output)
+{
+	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES;
+	const uint32_t pr = blockIdx.y, neuron = blockIdx.x * PER_BLK + (threadIdx.x / LANES), sub = threadIdx.x & (LANES - 1u);
+	LmDependentWait();
+	if ( pr >= __ldg(group_row_offset + GROUPS) || neuron >= N )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t group = __ldg(packed_expert + pr);
+	const uint64_t row_off = ((uint64_t)group * N + neuron) * CHUNKS;
+	const uint4 *w1_ptr = (const uint4 *)w1 + row_off, *w3_ptr = (const uint4 *)w3 + row_off;
+	const uint8_t *s1_ptr = w1_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
+	const uint8_t *s3_ptr = w3_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
+	const float g1 = __ldg((const float *)w1_scale_blob + group), g3 = __ldg((const float *)w3_scale_blob + group);
+	float acc1 = 0.0f, acc3 = 0.0f;
+	for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+	{
+		const uint4 vw1 = __ldcs(w1_ptr + c), vw3 = __ldcs(w3_ptr + c);
+		const float2 sc1 = QwenNvfp4LoadSc(s1_ptr, c, g1), sc3 = QwenNvfp4LoadSc(s3_ptr, c, g3);
+		#pragma unroll
+		for ( uint32_t half = 0u; half < 2u; ++half )
+		{
+			const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(activation + c * 32u, half);
+			float af[16];
+			LmSkinnyUnpackBf16x8(a.low, af);
+			LmSkinnyUnpackBf16x8(a.high, af + 8);
+			acc1 = fmaf(half == 0u ? sc1.x : sc1.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw1, half).pair, af), acc1);
+			acc3 = fmaf(half == 0u ? sc3.x : sc3.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw3, half).pair, af), acc3);
+		}
+	}
+	#pragma unroll
+	for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+	{
+		acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, LANES);
+		acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, LANES);
+	}
+	if ( sub == 0u )
+		output[(uint64_t)pr * N + neuron] = LmFloatToBf16(
+			SparkMathGateLimitedGlu(LmBf16ToFloat(LmFloatToBf16(acc1)), LmBf16ToFloat(LmFloatToBf16(acc3)), INFINITY) * __ldg(packed_weight + pr));
+	LmDependentRelease();
+}
+
+template<uint32_t K, uint32_t N, uint32_t GROUPS>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenNvfp4SkinnyW1W3BatchedKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
+	const uint8_t *__restrict__ w3, const uint8_t *__restrict__ w3_scale_blob, const uint16_t *__restrict__ activation,
+	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
+	const uint32_t *__restrict__ route_source_token, uint16_t *__restrict__ output)
+{
+	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES;
+	const uint32_t group = blockIdx.y, neuron = blockIdx.x * PER_BLK + (threadIdx.x / LANES), sub = threadIdx.x & (LANES - 1u);
+	LmDependentWait();
+	const uint32_t row_begin = __ldg(group_row_offset + group), row_end = __ldg(group_row_offset + group + 1u);
+	if ( row_begin >= row_end || neuron >= N )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint64_t row_off = ((uint64_t)group * N + neuron) * CHUNKS;
+	const uint4 *w1_ptr = (const uint4 *)w1 + row_off, *w3_ptr = (const uint4 *)w3 + row_off;
+	const uint8_t *s1_ptr = w1_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
+	const uint8_t *s3_ptr = w3_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
+	const float g1 = __ldg((const float *)w1_scale_blob + group), g3 = __ldg((const float *)w3_scale_blob + group);
+	for ( uint32_t first = row_begin; first < row_end; )
+	{
+		const uint32_t rem = row_end - first;
+		if ( rem == 1u )
+		{
+			const uint16_t *act = activation + (uint64_t)__ldg(route_source_token + first) * K;
+			float acc1 = 0.0f, acc3 = 0.0f;
+			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+			{
+				const uint4 vw1 = __ldcs(w1_ptr + c), vw3 = __ldcs(w3_ptr + c);
+				const float2 sc1 = QwenNvfp4LoadSc(s1_ptr, c, g1), sc3 = QwenNvfp4LoadSc(s3_ptr, c, g3);
+				#pragma unroll
+				for ( uint32_t half = 0u; half < 2u; ++half )
+				{
+					const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act + c * 32u, half);
+					float af[16];
+					LmSkinnyUnpackBf16x8(a.low, af);
+					LmSkinnyUnpackBf16x8(a.high, af + 8);
+					acc1 = fmaf(half == 0u ? sc1.x : sc1.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw1, half).pair, af), acc1);
+					acc3 = fmaf(half == 0u ? sc3.x : sc3.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw3, half).pair, af), acc3);
+				}
+			}
+			#pragma unroll
+			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+			{
+				acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, LANES);
+				acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, LANES);
+			}
+			if ( sub == 0u )
+				output[(uint64_t)first * N + neuron] = LmFloatToBf16(
+					SparkMathGateLimitedGlu(LmBf16ToFloat(LmFloatToBf16(acc1)), LmBf16ToFloat(LmFloatToBf16(acc3)), INFINITY) * __ldg(packed_weight + first));
+			first += 1u;
+		}
+		else
+		{
+			const uint32_t cnt = rem < 4u ? rem : 4u;
+			uint32_t src[4];
+			float acc1[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, acc3[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			#pragma unroll
+			for ( uint32_t r = 0u; r < 4u; ++r )
+				src[r] = __ldg(route_source_token + first + (r < cnt ? r : 0u));
+			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+			{
+				const uint4 vw1 = __ldcs(w1_ptr + c), vw3 = __ldcs(w3_ptr + c);
+				const float2 sc1 = QwenNvfp4LoadSc(s1_ptr, c, g1), sc3 = QwenNvfp4LoadSc(s3_ptr, c, g3);
+				#pragma unroll
+				for ( uint32_t half = 0u; half < 2u; ++half )
+				{
+					const LmSkinnyE2m1HalfDecoded d1 = QwenNvfp4DecodeHalf(vw1, half);
+					#pragma unroll
+					for ( uint32_t r = 0u; r < 4u; ++r )
+						acc1[r] = QwenNvfp4HalfDot(d1, activation + (uint64_t)src[r] * K + c * 32u, half, half == 0u ? sc1.x : sc1.y, acc1[r]);
+					const LmSkinnyE2m1HalfDecoded d3 = QwenNvfp4DecodeHalf(vw3, half);
+					#pragma unroll
+					for ( uint32_t r = 0u; r < 4u; ++r )
+						acc3[r] = QwenNvfp4HalfDot(d3, activation + (uint64_t)src[r] * K + c * 32u, half, half == 0u ? sc3.x : sc3.y, acc3[r]);
+				}
+			}
+			#pragma unroll
+			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < 4u; ++r )
+				{
+					acc1[r] += __shfl_xor_sync(0xffffffffu, acc1[r], step, LANES);
+					acc3[r] += __shfl_xor_sync(0xffffffffu, acc3[r], step, LANES);
+				}
+			if ( sub == 0u )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < 4u; ++r )
+					if ( r < cnt )
+						output[(uint64_t)(first + r) * N + neuron] = LmFloatToBf16(
+							SparkMathGateLimitedGlu(LmBf16ToFloat(LmFloatToBf16(acc1[r])), LmBf16ToFloat(LmFloatToBf16(acc3[r])), INFINITY) * __ldg(packed_weight + first + r));
+			first += cnt;
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t K, uint32_t N, uint32_t GROUPS>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenNvfp4SkinnyW2SingleKernel(const uint8_t *__restrict__ w2, const uint8_t *__restrict__ w2_scale_blob,
+	const uint16_t *__restrict__ activation, const uint32_t *__restrict__ group_row_offset,
+	const uint32_t *__restrict__ packed_expert, uint16_t *__restrict__ output)
+{
+	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES, NPG = 4u;
+	const uint32_t pr = blockIdx.y, n0 = (blockIdx.x * PER_BLK + (threadIdx.x / LANES)) * NPG, sub = threadIdx.x & (LANES - 1u);
+	LmDependentWait();
+	if ( pr >= __ldg(group_row_offset + GROUPS) || n0 >= N )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t group = __ldg(packed_expert + pr);
+	const uint64_t off0 = ((uint64_t)group * N + n0) * CHUNKS;
+	const uint4 *w_ptr[NPG];
+	const uint8_t *s_ptr[NPG];
+	bool live[NPG];
+	#pragma unroll
+	for ( uint32_t k = 0u; k < NPG; ++k )
+	{
+		live[k] = (n0 + k) < N;
+		const uint64_t off = live[k] ? (off0 + (uint64_t)k * CHUNKS) : off0;
+		w_ptr[k] = (const uint4 *)w2 + off;
+		s_ptr[k] = w2_scale_blob + (uint64_t)GROUPS * sizeof(float) + off * 2u;
+	}
+	const float glob = __ldg((const float *)w2_scale_blob + group);
+	const uint16_t *act = activation + (uint64_t)pr * K;
+	float acc[NPG] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+	{
+		uint4 vw[NPG];
+		float2 sc[NPG];
+		#pragma unroll
+		for ( uint32_t k = 0u; k < NPG; ++k )
+		{
+			vw[k] = live[k] ? __ldcs(w_ptr[k] + c) : make_uint4(0u, 0u, 0u, 0u);
+			sc[k] = live[k] ? QwenNvfp4LoadSc(s_ptr[k], c, glob) : make_float2(0.0f, 0.0f);
+		}
+		#pragma unroll
+		for ( uint32_t half = 0u; half < 2u; ++half )
+		{
+			const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act + c * 32u, half);
+			float af[16];
+			LmSkinnyUnpackBf16x8(a.low, af);
+			LmSkinnyUnpackBf16x8(a.high, af + 8);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < NPG; ++k )
+				if ( live[k] )
+					acc[k] = fmaf(half == 0u ? sc[k].x : sc[k].y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw[k], half).pair, af), acc[k]);
+		}
+	}
+	#pragma unroll
+	for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+		#pragma unroll
+		for ( uint32_t k = 0u; k < NPG; ++k )
+			if ( live[k] )
+				acc[k] += __shfl_xor_sync(0xffffffffu, acc[k], step, LANES);
+	if ( sub == 0u )
+		#pragma unroll
+		for ( uint32_t k = 0u; k < NPG; ++k )
+			if ( live[k] )
+				output[(uint64_t)pr * N + n0 + k] = LmFloatToBf16(acc[k]);
+	LmDependentRelease();
+}
+
+template<uint32_t K, uint32_t N, uint32_t GROUPS>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenNvfp4SkinnyW2BatchedKernel(const uint8_t *__restrict__ w2, const uint8_t *__restrict__ w2_scale_blob,
+	const uint16_t *__restrict__ activation, const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output)
+{
+	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES;
+	const uint32_t group = blockIdx.y, neuron = blockIdx.x * PER_BLK + (threadIdx.x / LANES), sub = threadIdx.x & (LANES - 1u);
+	LmDependentWait();
+	const uint32_t row_begin = __ldg(group_row_offset + group), row_end = __ldg(group_row_offset + group + 1u);
+	if ( row_begin >= row_end || neuron >= N )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint64_t off0 = ((uint64_t)group * N + neuron) * CHUNKS;
+	const uint4 *w_ptr = (const uint4 *)w2 + off0;
+	const uint8_t *s_ptr = w2_scale_blob + (uint64_t)GROUPS * sizeof(float) + off0 * 2u;
+	const float glob = __ldg((const float *)w2_scale_blob + group);
+	for ( uint32_t first = row_begin; first < row_end; )
+	{
+		const uint32_t rem = row_end - first;
+		if ( rem == 1u )
+		{
+			const uint16_t *act = activation + (uint64_t)first * K;
+			float acc = 0.0f;
+			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+			{
+				const uint4 vw = __ldcs(w_ptr + c);
+				const float2 sc = QwenNvfp4LoadSc(s_ptr, c, glob);
+				#pragma unroll
+				for ( uint32_t half = 0u; half < 2u; ++half )
+					acc = QwenNvfp4HalfDot(QwenNvfp4DecodeHalf(vw, half), act + c * 32u, half, half == 0u ? sc.x : sc.y, acc);
+			}
+			#pragma unroll
+			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+				acc += __shfl_xor_sync(0xffffffffu, acc, step, LANES);
+			if ( sub == 0u )
+				output[(uint64_t)first * N + neuron] = LmFloatToBf16(acc);
+			first += 1u;
+		}
+		else
+		{
+			const uint32_t cnt = rem < 4u ? rem : 4u;
+			float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+			{
+				const uint4 vw = __ldcs(w_ptr + c);
+				const float2 sc = QwenNvfp4LoadSc(s_ptr, c, glob);
+				#pragma unroll
+				for ( uint32_t half = 0u; half < 2u; ++half )
+				{
+					const LmSkinnyE2m1HalfDecoded d = QwenNvfp4DecodeHalf(vw, half);
+					#pragma unroll
+					for ( uint32_t r = 0u; r < 4u; ++r )
+						acc[r] = QwenNvfp4HalfDot(d, activation + (uint64_t)(first + (r < cnt ? r : 0u)) * K + c * 32u, half, half == 0u ? sc.x : sc.y, acc[r]);
+				}
+			}
+			#pragma unroll
+			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < 4u; ++r )
+					acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], step, LANES);
+			if ( sub == 0u )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < 4u; ++r )
+					if ( r < cnt )
+						output[(uint64_t)(first + r) * N + neuron] = LmFloatToBf16(acc[r]);
+			first += cnt;
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t THREADS, uint32_t EXPERTS>
+__global__ __launch_bounds__(THREADS, 1)
+static void QwenRouteBuildPackedKernel(const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint32_t routes,
+	uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
+	uint32_t *__restrict__ packed_expert, float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up,
+	uint32_t n_down, uint32_t *__restrict__ tile_prefix_down)
+{
+	LmDependentWait();
+	LmRouteBuildBlock<THREADS, EXPERTS>(route_expert, routes, top_k, group_row_offset, route_packed_row, route_source_token, tile_m,
+		n_up, tile_prefix_up, n_down, tile_prefix_down);
+	__syncthreads();
+	for ( uint32_t route = threadIdx.x; route < routes; route += THREADS )
+	{
+		const uint32_t pr = route_packed_row[route];
+		packed_weight[pr] = route_weight[route];
+		packed_expert[pr] = route_expert[route];
+	}
+	LmDependentRelease();
+}
+
 template<class G>
 static __device__ __forceinline__ void QwenRouterSoftmaxShared(const uint16_t *__restrict__ logits, uint32_t row, float *__restrict__ s_probs, float *__restrict__ reduction)
 {
@@ -654,8 +1160,8 @@ __global__ __launch_bounds__(QH_THREADS, 1)
 static void QwenMoeRouteSmallKernel(const uint16_t *__restrict__ logits, uint32_t rows, uint32_t expert_first, uint32_t *__restrict__ fault,
 	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
 	uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
-	float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up, uint32_t n_down,
-	uint32_t *__restrict__ tile_prefix_down)
+	uint32_t *__restrict__ packed_expert, float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up,
+	uint32_t n_down, uint32_t *__restrict__ tile_prefix_down)
 {
 	__shared__ float s_probs[G::kExperts];
 	__shared__ float reduction[LmBlockWarps<QH_THREADS>()];
@@ -692,7 +1198,11 @@ static void QwenMoeRouteSmallKernel(const uint16_t *__restrict__ logits, uint32_
 		tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
 	__syncthreads();
 	if ( threadIdx.x < routes )
-		packed_weight[route_packed_row[threadIdx.x]] = s_wt[threadIdx.x];
+	{
+		const uint32_t pr = route_packed_row[threadIdx.x];
+		packed_weight[pr] = s_wt[threadIdx.x];
+		packed_expert[pr] = s_exp[threadIdx.x];
+	}
 	LmDependentRelease();
 }
 
@@ -794,99 +1304,248 @@ static void QwenMoeLocalFinalizeGatedKernel(const uint16_t *__restrict__ packed,
 	}
 }
 
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
+template<uint32_t THREADS, uint32_t WIDTH>
+__global__ __launch_bounds__(THREADS, 2)
 static void QwenHybridHcInjectNormKernel(uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ partial_bf16,
 	const float *__restrict__ inject, const float *__restrict__ norm_weight, uint16_t *__restrict__ hc_normed_bf16,
-	uint32_t groups, uint32_t dimension)
+	uint32_t groups)
 {
+	static_assert((WIDTH & 7u) == 0u && WIDTH <= THREADS * LM_RMS_NORM_STAGED, "HC width fits in staged vectorized waves");
+	constexpr uint32_t VEC_SLOTS = (WIDTH + THREADS * 8u - 1u) / (THREADS * 8u);
 	__shared__ float reduction[LmBlockWarps<THREADS>()], sq_wave[THREADS * 8u];
 	const uint32_t stream = blockIdx.x, row = blockIdx.y;
-	const uint64_t res_base = ((uint64_t)row * groups + stream) * dimension;
-	const uint64_t part_base = (uint64_t)row * dimension;
+	const uint64_t res_base = ((uint64_t)row * groups + stream) * WIDTH;
+	const uint64_t part_base = (uint64_t)row * WIDTH;
 	uint16_t *res_row = residual_bf16 + res_base;
 	const uint16_t *part_row = partial_bf16 + part_base;
 	uint16_t *out_row = hc_normed_bf16 + res_base;
-	const float *group_weight = norm_weight + (uint64_t)stream * dimension;
+	const float *group_weight = norm_weight + (uint64_t)stream * WIDTH;
 	const float weight = inject[(uint64_t)row * groups + stream];
+	uint4 staged[VEC_SLOTS];
 	float total = 0.0f;
 	LmDependentWait();
-	LmDependentRelease();
-	if ( ((dimension & 7u) == 0u) && dimension <= THREADS * LM_RMS_NORM_STAGED &&
-		LmIsAligned16(res_row) && LmIsAligned16(part_row) && LmIsAligned16(group_weight) && LmIsAligned16(out_row) )
+	#pragma unroll
+	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
 	{
-		constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
-		uint4 staged[vec_slots];
-		#pragma unroll
-		for ( uint32_t slot = 0u; slot < vec_slots; ++slot )
+		const uint32_t wave_base = slot * THREADS * 8u;
+		const uint32_t offset = wave_base + threadIdx.x * 8u;
+		if ( offset < WIDTH )
 		{
-			const uint32_t wave_base = slot * THREADS * 8u;
-			if ( wave_base >= dimension )
-				staged[slot] = make_uint4(0u, 0u, 0u, 0u);
-			else
-			{
-				const uint32_t offset = wave_base + threadIdx.x * 8u;
-				if ( offset < dimension )
-				{
-					float r[8], p[8], sq[8];
-					LmLoadBf16x8AsFloat(*(const uint4 *)(res_row + offset), r);
-					LmLoadBf16x8AsFloat(*(const uint4 *)(part_row + offset), p);
-					#pragma unroll
-					for ( uint32_t k = 0u; k < 8u; ++k )
-						r[k] += SparkMathHyperInjected(p[k], weight);
-					const uint4 packed = LmPackUint4FloatToBf16(r);
-					*(uint4 *)(res_row + offset) = packed;
-					staged[slot] = packed;
-					LmLoadBf16x8AsFloat(packed, r);
-					#pragma unroll
-					for ( uint32_t k = 0u; k < 8u; ++k )
-						sq[k] = r[k] * r[k];
-					LmStoreFloat8(sq_wave + threadIdx.x * 8u, sq);
-				}
-				else
-					staged[slot] = make_uint4(0u, 0u, 0u, 0u);
-				__syncthreads();
-				#pragma unroll
-				for ( uint32_t s = 0u; s < 8u; ++s )
-					if ( wave_base + s * THREADS + threadIdx.x < dimension )
-						total += sq_wave[s * THREADS + threadIdx.x];
-				if ( wave_base + THREADS * 8u < dimension )
-					__syncthreads();
-			}
+			float r[8], p[8], sq[8];
+			LmLoadBf16x8AsFloat(*(const uint4 *)(res_row + offset), r);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(part_row + offset), p);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				r[k] += SparkMathHyperInjected(p[k], weight);
+			const uint4 packed = LmPackUint4FloatToBf16(r);
+			*(uint4 *)(res_row + offset) = packed;
+			staged[slot] = packed;
+			LmLoadBf16x8AsFloat(packed, r);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				sq[k] = r[k] * r[k];
+			LmStoreFloat8(sq_wave + threadIdx.x * 8u, sq);
 		}
-		const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)dimension, QH_EPSILON);
+		else
+			staged[slot] = make_uint4(0u, 0u, 0u, 0u);
+		__syncthreads();
 		#pragma unroll
-		for ( uint32_t slot = 0u; slot < vec_slots; ++slot )
-			if ( (slot * THREADS + threadIdx.x) * 8u < dimension )
-				LmGroupRmsStore8(staged[slot], group_weight, (slot * THREADS + threadIdx.x) * 8u, scale, out_row);
-		return;
+		for ( uint32_t s = 0u; s < 8u; ++s )
+			if ( wave_base + s * THREADS + threadIdx.x < WIDTH )
+				total += sq_wave[s * THREADS + threadIdx.x];
+		if ( slot + 1u < VEC_SLOTS )
+			__syncthreads();
 	}
-	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
-	{
-		const uint16_t updated = LmFloatToBf16(LmBf16ToFloat(res_row[index]) + SparkMathHyperInjected(LmBf16ToFloat(part_row[index]), weight));
-		res_row[index] = updated;
-		const float v = LmBf16ToFloat(updated);
-		total += v * v;
-	}
-	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)dimension, QH_EPSILON);
-	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
-		out_row[index] = LmFloatToBf16(LmBf16ToFloat(res_row[index]) * scale * group_weight[index]);
+	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)WIDTH, QH_EPSILON);
+	#pragma unroll
+	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
+		if ( (slot * THREADS + threadIdx.x) * 8u < WIDTH )
+			LmGroupRmsStore8(staged[slot], group_weight, (slot * THREADS + threadIdx.x) * 8u, scale, out_row);
+	LmDependentRelease();
 }
 
-template<uint32_t THREADS, uint32_t STREAMS>
-__global__ __launch_bounds__(THREADS, 2)
-static void QwenHyperGateInjectKernel(uint16_t *__restrict__ hc_low, const uint16_t *__restrict__ inject_logits, float *__restrict__ hc_inject,
-	uint64_t low_elements, uint32_t rows)
+template<uint32_t STREAMS, uint32_t WIDTH, uint32_t LOW_RANK, uint32_t RG>
+__global__ __launch_bounds__(128u, 2)
+static void QwenHcDownGateInjectKernel(const uint16_t *__restrict__ down, const uint16_t *__restrict__ inject_w,
+	const uint16_t *__restrict__ hc_normed, uint16_t *__restrict__ hc_low, float *__restrict__ hc_inject, uint32_t rows)
 {
+	constexpr uint32_t K = STREAMS * WIDTH;
+	constexpr uint32_t CHUNKS = K >> 3u;
+	constexpr uint32_t TOTAL_N = LOW_RANK + STREAMS;
+	constexpr uint32_t NPG = 2u;
+	constexpr uint32_t WARPS = 4u;
+	const uint32_t row_groups = (rows + RG - 1u) / RG;
+	const uint32_t task = (blockIdx.x / row_groups) * WARPS + (threadIdx.x >> 5u);
+	const uint32_t first_row = (blockIdx.x % row_groups) * RG;
+	const uint32_t lane = threadIdx.x & 31u;
+	const uint32_t n0 = task * NPG;
 	LmDependentWait();
-	LmDependentRelease();
-	LmUnaryBf16GridBody<THREADS>(hc_low, low_elements, LmHyperGateOp{(float)STREAMS});
-	if ( inject_logits != 0 )
+	if ( n0 < TOTAL_N )
 	{
-		const uint64_t total = (uint64_t)rows * STREAMS;
-		for ( uint64_t i = (uint64_t)blockIdx.x * THREADS + threadIdx.x; i < total; i += (uint64_t)gridDim.x * THREADS )
-			hc_inject[i] = SparkMathHyperInjectWeight(LmBf16ToFloat(inject_logits[i]), (float)STREAMS);
+		const uint32_t count = rows - first_row < RG ? rows - first_row : RG;
+		const bool has1 = n0 + 1u < TOTAL_N;
+		const uint4 *w0 = (const uint4 *)(n0 < LOW_RANK ? down + (uint64_t)n0 * K : inject_w + (uint64_t)(n0 - LOW_RANK) * K);
+		const uint4 *w1 = has1 ? (const uint4 *)(n0 + 1u < LOW_RANK ? down + (uint64_t)(n0 + 1u) * K : inject_w + (uint64_t)(n0 + 1u - LOW_RANK) * K) : w0;
+		const uint4 *a[RG];
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RG; ++r )
+			a[r] = (const uint4 *)(hc_normed + (uint64_t)(first_row + (r < count ? r : 0u)) * K);
+		float acc0[RG], acc1[RG];
+		#pragma unroll
+		for ( uint32_t r = 0u; r < RG; ++r )
+			acc0[r] = acc1[r] = 0.0f;
+		for ( uint32_t c = lane; c < CHUNKS; c += 32u )
+		{
+			const uint4 vw0 = __ldcs(w0 + c);
+			const uint4 vw1 = has1 ? __ldcs(w1 + c) : make_uint4(0u, 0u, 0u, 0u);
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				const uint4 va = __ldg(a[r] + c);
+				acc0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw0, va, 0.0f), acc0[r]);
+				if ( has1 )
+					acc1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw1, va, 0.0f), acc1[r]);
+			}
+		}
+		#pragma unroll
+		for ( uint32_t step = 16u; step > 0u; step >>= 1u )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				acc0[r] += __shfl_xor_sync(0xffffffffu, acc0[r], step, 32);
+				if ( has1 )
+					acc1[r] += __shfl_xor_sync(0xffffffffu, acc1[r], step, 32);
+			}
+		if ( lane == 0u )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+				if ( r < count )
+				{
+					const uint32_t row = first_row + r;
+					const float v0 = LmBf16ToFloat(LmFloatToBf16(acc0[r]));
+					if ( n0 < LOW_RANK )
+						hc_low[(uint64_t)row * LOW_RANK + n0] = LmFloatToBf16(SparkMathHyperGate(v0, (float)STREAMS));
+					else
+						hc_inject[(uint64_t)row * STREAMS + (n0 - LOW_RANK)] = SparkMathHyperInjectWeight(v0, (float)STREAMS);
+					if ( has1 )
+					{
+						const float v1 = LmBf16ToFloat(LmFloatToBf16(acc1[r]));
+						if ( n0 + 1u < LOW_RANK )
+							hc_low[(uint64_t)row * LOW_RANK + (n0 + 1u)] = LmFloatToBf16(SparkMathHyperGate(v1, (float)STREAMS));
+						else
+							hc_inject[(uint64_t)row * STREAMS + (n0 + 1u - LOW_RANK)] = SparkMathHyperInjectWeight(v1, (float)STREAMS);
+					}
+				}
 	}
+	LmDependentRelease();
+}
+
+template<uint32_t STREAMS, uint32_t WIDTH, uint32_t LOW_RANK, uint32_t RG>
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenHcUpMixKernel(const uint16_t *__restrict__ up, const uint16_t *__restrict__ hc_low,
+	const uint16_t *__restrict__ hc_normed, uint16_t *__restrict__ mixed, uint32_t rows)
+{
+	constexpr uint32_t CHUNKS = LOW_RANK >> 3u;
+	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+	constexpr uint32_t GROUPS = QH_THREADS / LANES;
+	__shared__ __align__(16) uint4 s_low[RG][CHUNKS];
+	const uint32_t row_groups = (rows + RG - 1u) / RG;
+	const uint32_t col = (blockIdx.x / row_groups) * GROUPS + (threadIdx.x / LANES);
+	const uint32_t first_row = (blockIdx.x % row_groups) * RG;
+	const uint32_t count = rows - first_row < RG ? rows - first_row : RG;
+	const uint32_t sub = threadIdx.x & (LANES - 1u);
+	LmDependentWait();
+	for ( uint32_t idx = threadIdx.x; idx < count * CHUNKS; idx += QH_THREADS )
+	{
+		const uint32_t r = idx / CHUNKS, c = idx % CHUNKS;
+		s_low[r][c] = ((const uint4 *)(hc_low + (uint64_t)(first_row + r) * LOW_RANK))[c];
+	}
+	__syncthreads();
+	if ( col < WIDTH )
+	{
+		const uint4 *w[STREAMS];
+		#pragma unroll
+		for ( uint32_t s = 0u; s < STREAMS; ++s )
+			w[s] = (const uint4 *)(up + (uint64_t)(s * WIDTH + col) * LOW_RANK);
+		float acc[STREAMS][RG];
+		#pragma unroll
+		for ( uint32_t s = 0u; s < STREAMS; ++s )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+				acc[s][r] = 0.0f;
+		for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+		{
+			uint4 vw[STREAMS];
+			#pragma unroll
+			for ( uint32_t s = 0u; s < STREAMS; ++s )
+				vw[s] = __ldcs(w[s] + c);
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+			{
+				const uint4 va = s_low[r < count ? r : 0u][c];
+				#pragma unroll
+				for ( uint32_t s = 0u; s < STREAMS; ++s )
+					acc[s][r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw[s], va, 0.0f), acc[s][r]);
+			}
+		}
+		#pragma unroll
+		for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
+			#pragma unroll
+			for ( uint32_t s = 0u; s < STREAMS; ++s )
+				#pragma unroll
+				for ( uint32_t r = 0u; r < RG; ++r )
+					acc[s][r] += __shfl_xor_sync(0xffffffffu, acc[s][r], step, LANES);
+		if ( sub == 0u )
+			#pragma unroll
+			for ( uint32_t r = 0u; r < RG; ++r )
+				if ( r < count )
+				{
+					const uint32_t row = first_row + r;
+					float total = 0.0f;
+					#pragma unroll
+					for ( uint32_t s = 0u; s < STREAMS; ++s )
+					{
+						const float u = LmBf16ToFloat(LmFloatToBf16(acc[s][r]));
+						const float n = LmBf16ToFloat(hc_normed[((uint64_t)row * STREAMS + s) * WIDTH + col]);
+						total += SparkMathHyperMixTerm(SparkMathHyperMixGate(u), n);
+					}
+					mixed[(uint64_t)row * WIDTH + col] = LmFloatToBf16(total / (float)STREAMS);
+				}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t THREADS, uint32_t STREAMS, uint32_t WIDTH>
+__global__ __launch_bounds__(THREADS, 4)
+static void QwenHyperMixKernel(const uint16_t *__restrict__ up_bf16, const uint16_t *__restrict__ normed_bf16,
+	uint16_t *__restrict__ mixed_bf16)
+{
+	static_assert((WIDTH & 7u) == 0u, "hyper mix width is whole uint4 vectors");
+	constexpr uint32_t VECS = WIDTH >> 3u;
+	const uint32_t row = blockIdx.x;
+	const uint64_t base = (uint64_t)row * STREAMS * WIDTH;
+	LmDependentWait();
+	for ( uint32_t v = threadIdx.x; v < VECS; v += THREADS )
+	{
+		const uint32_t element = v << 3u;
+		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+		#pragma unroll
+		for ( uint32_t s = 0u; s < STREAMS; ++s )
+		{
+			const uint64_t at = base + (uint64_t)s * WIDTH + element;
+			float u[8], n[8];
+			LmLoadBf16x8AsFloat(*(const uint4 *)(up_bf16 + at), u);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(normed_bf16 + at), n);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				total[k] += SparkMathHyperMixTerm(SparkMathHyperMixGate(u[k]), n[k]);
+		}
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k )
+			total[k] /= (float)STREAMS;
+		*(uint4 *)(mixed_bf16 + (uint64_t)row * WIDTH + element) = LmPackUint4FloatToBf16(total);
+	}
+	LmDependentRelease();
 }
 
 template<uint32_t THREADS, uint32_t STREAMS>
@@ -1183,17 +1842,32 @@ __global__ static void QwenIndexTailKernel(const uint16_t *raw, uint16_t *tail, 
 }
 
 template<class G>
-__global__ static void QwenIndexScoreKernel(LmKvShardView view, const uint16_t *query, const uint32_t *sequence_of_row, const uint32_t *context_length,
-	const uint32_t *positions, float *scores, uint32_t stride, float scale)
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenIndexScoreKernel(LmKvShardView view, const uint16_t *__restrict__ query, const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ positions, float *__restrict__ scores,
+	uint2 *__restrict__ candidates, uint32_t stride, float scale)
 {
 	using S = QwenHybridShape<G>;
 	constexpr uint32_t D = G::kIndexDim, H = G::kIndexHeads;
 	__shared__ alignas(16) float shared_query[H * D];
 	const uint32_t row = blockIdx.y, sequence = sequence_of_row[row];
+	LmDependentWait();
 	uint32_t limit = context_length[sequence];
 	if ( positions[row] + 1u < limit )
 		limit = positions[row] + 1u;
 	const uint32_t blocks = limit / G::kIndexRatio, local_count = SparkKvShardLocalKeys(view.shard, blocks);
+	if ( blocks <= S::kIndexBlocks )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const bool direct_pack = local_count <= S::kIndexBlocks;
+	const uint32_t active_limit = direct_pack ? S::kIndexBlocks : local_count;
+	if ( blockIdx.x * blockDim.x >= active_limit )
+	{
+		LmDependentRelease();
+		return;
+	}
 	const uint16_t *row_query = query + (uint64_t)row * H * D;
 	if ( ((H * D) & 7u) == 0u && LmIsAligned16(row_query) )
 	{
@@ -1212,10 +1886,10 @@ __global__ static void QwenIndexScoreKernel(LmKvShardView view, const uint16_t *
 			shared_query[index] = LmBf16ToFloat(row_query[index]);
 	}
 	__syncthreads();
-	for ( uint32_t local = blockIdx.x * blockDim.x + threadIdx.x; local < stride; local += gridDim.x * blockDim.x )
+	for ( uint32_t local = blockIdx.x * blockDim.x + threadIdx.x; local < active_limit; local += gridDim.x * blockDim.x )
 	{
 		float score = -INFINITY;
-		if ( blocks > S::kIndexBlocks && local < local_count )
+		if ( local < local_count )
 		{
 			const uint16_t *key = (const uint16_t *)LmKvShardSlotRequired<typename S::IndexKv>(view, sequence,
 				SparkKvShardLocalPosition(view.shard, local), row, LM_KV_ACCESS_READ);
@@ -1278,18 +1952,61 @@ __global__ static void QwenIndexScoreKernel(LmKvShardView view, const uint16_t *
 				}
 			}
 		}
-		scores[(uint64_t)row * stride + local] = score;
+		if ( direct_pack )
+			candidates[(uint64_t)row * S::kIndexBlocks + local] = make_uint2(__float_as_uint(score),
+				local < local_count && score > -INFINITY ? SparkKvShardLocalPosition(view.shard, local) : LM_INDEX_SHARD_NO_POSITION);
+		else
+			scores[(uint64_t)row * stride + local] = score;
 	}
+	LmDependentRelease();
 }
 
 template<class G>
-__global__ static void QwenIndexMaskKernel(const uint32_t *selected, const uint32_t *sequence_of_row, const uint32_t *context_length,
-	const uint32_t *positions, uint32_t *mask, uint32_t mask_words, uint32_t first_row)
+__global__ __launch_bounds__(QH_THREADS, 2)
+static void QwenIndexLocalTopkPackKernel(SparkKvShard shard, const float *__restrict__ scores, uint32_t stride,
+	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ positions,
+	uint32_t *__restrict__ local_selected, uint2 *__restrict__ candidates)
 {
 	using S = QwenHybridShape<G>;
+	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
+	__shared__ uint32_t scan[QH_THREADS];
+	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
+	const uint32_t row = blockIdx.x, sequence = sequence_of_row[row];
 	LmDependentWait();
+	uint32_t limit = context_length[sequence];
+	if ( positions[row] + 1u < limit )
+		limit = positions[row] + 1u;
+	const uint32_t blocks = limit / G::kIndexRatio, local_count = SparkKvShardLocalKeys(shard, blocks);
+	if ( blocks <= S::kIndexBlocks || local_count <= S::kIndexBlocks )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const float *row_scores = scores + (uint64_t)row * stride;
+	uint32_t *out = local_selected + (uint64_t)row * S::kIndexBlocks;
+	LmTopkExactSelect<QH_THREADS>(row_scores, local_count, S::kIndexBlocks, out, histogram, scan, state);
+	__syncthreads();
+	for ( uint32_t entry = threadIdx.x; entry < S::kIndexBlocks; entry += QH_THREADS )
+	{
+		const uint32_t local = out[entry];
+		const float score = local < local_count ? row_scores[local] : -INFINITY;
+		candidates[(uint64_t)row * S::kIndexBlocks + entry] = make_uint2(__float_as_uint(score),
+			local < local_count && score > -INFINITY ? SparkKvShardLocalPosition(shard, local) : LM_INDEX_SHARD_NO_POSITION);
+	}
 	LmDependentRelease();
-	const uint32_t row = first_row + blockIdx.x, sequence = sequence_of_row[row];
+}
+
+template<class G>
+__global__ __launch_bounds__(QH_THREADS, 4)
+static void QwenIndexGatheredSelectMaskKernel(const uint2 *__restrict__ gathered, uint64_t rank_stride, uint32_t degree,
+	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ positions,
+	uint32_t *__restrict__ mask, uint32_t mask_words)
+{
+	using S = QwenHybridShape<G>;
+	__shared__ uint32_t histogram[256];
+	__shared__ uint32_t s_state[6];
+	const uint32_t row = blockIdx.x, sequence = sequence_of_row[row];
+	LmDependentWait();
 	uint32_t limit = context_length[sequence];
 	if ( positions[row] + 1u < limit )
 		limit = positions[row] + 1u;
@@ -1301,20 +2018,157 @@ __global__ static void QwenIndexMaskKernel(const uint32_t *selected, const uint3
 		if ( (mask_words & 3u) == 0u && LmIsAligned16(row_mask) )
 		{
 			uint4 *m4 = (uint4 *)row_mask;
-			for ( uint32_t q = threadIdx.x; q < (mask_words >> 2u); q += blockDim.x )
+			for ( uint32_t q = threadIdx.x; q < (mask_words >> 2u); q += QH_THREADS )
 				m4[q] = make_uint4(word_bits(q * 128u), word_bits(q * 128u + 32u), word_bits(q * 128u + 64u), word_bits(q * 128u + 96u));
-			return;
 		}
-		for ( uint32_t word = threadIdx.x; word < mask_words; word += blockDim.x )
-			row_mask[word] = word_bits(word * 32u);
+		else
+			for ( uint32_t word = threadIdx.x; word < mask_words; word += QH_THREADS )
+				row_mask[word] = word_bits(word * 32u);
+		LmDependentRelease();
 		return;
 	}
-	for ( uint32_t entry = threadIdx.x; entry < S::kIndexBlocks; entry += blockDim.x )
+	if ( (mask_words & 3u) == 0u && LmIsAligned16(row_mask) )
 	{
-		const uint32_t block = selected[(uint64_t)row * S::kIndexBlocks + entry];
-		if ( block < blocks )
-			atomicOr(&row_mask[block / 32u], 1u << (block % 32u));
+		uint4 *m4 = (uint4 *)row_mask;
+		for ( uint32_t q = threadIdx.x; q < (mask_words >> 2u); q += QH_THREADS )
+			m4[q] = make_uint4(0u, 0u, 0u, 0u);
 	}
+	else
+		for ( uint32_t word = threadIdx.x; word < mask_words; word += QH_THREADS )
+			row_mask[word] = 0u;
+	const uint32_t total = degree * S::kIndexBlocks;
+	if ( threadIdx.x == 0u )
+	{
+		s_state[0] = 0u;
+		s_state[1] = 0u;
+		s_state[2] = S::kIndexBlocks;
+		s_state[3] = 0u;
+		s_state[4] = 0u;
+		s_state[5] = 0u;
+	}
+	__syncthreads();
+	for ( uint32_t pass = 0u; pass < 4u; ++pass )
+	{
+		const uint32_t shift = 24u - 8u * pass;
+		histogram[threadIdx.x] = 0u;
+		__syncthreads();
+		const uint32_t pfx = s_state[0], msk = s_state[1];
+		for ( uint32_t idx = threadIdx.x; idx < total; idx += QH_THREADS )
+		{
+			const uint32_t r = idx / S::kIndexBlocks, e = idx % S::kIndexBlocks;
+			const uint2 c = __ldg(&gathered[(uint64_t)r * rank_stride + (uint64_t)row * S::kIndexBlocks + e]);
+			if ( c.y < blocks )
+			{
+				const uint32_t key = LmTopkKey(__uint_as_float(c.x));
+				if ( (key & msk) == pfx )
+					atomicAdd(&histogram[(key >> shift) & 255u], 1u);
+			}
+		}
+		__syncthreads();
+		if ( threadIdx.x == 0u )
+		{
+			if ( pass == 0u )
+			{
+				uint32_t valid = 0u;
+				for ( uint32_t b = 0u; b < 256u; ++b )
+					valid += histogram[b];
+				if ( valid <= S::kIndexBlocks )
+				{
+					s_state[5] = 1u;
+					s_state[4] = valid;
+				}
+			}
+			if ( s_state[5] == 0u )
+			{
+				uint32_t running = 0u, bucket = 255u;
+				for ( ; bucket > 0u && running + histogram[bucket] < s_state[2]; --bucket )
+					running += histogram[bucket];
+				s_state[0] |= bucket << shift;
+				s_state[1] |= 255u << shift;
+				s_state[2] -= running;
+				s_state[3] = histogram[bucket];
+			}
+		}
+		__syncthreads();
+		if ( s_state[5] != 0u )
+			break;
+	}
+	if ( s_state[5] != 0u )
+	{
+		for ( uint32_t idx = threadIdx.x; idx < total; idx += QH_THREADS )
+		{
+			const uint32_t r = idx / S::kIndexBlocks, e = idx % S::kIndexBlocks;
+			const uint2 c = __ldg(&gathered[(uint64_t)r * rank_stride + (uint64_t)row * S::kIndexBlocks + e]);
+			if ( c.y < blocks )
+				atomicOr(&row_mask[c.y >> 5u], 1u << (c.y & 31u));
+		}
+		__syncthreads();
+		if ( threadIdx.x == 0u && s_state[4] < S::kIndexBlocks )
+		{
+			uint32_t have = s_state[4];
+			for ( uint32_t p = 0u; p < blocks && have < S::kIndexBlocks; ++p )
+			{
+				const uint32_t bit = 1u << (p & 31u);
+				if ( (row_mask[p >> 5u] & bit) == 0u )
+				{
+					row_mask[p >> 5u] |= bit;
+					have++;
+				}
+			}
+		}
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t thresh = s_state[0], need = s_state[2], eq_count = s_state[3];
+	uint32_t pos_thresh = 0xffffffffu;
+	if ( eq_count > need )
+	{
+		if ( threadIdx.x == 0u )
+		{
+			s_state[1] = 0u;
+			s_state[3] = 0u;
+			s_state[4] = need;
+		}
+		__syncthreads();
+		for ( uint32_t pass = 0u; pass < 4u; ++pass )
+		{
+			const uint32_t shift = 24u - 8u * pass;
+			histogram[threadIdx.x] = 0u;
+			__syncthreads();
+			const uint32_t ppfx = s_state[1], pmsk = s_state[3];
+			for ( uint32_t idx = threadIdx.x; idx < total; idx += QH_THREADS )
+			{
+				const uint32_t r = idx / S::kIndexBlocks, e = idx % S::kIndexBlocks;
+				const uint2 c = __ldg(&gathered[(uint64_t)r * rank_stride + (uint64_t)row * S::kIndexBlocks + e]);
+				if ( c.y < blocks && LmTopkKey(__uint_as_float(c.x)) == thresh && (c.y & pmsk) == ppfx )
+					atomicAdd(&histogram[(c.y >> shift) & 255u], 1u);
+			}
+			__syncthreads();
+			if ( threadIdx.x == 0u )
+			{
+				uint32_t running = 0u, bucket = 0u;
+				for ( ; bucket < 255u && running + histogram[bucket] < s_state[4]; ++bucket )
+					running += histogram[bucket];
+				s_state[1] |= bucket << shift;
+				s_state[3] |= 255u << shift;
+				s_state[4] -= running;
+			}
+			__syncthreads();
+		}
+		pos_thresh = s_state[1];
+	}
+	for ( uint32_t idx = threadIdx.x; idx < total; idx += QH_THREADS )
+	{
+		const uint32_t r = idx / S::kIndexBlocks, e = idx % S::kIndexBlocks;
+		const uint2 c = __ldg(&gathered[(uint64_t)r * rank_stride + (uint64_t)row * S::kIndexBlocks + e]);
+		if ( c.y < blocks )
+		{
+			const uint32_t key = LmTopkKey(__uint_as_float(c.x));
+			if ( key > thresh || (key == thresh && c.y <= pos_thresh) )
+				atomicOr(&row_mask[c.y >> 5u], 1u << (c.y & 31u));
+		}
+	}
+	LmDependentRelease();
 }
 
 #define QH_MOE_LANE_ROWS 1024u
@@ -1366,9 +2220,36 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	}
 
 	template<class Format>
+	static int32_t ExactLinear(const void *weight, const float *, const uint16_t *source, uint16_t *destination,
+		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream)
+	{
+		const uint32_t chunks = input_dimension / LmSkinnyFormat<Format>::kElements;
+		if ( chunks >= 32u )
+			(void)LM_LAUNCH_DEPENDENT((QwenExactLinearKernel<LmBf16Format, 32u, 8u, 4u>),
+				dim3((output_dimension + 3u) / 4u, (rows + 63u) / 64u), QH_THREADS, 0, stream,
+				(const uint8_t *)weight, source, destination, rows, input_dimension, output_dimension);
+		else
+			(void)LM_LAUNCH_DEPENDENT((QwenExactLinearKernel<LmBf16Format, 16u, 4u, 4u>),
+				dim3((output_dimension + 3u) / 4u, (rows + 63u) / 64u), QH_THREADS, 0, stream,
+				(const uint8_t *)weight, source, destination, rows, input_dimension, output_dimension);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	template<class Format>
 	static int32_t Project(const void *weight, const float *scale_rows, const uint16_t *source, uint16_t *destination,
 		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, uint32_t multiprocessors, SparkGpuStream stream)
 	{
+		if constexpr ( std::is_same<Format, LmBf16Format>::value )
+		{
+			constexpr uint32_t ELEMENTS = LmSkinnyFormat<Format>::kElements;
+			if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE && (input_dimension % ELEMENTS) == 0u &&
+				LmSkinnyAligned(weight) != 0u && LmSkinnyAligned(source) != 0u )
+			{
+				const uint32_t chunks = input_dimension / ELEMENTS;
+				if ( chunks >= 16u && (output_dimension > LM_SKINNY_SPLIT_MAX_OUTPUTS || chunks < LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES) )
+					return ExactLinear<Format>(weight, 0, source, destination, rows, input_dimension, output_dimension, stream);
+			}
+		}
 		const LmScaleTensor scale = scale_rows != 0 ?
 			LmScaleTensorBuild(scale_rows, LM_SCALE_ENCODING_F32, 1u, output_dimension, input_dimension, 1u, QH_SCALE_K) : LmScaleTensorNone();
 		return LmDenseRows<Format>(weight, scale, source, destination, (float *)0, rows, input_dimension, output_dimension, exact, multiprocessors,
@@ -1432,7 +2313,15 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const uint32_t qkvz_width = state->gdn_channels + state->gdn_v;
 		const bool fused_qkvz = rows > LM_SKINNY_ROWS_WIDE && exact == 0u && step->tree == 0u && qkvz_width <= S::kQkvWidth;
 		SparkStatus status;
-		if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
+		if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE && state->linear_bytes == 2u )
+		{
+			const uint8_t *z_weight = layer->mix_weight + (uint64_t)state->gdn_channels * G::kHidden * 2u;
+			if ( ExactLinear<LmBf16Format>(layer->mix_weight, 0, state->normed, state->qkv, rows, G::kHidden, state->gdn_channels, stream) != LM_LAUNCH_OK ||
+				ExactLinear<LmBf16Format>(z_weight, 0, state->normed, state->z, rows, G::kHidden, state->gdn_v, stream) != LM_LAUNCH_OK ||
+				ExactLinear<LmBf16Format>(layer->gdn_ba, 0, state->normed, state->ba, rows, G::kHidden, 2u * heads, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
 		{
 			if ( state->linear_bytes == 2u )
 			{
@@ -1494,7 +2383,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		(void)LM_LAUNCH_DEPENDENT((QwenGdnHeadRmsNormGateKernel<G::kGdnSigmoidGate>), dim3(heads, rows), QH_VALUE_DIM, 0, stream,
+		(void)LM_LAUNCH_DEPENDENT((QwenGdnHeadRmsNormGateKernel<G::kGdnSigmoidGate>), dim3((heads + 7u) >> 3u, rows), QH_THREADS, 0, stream,
 			state->mixed, fused_qkvz ? state->attn_gathered : state->z, layer->gdn_norm, state->mixed, rows, heads,
 			fused_qkvz ? qkvz_width : state->gdn_v, fused_qkvz ? state->gdn_channels : 0u);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -1541,35 +2430,20 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const uint32_t rows = step->rows;
 		const LmKvShardView *view = &state->index_views[layer->kv_index];
 		SparkStatus status;
-		LM_LAUNCH((QwenIndexScoreKernel<G>), dim3((state->index_local_stride + QH_THREADS - 1u) / QH_THREADS, rows), QH_THREADS, 0, stream, *view,
-			state->index_query, step->sequence_of_row, step->context_length, step->positions, state->index_scores, state->index_local_stride,
+		(void)LM_LAUNCH_DEPENDENT((QwenIndexScoreKernel<G>), dim3((state->index_local_stride + QH_THREADS - 1u) / QH_THREADS, rows), QH_THREADS, 0, stream, *view,
+			state->index_query, step->sequence_of_row, step->context_length, step->positions, state->index_scores, state->index_candidates, state->index_local_stride,
 			1.0f / sqrtf((float)G::kIndexDim));
-		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-			LmTopkExactLaunch<QH_THREADS>(state->index_scores, rows, state->index_local_stride, S::kIndexBlocks, LM_TOPK_EXACT_CHUNK,
-				LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->index_topk_entries,
-				state->index_local_selected, stream) != SPARK_GPU_SUCCESS ||
-			LmIndexShardCandidatePackLaunch<QH_THREADS>(view->shard, state->index_scores, state->index_local_stride, state->index_local_selected,
-				S::kIndexBlocks, rows, state->index_candidates, stream) != SPARK_GPU_SUCCESS )
+		(void)LM_LAUNCH_DEPENDENT((QwenIndexLocalTopkPackKernel<G>), rows, QH_THREADS, 0, stream, view->shard, state->index_scores, state->index_local_stride,
+			step->sequence_of_row, step->context_length, step->positions, state->index_local_selected, state->index_candidates);
+		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows,
 			S::kIndexBlocks * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)), state->index_candidates, state->index_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( SparkGpuMemsetAsync(state->index_mask, 0, (uint64_t)rows * state->index_mask_words * sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		for ( uint32_t first = 0u; first < rows; first += QH_INDEX_CHUNK )
-		{
-			const uint32_t count = rows - first < QH_INDEX_CHUNK ? rows - first : QH_INDEX_CHUNK;
-			if ( LmIndexShardCandidateScatterLaunch<QH_THREADS>(state->index_gathered + (uint64_t)first * S::kIndexBlocks,
-					(uint64_t)rows * S::kIndexBlocks, state->tp_degree, S::kIndexBlocks, count, state->index_global_stride, state->index_full_scores,
-					stream) != SPARK_GPU_SUCCESS ||
-				LmTopkExactLaunch<QH_THREADS>(state->index_full_scores, count, state->index_global_stride, S::kIndexBlocks, LM_TOPK_EXACT_CHUNK,
-					LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->index_topk_entries,
-					state->index_selected + (uint64_t)first * S::kIndexBlocks, stream) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			(void)LM_LAUNCH_DEPENDENT((QwenIndexMaskKernel<G>), count, QH_THREADS, 0, stream, state->index_selected, step->sequence_of_row, step->context_length,
-				step->positions, state->index_mask, state->index_mask_words, first);
-		}
+		(void)LM_LAUNCH_DEPENDENT((QwenIndexGatheredSelectMaskKernel<G>), rows, QH_THREADS, 0, stream, state->index_gathered,
+			(uint64_t)rows * S::kIndexBlocks, state->tp_degree, step->sequence_of_row, step->context_length, step->positions,
+			state->index_mask, state->index_mask_words);
 		return CudaStageLaunched();
 	}
 
@@ -1657,7 +2531,13 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const LmLocalExpertRoutes expert_routes = ExpertRoutes(state, rows, routes, sms);
 		const bool multi_shared_done = rows <= LM_SKINNY_ROWS_WIDE || exact != 0u;
 		int32_t launch;
-		if ( multi_shared_done )
+		if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE )
+		{
+			if ( ExactLinear<LmBf16Format>(layer->moe_router, 0, normed, state->router_logits, rows, G::kHidden, G::kExperts, stream) != LM_LAUNCH_OK ||
+				ExactLinear<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( multi_shared_done )
 		{
 			const LmSkinnyDenseTarget targets[2] =
 			{
@@ -1678,18 +2558,20 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 				(void)LM_LAUNCH_DEPENDENT((QwenMoeRouteSmallKernel<G>), 1u, QH_THREADS, 0, stream, state->router_logits, rows, state->expert_first,
 					step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
-					state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
-					n_down, state->tile_prefix_down);
+					state->route_packed_row, state->route_source_token, state->packed_expert, state->packed_weight, tile_m, n_up,
+					state->tile_prefix_up, n_down, state->tile_prefix_down);
 			}
 			else
 			{
 				(void)LM_LAUNCH_DEPENDENT((QwenMoeSoftmaxTopkLocalKernel<G>), rows, QH_THREADS, 0, stream, state->router_logits, state->expert_first,
 					step->route_fault, state->route_expert, state->route_weight, state->route_global);
-				if ( LmRouteBuild<QH_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
-					state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
-					stream) != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
+				const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
+				const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+				const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+				(void)LM_LAUNCH_DEPENDENT((QwenRouteBuildPackedKernel<QH_THREADS, G::kLocalExperts + 1u>), 1u, QH_THREADS, 0, stream,
+					state->route_expert, state->route_weight, routes, G::kTopK, state->group_row_offset, state->route_packed_row,
+					state->route_source_token, state->packed_expert, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
+					n_down, state->tile_prefix_down);
 			}
 		}
 		else
@@ -1700,81 +2582,65 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 				routes, state->expert_first, G::kLocalExperts);
-			if ( LmRouteBuild<QH_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
-				state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
-				stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
+			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
+			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+			(void)LM_LAUNCH_DEPENDENT((QwenRouteBuildPackedKernel<QH_THREADS, G::kLocalExperts + 1u>), 1u, QH_THREADS, 0, stream,
+				state->route_expert, state->route_weight, routes, G::kTopK, state->group_row_offset, state->route_packed_row,
+				state->route_source_token, state->packed_expert, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
+				n_down, state->tile_prefix_down);
 		}
 		if constexpr ( G::kExpertCodec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 && (G::kHidden % 128u) == 0u && (G::kMoeInter % 128u) == 0u )
 		{
-			if ( exact == 0u && rows > 1u )
+			constexpr uint32_t UP_CHUNKS = G::kHidden >> 5u;
+			constexpr uint32_t UP_LANES = UP_CHUNKS >= 32u ? 32u : (UP_CHUNKS >= 16u ? 16u : 8u);
+			constexpr uint32_t UP_PER_BLK = QH_THREADS / UP_LANES;
+			constexpr uint32_t DN_CHUNKS = G::kMoeInter >> 5u;
+			constexpr uint32_t DN_LANES = DN_CHUNKS >= 32u ? 32u : (DN_CHUNKS >= 16u ? 16u : 8u);
+			constexpr uint32_t DN_PER_BLK = QH_THREADS / DN_LANES;
+			constexpr uint32_t DN_SINGLE_PER_BLK = DN_PER_BLK * 4u;
+			if ( exact == 0u && rows > 128u )
 			{
-				if ( rows <= 128u )
-				{
-					launch = LmSkinnyGroupedExperts<LmNvfp4>(layer->moe_w1,
-						LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w1_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
-						state->expert_gate, state->group_row_offset, state->route_source_token, G::kLocalExperts, routes, 0u, G::kHidden, G::kMoeInter,
-						stream, 1u);
-					if ( launch == LM_LAUNCH_OK )
-						launch = LmSkinnyGroupedExperts<LmNvfp4>(layer->moe_w3,
-							LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w3_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
-							state->expert_up, state->group_row_offset, state->route_source_token, G::kLocalExperts, routes, 0u, G::kHidden, G::kMoeInter,
-							stream, 1u);
-					if ( launch != LM_LAUNCH_OK )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-					(void)LM_LAUNCH_DEPENDENT((QwenMoeSwigluPackedKernel), dim3(LmGridBlocks<QH_THREADS>(G::kMoeInter), routes), QH_THREADS, 0, stream,
-						state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter);
-				}
+				const uint32_t up_blocks = G::kLocalExperts * ((G::kMoeInter + 63u) / 64u);
+				if ( rows >= 512u )
+					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<3u, 8u, false, true, 2u>), up_blocks, 256u, 0, stream,
+						layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
+						state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
 				else
-				{
-					const uint32_t up_blocks = G::kLocalExperts * ((G::kMoeInter + 63u) / 64u);
-					if ( rows >= 512u )
-						(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<3u, 8u, false, true, 2u>), up_blocks, 256u, 0, stream,
-							layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
-							state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					else
-						(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<2u, 8u, false, true, 4u>), up_blocks, 256u, 0, stream,
-							layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
-							state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-				}
-				if ( rows <= 32u )
-				{
-					launch = LmSkinnyGroupedExperts<LmNvfp4>(layer->moe_w2, w2_scale, state->expert_act, state->expert_out,
-						state->group_row_offset, state->route_source_token, G::kLocalExperts, routes, 1u, G::kMoeInter, G::kHidden, stream, 1u);
-					if ( launch != LM_LAUNCH_OK )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				}
-				else
-				{
-					const uint32_t dn_blocks = G::kLocalExperts * ((G::kHidden + 127u) / 128u);
-					if ( rows >= 512u )
-						(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<3u, 8u, true, false, 2u>), dn_blocks, 256u, 0, stream,
-							layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
-							state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
-					else
-						(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<2u, 8u, true, false, 4u>), dn_blocks, 256u, 0, stream,
-							layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
-							state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
+					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<2u, 8u, false, true, 4u>), up_blocks, 256u, 0, stream,
+						layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
+						state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
 			}
+			else if ( rows == 1u )
+				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW1W3SingleKernel<G::kHidden, G::kMoeInter, G::kLocalExperts>),
+					dim3((G::kMoeInter + UP_PER_BLK - 1u) / UP_PER_BLK, routes), QH_THREADS, 0, stream,
+					layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight,
+					state->group_row_offset, state->packed_expert, state->expert_act);
 			else
+				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW1W3BatchedKernel<G::kHidden, G::kMoeInter, G::kLocalExperts>),
+					dim3((G::kMoeInter + UP_PER_BLK - 1u) / UP_PER_BLK, G::kLocalExperts), QH_THREADS, 0, stream,
+					layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight,
+					state->group_row_offset, state->route_source_token, state->expert_act);
+			if ( exact == 0u && rows > 32u )
 			{
-				launch = LmLocalExpertsUp<ExpertFormat>(expert_routes, layer->moe_w1,
-					LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w1_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
-					state->expert_gate, G::kHidden, G::kMoeInter, stream, exact);
-				if ( launch == LM_LAUNCH_OK )
-					launch = LmLocalExpertsUp<ExpertFormat>(expert_routes, layer->moe_w3,
-						LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w3_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
-						state->expert_up, G::kHidden, G::kMoeInter, stream, exact);
-				if ( launch != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				(void)LM_LAUNCH_DEPENDENT((QwenMoeSwigluPackedKernel), dim3(LmGridBlocks<QH_THREADS>(G::kMoeInter), routes), QH_THREADS, 0, stream,
-					state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter);
-				if ( LmLocalExpertsDown<ExpertFormat>(expert_routes, layer->moe_w2, w2_scale, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden,
-					stream, exact) != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				const uint32_t dn_blocks = G::kLocalExperts * ((G::kHidden + 127u) / 128u);
+				if ( rows >= 512u )
+					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<3u, 8u, true, false, 2u>), dn_blocks, 256u, 0, stream,
+						layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
+						state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
+				else
+					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<2u, 8u, true, false, 4u>), dn_blocks, 256u, 0, stream,
+						layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
+						state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
 			}
+			else if ( rows == 1u )
+				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW2SingleKernel<G::kMoeInter, G::kHidden, G::kLocalExperts>),
+					dim3((G::kHidden + DN_SINGLE_PER_BLK - 1u) / DN_SINGLE_PER_BLK, routes), QH_THREADS, 0, stream,
+					layer->moe_w2, layer->moe_w2_scale, state->expert_act, state->group_row_offset, state->packed_expert, state->expert_out);
+			else
+				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW2BatchedKernel<G::kMoeInter, G::kHidden, G::kLocalExperts>),
+					dim3((G::kHidden + DN_PER_BLK - 1u) / DN_PER_BLK, G::kLocalExperts), QH_THREADS, 0, stream,
+					layer->moe_w2, layer->moe_w2_scale, state->expert_act, state->group_row_offset, state->expert_out);
 		}
 		else
 		{
@@ -1800,7 +2666,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		(void)LM_LAUNCH_DEPENDENT((QwenHybridRowDotKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, normed, layer->moe_shared_gate, state->shared_logit, G::kHidden);
-		LM_LAUNCH((LmSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true);
+		(void)LM_LAUNCH_DEPENDENT((QwenSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Project<LmBf16Format>(layer->moe_shared_down, 0, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, exact, sms, stream) !=
 				LM_LAUNCH_OK )
@@ -1817,20 +2683,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const SparkStageRunnerStep *step = frame.step;
 		SparkGpuStream stream = frame.stream;
 		if constexpr ( G::kMoe )
-		{
-			const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
-			SparkStatus status = SPARK_STATUS_OK;
-			for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-				status = Moe(state, layer, step, first, step->rows - first < chunk ? step->rows - first : chunk, stream);
-			return status;
-		}
+			return Moe(state, layer, step, 0u, step->rows, stream);
 		else
 		{
 			const uint32_t rows = step->rows, sms = step->multiprocessors, exact = Exact(step);
 			if ( Linear(state, layer->ffn_gate_up, layer->ffn_gate_up_scale, state->normed, state->gate_up, rows, G::kHidden,
 				2u * state->ffn_rows, exact, sms, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((LmSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true);
+			(void)LM_LAUNCH_DEPENDENT((QwenSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 				Linear(state, layer->ffn_down, layer->ffn_down_scale, state->intermediate, state->partial, rows, state->ffn_rows, G::kHidden, exact, sms,
 					stream) != LM_LAUNCH_OK )
@@ -1869,47 +2729,77 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	static SparkStatus HcPre(State *state, const float *norm, const uint16_t *down, const uint16_t *up, const uint16_t *inject,
 		uint16_t *mixed, uint32_t rows, uint32_t exact, uint32_t sms, SparkGpuStream stream)
 	{
-		const bool fuse_down_inject = inject != 0 && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u);
-		if ( state->hc_pending_inject != 0u )
+		if constexpr ( S::kHyper )
 		{
-			state->hc_pending_inject = 0u;
-			(void)LM_LAUNCH_DEPENDENT((QwenHybridHcInjectNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream,
-				state->residual, state->partial, state->hc_inject, norm, state->hc_normed, G::kStreams, G::kHidden);
-		}
-		else
-			LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->residual, norm, state->hc_normed,
-				G::kStreams, G::kHidden, QH_EPSILON);
-		if ( fuse_down_inject )
-		{
-			const LmSkinnyDenseTarget targets[2] =
+			const bool exact_wide = exact != 0u && rows > LM_SKINNY_ROWS_WIDE;
+			const bool skinny = rows <= LM_SKINNY_ROWS_WIDE;
+			const bool fuse_down_inject = inject != 0 && skinny;
+			if ( state->hc_pending_inject != 0u )
 			{
-				{ down, state->hc_low, (float *)0, G::kHcLowRank, G::kHcLowRank, 0u, LmScaleTensorNone() },
-				{ inject, state->hc_up, (float *)0, G::kStreams, G::kStreams, 0u, LmScaleTensorNone() }
-			};
-			if ( LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, state->hc_normed, rows, S::kResidual, stream, exact) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			(void)LM_LAUNCH_DEPENDENT((QwenHyperGateInjectKernel<QH_THREADS, G::kStreams>),
-				LmGridBlocks<QH_THREADS>((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream,
-				state->hc_low, state->hc_up, state->hc_inject, (uint64_t)rows * G::kHcLowRank, rows);
-		}
-		else
-		{
-			if ( Project<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, exact, sms, stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((LmHyperGateKernel<QH_THREADS>), LmGridBlocks<QH_THREADS>((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream, state->hc_low,
-				(uint64_t)rows * G::kHcLowRank, (float)G::kStreams);
-		}
-		if ( Project<LmBf16Format>(up, 0, state->hc_low, state->hc_up, rows, G::kHcLowRank, S::kResidual, exact, sms, stream) != LM_LAUNCH_OK )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmHyperMixKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(G::kHidden), rows), QH_THREADS, 0, stream, state->hc_up, state->hc_normed, mixed,
-			G::kStreams, G::kHidden);
-		if ( inject != 0 && !fuse_down_inject )
-		{
-			if ( exact == 0u && rows > LM_HYPER_INJECT_CLUSTER_ROWS && ((S::kResidual & 7u) == 0u) )
-				(void)LM_LAUNCH_DEPENDENT((QwenHyperInjectWeightsVecKernel<QH_THREADS, G::kStreams>), rows, QH_THREADS, 0, stream,
-					state->hc_normed, inject, state->hc_inject, G::kHidden);
+				state->hc_pending_inject = 0u;
+				(void)LM_LAUNCH_DEPENDENT((QwenHybridHcInjectNormKernel<QH_THREADS, G::kHidden>), dim3(G::kStreams, rows), QH_THREADS, 0, stream,
+					state->residual, state->partial, state->hc_inject, norm, state->hc_normed, G::kStreams);
+			}
 			else
-				LmHyperInjectWeightsLaunch<QH_THREADS, G::kStreams>(rows, stream, state->hc_normed, inject, state->hc_inject, G::kHidden);
+				LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->residual, norm, state->hc_normed,
+					G::kStreams, G::kHidden, QH_EPSILON);
+			if ( fuse_down_inject )
+			{
+				constexpr uint32_t TOTAL_N = G::kHcLowRank + G::kStreams;
+				constexpr uint32_t N_BLOCKS = (TOTAL_N + 7u) / 8u;
+				if ( rows == 1u )
+					(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 1u>), N_BLOCKS, 128u, 0, stream,
+						down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows);
+				else if ( rows <= 4u )
+					(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 4u>), N_BLOCKS, 128u, 0, stream,
+						down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows);
+				else
+					(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 8u>),
+						N_BLOCKS * ((rows + 7u) / 8u), 128u, 0, stream, down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows);
+			}
+			else
+			{
+				if ( exact_wide && inject != 0 )
+				{
+					if ( ExactLinear<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, stream) != LM_LAUNCH_OK )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				}
+				else if ( Project<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, exact, sms, stream) != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				LM_LAUNCH((LmHyperGateKernel<QH_THREADS>), LmGridBlocks<QH_THREADS>((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream, state->hc_low,
+					(uint64_t)rows * G::kHcLowRank, (float)G::kStreams);
+			}
+			if ( skinny )
+			{
+				constexpr uint32_t CHUNKS = G::kHcLowRank >> 3u;
+				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+				constexpr uint32_t GROUPS = QH_THREADS / LANES;
+				constexpr uint32_t COL_BLOCKS = (G::kHidden + GROUPS - 1u) / GROUPS;
+				if ( rows == 1u )
+					(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixKernel<G::kStreams, G::kHidden, G::kHcLowRank, 1u>), COL_BLOCKS, QH_THREADS, 0, stream,
+						up, state->hc_low, state->hc_normed, mixed, rows);
+				else if ( rows <= 4u )
+					(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixKernel<G::kStreams, G::kHidden, G::kHcLowRank, 4u>), COL_BLOCKS, QH_THREADS, 0, stream,
+						up, state->hc_low, state->hc_normed, mixed, rows);
+				else
+					(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixKernel<G::kStreams, G::kHidden, G::kHcLowRank, 8u>),
+						COL_BLOCKS * ((rows + 7u) / 8u), QH_THREADS, 0, stream, up, state->hc_low, state->hc_normed, mixed, rows);
+			}
+			else
+			{
+				if ( Project<LmBf16Format>(up, 0, state->hc_low, state->hc_up, rows, G::kHcLowRank, S::kResidual, exact, sms, stream) != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				(void)LM_LAUNCH_DEPENDENT((QwenHyperMixKernel<QH_THREADS, G::kStreams, G::kHidden>), rows, QH_THREADS, 0, stream,
+					state->hc_up, state->hc_normed, mixed);
+			}
+			if ( inject != 0 && !fuse_down_inject )
+			{
+				if ( exact == 0u && rows > LM_HYPER_INJECT_CLUSTER_ROWS && ((S::kResidual & 7u) == 0u) )
+					(void)LM_LAUNCH_DEPENDENT((QwenHyperInjectWeightsVecKernel<QH_THREADS, G::kStreams>), rows, QH_THREADS, 0, stream,
+						state->hc_normed, inject, state->hc_inject, G::kHidden);
+				else
+					LmHyperInjectWeightsLaunch<QH_THREADS, G::kStreams>(rows, stream, state->hc_normed, inject, state->hc_inject, G::kHidden);
+			}
 		}
 		return CudaStageLaunched();
 	}
@@ -1965,7 +2855,13 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->ple_embed, state->ple_embed);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
+		if ( exact != 0u && rows > LM_SKINNY_ROWS_WIDE )
+		{
+			if ( ExactLinear<LmBf16Format>(state->ple_key_weight, 0, state->ple_embed, state->ple_key, rows, G::kHidden, S::kResidual, stream) != LM_LAUNCH_OK ||
+				ExactLinear<LmBf16Format>(state->ple_value_weight, 0, state->ple_embed, state->ple_value, rows, G::kHidden, G::kHidden, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( rows <= LM_SKINNY_ROWS_WIDE || exact != 0u )
 		{
 			const LmSkinnyDenseTarget targets[2] =
 			{
@@ -2030,17 +2926,25 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
 	{
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), frame.step->rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
-			frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
-		return SPARK_STATUS_OK;
+		if constexpr ( (G::kHidden & 7u) == 0u && G::kHidden <= QH_THREADS * 32u )
+			(void)LM_LAUNCH_DEPENDENT((QwenRmsNormKernel<G::kHidden, false>), frame.step->rows, QH_THREADS, 0, frame.stream,
+				frame.step->hidden_bf16, (const uint16_t *)0, weight, state->normed, QH_EPSILON);
+		else
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), frame.step->rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+				frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
+		return CudaStageLaunched();
 	}
 
 	static SparkStatus AddRmsNorm(State *state, const Frame &frame, const float *weight)
 	{
 		uint16_t *hidden = frame.step->hidden_bf16;
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), frame.step->rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
-			hidden, state->partial, weight, hidden, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
-		return SPARK_STATUS_OK;
+		if constexpr ( (G::kHidden & 7u) == 0u && G::kHidden <= QH_THREADS * 32u )
+			(void)LM_LAUNCH_DEPENDENT((QwenRmsNormKernel<G::kHidden, true>), frame.step->rows, QH_THREADS, 0, frame.stream,
+				hidden, state->partial, weight, state->normed, QH_EPSILON);
+		else
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), frame.step->rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+				hidden, state->partial, weight, hidden, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
+		return CudaStageLaunched();
 	}
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)
@@ -2153,6 +3057,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			{ (void **)&state->group_row_offset, (G::kMoe ? G::kLocalExperts + 2u : 0u) * sizeof(uint32_t) },
 			{ (void **)&state->route_packed_row, routes * sizeof(uint32_t) },
 			{ (void **)&state->route_source_token, routes * sizeof(uint32_t) },
+			{ (void **)&state->packed_expert, routes * sizeof(uint32_t) },
 			{ (void **)&state->tile_prefix_up, (G::kMoe ? G::kLocalExperts + 2u : 0u) * sizeof(uint32_t) },
 			{ (void **)&state->tile_prefix_down, (G::kMoe ? G::kLocalExperts + 2u : 0u) * sizeof(uint32_t) },
 			{ (void **)&state->packed_weight, routes * sizeof(float) },
@@ -2195,12 +3100,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			{ (void **)&state->index_tail, (uint64_t)S::kAttnLayers * slots * S::kIndexTail * G::kIndexDim * sizeof(uint16_t) },
 			{ (void **)&state->index_scores, S::kIndexer ? rows * state->index_local_stride * sizeof(float) : 0u },
 			{ (void **)&state->index_local_selected, rows * S::kIndexBlocks * sizeof(uint32_t) },
-			{ (void **)&state->index_topk_values, state->index_topk_entries * sizeof(float) },
-			{ (void **)&state->index_topk_positions, state->index_topk_entries * sizeof(uint32_t) },
 			{ (void **)&state->index_candidates, rows * S::kIndexBlocks * sizeof(uint2) },
 			{ (void **)&state->index_gathered, (uint64_t)state->tp_degree * rows * S::kIndexBlocks * sizeof(uint2) },
-			{ (void **)&state->index_full_scores, S::kIndexer ? (uint64_t)QH_INDEX_CHUNK * state->index_global_stride * sizeof(float) : 0u },
-			{ (void **)&state->index_selected, rows * S::kIndexBlocks * sizeof(uint32_t) },
 			{ (void **)&state->index_mask, rows * state->index_mask_words * sizeof(uint32_t) },
 			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
@@ -2299,9 +3200,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->index_local_stride = local > S::kIndexBlocks ? local : S::kIndexBlocks;
 			state->index_global_stride = global > S::kIndexBlocks ? global : S::kIndexBlocks;
 			state->index_mask_words = state->index_global_stride / 32u;
-			const uint64_t local_entries = (uint64_t)state->max_rows * LmTopkExactCandidateEntries(state->index_local_stride, S::kIndexBlocks, LM_TOPK_EXACT_CHUNK);
-			const uint64_t global_entries = (uint64_t)QH_INDEX_CHUNK * LmTopkExactCandidateEntries(state->index_global_stride, S::kIndexBlocks, LM_TOPK_EXACT_CHUNK);
-			state->index_topk_entries = 2u * (local_entries > global_entries ? local_entries : global_entries);
 		}
 		state->record_stride = (((uint64_t)state->max_rows * LmGqaShardRecordFloats(G::kHeads, G::kHeadDim, state->tp_degree) * sizeof(float) +
 			G::kHidden * sizeof(uint16_t) - 1u) / (G::kHidden * sizeof(uint16_t))) * G::kHidden * sizeof(uint16_t) / sizeof(float);
