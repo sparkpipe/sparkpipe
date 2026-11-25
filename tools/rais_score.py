@@ -925,7 +925,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         compute_precision_expert="fp8",
         attn_flops_per_tok_ctx=2.0 * 11 * 64 * (256 + 256),
         sparse_ctx_cap=2048,
-        context_tokens=1048576,
+        context_tokens=131072,
         max_sequences=16,
         index_bytes_per_token=11 * 256,
     ),

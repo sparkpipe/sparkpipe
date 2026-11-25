@@ -26,12 +26,13 @@ GRADED = {
     "glm-5.3-fp8": ("reasoning_effort", ("low", "high", "max")),
     "glm-5.3-flash": ("reasoning_effort", ("low", "high", "max")),
     "glm-5.3-flash-fp8": ("reasoning_effort", ("low", "high", "max")),
+    "sage-s2.1-flash": ("reasoning_effort", ("low", "high", "max")),
     "kimi-k3": ("thinking_effort", ("low", "high", "max")),
     "kimi-k3.1-pro": ("thinking_effort", ("low", "high", "max")),
     "deepseek-v4.1-flash": ("effort", ("low", "high", "max")),
     "muse-glimmer-30b": ("reasoning_strength", ("low", "medium", "high")),
 }
-SWITCH_ONLY = dict.fromkeys(("gemma-4-31b", "gemma-4-26b-a4b", "hy4-preview", "ling-3.0-flash", "ling-3.0-flash-fin", "laguna-s-2.1",
+SWITCH_ONLY = dict.fromkeys(("gemma-4-31b", "gemma-4-26b-a4b", "hy4-preview", "hy4-fp8", "ling-3.0-flash", "ling-3.0-flash-fin", "ling-3.1-flash", "ling-3.2-air", "laguna-s-2.1",
                               "mimo-v2.6-flash", "mimo-v2.6-pro", "k-exaone-2.0", "a.x-k2"))
 SWITCH_ONLY["solar-open-2"] = ("reasoning_effort", {"medium", "high", "xhigh"})
 LEVEL_LINE = "Reasoning effort is set to "

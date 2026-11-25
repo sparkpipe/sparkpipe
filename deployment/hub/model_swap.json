@@ -90,6 +90,19 @@
    "node_warm": "cd $HOME/stage-lanes/glm53_flash_fp8/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared > warm.log 2>&1"
   },
   {
+   "id": "sage-s2.1-flash",
+   "kv_label": "sage21_flash_stage",
+   "node_memory_bytes": 26843545600,
+   "node_reclaim": "$HOME/stage-lanes/sage21_flash/lane0/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/sage21_flash/lane0/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/sage21_flash/lane0/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/sage21_flash/lane0/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-sage21-flash-api 2>/dev/null; systemctl --user is-active -q kv-sage21-flash-api || systemd-run --user --unit=kv-sage21-flash-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/sage21_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/sage21_flash-kv-api/runtime --port 8492 >> /srv/workspace/sparkpipe/logs/sage21_flash-kv-api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-sage21-flash-api 2>/dev/null; systemctl --user reset-failed kv-sage21-flash-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8492/health",
+   "node_warm": "cd $HOME/stage-lanes/sage21_flash/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 716e6436905650b7be93e1b7dedfb0bb95afd3a3 16 --shared > warm.log 2>&1"
+  },
+  {
    "id": "kimi-k3",
    "kv_label": "k3_stage",
    "node_memory_bytes": 104689827840,
@@ -223,6 +236,30 @@
    "health": "http://127.0.0.1:8468/health"
   },
   {
+   "id": "ling-3.2-air",
+   "kv_label": "ling32_air_stage",
+   "node_memory_bytes": 15032385536,
+   "node_reclaim": "$HOME/stage-lanes/ling32_air/lane2/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/ling32_air/lane2/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/ling32_air/lane2/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/ling32_air/lane2/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-ling32-air-api 2>/dev/null; systemctl --user is-active -q kv-ling32-air-api || systemd-run --user --unit=kv-ling32-air-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/ling32_air-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling32_air-kv-api/runtime --port 8491 >> /srv/workspace/sparkpipe/logs/ling32_air-kv-api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-ling32-air-api 2>/dev/null; systemctl --user reset-failed kv-ling32-air-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8491/health"
+  },
+  {
+   "id": "ling-3.1-flash",
+   "kv_label": "ling31_flash_stage",
+   "node_memory_bytes": 47244640256,
+   "node_reclaim": "$HOME/stage-lanes/ling31_flash/lane2/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/ling31_flash/lane2/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/ling31_flash/lane2/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/ling31_flash/lane2/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-ling31-flash-api 2>/dev/null; systemctl --user is-active -q kv-ling31-flash-api || systemd-run --user --unit=kv-ling31-flash-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/ling31_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/ling31_flash-kv-api/runtime --port 8493 >> /srv/workspace/sparkpipe/logs/ling31_flash-kv-api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-ling31-flash-api 2>/dev/null; systemctl --user reset-failed kv-ling31-flash-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8493/health"
+  },
+  {
    "id": "hy4-preview",
    "kv_label": "hy4_tp16_stage",
    "node_memory_bytes": 68719476736,
@@ -233,6 +270,18 @@
    "api_start": "systemctl --user reset-failed kv-hy4-api 2>/dev/null; systemctl --user is-active -q kv-hy4-api || systemd-run --user --unit=kv-hy4-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/hy4-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/hy4-kv-api/runtime --port 8470 >> /srv/workspace/sparkpipe/logs/hy4-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-hy4-api 2>/dev/null; systemctl --user reset-failed kv-hy4-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8470/health"
+  },
+  {
+   "id": "hy4-fp8",
+   "kv_label": "hy4_fp8_tp16_stage",
+   "node_memory_bytes": 64424509440,
+   "node_reclaim": "$HOME/stage-lanes/hy4_fp8/lane0/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/hy4_fp8/lane0/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/hy4_fp8/lane0/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/hy4_fp8/lane0/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-hy4-fp8-api 2>/dev/null; systemctl --user is-active -q kv-hy4-fp8-api || systemd-run --user --unit=kv-hy4-fp8-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/hy4_fp8-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/hy4_fp8-kv-api/runtime --port 8494 >> /srv/workspace/sparkpipe/logs/hy4_fp8-kv-api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-hy4-fp8-api 2>/dev/null; systemctl --user reset-failed kv-hy4-fp8-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8494/health"
   },
   {
    "id": "muse-glimmer-30b",

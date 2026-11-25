@@ -127,6 +127,22 @@
       "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
       "text_prompt_prefix_token_ids": []
     },
+    "sage-s2.1-flash": {
+      "launcher": "stage_lane",
+      "model": "sage21_flash",
+      "lane": 0,
+      "runtime_root": "/home/{host}/stage-lanes/sage21_flash/lane0/root",
+      "weightd_socket": "/tmp/spark_weightd.sock",
+      "sequences": 64,
+      "rows": 4096,
+      "context_tokens": 131072,
+      "context_reason": "131,072 positions: the index score gather kernel holds no longer context",
+      "kv_logical_pages": 131072,
+      "state_budget_bytes": 12884901888,
+      "memory_max": "24G",
+      "tokenizer_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+      "text_prompt_prefix_token_ids": []
+    },
     "kimi-k3": {
       "launcher": "k3_lane",
       "model": "k3",
@@ -439,6 +455,36 @@
       "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996",
       "text_prompt_prefix_token_ids": []
     },
+    "ling-3.2-air": {
+      "launcher": "stage_lane",
+      "model": "ling32_air",
+      "lane": 2,
+      "runtime_root": "/home/{host}/stage-lanes/ling32_air/lane2/root",
+      "weightd_socket": "/tmp/spark_weightd.sock",
+      "sequences": 64,
+      "rows": 2048,
+      "context_tokens": 262144,
+      "kv_logical_pages": 262144,
+      "state_budget_bytes": 5368709120,
+      "memory_max": "16G",
+      "tokenizer_sha256": "e4089d45b9ad65634649f4d15733bd7c50cff78b8e2b42dbc150f2d60bebe050",
+      "text_prompt_prefix_token_ids": []
+    },
+    "ling-3.1-flash": {
+      "launcher": "stage_lane",
+      "model": "ling31_flash",
+      "lane": 2,
+      "runtime_root": "/home/{host}/stage-lanes/ling31_flash/lane2/root",
+      "weightd_socket": "/tmp/spark_weightd.sock",
+      "sequences": 64,
+      "rows": 2048,
+      "context_tokens": 262144,
+      "kv_logical_pages": 262144,
+      "state_budget_bytes": 5368709120,
+      "memory_max": "24G",
+      "tokenizer_sha256": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+      "text_prompt_prefix_token_ids": []
+    },
     "hy4-preview": {
       "launcher": "stage_lane",
       "model": "hy4",
@@ -453,6 +499,21 @@
       "state_budget_bytes": 5368709120,
       "memory_max": "32G",
       "tokenizer_sha256": "ac95145adf17fd0579a64bbcaade30f7cd5a0c4be69d9aa0473f83b163cde61c",
+      "text_prompt_prefix_token_ids": []
+    },
+    "hy4-fp8": {
+      "launcher": "stage_lane",
+      "model": "hy4_fp8",
+      "lane": 0,
+      "runtime_root": "/home/{host}/stage-lanes/hy4_fp8/lane0/root",
+      "weightd_socket": "/tmp/spark_weightd.sock",
+      "sequences": 64,
+      "rows": 2048,
+      "context_tokens": 1048576,
+      "kv_logical_pages": 1048576,
+      "state_budget_bytes": 5368709120,
+      "memory_max": "32G",
+      "tokenizer_sha256": "2e3f3d22065c2be5765ce99ab2410411ae338b32ce809ea20dcdb61d00198e83",
       "text_prompt_prefix_token_ids": []
     },
     "muse-glimmer-30b": {

@@ -238,6 +238,34 @@ LING3_FIN = {
     "node_target": "cuda.sm121.ling3_fin.stage_runner.linear_bf16.expert_bf16.kv_bf16",
     "contract": "model_contracts/lingfin_authoritative.json",
 }
+LING32_AIR = {
+    **LING3_FLASH,
+    "swap_id": "ling-3.2-air",
+    "api_port": 8491,
+    "kv_label": "ling32_air_stage",
+    "node_memory_bytes": 14 << 30,
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/ling-3.2-air/tokenizer.json",
+    "pack": "sparkdata/ling32_air.fp8.tp16/ling32_air.tp16.rank{rank:02d}.pack",
+    "adapter": "libling32_air_tp16_serving_adapter.so",
+    "program": "ling32_air",
+    "node_target": "cuda.sm121.ling32_air.stage_runner.linear_fp8.expert_fp8.kv_bf16",
+    "tokenizer_vocabulary": 157179,
+}
+LING31_FLASH = {
+    **LING3_FLASH,
+    "swap_id": "ling-3.1-flash",
+    "api_port": 8493,
+    "kv_label": "ling31_flash_stage",
+    "node_memory_bytes": 44 << 30,
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/ling-3.1-flash/tokenizer.json",
+    "pack": "sparkdata/ling31_flash.fp8.tp16/ling31_flash.tp16.rank{rank:02d}.pack",
+    "adapter": "libling31_flash_tp16_serving_adapter.so",
+    "program": "ling31_flash",
+    "node_target": "cuda.sm121.ling31_flash.stage_runner.linear_fp8.expert_fp8.kv_bf16",
+    "hidden": 4096,
+    "kv_page_bytes": 9 * 64 * 1152 // WORLD,
+    "recurrent_bytes": 63 * (4 * 128 * 128 * 4 + 1536 * 4 * 2),
+}
 HY4 = {
     "swap_id": "hy4-preview",
     "api_port": 8470,
@@ -255,6 +283,18 @@ HY4 = {
     "hidden": 6144,
     "kv_page_bytes": (78 * 64 * 1152 + 21 * 64 * 256) // WORLD,
     "recurrent_bytes": 0,
+}
+HY4_FP8 = {
+    **HY4,
+    "swap_id": "hy4-fp8",
+    "api_port": 8494,
+    "kv_label": "hy4_fp8_tp16_stage",
+    "node_memory_bytes": 60 << 30,
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/hy4-fp8/tokenizer.json",
+    "pack": "sparkdata/hy4_fp8.fp8.tp16/hy4.tp16.rank{rank:02d}.pack",
+    "adapter": "libhy4_fp8_tp16_serving_adapter.so",
+    "program": "hy4_fp8",
+    "node_target": "cuda.sm121.hy4_fp8.stage_runner.linear_fp8.expert_fp8.kv_bf16",
 }
 MUSE_GLIMMER = {
     "swap_id": "muse-glimmer-30b",
@@ -301,6 +341,17 @@ GLM53_FLASH_FP8 = {
     "pack": "sparkdata/glm53flash.fp8.tp16/packs/glm53flash.fp8.tp16.rank{rank:x}.sp",
     "adapter": "libglm53_flash_tp16_serving_adapter.so",
     "node_target": "cuda.sm121.glm53_flash.stage_runner.linear_bf16.expert_fp8.kv_bf16",
+}
+SAGE21_FLASH = {
+    **GLM53_FLASH_FP8,
+    "swap_id": "sage-s2.1-flash",
+    "api_port": 8492,
+    "kv_label": "sage21_flash_stage",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/sage-s2.1-flash/tokenizer.json",
+    "pack": "sparkdata/sage21_flash.fp8.tp16/packs/sage21_flash.fp8.tp16.rank{rank:x}.sp",
+    "adapter": "libsage21_flash_tp16_serving_adapter.so",
+    "program": "sage21_flash",
+    "node_target": "cuda.sm121.sage21_flash.stage_runner.linear_bf16.expert_fp8.kv_bf16",
 }
 LAGUNA = {
     "swap_id": "laguna-s-2.1",
@@ -500,6 +551,7 @@ MODELS = {
     "glm53_full_fp8": GLM53_FULL_FP8,
     "glm53_full_ab": {**GLM53_FULL, "swap_id": "glm-5.3-ab", "api_port": 8497},
     "hy4": HY4,
+    "hy4_fp8": HY4_FP8,
     "k3": K3,
     "k31_pro": K31_PRO,
     "laguna": LAGUNA,
@@ -508,10 +560,13 @@ MODELS = {
     "axk2": AXK2,
     "solar_open2": SOLAR_OPEN2,
     "ling3_fin": LING3_FIN,
+    "ling31_flash": LING31_FLASH,
+    "ling32_air": LING32_AIR,
     "mimo26_flash": MIMO26_FLASH,
     "mimo26_pro": MIMO26_PRO,
     "muse_glimmer": MUSE_GLIMMER,
     "ling3_flash": LING3_FLASH,
+    "sage21_flash": SAGE21_FLASH,
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
