@@ -875,6 +875,8 @@ static void test_doorbell_pair_race(uint32_t local_rank)
     atomic_store_explicit(&ctx.stop,1u,memory_order_release);
     CHECK(pthread_join(writer,0) == 0,"doorbell stable writer joined");
     CHECK(torn == 0u,"two-cell doorbell snapshot never observes an odd round without its preceding even round");
+    memset((void *)SparkWeightdMeshDoorbellAt(index,0u),0,4u * sizeof(uint64_t));
+    memset((void *)SparkWeightdMeshDoorbellAt(index,1u),0,4u * sizeof(uint64_t));
     CHECK(SparkWeightdMeshLaneConfigure(1u,&topology) == SPARK_STATUS_OK,"doorbell pair race lane reset after stable stress");
     test_complete_range(0u,spark_stub_ibv_posted_count());
     first_work = spark_stub_ibv_posted_count();
