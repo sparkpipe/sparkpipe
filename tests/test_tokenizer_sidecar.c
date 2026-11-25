@@ -484,9 +484,101 @@ static void TestKimiRanksAsset(void)
     printf("test_tokenizer_sidecar: tiktoken ranks asset round trip OK\n");
 }
 
+static void AssertParityCase(const SparkTokenizerSidecar *sidecar,
+    const char *text, uint32_t encode_flags, uint32_t capacity)
+{
+    SparkTokenizerWorkspace ws_fast, ws_ref;
+    SparkTokenizerEncoding enc_fast, enc_ref;
+    uint32_t fast_ids[256], ref_ids[256];
+    uint32_t text_bytes = (uint32_t)strlen(text);
+    SparkTokenizerWorkspaceReset(&ws_fast);
+    SparkTokenizerWorkspaceReset(&ws_ref);
+    assert(SparkTokenizerWorkspaceInitialize(&ws_fast, text_bytes + 8u) == SPARK_STATUS_OK);
+    assert(SparkTokenizerWorkspaceInitialize(&ws_ref, text_bytes + 8u) == SPARK_STATUS_OK);
+    SparkTokenizerEncodingReset(&enc_fast);
+    SparkTokenizerEncodingReset(&enc_ref);
+    enc_fast.token_capacity = capacity;
+    enc_fast.token_ids = capacity != 0u ? fast_ids : 0;
+    enc_ref.token_capacity = capacity;
+    enc_ref.token_ids = capacity != 0u ? ref_ids : 0;
+    SparkStatus fast_status = SparkTokenizerSidecarEncodeText(sidecar, text, text_bytes, encode_flags, &ws_fast, &enc_fast);
+    SparkStatus ref_status = SparkTokenizerEncodeUtf8WithWorkspace(&sidecar->tokenizer, text, text_bytes, encode_flags, &ws_ref, &enc_ref);
+    assert(fast_status == ref_status);
+    assert(enc_fast.token_count == enc_ref.token_count);
+    assert(enc_fast.overflow_token_count == enc_ref.overflow_token_count);
+    assert(enc_fast.invalid_segment_count == enc_ref.invalid_segment_count);
+    if (enc_fast.token_count != 0u)
+        assert(memcmp(fast_ids, ref_ids, (size_t)enc_fast.token_count * sizeof(uint32_t)) == 0);
+    SparkTokenizerWorkspaceDestroy(&ws_fast);
+    SparkTokenizerWorkspaceDestroy(&ws_ref);
+}
+
+static void TestSpecialTokenPrefilterParity(void)
+{
+    SparkTokenizerSidecar sidecar;
+    static const char *const cases[] = {
+        "plain text with <stdio.h> and [Record 00001] and a < b",
+        "<|stop|> ab!",
+        " ab!<|stop|>",
+        "   \t<|strip|> ab!<|stop|><|stop|>[role]x",
+        "leading   <|strip|>mid\xc2\xa0<|strip|><|p042|>tail~end",
+        "~<|p199|><stdio.h> [role] !",
+        ""
+    };
+    const char *path = "build/test_tokenizer_sidecar_prefilter.json";
+    FILE *file = fopen(path, "wb");
+    uint32_t i;
+    assert(file != 0);
+    fprintf(file,
+        "{\n"
+        "  \"model\": {\"type\": \"BPE\", \"ignore_merges\": false, \"byte_fallback\": false, \"vocab\": {\n");
+    for (i = 0u; i < 256u; ++i)
+    {
+        uint32_t cp = ByteGlyphCodePoint((uint8_t)i);
+        fprintf(file, "    \"");
+        if (cp == (uint32_t)'"')
+            fputs("\\\"", file);
+        else if (cp == (uint32_t)'\\')
+            fputs("\\\\", file);
+        else
+            AppendUtf8(file, cp);
+        fprintf(file, "\": %u,\n", i);
+    }
+    fprintf(file,
+        "    \"\xc4\xa0" "a\": 300, \"ab\": 301, \"\xc4\xa0" "ab\": 302\n"
+        "  }, \"merges\": [[\"\xc4\xa0\", \"a\"], [\"\xc4\xa0" "a\", \"b\"], [\"a\", \"b\"]]},\n"
+        "  \"pre_tokenizer\": {\"type\": \"Sequence\", \"pretokenizers\": [\n"
+        "    {\"type\": \"Split\", \"pattern\": {\"Regex\": \"%s\"}, \"behavior\": \"Isolated\", \"invert\": false},\n"
+        "    {\"type\": \"ByteLevel\", \"add_prefix_space\": false, \"use_regex\": false}\n"
+        "  ]},\n"
+        "  \"added_tokens\": [\n"
+        "    {\"id\": 400, \"content\": \"<|stop|>\", \"special\": true},\n"
+        "    {\"id\": 401, \"content\": \"[role]\", \"special\": false},\n"
+        "    {\"id\": 402, \"content\": \"<|strip|>\", \"special\": true, \"lstrip\": true},\n"
+        "    {\"id\": 403, \"content\": \"~\", \"special\": true},\n",
+        DIGIT_RUNS_PATTERN);
+    for (i = 0u; i < 256u; ++i)
+        fprintf(file, "    {\"id\": %u, \"content\": \"<|p%03u|>\", \"special\": true}%s\n",
+            500u + i, i, i + 1u == 256u ? "" : ",");
+    fprintf(file, "  ]\n}\n");
+    assert(fclose(file) == 0);
+    LoadSidecarAuto(&sidecar, path);
+    for (i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i)
+    {
+        AssertParityCase(&sidecar, cases[i], 0u, 256u);
+        AssertParityCase(&sidecar, cases[i], SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH, 256u);
+        AssertParityCase(&sidecar, cases[i], SPARK_TOKENIZER_ENCODE_FLAG_ADD_PREFIX_SPACE, 256u);
+        AssertParityCase(&sidecar, cases[i], 0u, 3u);
+        AssertParityCase(&sidecar, cases[i], 0u, 0u);
+    }
+    SparkTokenizerSidecarUnload(&sidecar);
+    printf("test_tokenizer_sidecar: special-token prefilter parity OK\n");
+}
+
 int main(void)
 {
     TestFormatDetectionAndRoundTrips();
+    TestSpecialTokenPrefilterParity();
     TestKimiRanksAsset();
     TestGroundTruth();
     printf("test_tokenizer_sidecar: ALL OK\n");
