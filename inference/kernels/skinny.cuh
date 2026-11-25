@@ -1982,7 +1982,7 @@ static int32_t LmSkinnyFrameGroup(LmSkinnyMultiArguments *multi, SparkGpuStream 
 			return(LmSkinnyFrameShape<Format,LANES,16u,4u>(multi,multiprocessors,stream));
 		if constexpr ( std::is_same<Format,LmBf16Format>::value )
 		{
-			if ( (rows > 16u || rows == 8u) && LmSkinnyFrameWarps(multi,LANES,8u,4u) >= enough )
+			if ( rows > 16u && LmSkinnyFrameWarps(multi,LANES,8u,4u) >= enough )
 				return(LmSkinnyFrameShape<Format,LANES,8u,4u>(multi,multiprocessors,stream));
 			if ( rows > 8u && LmSkinnyFrameWarps(multi,LANES,8u,2u) >= enough )
 				return(LmSkinnyFrameShape<Format,LANES,8u,2u>(multi,multiprocessors,stream));
@@ -2037,7 +2037,7 @@ static int32_t LmSkinnyMultiGroup(LmSkinnyMultiArguments *multi, uint32_t rows, 
 		if ( multi->part[part].skip_max_context != 0u )
 			has_skip = 1u;
 	}
-	if ( rows != 1u || (has_skip == 0u && multi->part[0].route_expert == 0 && outputs > 512u) )
+	if ( rows != 1u || (!std::is_same<Format,LmBf16Format>::value && has_skip == 0u && multi->part[0].route_expert == 0 && outputs > 512u) )
 		return(LmSkinnyFrameGroup<Format,LANES>(multi,stream));
 	if constexpr ( LmSkinnyDecodeOnce<Format>::kValue )
 		return(outputs <= 512u ? LmSkinnyMultiShape<Format,LANES,1u,1u>(multi,stream) : LmSkinnyMultiShape<Format,LANES,1u,2u>(multi,stream));
@@ -2054,7 +2054,7 @@ template<class Format, uint32_t LANES>
 static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunks, SparkGpuStream stream)
 {
 	uint32_t per_lane = (chunks + LANES - 1u) / LANES;
-	if ( args->rows != 1u || (args->route_expert == 0 && args->skip_max_context == 0u && args->output_dimension > 512u) )
+	if ( args->rows != 1u || (!std::is_same<Format,LmBf16Format>::value && args->route_expert == 0 && args->skip_max_context == 0u && args->output_dimension > 512u) )
 	{
 		LmSkinnyMultiArguments multi;
 		memset(&multi,0,sizeof(multi));

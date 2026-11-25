@@ -68,6 +68,9 @@ def main():
     if not pathlib.Path("/dev/nvidiactl").exists():
         print("SKIP live skl-overlay silicon test (no /dev/nvidiactl on this host)")
         return 0
+    if not HOSTED_BIN.exists() or not NVRM_LIB.exists():
+        built = subprocess.run(["make", "-s", "build/test_nvrm_hosted_launch"], cwd=ROOT, capture_output=True, text=True, check=False)
+        assert built.returncode == 0, f"failed to build build/test_nvrm_hosted_launch:\n{built.stdout}\n{built.stderr}"
     assert HOSTED_BIN.exists(), f"missing {HOSTED_BIN}; build build/test_nvrm_hosted_launch first"
     assert NVRM_LIB.exists(), f"missing {NVRM_LIB}; build nvrm-device first"
     check_zero_nvidia_ldd(HOSTED_BIN)
