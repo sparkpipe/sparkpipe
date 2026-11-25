@@ -2220,7 +2220,7 @@ static __device__ __forceinline__ void LmSkinnyCellSplitRows(const LmSkinnyCellA
 		{
 			const uint8_t *tile = base + (uint64_t)t0 * tile_stride;
 			weight_cur = __ldcs((const uint4 *)(tile + sub * LM_SKINNY_CHUNK_BYTES));
-			scale_cur = __ldcs(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub);
+			scale_cur = PAIR_CELLS ? __ldcs(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub) : __ldg(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub);
 		}
 		for ( uint32_t t = t0; t < t1; t += stride_t )
 		{
@@ -2231,7 +2231,7 @@ static __device__ __forceinline__ void LmSkinnyCellSplitRows(const LmSkinnyCellA
 			{
 				const uint8_t *tile = base + (uint64_t)next * tile_stride;
 				weight_next = __ldcs((const uint4 *)(tile + sub * LM_SKINNY_CHUNK_BYTES));
-				scale_next = __ldcs(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub);
+				scale_next = PAIR_CELLS ? __ldcs(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub) : __ldg(tile + LM_SKINNY_CELL_NEURONS * LM_SKINNY_CHUNK_BYTES + sub);
 			}
 			LmSkinnyCellTile<ROWS>(weight_cur,scale_cur,activation,t * LM_SKINNY_CELL_TILE_K,accumulator);
 			weight_cur = weight_next;
@@ -2463,7 +2463,7 @@ static int32_t LmSkinnyCellSplitDispatch(const LmSkinnyCellArguments &args, cons
 	const uint32_t split_threads = WARPS * LM_WARP_LANES;
 	if ( group_rows_max == 1u )
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellSplitKernel<1u,WARPS,SPLIT,PAIR_CELLS>),(uint32_t)tasks,split_threads,0u,stream,args,weight_secondary,primary_groups);
-	else if ( group_rows_max <= LM_SKINNY_CELL_SHORT_BATCH || args.packed_rows <= LM_SKINNY_CELL_SHORT_BATCH * args.groups )
+	else if ( group_rows_max <= LM_SKINNY_CELL_SHORT_BATCH || (PAIR_CELLS && args.packed_rows <= LM_SKINNY_CELL_SHORT_BATCH * args.groups) )
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellSplitKernel<LM_SKINNY_CELL_SHORT_BATCH,WARPS,SPLIT,PAIR_CELLS>),(uint32_t)tasks,split_threads,0u,stream,args,weight_secondary,primary_groups);
 	else
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellSplitKernel<LM_SKINNY_CELL_SPLIT_BATCH,WARPS,SPLIT,PAIR_CELLS>),(uint32_t)tasks,split_threads,0u,stream,args,weight_secondary,primary_groups);

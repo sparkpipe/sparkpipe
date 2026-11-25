@@ -481,7 +481,7 @@ static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegme
 	args.group_bytes = segments.group_bytes;
 	if constexpr ( SCALES == 0u && BITS == 4u )
 	{
-		if ( mean_rows <= 96u )
+		if ( args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES && mean_rows <= 96u )
 		{
 			blocks = (uint64_t)args.groups * col_blocks;
 			if ( mean_rows <= 26u )
@@ -494,6 +494,8 @@ static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegme
 		}
 	}
 	slots = ((uint64_t)args.packed_rows + (uint64_t)args.groups * LM_CELL_MMA_ROWS - 1u) / ((uint64_t)args.groups * LM_CELL_MMA_ROWS);
+	if ( args.k_tiles >= LM_CELL_MMA_SLOT_MIN_K_TILES && col_blocks <= 4u && args.packed_rows >= 16384u && slots < 2u )
+		slots = 2u;
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
 	blocks = (uint64_t)args.groups * slots * col_blocks;
 	LM_LAUNCH_DEPENDENT((LmCellMmaKernel<SCALES,BITS,LM_CELL_MMA_CHUNKS>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
