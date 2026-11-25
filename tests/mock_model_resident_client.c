@@ -1,6 +1,7 @@
 #include "mock_model_resident_client.h"
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,6 +104,7 @@ struct SparkModelResidentClient
 	uint64_t scripted_stale_prefix_request_id;
 };
 
+static pthread_mutex_t mock_registry_lock = PTHREAD_MUTEX_INITIALIZER;
 static SparkModelResidentClient *mock_registry[MOCK_RESIDENT_MAX_RANKS];
 static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
@@ -569,6 +571,7 @@ SparkStatus SparkModelResidentClientConnect(
 	uint32_t i;
 	if ( configuration == 0 || client_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)pthread_mutex_lock(&mock_registry_lock);
 	c = 0;
 	for (i=0u; i<mock_registry_count; i++)
 		if ( mock_registry[i] != 0 &&
@@ -584,10 +587,16 @@ SparkStatus SparkModelResidentClientConnect(
 	if ( c == 0 )
 	{
 		if ( mock_registry_count >= MOCK_RESIDENT_MAX_RANKS )
+		{
+			(void)pthread_mutex_unlock(&mock_registry_lock);
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
 		c = (SparkModelResidentClient *)calloc(1u,sizeof(*c));
 		if ( c == 0 )
+		{
+			(void)pthread_mutex_unlock(&mock_registry_lock);
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
 		mock_registry[mock_registry_count++] = c;
 	}
 	c->rank_index = configuration->rank_index;
@@ -601,6 +610,7 @@ SparkStatus SparkModelResidentClientConnect(
 	c->completion_function = configuration->completion_function;
 	c->completion_context = configuration->completion_context;
 	c->scripted_submit_status = SPARK_STATUS_OK;
+	(void)pthread_mutex_unlock(&mock_registry_lock);
 	*client_out = c;
 	return(SPARK_STATUS_OK);
 }
