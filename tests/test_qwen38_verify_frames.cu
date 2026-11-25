@@ -408,7 +408,7 @@ struct VfRig
 			M::KeepRows(state, &last, kept, stream) == SPARK_STATUS_OK && cudaStreamSynchronize(stream) == cudaSuccess;
 	}
 
-	int UploadTree(const VfRow *rows, const uint32_t *parent_rows, uint32_t count, SparkStageRunnerStep *step_out)
+	int UploadTree(const VfRow *rows, const uint32_t *parent_rows, uint32_t count, SparkStageRunnerStep *step_out, uint32_t slot_grain = 1u)
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
 		std::vector<uint32_t> position(count), sequence(count, rows[0].sequence), order(count), token(count), begin(2u), slot_table(count), fork_table(count);
@@ -417,7 +417,7 @@ struct VfRig
 		SparkStageRunnerStep step;
 		for ( uint32_t row = 0u; row < count; ++row )
 			tok_layout[row] = rows[row].variant;
-		if ( count > VF_MAX_FRAME || SparkSpeculationTreeLayoutBuild(parent_rows, tok_layout.data(), count, rows[0].position, 1u, &layout) != SPARK_STATUS_OK )
+		if ( count > VF_MAX_FRAME || SparkSpeculationTreeLayoutBuild(parent_rows, tok_layout.data(), count, rows[0].position, slot_grain, &layout) != SPARK_STATUS_OK )
 			return 0;
 		for ( uint32_t row = 0u; row < count; ++row )
 		{
@@ -482,10 +482,10 @@ struct VfRig
 			cudaMemcpyAsync(saves, save_table.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) == cudaSuccess ? 1 : 0;
 	}
 
-	int RunTree(const VfRow *rows, const uint32_t *parent_rows, uint32_t count, std::vector<uint16_t> *output)
+	int RunTree(const VfRow *rows, const uint32_t *parent_rows, uint32_t count, std::vector<uint16_t> *output, uint32_t slot_grain = 1u)
 	{
 		SparkStageRunnerStep step;
-		if ( UploadTree(rows, parent_rows, count, &step) == 0 || M::Step(state, &step, stream) != SPARK_STATUS_OK || cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( UploadTree(rows, parent_rows, count, &step, slot_grain) == 0 || M::Step(state, &step, stream) != SPARK_STATUS_OK || cudaStreamSynchronize(stream) != cudaSuccess )
 		{
 			(void)cudaStreamSynchronize(stream);
 			return 0;
@@ -625,6 +625,17 @@ struct VfRig
 			limit == UINT32_MAX ? UINT32_MAX : limit / G::kIndexRatio) : 1u;
 	}
 
+	static void PoisonUnwrittenKv(std::vector<uint8_t> *copy, uint32_t limit)
+	{
+		for ( uint32_t layer = 0u; layer < S::kAttnLayers; ++layer )
+			for ( uint32_t slot = limit; slot < VF_PAGES * S::Kv::kPageSlots; ++slot )
+			{
+				const uint64_t offset = ((uint64_t)layer * VF_SLOTS * VF_PAGES + slot / S::Kv::kPageSlots) * S::Kv::kPageBytes +
+					(uint64_t)(slot % S::Kv::kPageSlots) * S::Kv::kSlotBytes;
+				memset(copy->data() + offset, 0xff, S::Kv::kSlotBytes);
+			}
+	}
+
 	uint32_t KvClean(void) const
 	{
 		LmKvAccessError error, zero;
@@ -732,6 +743,92 @@ static void CheckTree(VfRig<G> &rig, const std::vector<uint8_t> &prefix, const c
 		printf("  %s: 8-node multi-branch tree verified (trunk bit-exact, branch max_diff=%.6f bit_mismatches=%u, all 3 KeepPath + 2 post-decode steps bit-exact)\n",
 			model, worst_branch, branch_bit_mismatches);
 	}
+}
+
+template<class G>
+static void CheckTreeBranches(VfRig<G> &rig, const std::vector<uint8_t> &prefix, const char *model)
+{
+	using M = QwenHybridModel<G>;
+	if constexpr ( !M::kTreeVerify )
+		return;
+	struct Case
+	{
+		uint32_t rows;
+		uint32_t slot_grain;
+		uint32_t parents[16];
+		uint32_t depths[16];
+		uint32_t path_count;
+		uint32_t paths[3][6];
+		uint32_t lengths[3];
+	};
+	static const uint32_t NR = SPARK_SPECULATION_TREE_FRAME_NO_ROW;
+	static const Case cases[] = {
+		{ 6u, 16u, { NR, 0u, 0u, 2u, 3u, 4u }, { 0u, 1u, 1u, 2u, 3u, 4u },
+			2u, { { 0u, 1u }, { 0u, 2u, 3u, 4u, 5u } }, { 2u, 5u } },
+		{ 6u, 1u, { NR, 0u, 0u, 2u, 3u, 4u }, { 0u, 1u, 1u, 2u, 3u, 4u },
+			1u, { { 0u, 2u, 3u, 4u, 5u } }, { 5u } },
+		{ 8u, 16u, { NR, 0u, 1u, 2u, 3u, 4u, 1u, 6u }, { 0u, 1u, 2u, 3u, 4u, 5u, 2u, 3u },
+			2u, { { 0u, 1u, 2u }, { 0u, 1u, 6u, 7u } }, { 3u, 4u } },
+		{ 12u, 16u, { NR, 0u, 1u, 2u, 3u, 4u, 5u, 1u, 7u, 8u, 9u, 2u }, { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 2u, 3u, 4u, 5u, 3u },
+			3u, { { 0u, 1u, 2u, 3u, 4u }, { 0u, 1u, 7u, 8u, 9u }, { 0u, 1u, 2u, 11u } }, { 5u, 5u, 4u } },
+		{ 12u, 1u, { NR, 0u, 1u, 2u, 3u, 4u, 5u, 1u, 7u, 8u, 9u, 2u }, { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 2u, 3u, 4u, 5u, 3u },
+			1u, { { 0u, 1u, 7u, 8u, 9u } }, { 5u } },
+		{ 16u, 16u, { NR, 0u, 1u, 2u, 3u, 4u, 1u, 6u, 7u, 8u, 2u, 10u, 11u, 0u, 13u, 14u },
+			{ 0u, 1u, 2u, 3u, 4u, 5u, 2u, 3u, 4u, 5u, 3u, 4u, 5u, 1u, 2u, 3u },
+			3u, { { 0u, 1u, 2u, 3u, 4u, 5u }, { 0u, 1u, 6u, 7u, 8u, 9u }, { 0u, 13u, 14u, 15u } }, { 6u, 6u, 4u } }
+	};
+	const uint32_t anchor = VF_PREFIX + 13u;
+	std::vector<uint8_t> poisoned;
+	Need(rig.Load(prefix) != 0, model, "prefix loads for poisoned branch tree checks", 0u, 0u, 0u);
+	for ( uint32_t p = VF_PREFIX; p < anchor; ++p )
+		Need(rig.Decode(0u, p, 90u + (p - VF_PREFIX), 0) != 0, model, "unaligned prefix decode runs", p, 0u, 0u);
+	poisoned = rig.Save();
+	VfRig<G>::PoisonUnwrittenKv(&poisoned, anchor);
+	for ( uint32_t c = 0u; c < sizeof(cases) / sizeof(cases[0]); ++c )
+	{
+		const Case &tc = cases[c];
+		VfRow tree_rows[16];
+		std::vector<uint16_t> tree_out;
+		std::vector<uint8_t> after_tree;
+		SparkStageRunnerStep tree_step;
+		for ( uint32_t row = 0u; row < tc.rows; ++row )
+			tree_rows[row] = { 0u, anchor + tc.depths[row], 200u + c * 32u + row };
+		Need(rig.Load(poisoned) != 0, model, "poisoned prefix loads for branch tree", tc.rows, tc.slot_grain, 0u);
+		Need(rig.RunTree(tree_rows, tc.parents, tc.rows, &tree_out, tc.slot_grain) != 0, model, "poisoned branch tree runs", tc.rows, tc.slot_grain, 0u);
+		after_tree = rig.Save();
+		tree_step = rig.last;
+		for ( uint32_t p = 0u; p < tc.path_count; ++p )
+		{
+			const uint32_t length = tc.lengths[p], limit = anchor + length + 2u;
+			std::vector<uint16_t> seq_out, plain, speculated;
+			std::vector<uint8_t> reference, after_keep, plain_state, speculated_state;
+			Need(rig.Load(poisoned) != 0, model, "poisoned prefix loads for branch reference", tc.rows, p, 0u);
+			for ( uint32_t k = 0u; k < length; ++k )
+				Need(rig.Decode(0u, anchor + k, tree_rows[tc.paths[p][k]].variant, &seq_out) != 0, model, "branch sequential reference runs", tc.rows, p, k);
+			for ( uint32_t k = 0u; k < length; ++k )
+				Need(memcmp(tree_out.data() + (uint64_t)tc.paths[p][k] * G::kHidden, seq_out.data() + (uint64_t)k * G::kHidden,
+					G::kHidden * sizeof(uint16_t)) == 0, model, "poisoned tree row equals sequential decode bit for bit (rows, path, k)", tc.rows, p, k);
+			reference = rig.Save();
+			Need(rig.Decode(0u, anchor + length, 3u, &plain) != 0 && rig.Decode(0u, anchor + length + 1u, 4u, &plain) != 0, model,
+				"post-branch plain decodes run", tc.rows, p, 0u);
+			plain_state = rig.Save();
+			Need(rig.Load(after_tree) != 0, model, "tree state loads for branch keep_path", tc.rows, p, 0u);
+			rig.last = tree_step;
+			Need(rig.KeepPath(tc.paths[p], length) != 0, model, "keep_rows folds branch path", tc.rows, p, 0u);
+			after_keep = rig.Save();
+			Need(rig.KvMatches(after_keep, reference, anchor + length) != 0u && rig.RecurrentMatches(after_keep, reference) != 0u, model,
+				"after keeping branch path KV and recurrent state match sequential decode bit for bit", tc.rows, p, 0u);
+			Need(rig.Decode(0u, anchor + length, 3u, &speculated) != 0 && rig.Decode(0u, anchor + length + 1u, 4u, &speculated) != 0, model,
+				"post-branch decodes run after keep_rows", tc.rows, p, 0u);
+			speculated_state = rig.Save();
+			Need(FirstDifference(speculated, plain, G::kHidden) == UINT32_MAX, model,
+				"post-branch decodes equal sequential run bit for bit (rows, path, first diff)", tc.rows, p, FirstDifference(speculated, plain, G::kHidden));
+			Need(rig.KvMatches(speculated_state, plain_state, limit) != 0u && rig.RecurrentMatches(speculated_state, plain_state) != 0u, model,
+				"post-branch KV and recurrent state equal sequential run bit for bit", tc.rows, p, 0u);
+		}
+	}
+	printf("  %s: poisoned-KV tree branches verified (rows=6,8,12,16; grain=1,16; anchor=%u; trunk & non-trunk KeepPath + 2 post-decodes bit-exact)\n",
+		model, anchor);
 }
 
 template<class G>
@@ -917,6 +1014,7 @@ static void Check(uint32_t linear_bytes, const char *model)
 			"a two-sequence verify frame, every row kept, leaves the decodes' KV and recurrent state", 0u, 0u, 0u);
 	}
 	CheckTree<G>(rig, prefix, model);
+	CheckTreeBranches<G>(rig, prefix, model);
 	CheckGraph<G>(rig, prefix, model);
 	Need(rig.KvClean() != 0u, model, "no step reported a KV access error", 0u, 0u, 0u);
 	printf("ok %s: frames of 1-%u rows, %u rejection points, %llu recurrent bytes per slot\n", model, VF_MAX_FRAME, checked,
