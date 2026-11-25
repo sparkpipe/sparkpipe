@@ -3,6 +3,7 @@
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -263,7 +264,7 @@ struct VfRig
 			target[index] = Bf16(Uniform(seed, index));
 	}
 
-	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output)
+	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output, uint32_t last_rows_only = 0u, uint32_t gather_context = 0u)
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
 		std::vector<uint32_t> position(count), sequence(count), order(count), begin(1u, 0u), slots;
@@ -294,6 +295,8 @@ struct VfRig
 		step.rows = count;
 		step.sequences = (uint32_t)slots.size();
 		step.commit = commit;
+		step.last_rows_only = last_rows_only;
+		step.gather_context = gather_context;
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -719,12 +722,463 @@ static void Check(void)
 	rig.Close();
 }
 
+static float RelativeRowDistance(const std::vector<uint16_t> &a, uint32_t ra, const std::vector<uint16_t> &b, uint32_t rb, uint32_t width)
+{
+	double diff = 0.0, norm = 0.0;
+	for ( uint32_t c = 0u; c < width; ++c )
+	{
+		const uint32_t ua = (uint32_t)a[(uint64_t)ra * width + c] << 16u;
+		const uint32_t ub = (uint32_t)b[(uint64_t)rb * width + c] << 16u;
+		float fa = 0.0f, fb = 0.0f;
+		memcpy(&fa, &ua, sizeof(float));
+		memcpy(&fb, &ub, sizeof(float));
+		const double d = (double)fa - (double)fb;
+		diff += d * d;
+		norm += (double)fb * (double)fb;
+	}
+	return norm > 0.0 ? (float)sqrt(diff / norm) : (float)sqrt(diff);
+}
+
+template<class G>
+static void CheckPrefixExact(void)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 12u, 16u, 23u, 64u, 128u };
+	static constexpr uint32_t kCached = 2u * G::kPageSlots;
+	static constexpr uint32_t kMaxTotal = kCached + 128u;
+	VfRig<G> rig;
+	const char *model = G::Tag();
+	std::vector<VfRow> all_rows(kMaxTotal);
+	std::vector<uint8_t> cached_state, zero_state;
+	if ( rig.Open() == 0 )
+	{
+		Require(0, model, "prefix-exact synthetic stage opens", 0u, 0u, 0u);
+		return;
+	}
+	zero_state = rig.Save();
+	for ( uint32_t position = 0u; position < kMaxTotal; ++position )
+		all_rows[position] = { 0u, position, 0u };
+	rig.Load(zero_state);
+	Require(rig.Run(all_rows.data(), kCached, 1u, 0, 1u, kCached) != 0, model, "cached prefix prefill runs", kCached, 0u, 0u);
+	cached_state = rig.Save();
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = kCached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		std::vector<uint8_t> cold_state;
+		rig.Load(zero_state);
+		Require(rig.Run(all_rows.data(), total, 1u, &cold_out, 1u, total) != 0, model, "cold prefill runs", total, delta, 0u);
+		cold_state = rig.Save();
+		Require(Finite(cold_out) != 0u, model, "cold prefill rows are finite", total, delta, 0u);
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)kCached * G::kHidden), cold_out.end());
+		rig.Load(cached_state);
+		Require(rig.Run(all_rows.data() + kCached, delta, 1u, &warm_out, 1u, total) != 0, model, "warm delta prefill runs", kCached, delta, 0u);
+		Require(FirstDifference(warm_out, cold_tail, G::kHidden) == UINT32_MAX, model,
+			"warm delta prefill equals cold prefill bit for bit (delta, first differing row)", delta, FirstDifference(warm_out, cold_tail, G::kHidden), 0u);
+		const std::vector<uint8_t> warm_state = rig.Save();
+		Require(rig.KvMatches(warm_state, cold_state, total) != 0u && rig.RecurrentMatches(warm_state, cold_state) != 0u, model,
+			"warm delta prefill leaves the same KV and recurrent state as cold prefill bit for bit (delta)", delta, 0u, 0u);
+	}
+	if constexpr ( !LingLayout<G>::kGqa )
+	{
+		std::vector<uint16_t> ref_out, pref_out;
+		const uint32_t check_len = 72u;
+		rig.Load(zero_state);
+		Require(rig.Run(all_rows.data(), check_len, 1u, &ref_out, 1u, 0u) != 0, model, "reference MLA prefill runs", check_len, 0u, 0u);
+		rig.Load(zero_state);
+		Require(rig.Run(all_rows.data(), check_len, 1u, &pref_out, 1u, check_len) != 0, model, "KV-gather MLA prefill runs", check_len, 0u, 0u);
+		uint32_t moe_flips = 0u;
+		for ( uint32_t p = 0u; p < check_len; ++p )
+		{
+			const float dist = RelativeRowDistance(pref_out, p, ref_out, p, G::kHidden);
+			if ( dist >= 0.02f )
+				moe_flips++;
+		}
+		Require(moe_flips <= 2u, model, "KV-gather MLA prefill matches reference MLA prefill modulo synthetic router ties (flips)", moe_flips, 0u, 0u);
+	}
+	{
+		std::vector<uint16_t> b1_out, b8_out;
+		VfRow b8_rows[8];
+		rig.Load(cached_state);
+		VfRow b1_row = { 0u, kCached, 5u };
+		Require(rig.Run(&b1_row, 1u, 1u, &b1_out, 0u, 0u) != 0, model, "B1 decode runs", 0u, 0u, 0u);
+		rig.Load(cached_state);
+		b8_rows[0] = b1_row;
+		for ( uint32_t r = 1u; r < 8u; ++r )
+			b8_rows[r] = { 1u, r - 1u, 20u + r };
+		Require(rig.Run(b8_rows, 8u, 1u, &b8_out, 0u, 0u) != 0, model, "B8 decode runs", 0u, 0u, 0u);
+		Require(memcmp(b1_out.data(), b8_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+			"B8 lane0 equals B1 decode bit for bit", 0u, 0u, 0u);
+	}
+	Require(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", 0u, 0u, 0u);
+	printf("%s %s prefix-exact + B1==B8: cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
+	rig.Close();
+}
+
+struct SmallLing31Tp4 : Ling31FlashGeometry<4u>
+{
+	static constexpr uint32_t kHidden = 2304u;
+	static constexpr uint32_t kLayers = 8u;
+	static constexpr uint32_t kDenseLayers = 8u;
+	static constexpr uint32_t kKdaHeads = 8u;
+	static constexpr uint32_t kMlaHeads = 8u;
+	static constexpr uint32_t kQLora = 256u;
+	static constexpr uint32_t kExperts = 32u;
+	static constexpr uint32_t kLocalExperts = 8u;
+	static constexpr uint32_t kMoeInter = 128u;
+	static constexpr uint32_t kSharedInter = 256u;
+	static constexpr uint32_t kSharedRows = 64u;
+	static constexpr bool kFp8Weights = true;
+	static const char *Tag(void) { return "ling-3.1-flash-tp4"; }
+};
+
+struct LingTp4Barrier
+{
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	uint32_t parties, waiting, generation, aborted;
+};
+
+static int LingTp4Wait(LingTp4Barrier *b)
+{
+	pthread_mutex_lock(&b->mutex);
+	const uint32_t gen = b->generation;
+	if ( b->aborted == 0u && ++b->waiting == b->parties )
+	{
+		b->waiting = 0u;
+		b->generation++;
+		pthread_cond_broadcast(&b->cond);
+	}
+	else
+		while ( b->aborted == 0u && gen == b->generation )
+			pthread_cond_wait(&b->cond, &b->mutex);
+	const int ok = b->aborted == 0u;
+	pthread_mutex_unlock(&b->mutex);
+	return ok;
+}
+
+__global__ static void LingTp4SumKernel(const uint8_t *staging, uint64_t pitch, uint32_t ranks, uint16_t *out, uint64_t count)
+{
+	for ( uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; idx < count; idx += (uint64_t)gridDim.x * blockDim.x )
+	{
+		float total = 0.0f;
+		for ( uint32_t r = 0u; r < ranks; ++r )
+			total += LmBf16ToFloat(((const uint16_t *)(staging + (uint64_t)r * pitch))[idx]);
+		out[idx] = LmFloatToBf16(total);
+	}
+}
+
+struct LingTp4Rig
+{
+	using G = SmallLing31Tp4;
+	using M = LingModel<G>;
+	using S = LingShape<G>;
+	using State = LingState<G>;
+	static constexpr uint32_t kRanks = 4u;
+	static constexpr uint64_t kRankKv = (uint64_t)VF_SLOTS * VF_PAGES * (S::Kv::kPageBytes / kRanks);
+
+	struct Rank
+	{
+		LingTp4Rig *rig;
+		uint32_t index;
+		State *state;
+		SparkStageRunnerServices services;
+		cudaStream_t stream;
+		uint16_t *hidden;
+		uint32_t *positions, *context, *sequence_of_row;
+		SparkStageRunnerStep step;
+		SparkStatus status;
+	};
+
+	Rank ranks[kRanks];
+	LingTp4Barrier barrier;
+	uint8_t *kv, *staging;
+	uint64_t staging_bytes;
+	uint32_t *page_table;
+	uint32_t multiprocessors;
+	uint32_t host_context[VF_SLOTS];
+
+	static SparkStatus Round(void *context, void *stream_ptr, uint32_t op, uint32_t stage, uint32_t rows, uint32_t row_elements,
+		const void *local, void *full)
+	{
+		Rank *rank = (Rank *)context;
+		LingTp4Rig *rig = rank->rig;
+		cudaStream_t stream = (cudaStream_t)stream_ptr;
+		const uint64_t block = (uint64_t)rows * (row_elements != 0u ? row_elements : G::kHidden) * sizeof(uint16_t);
+		uint8_t *slot = rig->staging + (uint64_t)rank->index * rig->staging_bytes;
+		if ( stage != SPARK_STAGE_RUNNER_ROUND_ALL )
+			return SPARK_STATUS_UNSUPPORTED;
+		const uint64_t copy = op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? (uint64_t)kRanks * block : block;
+		if ( copy > rig->staging_bytes || cudaMemcpyAsync(slot, local, copy, cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+			cudaStreamSynchronize(stream) != cudaSuccess )
+			return SPARK_STATUS_IO_ERROR;
+		if ( LingTp4Wait(&rig->barrier) == 0 )
+			return SPARK_STATUS_IO_ERROR;
+		if ( op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
+		{
+			for ( uint32_t s = 0u; s < kRanks; ++s )
+				if ( cudaMemcpyAsync((uint8_t *)full + (uint64_t)s * block, rig->staging + (uint64_t)s * rig->staging_bytes, block, cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+					return SPARK_STATUS_IO_ERROR;
+		}
+		else if ( op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+		{
+			for ( uint32_t s = 0u; s < kRanks; ++s )
+				if ( cudaMemcpyAsync((uint8_t *)full + (uint64_t)s * block, rig->staging + (uint64_t)s * rig->staging_bytes + (uint64_t)rank->index * block, block, cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+					return SPARK_STATUS_IO_ERROR;
+		}
+		else if ( op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 )
+		{
+			const uint64_t elems = block / sizeof(uint16_t);
+			LingTp4SumKernel<<<(uint32_t)((elems + 255u) / 256u), 256u, 0, stream>>>(rig->staging, rig->staging_bytes, kRanks, (uint16_t *)full, elems);
+		}
+		if ( cudaStreamSynchronize(stream) != cudaSuccess || LingTp4Wait(&rig->barrier) == 0 )
+			return SPARK_STATUS_IO_ERROR;
+		return SPARK_STATUS_OK;
+	}
+
+	static void *Thread(void *arg)
+	{
+		Rank *rank = (Rank *)arg;
+		typename M::Frame frame = { &rank->step, rank->stream };
+		const LingLayer &layer = rank->state->layers[G::kPhase];
+		SparkStatus st = M::RmsNorm(rank->state, frame, layer.input_norm);
+		if ( st == SPARK_STATUS_OK )
+			st = M::Attention(rank->state, frame, layer);
+		if ( st == SPARK_STATUS_OK )
+			st = M::AllReduce(rank->state, frame);
+		if ( st == SPARK_STATUS_OK )
+			st = M::AddRows(rank->state, frame);
+		if ( st == SPARK_STATUS_OK && cudaStreamSynchronize(rank->stream) != cudaSuccess )
+			st = SPARK_STATUS_IO_ERROR;
+		rank->status = st;
+		return 0;
+	}
+
+	int Open(void)
+	{
+		std::vector<uint32_t> table(VF_SLOTS * VF_PAGES);
+		memset(this, 0, sizeof(*this));
+		barrier.parties = kRanks;
+		if ( pthread_mutex_init(&barrier.mutex, 0) != 0 || pthread_cond_init(&barrier.cond, 0) != 0 ||
+			cudaDeviceGetAttribute((int *)&multiprocessors, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
+			cudaMalloc((void **)&kv, kRanks * kRankKv) != cudaSuccess || cudaMemset(kv, 0, kRanks * kRankKv) != cudaSuccess ||
+			cudaMalloc((void **)&page_table, table.size() * sizeof(uint32_t)) != cudaSuccess )
+			return 0;
+		for ( uint32_t i = 0u; i < table.size(); ++i )
+			table[i] = i;
+		if ( cudaMemcpy(page_table, table.data(), table.size() * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess )
+			return 0;
+		const float *in_norm = Norm(G::kHidden);
+		const LingWeight q_a = Fp8Weight(G::kQLora, G::kHidden);
+		const float *q_norm = Norm(G::kQLora);
+		const LingWeight kv_a = Fp8Weight(S::kSlot, G::kHidden);
+		const float *kv_norm = Norm(G::kLatent);
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			Rank *rk = &ranks[r];
+			rk->rig = this;
+			rk->index = r;
+			rk->services.context = rk;
+			rk->services.round = Round;
+			rk->state = (State *)calloc(1u, sizeof(State));
+			rk->state->tp_degree = kRanks;
+			rk->state->tp_rank = r;
+			rk->state->max_rows = VF_MAX_FRAME;
+			rk->state->slots = VF_SLOTS;
+			rk->state->ffn_rows = VF_FFN;
+			rk->state->expert_first = r * G::kLocalExperts;
+			rk->state->services = &rk->services;
+			M::Shape(rk->state);
+			rk->state->arena_bytes = M::Plan(rk->state, 0, 0u);
+			if ( cudaStreamCreate(&rk->stream) != cudaSuccess ||
+				cudaMalloc((void **)&rk->state->arena, rk->state->arena_bytes) != cudaSuccess ||
+				cudaMemset(rk->state->arena, 0, rk->state->arena_bytes) != cudaSuccess ||
+				cudaMalloc((void **)&rk->hidden, (uint64_t)VF_MAX_FRAME * G::kHidden * sizeof(uint16_t)) != cudaSuccess ||
+				cudaMalloc((void **)&rk->positions, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+				cudaMalloc((void **)&rk->sequence_of_row, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+				cudaMalloc((void **)&rk->context, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess )
+				return 0;
+			M::Plan(rk->state, (uint8_t *)rk->state->arena, 0u);
+			M::Arrange(rk->state);
+			LingLayer *ly = &rk->state->layers[G::kPhase];
+			ly->input_norm = in_norm;
+			ly->mla_q_a = q_a;
+			ly->mla_q_norm = q_norm;
+			ly->mla_q_b = Fp8Weight((uint64_t)S::kMlaRankHeads * S::kQkDim, G::kQLora);
+			ly->mla_kv_a = kv_a;
+			ly->mla_kv_norm = kv_norm;
+			ly->mla_uk = Tensor<uint16_t>((uint64_t)S::kMlaRankHeads * G::kLatent * G::kNope, 1.7f / sqrtf((float)G::kNope), 0.0f);
+			ly->mla_uv = Tensor<uint16_t>((uint64_t)S::kMlaRankHeads * G::kValueDim * G::kLatent, 1.7f / sqrtf((float)G::kLatent), 0.0f);
+			ly->mla_gate = Matrix(S::kMlaRankHeads, G::kHidden);
+			ly->mla_out = Fp8Weight(G::kHidden, (uint64_t)S::kMlaRankHeads * G::kValueDim);
+			SparkStageRunnerKv attach;
+			memset(&attach, 0, sizeof(attach));
+			attach.pool = kv + (uint64_t)r * kRankKv;
+			attach.layer_stride_bytes = kRankKv;
+			attach.layer_page_bytes = S::Kv::kPageBytes;
+			attach.layer_count = 1u;
+			attach.page_table = page_table;
+			attach.page_table_stride = VF_PAGES;
+			attach.pool_page_count = VF_SLOTS * VF_PAGES;
+			attach.sequence_count = VF_SLOTS;
+			attach.context_shard.degree = kRanks;
+			attach.context_shard.rank = r;
+			attach.context_shard.grain = 1u;
+			if ( M::AttachKv(rk->state, &attach) != SPARK_STATUS_OK )
+				return 0;
+		}
+		staging_bytes = (uint64_t)kRanks * ranks[0].state->partial_stride * sizeof(float);
+		const uint64_t ag_cap = (uint64_t)VF_MAX_FRAME * S::kMlaRankHeads * S::kSlot * sizeof(uint16_t);
+		if ( ag_cap > staging_bytes )
+			staging_bytes = ag_cap;
+		return cudaMalloc((void **)&staging, kRanks * staging_bytes) == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess;
+	}
+
+	int Run(const VfRow *rows, uint32_t count, uint32_t gather_ctx, std::vector<uint16_t> *out)
+	{
+		std::vector<uint16_t> input((uint64_t)count * G::kHidden), res(input.size()), other(input.size());
+		std::vector<uint32_t> pos(count), seq(count, 0u);
+		pthread_t threads[kRanks];
+		for ( uint32_t i = 0u; i < count; ++i )
+		{
+			const uint32_t seed = Mix(rows[i].sequence * 7919u + rows[i].variant * 104729u) ^ rows[i].position;
+			for ( uint32_t c = 0u; c < G::kHidden; ++c )
+				input[(uint64_t)i * G::kHidden + c] = Bf16(Uniform(seed, c));
+			pos[i] = rows[i].position;
+			seq[i] = rows[i].sequence;
+			host_context[rows[i].sequence] = rows[i].position + 1u;
+		}
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			Rank *rk = &ranks[r];
+			memset(&rk->step, 0, sizeof(rk->step));
+			rk->step.hidden_bf16 = rk->hidden;
+			rk->step.positions = rk->positions;
+			rk->step.context_length = rk->context;
+			rk->step.sequence_of_row = rk->sequence_of_row;
+			rk->step.rows = count;
+			rk->step.sequences = 1u;
+			rk->step.commit = 1u;
+			rk->step.last_rows_only = 1u;
+			rk->step.gather_context = gather_ctx;
+			rk->step.context = VF_PAGES * G::kPageSlots;
+			rk->step.multiprocessors = multiprocessors;
+			rk->step.route_fault = VfRouteFault();
+			if ( cudaMemcpyAsync(rk->hidden, input.data(), input.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, rk->stream) != cudaSuccess ||
+				cudaMemcpyAsync(rk->positions, pos.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, rk->stream) != cudaSuccess ||
+				cudaMemcpyAsync(rk->sequence_of_row, seq.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, rk->stream) != cudaSuccess ||
+				cudaMemcpyAsync(rk->context, host_context, sizeof(host_context), cudaMemcpyHostToDevice, rk->stream) != cudaSuccess )
+				return 0;
+		}
+		barrier.waiting = 0u;
+		barrier.aborted = 0u;
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+			if ( pthread_create(&threads[r], 0, Thread, &ranks[r]) != 0 )
+				return 0;
+		int ok = 1;
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			pthread_join(threads[r], 0);
+			ok = ok && ranks[r].status == SPARK_STATUS_OK;
+		}
+		if ( !ok || cudaMemcpy(res.data(), ranks[0].hidden, res.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess )
+			return 0;
+		for ( uint32_t r = 1u; r < kRanks; ++r )
+		{
+			if ( cudaMemcpy(other.data(), ranks[r].hidden, other.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess )
+				return 0;
+			Require(memcmp(other.data(), res.data(), other.size() * sizeof(uint16_t)) == 0, G::Tag(), "all TP4 ranks agree on MLA output (rank)", r, 0u, 0u);
+		}
+		if ( out != 0 )
+			*out = res;
+		return 1;
+	}
+
+	void Close(void)
+	{
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			if ( ranks[r].state != 0 )
+			{
+				cudaFree(ranks[r].state->arena);
+				free(ranks[r].state);
+			}
+			cudaFree(ranks[r].hidden);
+			cudaFree(ranks[r].positions);
+			cudaFree(ranks[r].sequence_of_row);
+			cudaFree(ranks[r].context);
+			if ( ranks[r].stream != 0 )
+				cudaStreamDestroy(ranks[r].stream);
+		}
+		cudaFree(staging);
+		cudaFree(page_table);
+		cudaFree(kv);
+		pthread_cond_destroy(&barrier.cond);
+		pthread_mutex_destroy(&barrier.mutex);
+	}
+};
+
+static void CheckMlaTp4(void)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 16u, 23u, 64u, 128u };
+	static constexpr uint32_t kCached = 2u * SmallLing31Tp4::kPageSlots;
+	static constexpr uint32_t kMaxTotal = kCached + 128u;
+	const char *model = SmallLing31Tp4::Tag();
+	LingTp4Rig rig;
+	if ( rig.Open() == 0 )
+	{
+		Require(0, model, "TP4 MLA synthetic stage opens", 0u, 0u, 0u);
+		return;
+	}
+	std::vector<VfRow> all_rows(kMaxTotal);
+	for ( uint32_t p = 0u; p < kMaxTotal; ++p )
+		all_rows[p] = { 0u, p, 0u };
+	std::vector<uint8_t> cached_kv(rig.kRanks * rig.kRankKv), cold_kv(rig.kRanks * rig.kRankKv), warm_kv(rig.kRanks * rig.kRankKv);
+	Require(rig.Run(all_rows.data(), kCached, kCached, 0) != 0, model, "TP4 cached prefix runs", kCached, 0u, 0u);
+	Require(cudaMemcpy(cached_kv.data(), rig.kv, cached_kv.size(), cudaMemcpyDeviceToHost) == cudaSuccess, model, "TP4 save cached KV", 0u, 0u, 0u);
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = kCached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		Require(cudaMemset(rig.kv, 0, cached_kv.size()) == cudaSuccess, model, "TP4 reset KV", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data(), total, total, &cold_out) != 0, model, "TP4 cold MLA prefill runs", total, delta, 0u);
+		Require(cudaMemcpy(cold_kv.data(), rig.kv, cold_kv.size(), cudaMemcpyDeviceToHost) == cudaSuccess, model, "TP4 save cold KV", delta, 0u, 0u);
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)kCached * SmallLing31Tp4::kHidden), cold_out.end());
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 restore cached KV", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, total, &warm_out) != 0, model, "TP4 warm MLA delta prefill runs", kCached, delta, 0u);
+		Require(cudaMemcpy(warm_kv.data(), rig.kv, warm_kv.size(), cudaMemcpyDeviceToHost) == cudaSuccess, model, "TP4 save warm KV", delta, 0u, 0u);
+		Require(FirstDifference(warm_out, cold_tail, SmallLing31Tp4::kHidden) == UINT32_MAX, model,
+			"TP4 warm MLA prefill equals cold bit for bit (delta, first differing row)", delta, FirstDifference(warm_out, cold_tail, SmallLing31Tp4::kHidden), 0u);
+		Require(memcmp(warm_kv.data(), cold_kv.data(), warm_kv.size()) == 0, model,
+			"TP4 warm MLA leaves identical sharded KV on all 4 ranks (delta)", delta, 0u, 0u);
+	}
+	{
+		std::vector<uint16_t> ref_out, gather_out;
+		const uint32_t delta = 64u, total = kCached + delta;
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 accuracy restore 1", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, 0u, &ref_out) != 0, model, "TP4 reference scatter MLA runs", delta, 0u, 0u);
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 accuracy restore 2", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, total, &gather_out) != 0, model, "TP4 KV-gather warm MLA runs", delta, 0u, 0u);
+		for ( uint32_t p = 0u; p < delta; ++p )
+		{
+			const float dist = RelativeRowDistance(gather_out, p, ref_out, p, SmallLing31Tp4::kHidden);
+			Require(dist < 0.01f, model, "TP4 warm KV-gather MLA matches reference scatter MLA (pos, rel x 1e6)", p, (uint32_t)(dist * 1.0e6f), 0u);
+		}
+	}
+	printf("%s %s multi-rank MLA KV-gather prefix-exact + accuracy: 4 ranks, cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
+	rig.Close();
+}
+
 int main(void)
 {
 	Check<SmallSolar>();
 	Check<SmallLing3>();
 	Check<SmallLing32Fp8>();
 	Check<SmallLing31Flash>();
+	CheckPrefixExact<SmallSolar>();
+	CheckPrefixExact<SmallLing3>();
+	CheckPrefixExact<SmallLing32Fp8>();
+	CheckPrefixExact<SmallLing31Flash>();
+	CheckMlaTp4();
 	if ( vf_failures != 0 )
 	{
 		printf("FAIL ling verify frames: %d failures\n", vf_failures);

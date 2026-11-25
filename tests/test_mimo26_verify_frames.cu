@@ -346,7 +346,7 @@ struct VfRig
 			target[index] = Bf16(Uniform(seed, index));
 	}
 
-	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output)
+	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output, uint32_t last_rows_only = 0u, uint32_t gather_context = 0u)
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden), result(input.size()), other(input.size());
 		std::vector<uint32_t> position(count), sequence(count);
@@ -374,6 +374,8 @@ struct VfRig
 			rank->step.rows = count;
 			rank->step.sequences = sequences;
 			rank->step.commit = commit;
+			rank->step.last_rows_only = last_rows_only;
+			rank->step.gather_context = gather_context;
 			rank->step.context = VF_PAGES * G::kPageSlots;
 			rank->step.multiprocessors = multiprocessors;
 			rank->step.route_fault = VfRouteFault();
@@ -818,10 +820,125 @@ static void Check(void)
 	rig.Close();
 }
 
+static float RelativeRowDistance(const std::vector<uint16_t> &a, uint32_t ra, const std::vector<uint16_t> &b, uint32_t rb, uint32_t width)
+{
+	double diff = 0.0, norm = 0.0;
+	for ( uint32_t c = 0u; c < width; ++c )
+	{
+		const uint32_t ua = (uint32_t)a[(uint64_t)ra * width + c] << 16u;
+		const uint32_t ub = (uint32_t)b[(uint64_t)rb * width + c] << 16u;
+		float fa = 0.0f, fb = 0.0f;
+		memcpy(&fa, &ua, sizeof(float));
+		memcpy(&fb, &ub, sizeof(float));
+		const double d = (double)fa - (double)fb;
+		diff += d * d;
+		norm += (double)fb * (double)fb;
+	}
+	return norm > 0.0 ? (float)sqrt(diff / norm) : (float)sqrt(diff);
+}
+
+struct SmallProDense : Mimo26ProGeometry<SPARK_MIMO26_PRO_TP16_STAGE_TP_DEGREE>
+{
+	static constexpr uint32_t kLayers = 2u;
+	static constexpr uint32_t kFullLayers = 1u;
+	static constexpr uint32_t kDenseLayers = 2u;
+	static constexpr uint32_t kMoeInter = 512u;
+	static constexpr uint32_t kExperts = 128u;
+	static constexpr uint32_t kLocalExperts = kExperts / kTpDegree;
+	static constexpr uint32_t kWindow = 24u;
+	static bool FullLayer(uint32_t layer) { return layer == 0u; }
+	static const char *Tag(void) { return "mimo-v2.6-pro-dense"; }
+};
+
+struct SmallProMxfp4 : Mimo26ProGeometry<SPARK_MIMO26_PRO_TP16_STAGE_TP_DEGREE>
+{
+	static constexpr uint32_t kLayers = 2u;
+	static constexpr uint32_t kFullLayers = 1u;
+	static constexpr uint32_t kMoeInter = 512u;
+	static constexpr uint32_t kExperts = 128u;
+	static constexpr uint32_t kLocalExperts = kExperts / kTpDegree;
+	static constexpr uint32_t kWindow = 24u;
+	static bool FullLayer(uint32_t layer) { return layer == 0u; }
+	static const char *Tag(void) { return "mimo-v2.6-pro-mxfp4"; }
+};
+
+template<class G>
+static void CheckPrefixExact(void)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 12u, 16u, 23u, 64u, 128u };
+	static constexpr uint32_t kCached = 2u * G::kPageSlots;
+	static constexpr uint32_t kMaxTotal = kCached + 128u;
+	VfRig<G> rig;
+	const char *model = G::Tag();
+	std::vector<VfRow> all_rows(kMaxTotal);
+	std::vector<uint8_t> cached_kv;
+	if ( rig.Open() == 0 )
+	{
+		Require(0, model, "prefix-exact synthetic stage opens", 0u, 0u, 0u);
+		return;
+	}
+	for ( uint32_t position = 0u; position < kMaxTotal; ++position )
+		all_rows[position] = { 0u, position, 0u };
+	Require(rig.Run(all_rows.data(), kCached, 1u, 0, 1u, kCached) != 0, model, "cached prefix prefill runs", kCached, 0u, 0u);
+	cached_kv = rig.Save();
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = kCached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		std::vector<uint8_t> cold_kv;
+		Require(cudaMemset(rig.kv, 0, rig.kRanks * rig.kRankKv) == cudaSuccess, model, "prefix-exact KV reset succeeds", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data(), total, 1u, &cold_out, 1u, total) != 0, model, "cold prefill runs", total, delta, 0u);
+		cold_kv = rig.Save();
+		Require(Finite(cold_out) != 0u, model, "cold prefill rows are finite", total, delta, 0u);
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)kCached * G::kHidden), cold_out.end());
+		Require(rig.Load(cached_kv) != 0, model, "cached KV restore succeeds", delta, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, 1u, &warm_out, 1u, total) != 0, model, "warm delta prefill runs", kCached, delta, 0u);
+		Require(FirstDifference(warm_out, cold_tail, G::kHidden) == UINT32_MAX, model,
+			"warm delta prefill equals cold prefill bit for bit (delta, first differing row)", delta, FirstDifference(warm_out, cold_tail, G::kHidden), 0u);
+		Require(rig.KvMatches(rig.Save(), cold_kv, total) != 0u, model,
+			"warm delta prefill leaves the same KV as cold prefill bit for bit (delta)", delta, 0u, 0u);
+	}
+	if constexpr ( G::kDenseLayers == G::kLayers )
+	{
+		std::vector<uint16_t> ref_out, pref_out;
+		const uint32_t check_len = 72u;
+		Require(cudaMemset(rig.kv, 0, rig.kRanks * rig.kRankKv) == cudaSuccess, model, "prefill accuracy KV reset succeeds", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data(), check_len, 1u, &ref_out, 1u, 0u) != 0, model, "reference GQA prefill runs", check_len, 0u, 0u);
+		Require(cudaMemset(rig.kv, 0, rig.kRanks * rig.kRankKv) == cudaSuccess, model, "prefill accuracy KV reset 2 succeeds", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data(), check_len, 1u, &pref_out, 1u, check_len) != 0, model, "local-head prefill run succeeds", check_len, 0u, 0u);
+		for ( uint32_t p = 0u; p < check_len; ++p )
+		{
+			const float dist = RelativeRowDistance(pref_out, p, ref_out, p, G::kHidden);
+			Require(dist < 0.02f, model, "local-head prefill matches reference GQA prefill (pos, rel x 1e6)", p, (uint32_t)(dist * 1.0e6f), 0u);
+		}
+	}
+	{
+		std::vector<uint16_t> b1_out, b8_out;
+		VfRow b8_rows[8];
+		Require(rig.Load(cached_kv) != 0, model, "B1==B8 KV restore succeeds", 0u, 0u, 0u);
+		VfRow b1_row = { 0u, kCached, 5u };
+		Require(rig.Run(&b1_row, 1u, 1u, &b1_out, 0u, 0u) != 0, model, "B1 decode runs", 0u, 0u, 0u);
+		Require(rig.Load(cached_kv) != 0, model, "B8 KV restore succeeds", 0u, 0u, 0u);
+		b8_rows[0] = b1_row;
+		for ( uint32_t r = 1u; r < 8u; ++r )
+			b8_rows[r] = { 1u, r - 1u, 20u + r };
+		Require(rig.Run(b8_rows, 8u, 1u, &b8_out, 0u, 0u) != 0, model, "B8 decode runs", 0u, 0u, 0u);
+		Require(memcmp(b1_out.data(), b8_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+			"B8 lane0 equals B1 decode bit for bit", 0u, 0u, 0u);
+	}
+	Require(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", 0u, 0u, 0u);
+	printf("%s %s prefix-exact + B1==B8: %u ranks, cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, VfRig<G>::kRanks, kCached);
+	rig.Close();
+}
+
 int main(void)
 {
 	Check<SmallFlash>();
 	Check<SmallPro>();
+	CheckPrefixExact<SmallFlash>();
+	CheckPrefixExact<SmallPro>();
+	CheckPrefixExact<SmallProDense>();
+	CheckPrefixExact<SmallProMxfp4>();
 	if ( vf_failures != 0 )
 	{
 		printf("FAIL mimo26 verify frames: %d failures\n", vf_failures);

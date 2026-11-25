@@ -1,0 +1,2 @@
++1070
+MiMo-V2.6 and Ling-3.x GB10 prefill wire-cut, batch, decode, and Gate GX exactness kernels: adds KV-gather local-head FlashAttention MMA prefill (HD=192, VD=128 with sliding window and fused sinks), prior KV pack/unpack/direct kernels, local-expected MXFP4 tile-16 MoE dispatch, and unified prefill Gate GX paths to mimo26_stage.cuh; adds zero-collective cold / prior-KV-gather warm MLA prefill, fused KDA beta and head-norm-gate-out FP8 decode kernels, and unified chunked-delta Gate GX prefill paths to ling_stage.cuh.
