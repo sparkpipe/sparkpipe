@@ -1,0 +1,2 @@
++715
+dsv41_flash tp4 B4/B8/B16 and prefill optimizations: adds D41HcMixNormK32Kernel (32 K-split double-buffered Sinkhorn+CollapseNorm), D41MxGemmBatch16Kernel (3-stage flat-tile batched MXFP8 GEMM for rows<=16 fusing o_a, sh_w2_part, q_a+kv_a, sh_w1+sh_w3 and accelerating o_b/q_b), D41CompactActiveExpertsKernel and D41CellMxW2DirectKernel (direct received-buffer W2 MX GEMM), D41UnpackQCodesKernel and short-context prefill indexer skip, plus multi-row idx_skip in D41MxGemmSmallKernel.

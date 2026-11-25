@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "inference/kernels/cell_mx.cuh"
 #include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/fused/arrival.cuh"
@@ -3310,12 +3311,180 @@ void D41HcMixNormStagedKernel(const uint16_t *__restrict__ streams, const float 
 	LmDependentRelease();
 }
 
+template<uint32_t MAX_R, uint32_t HIDDEN>
+static __global__ __launch_bounds__(256, 2)
+void D41HcMixNormK32Kernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, const float *__restrict__ scale,
+	const float *__restrict__ base, float *__restrict__ partials, float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb,
+	uint32_t *__restrict__ counters, const float *__restrict__ collapse_pre, const uint16_t *__restrict__ norm, uint16_t *__restrict__ x,
+	uint16_t *__restrict__ xq, uint8_t *__restrict__ mx_codes, uint8_t *__restrict__ mx_scales, uint32_t rows, float rms_eps, uint32_t hc_iters,
+	float hc_eps)
+{
+	using S = LmHcSinkhornShape<D41K_HC>;
+	constexpr uint32_t THREADS = 256u, WARPS = 8u, K_SPLITS = 32u, TASKS_PER_WARP = S::kMix / WARPS;
+	constexpr uint32_t FLAT = D41K_HC * HIDDEN, SLICE_K = FLAT / K_SPLITS, ITERS = SLICE_K / 128u;
+	constexpr uint32_t STR_VECS = MAX_R * 16u;
+	static_assert(S::kMix == 24u && S::kTasks == 25u && FLAT % (K_SPLITS * 128u) == 0u && STR_VECS <= THREADS,
+		"k32 sinkhorn splits hidden evenly into 128-wide chunks");
+	union SharedStorage
+	{
+		uint16_t s_str[2][MAX_R][128];
+		float mix[WARPS][S::kTasks];
+		struct { uint16_t row[HIDDEN]; float red[8]; } cn;
+	};
+	__shared__ __align__(16) SharedStorage smem;
+	const uint32_t chunks = (rows + MAX_R - 1u) / MAX_R, sink_blocks = chunks * K_SPLITS;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	LmDependentWait();
+	if ( blockIdx.x < sink_blocks )
+	{
+		const uint32_t chunk = blockIdx.x >> 5u, ksplit = blockIdx.x & 31u, row0 = chunk * MAX_R;
+		const uint32_t live = rows - row0 < MAX_R ? rows - row0 : MAX_R;
+		const uint32_t k_base = ksplit * SLICE_K;
+		const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(smem.s_str);
+		constexpr uint32_t BUF_BYTES = MAX_R * 128u * 2u;
+		const uint32_t cp_r = threadIdx.x >> 4u, cp_c = threadIdx.x & 15u;
+		const uint32_t cp_active = threadIdx.x < STR_VECS && cp_r < live ? 1u : 0u;
+		const uint16_t *cp_src = cp_active != 0u ? streams + (uint64_t)(row0 + cp_r) * FLAT + k_base + cp_c * 8u : (const uint16_t *)0;
+		const uint32_t cp_dst_off = threadIdx.x * 16u;
+		auto issue = [&](uint32_t iter)
+		{
+			if ( cp_active != 0u )
+				asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(sbase + (iter & 1u) * BUF_BYTES + cp_dst_off),
+					"l"(cp_src + iter * 128u) : "memory");
+			asm volatile("cp.async.commit_group;\n" ::: "memory");
+		};
+		float total[TASKS_PER_WARP][MAX_R], norm_sq[MAX_R];
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+		{
+			norm_sq[r] = 0.0f;
+			#pragma unroll
+			for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t ) total[t][r] = 0.0f;
+		}
+		issue(0u);
+		for ( uint32_t iter = 0u; iter < ITERS; ++iter )
+		{
+			const uint32_t k_off = k_base + iter * 128u;
+			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+			__syncthreads();
+			if ( iter + 1u < ITERS ) issue(iter + 1u);
+			float4 f[TASKS_PER_WARP];
+			#pragma unroll
+			for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
+				f[t] = __ldcs((const float4 *)(fn + (uint64_t)(warp + t * WARPS) * FLAT + k_off) + lane);
+			const uint16_t (*cur)[128] = smem.s_str[iter & 1u];
+			#pragma unroll
+			for ( uint32_t r = 0u; r < MAX_R; ++r )
+				if ( r < live )
+				{
+					const uint2 s = ((const uint2 *)cur[r])[lane];
+					const float v0 = LmBf16ToFloat((uint16_t)(s.x & 0xffffu));
+					const float v1 = LmBf16ToFloat((uint16_t)(s.x >> 16u));
+					const float v2 = LmBf16ToFloat((uint16_t)(s.y & 0xffffu));
+					const float v3 = LmBf16ToFloat((uint16_t)(s.y >> 16u));
+					#pragma unroll
+					for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
+						total[t][r] = fmaf(f[t].x, v0, fmaf(f[t].y, v1, fmaf(f[t].z, v2, fmaf(f[t].w, v3, total[t][r]))));
+					if ( warp == 0u )
+						norm_sq[r] = fmaf(v0, v0, fmaf(v1, v1, fmaf(v2, v2, fmaf(v3, v3, norm_sq[r]))));
+				}
+		}
+		#pragma unroll
+		for ( uint32_t r = 0u; r < MAX_R; ++r )
+			if ( r < live )
+			{
+				#pragma unroll
+				for ( uint32_t t = 0u; t < TASKS_PER_WARP; ++t )
+				{
+					float sum = total[t][r];
+					#pragma unroll
+					for ( uint32_t off = 16u; off != 0u; off >>= 1u ) sum += __shfl_down_sync(0xffffffffu, sum, off);
+					if ( lane == 0u ) partials[((uint64_t)(row0 + r) * S::kTasks + warp + t * WARPS) * K_SPLITS + ksplit] = sum;
+				}
+				if ( warp == 0u )
+				{
+					float ns = norm_sq[r];
+					#pragma unroll
+					for ( uint32_t off = 16u; off != 0u; off >>= 1u ) ns += __shfl_down_sync(0xffffffffu, ns, off);
+					if ( lane == 0u ) partials[((uint64_t)(row0 + r) * S::kTasks + S::kMix) * K_SPLITS + ksplit] = ns;
+				}
+			}
+		if ( LmFusedLastArrival(counters + chunk, K_SPLITS) )
+		{
+			const uint32_t sr = lane / D41K_HC, sc = lane % D41K_HC, cell = lane % (D41K_HC * D41K_HC);
+			for ( uint32_t r = warp; r < live; r += WARPS )
+			{
+				const uint32_t row = row0 + r;
+				if ( lane < S::kTasks )
+				{
+					const float *part = partials + ((uint64_t)row * S::kTasks + lane) * K_SPLITS;
+					float val = 0.0f;
+					#pragma unroll 4
+					for ( uint32_t k = 0u; k < K_SPLITS; ++k ) val += part[k];
+					smem.mix[warp][lane] = val;
+				}
+				__syncwarp();
+				const float *m = smem.mix[warp];
+				const float inverse = rsqrtf(m[S::kMix] / (float)FLAT + rms_eps);
+				if ( lane < D41K_HC )
+					pre[(uint64_t)row * D41K_HC + lane] = 1.0f / (1.0f + expf(-((m[lane] * inverse) * scale[0] + base[lane]))) + hc_eps;
+				else if ( lane < 2u * D41K_HC )
+					post[(uint64_t)row * D41K_HC + lane - D41K_HC] = 2.0f / (1.0f + expf(-((m[lane] * inverse) * scale[1] + base[lane])));
+				float cv = (m[2u * D41K_HC + cell] * inverse) * scale[2] + base[2u * D41K_HC + cell];
+				float top = -INFINITY;
+				#pragma unroll
+				for ( uint32_t idx = 0u; idx < D41K_HC; ++idx )
+					top = fmaxf(top, __shfl_sync(0xffffffffu, cv, sr * D41K_HC + idx));
+				cv = expf(cv - top);
+				cv = cv / LmHcSinkhornLineSum<D41K_HC>(cv, sr * D41K_HC, 1u) + hc_eps;
+				cv /= LmHcSinkhornLineSum<D41K_HC>(cv, sc, D41K_HC) + hc_eps;
+				for ( uint32_t it = 1u; it < hc_iters; ++it )
+				{
+					cv /= LmHcSinkhornLineSum<D41K_HC>(cv, sr * D41K_HC, 1u) + hc_eps;
+					cv /= LmHcSinkhornLineSum<D41K_HC>(cv, sc, D41K_HC) + hc_eps;
+				}
+				if ( lane < D41K_HC * D41K_HC )
+					comb[(uint64_t)row * D41K_HC * D41K_HC + lane] = cv;
+			}
+		}
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t row = blockIdx.x - sink_blocks;
+	if ( row < rows )
+		D41CollapseNormBlock<THREADS, HIDDEN>(streams, collapse_pre, norm, x, xq, mx_codes, mx_scales, row, rms_eps, smem.cn.row, smem.cn.red);
+	LmDependentRelease();
+}
+
+template<uint32_t QLORA>
+static __global__ __launch_bounds__(128)
+void D41UnpackQCodesKernel(const uint8_t *__restrict__ received, uint8_t *__restrict__ codes, uint8_t *__restrict__ scales,
+	uint32_t own, uint64_t segment)
+{
+	constexpr uint32_t CODE_VECS = QLORA / 16u, SCALE_WORDS = QLORA / 128u;
+	static_assert(QLORA % 128u == 0u && CODE_VECS + SCALE_WORDS <= 128u, "q_coded unpack fits one block");
+	const uint32_t row = blockIdx.y, source = row / own, local = row - source * own;
+	const uint8_t *seg = received + (uint64_t)source * segment;
+	LmDependentWait();
+	if ( threadIdx.x < CODE_VECS )
+		((uint4 *)(codes + (uint64_t)row * QLORA))[threadIdx.x] = ((const uint4 *)(seg + (uint64_t)local * QLORA))[threadIdx.x];
+	else if ( threadIdx.x < CODE_VECS + SCALE_WORDS )
+	{
+		const uint32_t j = threadIdx.x - CODE_VECS;
+		((uint32_t *)(scales + (uint64_t)row * (QLORA / 32u)))[j] =
+			((const uint32_t *)(seg + (uint64_t)own * QLORA + (uint64_t)local * (QLORA / 32u)))[j];
+	}
+	LmDependentRelease();
+}
+
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N, uint32_t STAGES, bool OUT_F32>
 static __global__ __launch_bounds__(WARPS_M * WARPS_N * 32u)
 void D41MxGemmSmallKernel(const uint8_t *__restrict__ act, const uint8_t *__restrict__ act_scale,
 	const uint8_t *__restrict__ w0, const uint8_t *__restrict__ ws0, void *__restrict__ out0, uint32_t dim0,
 	const uint8_t *__restrict__ w1, const uint8_t *__restrict__ ws1, void *__restrict__ out1, uint32_t dim1,
-	uint32_t rows, uint32_t input_dim, uint32_t out_stride0 = 0u, uint32_t out_col0 = 0u)
+	uint32_t rows, uint32_t input_dim, uint32_t out_stride0 = 0u, uint32_t out_col0 = 0u,
+	const uint32_t *__restrict__ skip_seq = 0, const uint32_t *__restrict__ skip_len = 0,
+	const uint32_t *__restrict__ skip_bound = 0, uint32_t skip_max_context = 0u)
 {
 	constexpr uint32_t THREADS = WARPS_M * WARPS_N * 32u, TILE_K = 128u, BLK = 32u;
 	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N, MF = WARP_M / 16u, NF = WARP_N / 8u;
@@ -3341,6 +3510,22 @@ void D41MxGemmSmallKernel(const uint8_t *__restrict__ act, const uint8_t *__rest
 	const uint32_t n_base = (is_second != 0u ? nt - ntiles0 : nt) * TILE_N;
 	const uint32_t k_tiles = input_dim / TILE_K, sc_cols = input_dim / BLK;
 	LmDependentWait();
+	if ( skip_max_context != 0u && skip_seq != 0 && skip_len != 0 && (is_second != 0u || dim1 == 0u) )
+	{
+		const uint32_t row_end = row_base + TILE_M < rows ? row_base + TILE_M : rows;
+		uint32_t any_sparse = 0u;
+		for ( uint32_t r = row_base; r < row_end; ++r )
+		{
+			uint32_t b = __ldg(skip_len + __ldg(skip_seq + r));
+			if ( skip_bound != 0 )
+			{
+				const uint32_t rp = __ldg(skip_bound + r);
+				b = rp == D41K_NO_ROW ? 0u : (rp + 1u < b ? rp + 1u : b);
+			}
+			if ( b > skip_max_context ) { any_sparse = 1u; break; }
+		}
+		if ( any_sparse == 0u ) { LmDependentRelease(); return; }
+	}
 	auto swz = [](uint32_t r, uint32_t c) { return r * TILE_K + ((c ^ (r & 7u)) << 4u); };
 	auto issue = [&](uint32_t k)
 	{
@@ -4992,3 +5177,368 @@ void D41FusedRouterPackedKernel(const uint16_t *__restrict__ router_w, const uin
 			tile_prefix_down, packed_weight, rows, row_valid);
 	LmDependentRelease();
 }
+
+template<uint32_t EXPERTS>
+static __global__ __launch_bounds__(256)
+void D41CompactActiveExpertsKernel(const uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ active_out)
+{
+	__shared__ uint32_t s_warp[8];
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	LmDependentWait();
+	const uint32_t a0 = threadIdx.x < EXPERTS && group_row_offset[threadIdx.x + 1u] > group_row_offset[threadIdx.x] ? 1u : 0u;
+	const uint32_t a1 = threadIdx.x + 256u < EXPERTS && group_row_offset[threadIdx.x + 257u] > group_row_offset[threadIdx.x + 256u] ? 1u : 0u;
+	const uint32_t m0 = __ballot_sync(0xffffffffu, a0 != 0u);
+	if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m0);
+	__syncthreads();
+	if ( warp == 0u )
+	{
+		uint32_t w = lane < 8u ? s_warp[lane] : 0u;
+		#pragma unroll
+		for ( uint32_t d = 1u; d < 8u; d <<= 1u ) { const uint32_t u = __shfl_up_sync(0xffffffffu, w, d); if ( lane >= d ) w += u; }
+		if ( lane < 8u ) s_warp[lane] = w;
+	}
+	__syncthreads();
+	const uint32_t tot0 = s_warp[7];
+	const uint32_t off0 = (warp > 0u ? s_warp[warp - 1u] : 0u) + (uint32_t)__popc(m0 & ((1u << lane) - 1u));
+	if ( a0 != 0u ) active_out[off0] = threadIdx.x;
+	__syncthreads();
+	const uint32_t m1 = __ballot_sync(0xffffffffu, a1 != 0u);
+	if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m1);
+	__syncthreads();
+	if ( warp == 0u )
+	{
+		uint32_t w = lane < 8u ? s_warp[lane] : 0u;
+		#pragma unroll
+		for ( uint32_t d = 1u; d < 8u; d <<= 1u ) { const uint32_t u = __shfl_up_sync(0xffffffffu, w, d); if ( lane >= d ) w += u; }
+		if ( lane < 8u ) s_warp[lane] = w;
+	}
+	__syncthreads();
+	const uint32_t tot1 = s_warp[7];
+	const uint32_t off1 = tot0 + (warp > 0u ? s_warp[warp - 1u] : 0u) + (uint32_t)__popc(m1 & ((1u << lane) - 1u));
+	if ( a1 != 0u ) active_out[off1] = threadIdx.x + 256u;
+	if ( threadIdx.x == 0u ) active_out[EXPERTS] = tot0 + tot1;
+	LmDependentRelease();
+}
+
+struct D41MxBatchDesc
+{
+	const uint8_t *act[4];
+	const uint8_t *act_scale[4];
+	const uint8_t *w[4];
+	const uint8_t *ws[4];
+	uint16_t *out[4];
+	uint32_t in_dim[4];
+	uint32_t out_dim[4];
+	uint32_t out_stride[4];
+	uint32_t out_col[4];
+	uint32_t tile_end[4];
+};
+
+template<uint32_t STAGES>
+static __global__ __launch_bounds__(128, 3)
+void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_t rows)
+{
+	constexpr uint32_t TILE_M = 16u, TILE_N = 16u, TILE_K = 128u, BLK = 32u;
+	constexpr uint32_t A_BYTES = TILE_M * TILE_K, B_BYTES = TILE_N * TILE_K;
+	constexpr uint32_t STAGE_BYTES = A_BYTES + B_BYTES + (TILE_M + TILE_N) * 4u;
+	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
+	const uint32_t nt = blockIdx.x, row_base = blockIdx.y * TILE_M;
+	uint32_t grp = 0u;
+	if ( nt >= desc.tile_end[0] )
+	{
+		grp = 1u;
+		if ( nt >= desc.tile_end[1] )
+		{
+			grp = 2u;
+			if ( nt >= desc.tile_end[2] ) grp = 3u;
+		}
+	}
+	const uint32_t n_base = (nt - (grp > 0u ? desc.tile_end[grp - 1u] : 0u)) * TILE_N;
+	const uint32_t out_dim = desc.out_dim[grp], input_dim = desc.in_dim[grp];
+	if ( n_base >= out_dim || row_base >= rows ) return;
+	const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(smem);
+	const uint32_t warp_k = threadIdx.x >> 5u, lane = threadIdx.x & 31u, group = lane >> 2u, quad = lane & 3u;
+	const uint8_t *act = desc.act[grp], *act_scale = desc.act_scale[grp];
+	const uint8_t *w = desc.w[grp], *ws = desc.ws[grp];
+	uint16_t *out_ptr = desc.out[grp];
+	const uint32_t out_stride = desc.out_stride[grp], out_col = desc.out_col[grp];
+	const uint32_t k_tiles = input_dim / TILE_K, sc_cols = input_dim / BLK;
+	LmDependentWait();
+	auto swz = [](uint32_t r, uint32_t c) { return r * TILE_K + ((c ^ (r & 7u)) << 4u); };
+	const uint32_t ch = threadIdx.x, r_cp = ch >> 3u, c_cp = ch & 7u;
+	const uint32_t a_live = row_base + r_cp < rows ? 16u : 0u;
+	const uint32_t b_live = n_base + r_cp < out_dim ? 16u : 0u;
+	const uint8_t *a_row = act + (uint64_t)(a_live != 0u ? row_base + r_cp : 0u) * input_dim + c_cp * 16u;
+	const uint8_t *b_row = w + (uint64_t)(b_live != 0u ? n_base + r_cp : 0u) * input_dim + c_cp * 16u;
+	const uint32_t sa_dst = swz(r_cp, c_cp), sb_dst = A_BYTES + sa_dst;
+	const uint8_t *sc_src = threadIdx.x < TILE_M ?
+		act_scale + (uint64_t)(row_base + threadIdx.x < rows ? row_base + threadIdx.x : rows - 1u) * sc_cols :
+		threadIdx.x < TILE_M + TILE_N ?
+		ws + (uint64_t)(n_base + (threadIdx.x - TILE_M) < out_dim ? n_base + (threadIdx.x - TILE_M) : out_dim - 1u) * sc_cols :
+		(const uint8_t *)0;
+	auto issue = [&](uint32_t k)
+	{
+		const uint32_t st = sbase + (k % STAGES) * STAGE_BYTES;
+		asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sa_dst), "l"(a_row + (uint64_t)k * TILE_K), "r"(a_live) : "memory");
+		asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
+		if ( sc_src != 0 )
+			asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(st + A_BYTES + B_BYTES + threadIdx.x * 4u),
+				"l"(sc_src + (uint64_t)k * 4u) : "memory");
+	};
+	float total[2][4];
+	#pragma unroll
+	for ( uint32_t j = 0u; j < 2u; ++j ) total[j][0] = total[j][1] = total[j][2] = total[j][3] = 0.0f;
+	for ( uint32_t p = 0u; p + 1u < STAGES; ++p )
+	{
+		if ( p < k_tiles ) issue(p);
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+	}
+	const uint32_t a_ldm_r = ((lane >> 3u) & 1u) * 8u + (lane & 7u), a_ldm_c = warp_k * 2u + (lane >> 4u);
+	const uint32_t b_ldm_r = (lane >> 4u) * 8u + (lane & 7u), b_ldm_c = warp_k * 2u + ((lane >> 3u) & 1u);
+	const uint32_t a_ldm_off = swz(a_ldm_r, a_ldm_c), b_ldm_off = A_BYTES + swz(b_ldm_r, b_ldm_c);
+	const uint32_t sa_idx = group + ((lane & 1u) << 3u), sb0_idx = TILE_M + group, sb1_idx = TILE_M + 8u + group;
+	for ( uint32_t k = 0u; k < k_tiles; ++k )
+	{
+		asm volatile("cp.async.wait_group %0;\n" :: "n"(STAGES - 2u) : "memory");
+		__syncthreads();
+		if ( k + STAGES - 1u < k_tiles ) issue(k + STAGES - 1u);
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+		const uint32_t st = sbase + (k % STAGES) * STAGE_BYTES;
+		const uint32_t *words = (const uint32_t *)(smem + (k % STAGES) * STAGE_BYTES + A_BYTES + B_BYTES);
+		const uint32_t scale_a = words[sa_idx], scale_b0 = words[sb0_idx], scale_b1 = words[sb1_idx];
+		uint32_t a[4], b0[2], b1[2];
+		asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+			: "=r"(a[0]), "=r"(a[1]), "=r"(a[2]), "=r"(a[3]) : "r"(st + a_ldm_off));
+		asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+			: "=r"(b0[0]), "=r"(b0[1]), "=r"(b1[0]), "=r"(b1[1]) : "r"(st + b_ldm_off));
+		float blk0[4], blk1[4];
+		LmMmaMxf8Block(blk0, a, b0, scale_a, (uint16_t)warp_k, scale_b0, (uint16_t)warp_k);
+		LmMmaMxf8Block(blk1, a, b1, scale_a, (uint16_t)warp_k, scale_b1, (uint16_t)warp_k);
+		total[0][0] += blk0[0]; total[0][1] += blk0[1]; total[0][2] += blk0[2]; total[0][3] += blk0[3];
+		total[1][0] += blk1[0]; total[1][1] += blk1[1]; total[1][2] += blk1[2]; total[1][3] += blk1[3];
+	}
+	asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+	__syncthreads();
+	float *ep = (float *)smem;
+	if ( warp_k != 0u )
+	{
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+			#pragma unroll
+			for ( uint32_t e = 0u; e < 4u; ++e )
+				ep[(((warp_k - 1u) * 2u + j) * 4u + e) * 32u + lane] = total[j][e];
+	}
+	__syncthreads();
+	if ( warp_k == 0u )
+	{
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+			#pragma unroll
+			for ( uint32_t e = 0u; e < 4u; e += 2u )
+			{
+				const uint32_t r = row_base + group + (e >> 1u) * 8u;
+				const uint32_t col = n_base + j * 8u + quad * 2u;
+				if ( r < rows && col < out_dim )
+				{
+					const float v0 = total[j][e] + ep[((0u * 2u + j) * 4u + e) * 32u + lane]
+						+ ep[((1u * 2u + j) * 4u + e) * 32u + lane] + ep[((2u * 2u + j) * 4u + e) * 32u + lane];
+					const float v1 = total[j][e + 1u] + ep[((0u * 2u + j) * 4u + e + 1u) * 32u + lane]
+						+ ep[((1u * 2u + j) * 4u + e + 1u) * 32u + lane] + ep[((2u * 2u + j) * 4u + e + 1u) * 32u + lane];
+					*(uint32_t *)(out_ptr + (uint64_t)r * out_stride + out_col + col) = LmPackBf16Pair(v0, v1);
+				}
+			}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t SLICE, uint32_t INTER, uint32_t OUT_DIM>
+static __global__ __launch_bounds__(256, 2)
+void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_t *__restrict__ recv_base,
+	uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ active_experts,
+	uint32_t routes, uint64_t recv_stride)
+{
+	constexpr uint32_t THREADS = 256u, TILE_M = 2u * WARP_CHUNKS * 16u, COPIES = TILE_M / 32u;
+	constexpr uint32_t TILE_K = 128u, K_STEPS = 4u, K_ITERS = INTER / TILE_K;
+	constexpr uint32_t TOTAL_CELLS = OUT_DIM / 16u, N_BLOCKS = TOTAL_CELLS / 8u;
+	constexpr uint32_t CELL_VECS = 17u, CELL_BYTES = CELL_VECS * 16u;
+	constexpr uint32_t TILE_VECS = 8u * CELL_VECS, TILE_BYTES = 8u * CELL_BYTES;
+	constexpr uint32_t W_VECS = K_STEPS * TILE_VECS, W_BYTES = K_STEPS * TILE_BYTES;
+	constexpr uint32_t W_PASSES = (W_VECS + THREADS - 1u) / THREADS;
+	constexpr uint32_t A_BYTES = TILE_M * TILE_K, STAGE_BYTES = A_BYTES + W_BYTES;
+	constexpr uint32_t S_WORDS = 2u * TILE_M;
+	constexpr uint64_t TILE_STRIDE = (uint64_t)TOTAL_CELLS * CELL_BYTES;
+	constexpr uint64_t GROUP_BYTES = (uint64_t)(INTER / 32u) * TILE_STRIDE;
+	constexpr uint32_t S_BLOCKS = SLICE / SPARK_DSV41_FLASH_FP8_BLOCK;
+	static_assert(OUT_DIM % 128u == 0u && INTER % 128u == 0u && SLICE % 64u == 0u && W_PASSES == 3u && TILE_M % 32u == 0u, "direct w2 recv geometry");
+	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES + S_WORDS * 4u];
+	const uint32_t active_idx = blockIdx.x / N_BLOCKS, n_block = blockIdx.x - active_idx * N_BLOCKS;
+	LmDependentWait();
+	LmDependentRelease();
+	const uint32_t active_count = __ldg(active_experts + EXPERTS);
+	if ( active_idx >= active_count )
+		return;
+	const uint32_t group = __ldg(active_experts + active_idx);
+	const uint32_t start = __ldg(group_row_offset + group), end = __ldg(group_row_offset + group + 1u);
+	if ( start >= end )
+		return;
+	const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(smem);
+	uint32_t *s_scratch = (uint32_t *)(smem + STAGES * STAGE_BYTES);
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
+	const uint32_t warp_m = warp >> 2u, warp_n = warp & 3u;
+	const uint32_t chunk = threadIdx.x & 7u, row_base = threadIdx.x >> 3u;
+	const uint32_t warp_row_base = warp_m * (WARP_CHUNKS * 16u);
+	const uint32_t block_cell0 = n_block * 8u, cell_first = block_cell0 + warp_n * 2u;
+	const uint8_t *group_cells = w2_cells + (uint64_t)group * GROUP_BYTES + (uint64_t)block_cell0 * CELL_BYTES;
+	uint32_t w_off[W_PASSES];
+	#pragma unroll
+	for ( uint32_t p = 0u; p < W_PASSES; ++p )
+	{
+		const uint32_t v = threadIdx.x + p * THREADS;
+		if ( v < W_VECS )
+		{
+			const uint32_t kt = v / TILE_VECS, in_kt = v - kt * TILE_VECS;
+			w_off[p] = (uint32_t)((uint64_t)kt * TILE_STRIDE + in_kt * 16u);
+		}
+		else
+			w_off[p] = 0u;
+	}
+	const uint32_t shfl_lo = (lane & ~3u) | (c >> 1u), shfl_hi = shfl_lo | 2u;
+	const uint32_t perm_sel = (c & 1u) != 0u ? 0x7632u : 0x5410u;
+	const uint32_t ldm_row = warp_row_base + ((lane >> 3u) & 1u) * 8u + (lane & 7u), ldm_col = lane >> 4u;
+	const uint32_t s_row_idx = warp_row_base + g + ((lane & 1u) << 3u);
+	const uint32_t warp_w_off = warp_n * 2u * CELL_BYTES;
+	const uint32_t w_lane_off = warp_w_off + lane * 4u, ws_lane_off = warp_w_off + 256u + g;
+	const uint8_t *r0 = (const uint8_t *)(recv_base + 0ull * recv_stride);
+	const uint8_t *r1 = (const uint8_t *)(recv_base + 1ull * recv_stride);
+	const uint8_t *r2 = (const uint8_t *)(recv_base + 2ull * recv_stride);
+	const uint8_t *r3 = (const uint8_t *)(recv_base + 3ull * recv_stride);
+	const uint64_t sc_off_base = (uint64_t)routes * SLICE;
+	for ( uint32_t first = start; first < end; first += TILE_M )
+	{
+		const uint32_t count = end - first < TILE_M ? end - first : TILE_M;
+		const uint32_t sc_route = first + threadIdx.x, sc_live = threadIdx.x < count ? 1u : 0u;
+		const uint8_t *w_base = group_cells;
+		float acc[WARP_CHUNKS][4][4];
+		#pragma unroll
+		for ( uint32_t m = 0u; m < WARP_CHUNKS; ++m )
+			#pragma unroll
+			for ( uint32_t f = 0u; f < 4u; ++f ) acc[m][f][0] = acc[m][f][1] = acc[m][f][2] = acc[m][f][3] = 0.0f;
+		auto produce = [&](uint32_t k_idx, uint32_t st_off)
+		{
+			const uint32_t stage_s = sbase + st_off, w_stage = stage_s + A_BYTES;
+			const uint32_t elem = k_idx * TILE_K + chunk * 16u;
+			const uint32_t src_r = elem / SLICE, within = elem - src_r * SLICE;
+			const uint8_t *rb = src_r == 0u ? r0 : src_r == 1u ? r1 : src_r == 2u ? r2 : r3;
+			#pragma unroll
+			for ( uint32_t q = 0u; q < COPIES; ++q )
+			{
+				const uint32_t lr = row_base + q * 32u, live = lr < count ? 1u : 0u;
+				LmCellMxCopy(stage_s + LmCellMxSwizzle(lr, chunk), live != 0u ? rb + (uint64_t)(first + lr) * SLICE + within : rb, live << 4u);
+			}
+			#pragma unroll
+			for ( uint32_t p = 0u; p < W_PASSES; ++p )
+				if ( threadIdx.x + p * THREADS < W_VECS )
+					LmCellMxCopy(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
+			w_base += (uint64_t)K_STEPS * TILE_STRIDE;
+		};
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+		auto advance = [](uint32_t &off) { off += STAGE_BYTES; if ( off == STAGES * STAGE_BYTES ) off = 0u; };
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < K_ITERS ) produce(kp, sp_off);
+			LmCellMmaCommit();
+			++kp;
+			advance(sp_off);
+		}
+		const uint32_t active_m = warp_row_base < count ? 1u : 0u;
+		for ( uint32_t k_step = 0u; k_step < K_ITERS; ++k_step )
+		{
+			const uint32_t s_buf = (k_step & 1u) * TILE_M;
+			if ( threadIdx.x < TILE_M )
+			{
+				uint32_t sw = 0u;
+				if ( sc_live != 0u )
+				{
+					const uint32_t b0 = k_step * 4u, sr0 = b0 / S_BLOCKS, sb0 = b0 - sr0 * S_BLOCKS;
+					const uint32_t b2 = b0 + 2u, sr2 = b2 / S_BLOCKS, sb2 = b2 - sr2 * S_BLOCKS;
+					const uint8_t *rb0 = sr0 == 0u ? r0 : sr0 == 1u ? r1 : sr0 == 2u ? r2 : r3;
+					const uint8_t *rb2 = sr2 == 0u ? r0 : sr2 == 1u ? r1 : sr2 == 2u ? r2 : r3;
+					const uint32_t lo = *(const uint16_t *)(rb0 + sc_off_base + (uint64_t)sc_route * S_BLOCKS + sb0);
+					const uint32_t hi = *(const uint16_t *)(rb2 + sc_off_base + (uint64_t)sc_route * S_BLOCKS + sb2);
+					sw = lo | (hi << 16u);
+				}
+				s_scratch[s_buf + threadIdx.x] = sw;
+			}
+			LmCellMmaWait<STAGES - 2u>();
+			__syncthreads();
+			if ( kp < K_ITERS )
+			{
+				produce(kp, sp_off);
+				++kp;
+				advance(sp_off);
+			}
+			LmCellMmaCommit();
+			if ( active_m != 0u )
+			{
+				const uint32_t stage_s = sbase + sc_off, w_stage = stage_s + A_BYTES;
+				uint32_t scale_word[WARP_CHUNKS];
+				#pragma unroll
+				for ( uint32_t m = 0u; m < WARP_CHUNKS; ++m )
+					scale_word[m] = s_scratch[s_buf + s_row_idx + m * 16u];
+				#pragma unroll 1
+				for ( uint32_t step = 0u; step < K_STEPS; ++step )
+				{
+					const uint32_t w_tile = w_stage + step * TILE_BYTES + w_lane_off;
+					const uint32_t ws_tile = w_stage + step * TILE_BYTES + ws_lane_off;
+					const uint32_t a_col = step * 2u + ldm_col;
+					uint32_t b[4][2], scale_b[4], a[2][4];
+					#pragma unroll
+					for ( uint32_t f = 0u; f < 4u; ++f )
+					{
+						const uint32_t raw = LmCellMxShared32(w_tile + (f / 2u) * CELL_BYTES + (f % 2u) * 128u);
+						LmCellMxE2m1(__byte_perm(__shfl_sync(0xffffffffu, raw, shfl_lo), __shfl_sync(0xffffffffu, raw, shfl_hi), perm_sel), b[f][0], b[f][1]);
+						scale_b[f] = LmCellMxShared8(ws_tile + (f / 2u) * CELL_BYTES + (f % 2u) * 8u);
+					}
+					LmCellMxMatrix4(stage_s + LmCellMxSwizzle(ldm_row, a_col), a[0]);
+					#pragma unroll
+					for ( uint32_t m = 0u; m < WARP_CHUNKS; ++m )
+					{
+						const uint32_t cur = m & 1u, nxt = cur ^ 1u;
+						if ( m + 1u < WARP_CHUNKS )
+							LmCellMxMatrix4(stage_s + LmCellMxSwizzle(ldm_row + (m + 1u) * 16u, a_col), a[nxt]);
+						#pragma unroll
+						for ( uint32_t f = 0u; f < 4u; ++f )
+						{
+							float blk[4];
+							LmMmaMxf8Mxf4Block<0u>(blk, a[cur], b[f], scale_word[m], scale_b[f]);
+							acc[m][f][0] += blk[0]; acc[m][f][1] += blk[1]; acc[m][f][2] += blk[2]; acc[m][f][3] += blk[3];
+						}
+						scale_word[m] >>= 8u;
+					}
+				}
+			}
+			advance(sc_off);
+		}
+		LmCellMmaWait<0u>();
+		if ( active_m != 0u )
+		{
+			#pragma unroll
+			for ( uint32_t m = 0u; m < WARP_CHUNKS; ++m )
+				#pragma unroll
+				for ( uint32_t h = 0u; h < 2u; ++h )
+				{
+					const uint32_t lr = warp_row_base + m * 16u + g + h * 8u;
+					if ( lr >= count ) continue;
+					uint16_t *row_out = output_bf16 + (uint64_t)(first + lr) * OUT_DIM;
+					#pragma unroll
+					for ( uint32_t f = 0u; f < 4u; ++f )
+						*(uint32_t *)(row_out + (cell_first + (f >> 1u)) * 16u + (f & 1u) * 8u + c * 2u) =
+							LmPackBf16Pair(acc[m][f][h * 2u], acc[m][f][h * 2u + 1u]);
+				}
+		}
+		if ( first + TILE_M < end ) __syncthreads();
+	}
+}
+
+
