@@ -142,7 +142,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_MX_MIN_ROWS 8u
 #define D41_SHARED_SPLIT_ROWS 64u
 #define D41_ATTEND_TILES 2u
-#define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
+#define D41_OWN_ROWS_MIN ((!D41_ROWS && D41_WHOLE) ? 512u : (D41_WHOLE ? 2048u : UINT32_MAX))
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
 #define D41_BACKUP_LAYERS (D41_ROWS ? D41_LAYERS : 0u)
 #define D41_BACKUP_COPIES (D41_ROWS && D41_TP >= 4u ? 2u : 1u)
@@ -456,6 +456,7 @@ static uint32_t D41MxSmallReady(const D41Mx *mx, const D41Fp8Linear *linear, con
 static int32_t D41LinearMx(const D41Fp8Linear *linear, const D41Mx *mx, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 	uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream, uint32_t out_stride = 0u, uint32_t out_col = 0u)
 {
+	LmWeightPrefetchNote(stream, linear->weight, (uint64_t)output_dimension * input_dimension);
 	if ( D41MxSmallReady(mx, linear, destination, rows, input_dimension, output_dimension) != 0u &&
 		((out_stride | out_col) & 1u) == 0u &&
 		((rows + 31u) / 32u) * ((output_dimension + 127u) / 128u) < multiprocessors )
@@ -475,6 +476,7 @@ static int32_t D41LinearMx(const D41Fp8Linear *linear, const D41Mx *mx, uint16_t
 static int32_t D41LinearMxF32(const D41Fp8Linear *linear, const D41Mx *mx, float *destination, uint32_t rows, uint32_t input_dimension,
 	uint32_t output_dimension, SparkGpuStream stream)
 {
+	LmWeightPrefetchNote(stream, linear->weight, (uint64_t)output_dimension * input_dimension);
 	if ( D41MxSmallReady(mx, linear, destination, rows, input_dimension, output_dimension) == 0u )
 		return LM_LAUNCH_ERR_SHAPE;
 	LM_LAUNCH_DEPENDENT((D41MxGemmSmallKernel<32u, 64u, 2u, 2u, 3u, true>), dim3((output_dimension + 63u) / 64u, (rows + 31u) / 32u), 128u, 0, stream,
@@ -537,6 +539,8 @@ static int32_t D41LinearPairMx(const D41Fp8Linear *first, const D41Fp8Linear *se
 	uint16_t *second_destination, uint32_t rows, uint32_t input_dimension, uint32_t first_dimension, uint32_t second_dimension,
 	uint32_t multiprocessors, SparkGpuStream stream)
 {
+	LmWeightPrefetchNote(stream, first->weight, (uint64_t)first_dimension * input_dimension);
+	LmWeightPrefetchNote(stream, second->weight, (uint64_t)second_dimension * input_dimension);
 	if ( D41MxSmallReady(mx, first, first_destination, rows, input_dimension, first_dimension) != 0u &&
 		D41MxSmallReady(mx, second, second_destination, rows, input_dimension, second_dimension) != 0u &&
 		((rows + 31u) / 32u) * (((first_dimension + 127u) / 128u) + ((second_dimension + 127u) / 128u)) < multiprocessors )
@@ -1132,9 +1136,9 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream);
 	}
 	if ( ratio > 1u && step->commit != 0u && save_inline == 0u )
-		LM_LAUNCH((D41CompressorSaveKernel), rows, D41_THREADS, 0, stream, state->c_kv, state->c_score, compressor_state, step->positions,
+		LM_LAUNCH_DEPENDENT((D41CompressorSaveKernel), rows, D41_THREADS, 0, stream, state->c_kv, state->c_score, compressor_state, step->positions,
 			state->row_lane, state->row_ordinal, step->sequence_row_begin, step->recurrent_index, rows, ratio, state_stride, D41_HEAD_DIM,
-			step->commit, (const uint32_t *)0);
+			step->commit, (const uint32_t *)0, (const uint32_t *)0);
 	if ( D41Project(layer->idx_wk, state->c_latent, state->idx_key, 0, rows, D41_HEAD_DIM, D41_INDEX_DIM, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( cache < 3u )
@@ -1192,7 +1196,7 @@ static SparkStatus D41IndexQuery(D41ModelState *state, const D41Layer *layer, ui
 		step->positions, state->compress_frequency, D41_LOCAL_INDEX_HEADS, D41_INDEX_DIM, (float)(1.0 / sqrt((double)D41_INDEX_DIM) / sqrt((double)D41_INDEX_HEADS)),
 		skip_max_context != 0u ? step->sequence_of_row : (const uint32_t *)0, skip_length, skip_bound, skip_max_context, state->rope_sc_compress);
 	if ( packed != 0 )
-		LM_LAUNCH((D41IndexPackKernel), rows, D41_THREADS, 0, stream, state->idx_pack_local, state->idx_w_full, packed, local_width,
+		LM_LAUNCH_DEPENDENT((D41IndexPackKernel), rows, D41_THREADS, 0, stream, state->idx_pack_local, state->idx_w_full, packed, local_width,
 			D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 	return D41Launched();
 }
@@ -1213,11 +1217,11 @@ static uint32_t D41IndexScoreFast(D41ModelState *state, uint32_t cache, const Sp
 	uint32_t *q_codes = (uint32_t *)(scratch + k_bytes);
 	uint8_t *q_scales = scratch + k_bytes + q_codes_bytes;
 	if ( pack_keys != 0u )
-		LM_LAUNCH((D41PackIndexKeysMxfp4Kernel<Geometry>), (uint32_t)(((uint64_t)stride * 16u + 255u) / 256u), 256u, 0, stream,
+		LM_LAUNCH_DEPENDENT((D41PackIndexKeysMxfp4Kernel<Geometry>), (uint32_t)(((uint64_t)stride * 16u + 255u) / 256u), 256u, 0, stream,
 			state->index_views[cache], sequences, length, stride, k_codes, k_scales);
 	const uint64_t q_octets = (uint64_t)count * D41_INDEX_HEADS * (D41_INDEX_DIM / 8u);
-	LM_LAUNCH((D41PackIndexQueriesMxfp4Kernel), (uint32_t)((q_octets + 255u) / 256u), 256u, 0, stream, query, q_codes, q_scales, q_octets);
-	LM_LAUNCH((D41IndexScoreMxfp4Kernel<ROUND_BF16>), dim3((stride + 255u) / 256u, (count + 7u) / 8u), 256u, 0, stream,
+	LM_LAUNCH_DEPENDENT((D41PackIndexQueriesMxfp4Kernel), (uint32_t)((q_octets + 255u) / 256u), 256u, 0, stream, query, q_codes, q_scales, q_octets);
+	LM_LAUNCH_DEPENDENT((D41IndexScoreMxfp4Kernel<ROUND_BF16>), dim3((stride + 255u) / 256u, (count + 7u) / 8u), 256u, 0, stream,
 		q_codes, (const uint32_t *)q_scales, weights, k_codes, k_scales, state->index_views[cache].shard, sequences, length, bounds,
 		mask, state->local_block_stride, count, stride, state->local_scores, dense_limit);
 	return mask != 0 ? 2u : 1u;
@@ -1231,7 +1235,7 @@ static SparkStatus D41Select(D41ModelState *state, uint32_t index, const SparkSt
 	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
 	const uint8_t *apply_mask = state->step_blocks != 0u && index > D41_CANDIDATE_SOURCE ? state->block_mask : (const uint8_t *)0;
 	SparkStatus status;
-	LM_LAUNCH((D41IndexUnpackKernel), dim3(rows, D41_TP), D41_THREADS, 0, stream, packed, rank_stride, state->idx_query, state->idx_w_full,
+	LM_LAUNCH_DEPENDENT((D41IndexUnpackKernel), dim3(rows, D41_TP), D41_THREADS, 0, stream, packed, rank_stride, state->idx_query, state->idx_w_full,
 		local_width, D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 	const uint32_t fast = D41IndexScoreFast<Geometry, true>(state, cache, step, state->idx_query, state->idx_w_full, step->sequence_of_row,
 		length, bound, apply_mask, rows, state->step_score_stride, 1u, stream);
@@ -1274,7 +1278,7 @@ static SparkStatus D41SelectWhole(D41ModelState *state, uint32_t index, const Sp
 	const uint32_t own = state->own_rows, begin = state->own_first, end = own != 0u && begin + own < rows ? begin + own : rows;
 	const uint32_t unpacked = D41_ROWS && own != 0u ? own : rows, unpack_first = D41_ROWS && own != 0u ? begin : 0u;
 	if ( !D41_ROWS )
-		LM_LAUNCH((D41IndexUnpackKernel), dim3(unpacked, D41_TP), D41_THREADS, 0, stream, state->q_gathered, (uint64_t)unpacked * D41_INDEX_PACK,
+		LM_LAUNCH_DEPENDENT((D41IndexUnpackKernel), dim3(unpacked, D41_TP), D41_THREADS, 0, stream, state->q_gathered, (uint64_t)unpacked * D41_INDEX_PACK,
 			state->idx_query + (uint64_t)unpack_first * D41_INDEX_HEADS * D41_INDEX_DIM, state->idx_w_full + (uint64_t)unpack_first * D41_INDEX_HEADS, local_width,
 			D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 	const uint64_t fits = (uint64_t)state->select_rows * state->local_score_stride / stride;
@@ -1309,14 +1313,14 @@ static SparkStatus D41SelectWhole(D41ModelState *state, uint32_t index, const Sp
 		{
 			uint32_t *block_chosen = state->block_local_selected + (uint64_t)first * keep;
 			const uint32_t block_dense = state->dump == 0 ? D41_CANDIDATE_ROWS : 0u;
-			LM_LAUNCH((D41WholeBlockMaxKernel), dim3((state->local_block_stride + D41_THREADS - 1u) / D41_THREADS, count), D41_THREADS, 0, stream,
+			LM_LAUNCH_DEPENDENT((D41WholeBlockMaxKernel), dim3((state->local_block_stride + D41_THREADS - 1u) / D41_THREADS, count), D41_THREADS, 0, stream,
 				state->local_scores, stride, sequences, length, bounds, state->block_scores, state->local_block_stride, D41_GRAIN, block_dense);
 			if ( D41TopkExactLaunch(state->block_scores, count, state->local_block_stride, keep, block_chosen, stream,
 					block_dense != 0u ? sequences : (const uint32_t *)0, block_dense != 0u ? length : (const uint32_t *)0,
 					block_dense != 0u ? bounds : (const uint32_t *)0, block_dense, D41_GRAIN,
 					state->topk_values, state->topk_positions, state->topk_entries) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((D41WholeBlockMaskKernel), count, D41_THREADS, 0, stream, state->block_scores, block_chosen, keep,
+			LM_LAUNCH_DEPENDENT((D41WholeBlockMaskKernel), count, D41_THREADS, 0, stream, state->block_scores, block_chosen, keep,
 				state->block_mask + (uint64_t)first * state->local_block_stride, state->local_block_stride,
 				block_dense != 0u ? sequences : (const uint32_t *)0, block_dense != 0u ? length : (const uint32_t *)0,
 				block_dense != 0u ? bounds : (const uint32_t *)0, D41_GRAIN, block_dense);
@@ -1458,7 +1462,7 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 			stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	LM_LAUNCH((D41SumGatheredKernel), D41Blocks((uint64_t)own * D41_HIDDEN / 8u), D41_THREADS, 0, stream, state->partial, state->own_out,
+	LM_LAUNCH_DEPENDENT((D41SumGatheredKernel), D41Blocks((uint64_t)own * D41_HIDDEN / 8u), D41_THREADS, 0, stream, state->partial, state->own_out,
 		(uint64_t)own * D41_HIDDEN, D41_TP);
 	state->owner_reduced = 1u;
 	return D41Launched();
@@ -1522,6 +1526,26 @@ static D41Fp8Linear D41RowsOf(const D41Fp8Linear *linear, uint32_t first_row, ui
 	part.scale = linear->scale + (uint64_t)first_row * (input_dimension / D41_FP8_BLOCK);
 	part.wide = linear->wide != 0 ? linear->wide + (uint64_t)first_row * input_dimension : (const uint16_t *)0;
 	return part;
+}
+
+static uint32_t D41L2PrefetchFork(D41ModelState *state, SparkGpuStream stream, const uint8_t *ptr0, uint64_t bytes0,
+	const uint8_t *ptr1, uint64_t bytes1)
+{
+	if ( state->shared_stream == 0 || state->shared_fork == 0 || state->shared_join == 0 || (ptr0 == 0 && ptr1 == 0) )
+		return 0u;
+	if ( SparkGpuEventRecord(state->shared_fork, stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamWaitEvent(state->shared_stream, state->shared_fork, 0u) != SPARK_GPU_SUCCESS )
+		return 0u;
+	LM_LAUNCH((D41L2PrefetchKernel), 2u, 64u, 0, state->shared_stream, ptr0, bytes0, ptr1, bytes1);
+	if ( SparkGpuEventRecord(state->shared_join, state->shared_stream) != SPARK_GPU_SUCCESS )
+		return 0u;
+	return 1u;
+}
+
+static void D41L2PrefetchJoin(D41ModelState *state, SparkGpuStream stream, uint32_t armed)
+{
+	if ( armed != 0u )
+		(void)SparkGpuStreamWaitEvent(stream, state->shared_join, 0u);
 }
 
 static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
@@ -1598,7 +1622,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 		return status;
 	if ( step->tree != 0u )
 	{
-		LM_LAUNCH((D41WindowFoldKernel), dim3(rows, heads), D41K_THREADS, 0, stream, state->records_received, stride, heads, state->q_local,
+		LM_LAUNCH_DEPENDENT((D41WindowFoldKernel), dim3(rows, heads), D41K_THREADS, 0, stream, state->records_received, stride, heads, state->q_local,
 			(uint64_t)rows * width, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, qk_scale,
 			heads, 1u, step->parent_rows);
@@ -1607,14 +1631,15 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 			state->row_ordinal, step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, rows,
 			step->commit);
 	}
-	else if ( rows <= 8u && D41_SPREAD_HEADS == 4u )
+#if D41_SPREAD_HEADS == 4u
+	else if ( rows <= 8u )
 	{
-		if constexpr ( D41_SPREAD_HEADS == 4u )
-			LM_LAUNCH_DEPENDENT((D41WindowFoldSpreadClusterKernel<D41_SPREAD_HEADS>), dim3(D41K_WINDOW_PARTS, rows), D41K_THREADS, 0, stream,
-				state->records_received, ratio > 0u ? 1u : 0u, state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
-				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS,
-				D41_WINDOW, qk_scale, layer->sink + head_first, rope_sc, state->attn_merged, oa_mx == 0u ? 1u : 0u, rows, step->commit);
+		LM_LAUNCH_DEPENDENT((D41WindowFoldSpreadClusterKernel<D41_SPREAD_HEADS>), dim3(D41K_WINDOW_PARTS, rows), D41K_THREADS, 0, stream,
+			state->records_received, ratio > 0u ? 1u : 0u, state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+			step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS,
+			D41_WINDOW, qk_scale, layer->sink + head_first, rope_sc, state->attn_merged, oa_mx == 0u ? 1u : 0u, rows, step->commit);
 	}
+#endif
 	else
 		LM_LAUNCH_DEPENDENT((D41WindowFoldSpreadKernel<D41_SPREAD_HEADS, 2u>), dim3(rows, D41_SPREAD_HEADS / 2u), D41K_THREADS, 0, stream, state->records_received,
 			ratio > 0u ? 1u : 0u, state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin,
@@ -1818,12 +1843,18 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	}
 	else
 		D41InitRecords(state->records_received, stride, rows, D41_LOCAL_HEADS, 1u, stream);
+	const uint32_t prefetch_oa = rows <= 16u && own == 0u && state->dump == 0 ?
+		D41L2PrefetchFork(state, stream, layer->o_a[0].weight,
+			(uint64_t)D41_GROUP_ROWS * D41_GROUP_WIDTH < (4u << 20) ? (uint64_t)D41_GROUP_ROWS * D41_GROUP_WIDTH : (4u << 20),
+			D41_LOCAL_GROUPS > 1u ? layer->o_a[1].weight : layer->o_b.weight,
+			D41_LOCAL_GROUPS > 1u ? ((uint64_t)D41_GROUP_ROWS * D41_GROUP_WIDTH < (4u << 20) ? (uint64_t)D41_GROUP_ROWS * D41_GROUP_WIDTH : (4u << 20)) :
+			((uint64_t)D41_HIDDEN * D41_WO_A_ROWS < (4u << 20) ? (uint64_t)D41_HIDDEN * D41_WO_A_ROWS : (4u << 20))) : 0u;
 	if ( fused == 0u && step->tree != 0u )
-		LM_LAUNCH((D41WindowFoldKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, stride, D41_LOCAL_HEADS, state->q_local,
+		LM_LAUNCH_DEPENDENT((D41WindowFoldKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, stride, D41_LOCAL_HEADS, state->q_local,
 			query_stride, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, qk_scale, D41_LOCAL_HEADS, 1u, parents);
 	else if ( fused == 0u && rows == 1u )
-		LM_LAUNCH((D41WindowFoldClusterKernel), dim3(D41K_WINDOW_PARTS, D41_LOCAL_HEADS, rows), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS,
+		LM_LAUNCH_DEPENDENT((D41WindowFoldClusterKernel), dim3(D41K_WINDOW_PARTS, D41_LOCAL_HEADS, rows), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS,
 			state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	else if ( fused == 0u && rows >= 16u && D41_LOCAL_HEADS % 4u == 0u )
@@ -1831,7 +1862,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 			D41_LOCAL_HEADS, state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	else if ( fused == 0u )
-		LM_LAUNCH((D41WindowFoldWholeKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
+		LM_LAUNCH_DEPENDENT((D41WindowFoldWholeKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
 			state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	status = D41Launched();
@@ -1843,13 +1874,15 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	if ( D41OutputFuses(state, rows, fused) != 0u )
 	{
 		status = D41OutputFused(state, layer, step, ring, stride, frequency, stream);
-		return status != SPARK_STATUS_OK ? status : D41OutputProject(state, layer, index, rows, sms, stream);
+		status = status != SPARK_STATUS_OK ? status : D41OutputProject(state, layer, index, rows, sms, stream);
+		D41L2PrefetchJoin(state, stream, prefetch_oa);
+		return status;
 	}
-	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	LM_LAUNCH_DEPENDENT((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
-		step->commit, (const uint32_t *)0);
+		step->commit, (const uint32_t *)0, (const uint32_t *)0);
 	if ( fused == 0u )
-		LM_LAUNCH((D41MergeSinkKernel), dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream, state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
+		LM_LAUNCH_DEPENDENT((D41MergeSinkKernel), dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream, state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
 			state->attn_merged);
 	if ( coded == 0u )
 		D41Rope(state->attn_merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream, rope_sc);
@@ -1884,7 +1917,9 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		LM_LAUNCH((LmSliceColumnsKernel<D41_THREADS>), dim3(D41Blocks(D41_GROUP_ROWS / 8u), rows), D41_THREADS, 0, stream, state->wo_a_group,
 			state->wo_a_out + (uint64_t)group * D41_GROUP_ROWS, D41_GROUP_ROWS, 0u, D41_GROUP_ROWS, D41_WO_A_ROWS);
 	}
-	return D41OutputProject(state, layer, index, rows, sms, stream);
+	status = D41OutputProject(state, layer, index, rows, sms, stream);
+	D41L2PrefetchJoin(state, stream, prefetch_oa);
+	return status;
 }
 
 static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
@@ -1922,7 +1957,7 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 			own_kv + (uint64_t)(own - edge) * D41_HEAD_DIM, state->window_edges);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((D41WindowAssembleKernel), own + D41_TP * edge, 64u, 0, stream, own_kv, state->window_edges, state->window_kv, own, edge, first);
+	LM_LAUNCH_DEPENDENT((D41WindowAssembleKernel), own + D41_TP * edge, 64u, 0, stream, own_kv, state->window_edges, state->window_kv, own, edge, first);
 	for ( uint32_t part = 0u; part < parts; ++part )
 	{
 		uint16_t *query = state->q_local + (uint64_t)part * own * part_width;
@@ -1949,7 +1984,7 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 		LM_LAUNCH((LmScaleElementsKernel<uint16_t>), D41Blocks(((uint64_t)own * D41_LOCAL_INDEX_HEADS + 7u) >> 3u), D41_THREADS, 0, stream, state->idx_w_full,
 			(uint64_t)own * D41_LOCAL_INDEX_HEADS, (float)(1.0 / sqrt((double)D41_INDEX_DIM) / sqrt((double)D41_INDEX_HEADS)));
 		if ( !D41_ROWS )
-			LM_LAUNCH((D41IndexPackKernel), own, D41_THREADS, 0, stream, state->idx_pack_local, state->idx_w_full, state->q_gathered, index_width,
+			LM_LAUNCH_DEPENDENT((D41IndexPackKernel), own, D41_THREADS, 0, stream, state->idx_pack_local, state->idx_w_full, state->q_gathered, index_width,
 				D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
@@ -1975,8 +2010,8 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream, (uint64_t)own * part_width, 0u, part_bytes)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
-		step->sequence_row_begin, step->recurrent_index, ring_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, step->commit, (const uint32_t *)0);
+	LM_LAUNCH_DEPENDENT((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+		step->sequence_row_begin, step->recurrent_index, ring_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, step->commit, (const uint32_t *)0, (const uint32_t *)0);
 	{
 		const uint8_t *group_codes[D41_LOCAL_GROUPS], *group_scales[D41_LOCAL_GROUPS], *group_weights[D41_LOCAL_GROUPS], *group_weight_scales[D41_LOCAL_GROUPS];
 		uint32_t group_columns[D41_LOCAL_GROUPS];
@@ -2108,13 +2143,13 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		return status;
 	if ( local != 0u )
 		for ( uint32_t source = 0u; source < D41_TP; ++source )
-			LM_LAUNCH((D41WindowFoldKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received + (uint64_t)source * destination_stride,
+			LM_LAUNCH_DEPENDENT((D41WindowFoldKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received + (uint64_t)source * destination_stride,
 				destination_stride, D41_LOCAL_HEADS, state->q_local, (uint64_t)rows * local_width, state->window_kv,
 				state->ring_landing + (uint64_t)source * D41_RING_LANDING_ROWS * D41_HIDDEN + (uint64_t)index * D41_RING_ELEMENTS, step->positions, state->row_lane,
 				state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, 0u, D41_RING_ROWS, D41_WINDOW, D41_TP,
-				source, 1.0f / sqrtf((float)D41_HEAD_DIM), D41_LOCAL_HEADS, 1u);
+				source, 1.0f / sqrtf((float)D41_HEAD_DIM), D41_LOCAL_HEADS, 1u, (const uint32_t *)0);
 	else
-		LM_LAUNCH((D41WindowFoldKernel), dim3(rows, D41_HEADS), D41K_THREADS, 0, stream, state->records_send, destination_stride, D41_LOCAL_HEADS,
+		LM_LAUNCH_DEPENDENT((D41WindowFoldKernel), dim3(rows, D41_HEADS), D41K_THREADS, 0, stream, state->records_send, destination_stride, D41_LOCAL_HEADS,
 			state->q_gathered, query_rank_stride, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 			step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS,
 			D41_WINDOW, D41_TP, state->tp_rank,
@@ -2125,9 +2160,9 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	status = D41VerifyWindow(state, index, step, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	LM_LAUNCH_DEPENDENT((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP,
-		state->tp_rank, rows, step->commit, (const uint32_t *)0);
+		state->tp_rank, rows, step->commit, (const uint32_t *)0, (const uint32_t *)0);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && local == 0u )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, record_copies * rows, D41_RECORD_ROW_ELEMENTS,
@@ -2136,7 +2171,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		return status;
 	{
 		uint16_t *merged = pair != 0u ? state->group_input : state->attn_merged;
-		LM_LAUNCH((D41MergeSinkKernel), dim3(rows, record_heads), D41_THREADS, 0, stream, state->records_received, destination_stride, D41_TP,
+		LM_LAUNCH_DEPENDENT((D41MergeSinkKernel), dim3(rows, record_heads), D41_THREADS, 0, stream, state->records_received, destination_stride, D41_TP,
 			record_heads, pair != 0u ? layer->group_sink : layer->sink, merged);
 		D41Rope(merged, rows, record_heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream, rope_sc);
 	}
@@ -2149,7 +2184,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		if ( status == SPARK_STATUS_OK )
 		{
 			if ( oa_mx != 0u )
-				LM_LAUNCH((D41RankMajorMxKernel), dim3(D41Blocks((2u * local_width) / 8u), rows), D41_THREADS, 0, stream, state->attn_gathered,
+				LM_LAUNCH_DEPENDENT((D41RankMajorMxKernel), dim3(D41Blocks((2u * local_width) / 8u), rows), D41_THREADS, 0, stream, state->attn_gathered,
 					state->mx.codes, state->mx.scales, rows, local_width, 2u, (state->tp_rank / 2u) * 2u);
 			else
 				LM_LAUNCH((LmRankMajorRowsKernel<D41_THREADS>), dim3(D41Blocks((2u * local_width) / 8u), rows), D41_THREADS, 0, stream, state->attn_gathered,
@@ -2201,7 +2236,21 @@ static uint32_t D41SharedSplitStep(const D41ModelState *state, uint32_t rows)
 
 static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint64_t stride, uint32_t sms, SparkGpuStream stream)
 {
-	for ( uint32_t source = 0u; source < (D41_SHARED_ROUTED != 0u ? D41_TP : 0u); ++source )
+	const uint32_t count = D41_SHARED_ROUTED != 0u ? D41_TP : 0u;
+	uint32_t any_dequant = 0u;
+	for ( uint32_t source = 0u; source < count; ++source )
+	{
+		uint32_t first, width;
+		D41SharedSlice(source, &first, &width);
+		if ( D41MxReady(&state->mx, rows, width, state->row_invariant) == 0u )
+			any_dequant = 1u;
+	}
+	if ( any_dequant != 0u )
+	{
+		LM_LAUNCH_DEPENDENT((D41SharedDequantAllKernel), dim3(D41Blocks(D41_SHARED_SLICE_MAX / 8u), rows, count), D41_THREADS, 0, stream,
+			state->moe_received, state->shared_act, rows, stride, D41_TP, D41_MOE_INTER / D41_SHARED_GRANULE, D41_SHARED_GRANULE);
+	}
+	for ( uint32_t source = 0u; source < count; ++source )
 	{
 		uint32_t first, width;
 		const uint8_t *codes = (const uint8_t *)(state->moe_received + (uint64_t)source * stride);
@@ -2214,11 +2263,8 @@ static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer
 			launched = D41LinearMx(&layer->sh_w2_part[source], &sh_mx, partial, rows, width, D41_HIDDEN_SLICE, sms, stream);
 		}
 		else
-		{
-			LM_LAUNCH((D41SharedDequantKernel), dim3(D41Blocks(width / 8u), rows), D41_THREADS, 0, stream, codes, state->shared_act, rows, width);
-			launched = D41Linear(&layer->sh_w2_part[source], state->shared_act, partial, rows, width, D41_HIDDEN_SLICE, sms, state->row_invariant,
-				(const D41Mx *)0, stream);
-		}
+			launched = D41Linear(&layer->sh_w2_part[source], state->shared_act + (uint64_t)first * rows, partial, rows, width, D41_HIDDEN_SLICE,
+				sms, state->row_invariant, (const D41Mx *)0, stream);
 		if ( launched != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
@@ -2297,7 +2343,7 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 	uint8_t *codes = (uint8_t *)state->expert_act;
 	if ( rows == 0u )
 		return D41ExchangeReturn(state, step, stream);
-	LM_LAUNCH((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
+	LM_LAUNCH_DEPENDENT((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
 		state->expert_group + (uint64_t)index * D41_EXPERTS, D41_LOCAL_EXPERTS, groups, D41_EXPERTS);
 	if ( (held != 0u ?
 		LmRouteBuild<D41_THREADS,D41_HELD_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset, state->route_packed_row,
@@ -2320,7 +2366,7 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 		LmCellMxExpertsSplit(layer->e_w13_cells, held != 0u ? layer->e_w13_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u,
 		received, gate_up, state->group_row_offset, state->route_source_token, groups, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	LM_LAUNCH((D41ExpertActKernel), dim3(D41Blocks(D41_MOE_INTER / 8u), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream, gate_up,
+	LM_LAUNCH_DEPENDENT((D41ExpertActKernel), dim3(D41Blocks(D41_MOE_INTER / 8u), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream, gate_up,
 		state->packed_weight, state->group_row_offset, groups, codes, (uint16_t *)0, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	if ( D41Launched() != SPARK_STATUS_OK ||
 		LmCellMxExpertsSplit(layer->e_w2_cells, held != 0u ? layer->e_w2_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u, down,
@@ -2344,6 +2390,52 @@ static int32_t D41FusedRoutes(D41ModelState *state, const D41Layer *layer, const
 		state->tile_prefix_up, state->tile_prefix_down, state->packed_weight, step->route_fault, state->route_counters, 0u,
 		(2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N };
 	return D41FusedRouteLaunch(&fused, rows, stream);
+}
+
+#if D41_HELD_EXPERTS + 1u <= 96u
+template<uint32_t MAX_R>
+static SparkStatus D41LaunchFusedRouterBalanceShape(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
+	uint32_t index, uint32_t copies, uint32_t rows, SparkGpuStream stream)
+{
+	LmWeightPrefetchNote(stream, layer->router, (uint64_t)D41_EXPERTS * D41_HIDDEN * sizeof(uint16_t));
+	LM_LAUNCH_DEPENDENT((D41FusedRouterBalanceKernel<D41_TP, D41_EXPERTS, D41_LOCAL_EXPERTS, D41_THREADS, D41_HELD_EXPERTS + 1u, D41_TOPK, D41_BACKUP_COPIES, D41_HIDDEN, MAX_R>),
+		D41_EXPERTS, D41_THREADS, 0, stream, layer->router, state->x, state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault,
+		state->route_expert, state->route_weight, state->route_global, rows, state->tp_rank, copies, state->row_invariant,
+		state->expert_owner + (uint64_t)index * D41_EXPERTS, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS,
+		state->expert_group + (uint64_t)index * D41_EXPERTS, state->group_row_offset, state->route_packed_row, state->route_source_token,
+		(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
+		state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight,
+		state->route_counters, (const uint32_t *)0);
+	return D41Launched();
+}
+
+static SparkStatus D41LaunchFusedRouterBalance(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
+	uint32_t index, uint32_t copies, uint32_t rows, SparkGpuStream stream)
+{
+	return D41LaunchFusedRouterBalanceShape<1u>(state, layer, step, index, copies, rows, stream);
+}
+#endif
+
+template<uint32_t MAX_R>
+static SparkStatus D41LaunchFusedRouterPackedShape(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
+	uint32_t rows, SparkGpuStream stream)
+{
+	LmWeightPrefetchNote(stream, layer->router, (uint64_t)D41_EXPERTS * D41_HIDDEN * sizeof(uint16_t));
+	LM_LAUNCH_DEPENDENT((D41FusedRouterPackedKernel<D41_EXPERTS, D41_TOPK, D41_HIDDEN, MAX_R>), D41_EXPERTS, 256u, 0, stream,
+		layer->router, state->x, state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert,
+		state->route_weight, state->group_row_offset, state->route_packed_row, state->route_source_token,
+		(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_EXPERTS), (2u * D41_EXPERT_SLICE + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
+		state->tile_prefix_up, (D41_HIDDEN_SLICE + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight,
+		rows, state->route_counters, (const uint32_t *)0);
+	return D41Launched();
+}
+
+static SparkStatus D41LaunchFusedRouterPacked(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
+	uint32_t rows, SparkGpuStream stream)
+{
+	if ( rows == 1u ) return D41LaunchFusedRouterPackedShape<1u>(state, layer, step, rows, stream);
+	if ( rows <= 4u ) return D41LaunchFusedRouterPackedShape<4u>(state, layer, step, rows, stream);
+	return D41LaunchFusedRouterPackedShape<8u>(state, layer, step, rows, stream);
 }
 
 static SparkStatus D41FillBackups(D41ModelState *state, const D41Layer *layer, SparkGpuStream stream);
@@ -2385,8 +2477,17 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	const uint32_t routed = balanced == 0u ? D41RoutesFuse(state, rows) : 0u;
 	const uint32_t fused_bal = balanced != 0u && state->own_rows == 0u && state->dump == 0 && rows <= 256u && D41_HELD_EXPERTS + 1u <= 96u ? 1u : 0u;
+	const uint32_t fused_router_bal = fused_bal != 0u && rows == 1u &&
+		(((uintptr_t)layer->router | (uintptr_t)state->x) & 15u) == 0u ? 1u : 0u;
 	const uint32_t fused_bal_topk = fused_bal != 0u && rows <= 8u ? 1u : 0u;
-	if ( state->own_rows == 0u &&
+	if ( fused_router_bal != 0u )
+	{
+#if D41_HELD_EXPERTS + 1u <= 96u
+		if ( D41LaunchFusedRouterBalance(state, layer, step, index, copies, rows, stream) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+#endif
+	}
+	else if ( state->own_rows == 0u &&
 		(D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		(fused_bal_topk != 0u ? false : routed != 0u ? D41FusedRoutes(state, layer, step, rows, stream) != LM_LAUNCH_OK :
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
@@ -2397,30 +2498,31 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		SparkGpuMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS ||
 		SparkGpuMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( fused_bal != 0u )
+	if ( fused_router_bal != 0u )
+		;
+	else if ( fused_bal != 0u )
 	{
-		if constexpr ( D41_HELD_EXPERTS + 1u <= 96u )
-		{
-			if ( fused_bal_topk != 0u )
-				LM_LAUNCH_DEPENDENT((D41TopkBalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u,D41_TOPK,D41_BACKUP_COPIES,true>), 1u, D41_THREADS, 0, stream,
-					state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->route_global,
-					rows, state->tp_rank, copies, state->row_invariant, state->expert_owner + (uint64_t)index * D41_EXPERTS,
-					state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, state->expert_group + (uint64_t)index * D41_EXPERTS,
-					state->group_row_offset, state->route_packed_row, state->route_source_token,
-					(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
-					state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight);
-			else
-				LM_LAUNCH_DEPENDENT((D41TopkBalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u,D41_TOPK,D41_BACKUP_COPIES,false>), 1u, D41_THREADS, 0, stream,
-					state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->route_global,
-					rows, state->tp_rank, copies, state->row_invariant, state->expert_owner + (uint64_t)index * D41_EXPERTS,
-					state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, state->expert_group + (uint64_t)index * D41_EXPERTS,
-					state->group_row_offset, state->route_packed_row, state->route_source_token,
-					(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
-					state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight);
-		}
+#if D41_HELD_EXPERTS + 1u <= 96u
+		if ( fused_bal_topk != 0u )
+			LM_LAUNCH_DEPENDENT((D41TopkBalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u,D41_TOPK,D41_BACKUP_COPIES,true>), 1u, D41_THREADS, 0, stream,
+				state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->route_global,
+				rows, state->tp_rank, copies, state->row_invariant, state->expert_owner + (uint64_t)index * D41_EXPERTS,
+				state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, state->expert_group + (uint64_t)index * D41_EXPERTS,
+				state->group_row_offset, state->route_packed_row, state->route_source_token,
+				(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
+				state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight);
+		else
+			LM_LAUNCH_DEPENDENT((D41TopkBalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u,D41_TOPK,D41_BACKUP_COPIES,false>), 1u, D41_THREADS, 0, stream,
+				state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->route_global,
+				rows, state->tp_rank, copies, state->row_invariant, state->expert_owner + (uint64_t)index * D41_EXPERTS,
+				state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, state->expert_group + (uint64_t)index * D41_EXPERTS,
+				state->group_row_offset, state->route_packed_row, state->route_source_token,
+				(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
+				state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight);
+#endif
 	}
 	else if ( balanced != 0u )
-		LM_LAUNCH((D41BalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u>), 1u, D41_THREADS, 0, stream,
+		LM_LAUNCH_DEPENDENT((D41BalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u>), 1u, D41_THREADS, 0, stream,
 			state->route_expert, state->route_weight, state->route_global, rows, D41_TOPK, state->tp_rank, copies, state->row_invariant,
 			state->expert_owner + (uint64_t)index * D41_EXPERTS, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS,
 			state->expert_group + (uint64_t)index * D41_EXPERTS, state->group_row_offset, state->route_packed_row, state->route_source_token,
@@ -2428,7 +2530,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 			state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight);
 	else if ( routed == 0u )
 	{
-		LM_LAUNCH((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
+		LM_LAUNCH_DEPENDENT((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
 			state->expert_group + (uint64_t)index * D41_EXPERTS, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);
 		if ( LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up,
@@ -2468,7 +2570,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		LM_LAUNCH_DEPENDENT((D41SwigluMxKernel), dim3(D41Blocks(state->shared_width / 8u), shared_rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 			state->mx.codes, state->mx.scales, state->shared_width, D41_SWIGLU_LIMIT);
 	else if ( shared_rows != 0u )
-		LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), shared_rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
+		LM_LAUNCH_DEPENDENT((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), shared_rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
@@ -2532,7 +2634,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		state->post_mode = 3u;
 		return SPARK_STATUS_OK;
 	}
-	LM_LAUNCH((D41SumGatheredKernel), D41Blocks((uint64_t)rows * D41_HIDDEN / 8u), D41_THREADS, 0, stream, state->moe_gathered,
+	LM_LAUNCH_DEPENDENT((D41SumGatheredKernel), D41Blocks((uint64_t)rows * D41_HIDDEN / 8u), D41_THREADS, 0, stream, state->moe_gathered,
 		state->partial, (uint64_t)rows * D41_HIDDEN, D41_TP);
 	return D41Launched();
 }
@@ -2545,17 +2647,26 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	SparkStatus status;
 	if ( state->moe_whole != 0u )
 		return D41MoeWhole(state, layer, step, stream);
-	const uint32_t fused_tp4_route = state->own_rows == 0u && state->dump == 0 && rows <= 8u && D41_EXPERTS <= 512u ? 1u : 0u;
-	if ( state->own_rows == 0u &&
+	const uint32_t fused_tp4_route = state->own_rows == 0u && state->dump == 0 && rows <= 16u && D41_EXPERTS <= 512u ? 1u : 0u;
+	const uint32_t fused_tp4_router = fused_tp4_route != 0u && (rows <= 4u || (rows <= 8u && state->row_invariant != 0u)) &&
+		(((uintptr_t)layer->router | (uintptr_t)state->x) & 15u) == 0u ? 1u : 0u;
+	if ( fused_tp4_router != 0u )
+	{
+		if ( D41LaunchFusedRouterPacked(state, layer, step, rows, stream) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	else if ( state->own_rows == 0u &&
 		D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( fused_tp4_route != 0u )
+	if ( fused_tp4_router != 0u )
+		;
+	else if ( fused_tp4_route != 0u )
 	{
 		LM_LAUNCH_DEPENDENT((D41TopkRoutePackedKernel<D41_EXPERTS, D41_TOPK>), 1u, 256u, 0, stream, state->router_logits, layer->router_bias,
 			D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->group_row_offset, state->route_packed_row,
 			state->route_source_token, (uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_EXPERTS),
 			(2u * D41_EXPERT_SLICE + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_up,
-			(D41_HIDDEN_SLICE + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight, rows);
+			(D41_HIDDEN_SLICE + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight, rows, (const uint32_t *)0);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
@@ -2586,26 +2697,31 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		D41SharedUp(state, layer, rows, sms, in_mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( D41_SHARED_ROUTED != 0u )
-		LM_LAUNCH((D41SharedSendKernel), dim3(D41Blocks(state->shared_width / 8u), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
+		LM_LAUNCH_DEPENDENT((D41SharedSendKernel), dim3(D41Blocks(state->shared_width / 8u), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 			state->moe_send, rows, state->shared_width, D41_TP, stride, D41_SWIGLU_LIMIT);
 	else if ( D41MxReady(&state->mx, rows, state->shared_width, state->row_invariant) != 0u )
 	{
-		LM_LAUNCH((D41SwigluMxKernel), dim3(D41Blocks(state->shared_width / 8u), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
+		LM_LAUNCH_DEPENDENT((D41SwigluMxKernel), dim3(D41Blocks(state->shared_width / 8u), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 			state->mx.codes, state->mx.scales, state->shared_width, D41_SWIGLU_LIMIT);
 		if ( D41LinearMx(&layer->sh_w2, &state->mx, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	else
 	{
-		LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
+		LM_LAUNCH_DEPENDENT((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 		if ( D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx,
 			stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	LM_LAUNCH((D41MoeSendKernel), D41ItemGrid(D41Blocks(D41_SHARED_ROUTED != 0u ? D41_EXPERT_SLICE : D41_HIDDEN), routes + (D41_SHARED_ROUTED != 0u ? 0u : rows)),
-		D41_THREADS, 0, stream, state->expert_gate_up, state->packed_weight, state->shared_out, state->moe_send + route_base, routes,
-		D41_SHARED_ROUTED != 0u ? 0u : rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
+	if ( routes >= 48u )
+		LM_LAUNCH_DEPENDENT((D41MoeSendVecKernel), D41ItemGrid(D41Blocks((D41_SHARED_ROUTED != 0u ? D41_EXPERT_SLICE : D41_HIDDEN) / 8u), routes + (D41_SHARED_ROUTED != 0u ? 0u : rows)),
+			D41_THREADS, 0, stream, state->expert_gate_up, state->packed_weight, state->shared_out, state->moe_send + route_base, routes,
+			D41_SHARED_ROUTED != 0u ? 0u : rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
+	else
+		LM_LAUNCH_DEPENDENT((D41MoeSendKernel), D41ItemGrid(D41Blocks(D41_SHARED_ROUTED != 0u ? D41_EXPERT_SLICE : D41_HIDDEN), routes + (D41_SHARED_ROUTED != 0u ? 0u : rows)),
+			D41_THREADS, 0, stream, state->expert_gate_up, state->packed_weight, state->shared_out, state->moe_send + route_base, routes,
+			D41_SHARED_ROUTED != 0u ? 0u : rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, rows, D41_MOE_ROW_ELEMENTS, state->moe_send,
@@ -2615,13 +2731,16 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	const uint32_t mx_down = state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
 	const uint8_t *down_codes = (const uint8_t *)state->expert_act;
 	if ( mx_down != 0u && D41_MOE_CODES != 0u )
-		LM_LAUNCH((D41ActAssembleCodesKernel), D41ItemGrid(D41Blocks(D41_MOE_INTER / 16u + D41_MOE_INTER / (2u * D41_FP8_BLOCK)), routes), D41_THREADS, 0, stream,
+		LM_LAUNCH_DEPENDENT((D41ActAssembleCodesKernel), D41ItemGrid(D41Blocks(D41_MOE_INTER / 16u + D41_MOE_INTER / (2u * D41_FP8_BLOCK)), routes), D41_THREADS, 0, stream,
 			state->moe_received + route_base, (uint8_t *)state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes);
 	else if ( mx_down != 0u )
-		LM_LAUNCH((D41ActAssembleMxKernel), D41ItemGrid(D41Blocks(D41_MOE_INTER / 8u), routes), D41_THREADS, 0, stream,
+		LM_LAUNCH_DEPENDENT((D41ActAssembleMxKernel), D41ItemGrid(D41Blocks(D41_MOE_INTER / 8u), routes), D41_THREADS, 0, stream,
 			state->moe_received + route_base, (uint8_t *)state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes);
+	else if ( routes >= 48u )
+		LM_LAUNCH_DEPENDENT((D41ActAssembleQdqVecKernel), D41ItemGrid(D41Blocks(D41_MOE_INTER / 8u), routes), D41_THREADS, 0, stream, state->moe_received + route_base,
+			state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
 	else
-		LM_LAUNCH((D41ActAssembleQdqKernel), D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream, state->moe_received + route_base,
+		LM_LAUNCH_DEPENDENT((D41ActAssembleQdqKernel), D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream, state->moe_received + route_base,
 			state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
 	if ( (mx_down != 0u ?
 		LmCellMxExperts(layer->e_w2_cells, down_codes, down_codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset,
@@ -2635,7 +2754,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		if ( status != SPARK_STATUS_OK )
 			return status;
 	}
-	LM_LAUNCH((D41FinalizeSliceKernel), dim3(D41Blocks(D41_HIDDEN_SLICE / 8u), rows), D41_THREADS, 0, stream, state->expert_slice, state->moe_received,
+	LM_LAUNCH_DEPENDENT((D41FinalizeSliceKernel), dim3(D41Blocks(D41_HIDDEN_SLICE / 8u), rows), D41_THREADS, 0, stream, state->expert_slice, state->moe_received,
 		state->route_expert, state->route_packed_row, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_TP, D41_HIDDEN_SLICE, stride, shared_offset,
 		D41_SHARED_ROUTED != 0u ? state->shared_out : (const uint16_t *)0);
 	status = D41Launched();
@@ -2661,6 +2780,11 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 			state->moe_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
+		if ( state->dump == 0 )
+		{
+			state->post_mode = 1u;
+			return SPARK_STATUS_OK;
+		}
 		LM_LAUNCH((LmRankMajorRowsKernel<D41_THREADS>), dim3(D41Blocks(D41_HIDDEN / 8u), state->own_rows), D41_THREADS, 0, stream, state->moe_gathered,
 			state->own_out, state->own_rows, D41_HIDDEN_SLICE, D41_TP);
 		return D41Launched();
@@ -2670,6 +2794,11 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 			rows == 1u ? state->partial : state->moe_gathered);
 	if ( status != SPARK_STATUS_OK || rows == 1u )
 		return status;
+	if ( state->dump == 0 )
+	{
+		state->post_mode = 1u;
+		return SPARK_STATUS_OK;
+	}
 	LM_LAUNCH((LmRankMajorRowsKernel<D41_THREADS>), dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream, state->moe_gathered, state->partial, rows,
 		D41_HIDDEN_SLICE, D41_TP);
 	return D41Launched();
@@ -2693,7 +2822,7 @@ static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, con
 	if ( pre_coded == 0u && LmMxQuantize(state->own_x, block, block + (uint64_t)own * D41_HIDDEN, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( routed != 0u )
-		LM_LAUNCH((D41FfnPackKernel), (routed * D41_TOPK + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream, state->route_expert + (uint64_t)first * D41_TOPK,
+		LM_LAUNCH_DEPENDENT((D41FfnPackKernel), (routed * D41_TOPK + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream, state->route_expert + (uint64_t)first * D41_TOPK,
 			state->route_weight + (uint64_t)first * D41_TOPK, block, own, routed, D41_HIDDEN, D41_TOPK);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -2701,7 +2830,7 @@ static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, con
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((D41FfnUnpackKernel), dim3(D41Blocks(to_mx != 0u ? D41_HIDDEN / 16u : D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream,
+	LM_LAUNCH_DEPENDENT((D41FfnUnpackKernel), dim3(D41Blocks(to_mx != 0u ? D41_HIDDEN / 16u : D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream,
 		(const uint8_t *)state->moe_received, to_mx != 0u ? (uint16_t *)0 : state->xq, to_mx != 0u ? state->mx.codes : (uint8_t *)0,
 		to_mx != 0u ? state->mx.scales : (uint8_t *)0, state->route_expert, state->route_weight, own, D41_HIDDEN, D41_TOPK,
 		(uint64_t)own * D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t));
@@ -3208,9 +3337,9 @@ struct D41Cuda : CudaStage<D41Cuda>
 			*state->tap_first_row = first <= state->tail_first_position ? 0u :
 				first - state->tail_first_position < rows ? first - state->tail_first_position : rows;
 		}
-		LM_LAUNCH((D41CompressedEmitPositionKernel), (rows + 255u) / 256u, 256u, 0, stream, step->positions, state->bound_ratio2, rows, 2u);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), (rows + 255u) / 256u, 256u, 0, stream, step->positions, state->bound_ratio1, rows, 1u);
-		LM_LAUNCH((D41RopeTableKernel), rows, D41K_ROPE_PAIRS, 0, stream, step->positions, state->full_frequency, state->rope_sc_full, state->rope_sc_compress, rows);
+		LM_LAUNCH_DEPENDENT((D41CompressedEmitPositionKernel), (rows + 255u) / 256u, 256u, 0, stream, step->positions, state->bound_ratio2, rows, 2u);
+		LM_LAUNCH_DEPENDENT((D41CompressedEmitPositionKernel), (rows + 255u) / 256u, 256u, 0, stream, step->positions, state->bound_ratio1, rows, 1u);
+		LM_LAUNCH_DEPENDENT((D41RopeTableKernel), rows, D41K_ROPE_PAIRS, 0, stream, step->positions, state->full_frequency, state->rope_sc_full, state->rope_sc_compress, rows);
 		if ( step->tree != 0u )
 			LM_LAUNCH((D41CompressedTreeMapKernel), (rows + 255u) / 256u, 256u, 0, stream, step->fork_positions, step->slot_offsets,
 				state->fork_ratio2, state->offset_ratio2, rows, 2u);
@@ -3219,9 +3348,9 @@ struct D41Cuda : CudaStage<D41Cuda>
 		status = D41EngramAheadBegin(state, step, stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LM_LAUNCH((D41CompressedLengthKernel), (state->context_slots + 255u) / 256u, 256u, 0, stream, step->context_length, state->length_ratio2,
+		LM_LAUNCH_DEPENDENT((D41CompressedLengthKernel), (state->context_slots + 255u) / 256u, 256u, 0, stream, step->context_length, state->length_ratio2,
 			state->context_slots, 2u);
-		LM_LAUNCH((D41CompressedLengthKernel), (state->context_slots + 255u) / 256u, 256u, 0, stream, step->context_length, state->length_ratio1,
+		LM_LAUNCH_DEPENDENT((D41CompressedLengthKernel), (state->context_slots + 255u) / 256u, 256u, 0, stream, step->context_length, state->length_ratio1,
 			state->context_slots, 1u);
 		LM_LAUNCH((LmHcExpandStreamsKernel<D41_HIDDEN>), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, step->hidden_bf16, state->streams, rows);
 		state->own_rows = (rows + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
@@ -4827,9 +4956,9 @@ inline SparkStatus D41Cuda::Bind(void *model, SparkWeightdLazyPack *lazy_pack, S
 		state->counts_ready = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	if ( D41_ROWS && (SparkGpuStreamCreateWithFlags(&state->shared_stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
+	if ( SparkGpuStreamCreateWithFlags(&state->shared_stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
 		SparkGpuEventCreateWithFlags(&state->shared_fork, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS ||
-		SparkGpuEventCreateWithFlags(&state->shared_join, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS) )
+		SparkGpuEventCreateWithFlags(&state->shared_join, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkGpuHostGetDevicePointer((void **)&state->kv_error, state->host_error, 0u) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);

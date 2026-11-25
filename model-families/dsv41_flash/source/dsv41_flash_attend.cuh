@@ -578,9 +578,11 @@ void D41AttendKernel(
 	uint16_t *__restrict__ output, uint64_t output_part_stride, const float *__restrict__ frequency, uint32_t rope_offset, uint32_t group_heads,
 	uint8_t *__restrict__ codes, uint64_t codes_part_stride, uint32_t rows, uint32_t live, uint32_t row_base)
 {
+	LmDependentWait();
 	D41AttendBody<Geometry, DIM, QTILES, true>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
 		ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride,
 		frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base, 0, 0, 0);
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t DIM, uint32_t QTILES>
@@ -594,9 +596,11 @@ void D41AttendTreeKernel(
 	uint16_t *__restrict__ output, uint64_t output_part_stride, uint32_t rows, uint32_t live, uint32_t row_base,
 	const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets, const uint32_t *__restrict__ parent_rows)
 {
+	LmDependentWait();
 	D41AttendBody<Geometry, DIM, QTILES, false>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
 		ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride,
 		0, 0u, 0u, 0, 0u, rows, live, row_base, fork_positions, slot_offsets, parent_rows);
+	LmDependentRelease();
 }
 
 template<class Geometry, uint32_t DIM, uint32_t QTILES = 1u>
@@ -635,7 +639,7 @@ static inline SparkGpuError D41AttendLaunch(LmKvShardView cache, uint32_t compre
 			}
 			const uint32_t resident = LmLatentShardPrefillMultiprocessors();
 			const uint32_t grid = live < resident ? live : resident;
-			LM_LAUNCH((D41AttendTreeKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row,
+			LM_LAUNCH_DEPENDENT((D41AttendTreeKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row,
 				length, bound, selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices,
 				recurrent_slot, sink, qk_scale, output, output_part_stride, rows, live, row_base, fork_positions, slot_offsets, parent_rows);
 			return SparkGpuPeekAtLastError();
@@ -652,7 +656,7 @@ static inline SparkGpuError D41AttendLaunch(LmKvShardView cache, uint32_t compre
 	}
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors();
 	const uint32_t grid = live < resident ? live : resident;
-	LM_LAUNCH((D41AttendKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
+	LM_LAUNCH_DEPENDENT((D41AttendKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
 		selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink,
 		qk_scale, output, output_part_stride, frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base);
 	return SparkGpuPeekAtLastError();
