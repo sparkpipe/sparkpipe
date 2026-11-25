@@ -112,6 +112,9 @@ struct GemmaState : CudaStagePackState
 	uint16_t *expert_out;
 	LmKvShardView sliding_views[GemmaShape<G>::kSlidingLayers];
 	LmKvShardView full_views[GemmaShape<G>::kFullLayers];
+	int16_t tap_output[G::kLayers];
+	uint16_t *tap_slab;
+	uint64_t tap_stride;
 };
 
 static __device__ __forceinline__ float GemmaWarpSum(float value)
@@ -1256,6 +1259,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 
 	static constexpr bool kLanes = true;
 	static constexpr bool kKeepRows = true;
+	static constexpr bool kTapPlan = true;
 	static constexpr bool kFusedPostNorm = true;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr uint32_t kHidden = G::kHidden;
@@ -1696,6 +1700,21 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, blocks * frame.step->rows, 0u, rows, rows);
 	}
 
+	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
+	{
+		SparkStatus status = SPARK_STATUS_OK;
+		if ( state->tap_slab != 0 && state->tap_output[index] >= 0 )
+		{
+			LM_LAUNCH((LmCopyRowsStridedKernel<GM_THREADS>), dim3(LmGridBlocks<GM_THREADS>(G::kHidden), frame.step->rows), GM_THREADS, 0, frame.stream,
+				frame.step->hidden_bf16, state->tap_slab + (uint64_t)frame.step->dispatch_row_offset * state->tap_stride +
+				(uint64_t)state->tap_output[index] * G::kHidden, frame.step->rows, G::kHidden, state->tap_stride);
+			status = CudaStageLaunched();
+		}
+		if ( status == SPARK_STATUS_OK )
+			CudaStageLayerDone(state, index);
+		return status;
+	}
+
 	static uint64_t Plan(State *state, uint8_t *base, uint32_t lane)
 	{
 		const uint64_t rows = state->max_rows, width = rows * G::kHidden * sizeof(uint16_t), routes = rows * G::kTopK;
@@ -1737,6 +1756,14 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
 		return CudaStagePlace(plan, base);
+	}
+
+	static SparkStatus Prepare(State *state, const SparkStageRunnerConfiguration *configuration)
+	{
+		(void)configuration;
+		for ( uint32_t index = 0u; index < G::kLayers; ++index )
+			state->tap_output[index] = -1;
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus Shape(State *state)
@@ -1931,6 +1958,29 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		if ( SparkGpuMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+	{
+		State *state = (State *)model;
+		int16_t outputs[G::kLayers];
+		if ( state == 0 || plan == 0 || plan->entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < G::kLayers; ++layer )
+			outputs[layer] = -1;
+		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
+		{
+			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+				continue;
+			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= G::kLayers )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+			outputs[plan->entries[index].layer] = (int16_t)index;
+		}
+		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+		state->tap_stride = plan->row_stride_elements;
+		fprintf(stderr, "%s: taps entries=%u capture=%u; a layer output is its residual after the feed-forward add\n", G::Tag(), plan->entry_count, plan->capture);
 		return SPARK_STATUS_OK;
 	}
 
