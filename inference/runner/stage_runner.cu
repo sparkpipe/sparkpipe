@@ -611,6 +611,9 @@ static SparkStatus StageRunnerTakeFailure(SparkStageRunnerState *state)
 static uint32_t StageRunnerSumOperation(SparkStageRunnerState *state, uint32_t flags, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements)
 {
+	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
+	if ( SparkTpMeshFastWireCodec() != SPARK_TP_MESH_WIRE_CODEC_BF16 && elements >= SPARK_TP_MESH_WIRE_MIN_ELEMENTS )
+		return operation;
 	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL &&
 		(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) == SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL &&
 		SparkTpDeviceCollectiveSupportsPairAllReduce(&state->device_collective, rows, row_elements) != 0u ?
@@ -660,7 +663,13 @@ static SparkStatus StageRunnerReduceBf16(SparkStageRunnerState *state, SparkGpuS
 		SPARK_STAGE_RUNNER_ROUND_ALL, rows, 0u);
 	StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
 		rows, device_values, (void *)device_values, state->tp_next_ordinal++);
-	status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
+	{
+		const uint32_t allow_wire = (state->sum_flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) ==
+			SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL ? 1u : 0u;
+		const uint32_t prev_wire = SparkTpMeshFastSetWireCodecAllowed(allow_wire);
+		status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
+		(void)SparkTpMeshFastSetWireCodecAllowed(prev_wire);
+	}
 	if ( status == SPARK_STATUS_OK )
 		StageRunnerCountSum(state, operation);
 	return status;
@@ -719,12 +728,17 @@ static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t f
 		status = SparkTpDeviceCollectiveFinish(&state->device_collective);
 	else
 	{
+		const uint32_t allow_wire = stage == SPARK_STAGE_RUNNER_ROUND_ALL &&
+			(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) ==
+			SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL ? 1u : 0u;
+		const uint32_t prev_wire = SparkTpMeshFastSetWireCodecAllowed(allow_wire);
 		StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, (SparkGpuStream)stream_void,
 			rows, local, full, state->tp_next_ordinal++);
 		submission.row_elements = row_elements;
 		status = stage == SPARK_STAGE_RUNNER_ROUND_BEGIN
 			? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission, operation)
 			: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
+		(void)SparkTpMeshFastSetWireCodecAllowed(prev_wire);
 	}
 	if ( status != SPARK_STATUS_OK )
 		state->tp_collective_failed = 1u;
@@ -1591,7 +1605,11 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 				rows * state->distribution_sub_rows, state->distribution_logits + (uint64_t)first * slice,
 				state->distribution_gathered, state->tp_next_ordinal++);
 			submission.row_elements = 2u * slice / state->distribution_sub_rows;
-			status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
+			{
+				const uint32_t prev_wire = SparkTpMeshFastSetWireCodecAllowed(0u);
+				status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER);
+				(void)SparkTpMeshFastSetWireCodecAllowed(prev_wire);
+			}
 			if ( status == SPARK_STATUS_OK )
 				status = StageRunnerSampleDistribution(state, state->distribution_gathered, (uint64_t)rows * slice, slice, slice, first, rows, stream);
 		}

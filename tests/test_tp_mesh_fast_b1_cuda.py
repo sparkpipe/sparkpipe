@@ -25,7 +25,7 @@ if REQUIRED_COMPUTE_CAPABILITY not in capabilities:
 if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_tp_mesh_fast_b1_cuda: an sm_121 device is present but nvcc is unavailable")
 
-for target in ("tp_mesh_fast_b1_cuda", "tp_mesh_prefill_collective_cuda"):
+for target in ("tp_mesh_fast_b1_cuda", "tp_mesh_prefill_collective_cuda", "tp_mesh_mxfp8_wire_cuda"):
     binary = ROOT / "build" / target
     binary.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
