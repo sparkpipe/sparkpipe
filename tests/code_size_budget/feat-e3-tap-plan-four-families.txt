@@ -1,0 +1,2 @@
++190
+Wave-4B E3 hidden-state TapPlan (kTapPlan = true) capture across four model families (glm-5.3, a.x-k2, glm-5.3-flash, k-exaone-2.0): zero-overhead tap_slab/tap_output capture in glm52_stage.cuh (unordered, ordered scatter, and row-sharded all-gather paths), glm5_next_stage_model.cuh (4-stream hyper-connection mean capture after HC post-mix), and gemma4_stage.cuh (in-place residual strided copy), plus Makefile wiring for build/test_four_family_tap_plan.

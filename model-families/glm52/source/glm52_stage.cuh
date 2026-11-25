@@ -310,6 +310,22 @@ typedef struct GlmBuffers
 	LmKvAccessError *index_error;
 } GlmBuffers;
 
+template<uint32_t THREADS, bool ADD_RESIDUAL>
+__global__ __launch_bounds__(THREADS, 1)
+static void GlmTapScatterRowsKernel(const uint16_t *__restrict__ source_bf16, const uint16_t *__restrict__ addend_bf16,
+	const uint32_t *__restrict__ order, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension, uint64_t destination_stride)
+{
+	const uint32_t element = blockIdx.x * THREADS + threadIdx.x;
+	if ( element >= dimension )
+		return;
+	for ( uint32_t row = blockIdx.y; row < rows; row += gridDim.y )
+	{
+		const uint64_t src = (uint64_t)row * dimension + element;
+		const uint64_t dst = (uint64_t)order[row] * destination_stride + element;
+		destination_bf16[dst] = ADD_RESIDUAL ? LmFloatToBf16(LmBf16ToFloat(source_bf16[src]) + LmBf16ToFloat(addend_bf16[src])) : source_bf16[src];
+	}
+}
+
 static inline void GlmProjectionSlice(uint32_t total, uint32_t tp_degree, uint32_t tp_rank, uint32_t *first, uint32_t *count)
 {
 	const uint32_t granules = total / GLM_GRANULE, base = granules / tp_degree, extra = granules % tp_degree;
@@ -1564,12 +1580,17 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		uint64_t steps;
 		uint64_t waves;
 		uint64_t gather_waves;
+		uint32_t taps;
+		int16_t tap_output[S::kLayers];
+		uint16_t *tap_slab;
+		uint64_t tap_stride;
 	};
 
 	using Schedule = GlmSchedule<G, GlmModel>;
 
 	static constexpr bool kGraphKey = true;
 	static constexpr bool kKeepRows = true;
+	static constexpr bool kTapPlan = true;
 	static constexpr bool kCheck = true;
 	static constexpr bool kWaves = true;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
@@ -1953,6 +1974,8 @@ struct GlmModel : CudaStage<GlmModel<G>>
 	{
 		const SparkGlm52StagePackEntry *embed, *norm, *head;
 		SparkStatus status;
+		for ( uint32_t layer = 0u; layer < S::kLayers; layer++ )
+			state->tap_output[layer] = -1;
 		state->heads = S::kHeads / state->tp_degree;
 		state->scatter_rows = state->max_rows < GLM_SCATTER_ROWS ? state->max_rows : GLM_SCATTER_ROWS;
 		if ( configuration->kv_pages_per_sequence == 0u || (uint64_t)configuration->kv_pages_per_sequence * GLM_PAGE_SLOTS > S::kMaxPositions )
@@ -2540,9 +2563,49 @@ struct GlmModel : CudaStage<GlmModel<G>>
 	{
 		const GlmWave *wave = &frame.wave;
 		const uint32_t last = layer + 1u == S::kLayers ? 1u : 0u;
+		const uint32_t keep = last == 0u || (state->taps != 0u && state->tap_output[layer] >= 0) ? 1u : 0u;
 		return RowSharded(wave) != 0u ? RowShard(state, wave, layer, frame.hidden, last != 0u ? state->final_norm : state->layers[layer + 1u].attn_norm,
-			last == 0u ? 1u : 0u, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_down, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_up,
+			keep, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_down, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_up,
 			frame.stream) : CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, wave->rows, 0u, frame.hidden, frame.hidden);
+	}
+
+	static SparkStatus LayerDone(State *state, Frame &frame, uint32_t layer)
+	{
+		SparkStatus status = SPARK_STATUS_OK;
+		if ( state->taps != 0u && state->tap_output[layer] >= 0 )
+		{
+			const GlmWave *wave = &frame.wave;
+			const uint64_t entry_offset = (uint64_t)state->tap_output[layer] * S::kHidden;
+			if ( RowSharded(wave) != 0u )
+			{
+				const GlmRowShare row = GlmRowShareOf(wave->rows, state->tp_degree, state->tp_rank);
+				status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u,
+					state->residual + (uint64_t)state->tp_rank * row.share * S::kHidden, state->hidden);
+				if ( status == SPARK_STATUS_OK && state->tap_slab != 0 )
+				{
+					LM_LAUNCH((GlmTapScatterRowsKernel<GLM_THREADS, false>), dim3(LmGridBlocks<GLM_THREADS>(S::kHidden), wave->rows), GLM_THREADS, 0,
+						frame.stream, state->hidden, (const uint16_t *)0, state->order + wave->first,
+						state->tap_slab + (uint64_t)frame.step->dispatch_row_offset * state->tap_stride + entry_offset, wave->rows, S::kHidden, state->tap_stride);
+					status = CudaStageLaunched();
+				}
+			}
+			else if ( state->tap_slab != 0 )
+			{
+				if ( wave->ordered != 0u )
+					LM_LAUNCH((GlmTapScatterRowsKernel<GLM_THREADS, true>), dim3(LmGridBlocks<GLM_THREADS>(S::kHidden), wave->rows), GLM_THREADS, 0,
+						frame.stream, state->residual, frame.hidden, state->order + wave->first,
+						state->tap_slab + (uint64_t)frame.step->dispatch_row_offset * state->tap_stride + entry_offset, wave->rows, S::kHidden, state->tap_stride);
+				else
+					LM_LAUNCH((LmAddRowsStridedKernel<GLM_THREADS>), dim3(LmGridBlocks<GLM_THREADS>(S::kHidden), wave->rows), GLM_THREADS, 0, frame.stream,
+						state->residual, frame.hidden,
+						state->tap_slab + (uint64_t)(frame.step->dispatch_row_offset + wave->first) * state->tap_stride + entry_offset, wave->rows,
+						S::kHidden, state->tap_stride);
+				status = CudaStageLaunched();
+			}
+		}
+		if ( status == SPARK_STATUS_OK )
+			CudaStageLayerDone(state, layer);
+		return status;
 	}
 
 	static uint32_t GatherCheaper(const State *state, const GlmWave *wave)
@@ -2810,6 +2873,32 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		}
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+	{
+		State *state = (State *)model;
+		int16_t outputs[S::kLayers];
+		uint32_t has_output = 0u;
+		if ( state == 0 || plan == 0 || plan->entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < S::kLayers; ++layer )
+			outputs[layer] = -1;
+		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
+		{
+			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+				continue;
+			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= S::kLayers )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+			outputs[plan->entries[index].layer] = (int16_t)index;
+			has_output = 1u;
+		}
+		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->taps = has_output;
+		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+		state->tap_stride = plan->row_stride_elements;
+		fprintf(stderr, "%s: taps entries=%u capture=%u; a layer output is its residual after the feed-forward add\n", G::Tag(), plan->entry_count, plan->capture);
 		return SPARK_STATUS_OK;
 	}
 

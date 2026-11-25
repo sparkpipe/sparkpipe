@@ -84,6 +84,9 @@ struct Glm5NextModelState : CudaStageState
 	uint64_t steps;
 	uint64_t prefill_rows;
 	struct Glm5NextModelState *lane_scratch;
+	int16_t tap_output[G5N_LAYERS];
+	uint16_t *tap_slab;
+	uint64_t tap_stride;
 };
 
 static uint32_t Glm5NextRankHeads(uint32_t total, uint32_t degree)
@@ -633,6 +636,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 
 	static constexpr bool kLanes = true;
 	static constexpr bool kKeepRows = true;
+	static constexpr bool kTapPlan = true;
 	static constexpr uint32_t kChunkRows = G5N_LANE_ROWS;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr SparkStatus kLaneRefusal = SPARK_STATUS_INVALID_ARGUMENT;
@@ -759,6 +763,17 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		Glm5NextBindLayer(state, frame.step, layer, &frame.b);
 	}
 
+	static SparkStatus TapStreams(const Glm5NextModelState *state, const Frame &frame, const uint16_t *streams, uint32_t layer)
+	{
+		if ( state->tap_slab == 0 || state->tap_output[layer] < 0 )
+			return SPARK_STATUS_OK;
+		const uint32_t rows = frame.step->rows;
+		const uint64_t offset = (uint64_t)frame.step->dispatch_row_offset * state->tap_stride + (uint64_t)state->tap_output[layer] * G5N_HIDDEN;
+		LM_LAUNCH((LmStreamMeanRowsKernel<G5N_THREADS>), dim3(LmGridBlocks<G5N_THREADS>(G5N_HIDDEN), rows), G5N_THREADS, 0, frame.stream,
+			streams, state->tap_slab + offset, rows, G5N_HC, G5N_HIDDEN, state->tap_stride);
+		return CudaStageLaunched();
+	}
+
 	static SparkStatus HyperNorm(Glm5NextModelState *state, Frame &frame, uint32_t layer, Glm5NextPart part)
 	{
 		const Glm5NextLayerWeights *w = &state->layers[layer];
@@ -769,14 +784,18 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		const void *base = part == GLM5_NEXT_FFN_PART ? w->hc_ffn_base : w->hc_attn_base;
 		const void *scale = part == GLM5_NEXT_FFN_PART ? w->hc_ffn_scale : w->hc_attn_scale;
 		const void *norm = part == GLM5_NEXT_FFN_PART ? w->post_attn_norm : w->attn_norm;
+		SparkStatus status;
 		frame.b.prenormed = 1u;
 		if ( frame.post_pending != 0u )
 		{
 			frame.stream_bank ^= 1u;
 			frame.post_pending = 0u;
 		}
-		return Launch(Glm5NextHcPostNorm(&frame.b, streams_in, post_out, streams_out, fn, base, scale, norm, frame.step->rows, frame.stream),
+		status = Launch(Glm5NextHcPostNorm(&frame.b, streams_in, post_out, streams_out, fn, base, scale, norm, frame.step->rows, frame.stream),
 			part == GLM5_NEXT_FFN_PART ? "ffn hc site" : "attention hc site", layer);
+		if ( status == SPARK_STATUS_OK && part == GLM5_NEXT_ATTENTION_PART && layer > 0u )
+			status = TapStreams(state, frame, streams_out, layer - 1u);
+		return status;
 	}
 
 	static SparkStatus Kda(Glm5NextModelState *state, Frame &frame, uint32_t layer)
@@ -809,8 +828,12 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 			return SPARK_STATUS_OK;
 		}
 		const uint16_t *src = frame.stream_bank != 0u ? state->snapshot : state->streams;
+		SparkStatus status;
 		frame.stream_bank = 0u;
-		return Launch(Glm5NextHcPostFrom(&frame.b, src, state->streams, frame.step->rows, frame.stream), "ffn hc post", layer);
+		status = Launch(Glm5NextHcPostFrom(&frame.b, src, state->streams, frame.step->rows, frame.stream), "ffn hc post", layer);
+		if ( status == SPARK_STATUS_OK )
+			status = TapStreams(state, frame, state->streams, layer);
+		return status;
 	}
 
 	static SparkStatus DenseMlp(Glm5NextModelState *state, Frame &frame, uint32_t layer)
@@ -881,6 +904,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		state->verify_rows = G::kVerifyRows;
 		for ( uint32_t layer = 0u; layer < G5N_LAYERS; ++layer )
 		{
+			state->tap_output[layer] = -1;
 			state->layers[layer].kda_ordinal = Glm5NextKdaOrdinal(layer);
 			state->layers[layer].dsa_ordinal = Glm5NextDsaOrdinal(layer);
 		}
@@ -1029,6 +1053,29 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		parts[2] = { state->kda_windows + windows, state->kda_window_slot_bytes, G5N_KDA_LAYERS };
 		parts[3] = { state->kda_windows + 2u * windows, state->kda_window_slot_bytes, G5N_KDA_LAYERS };
 		return 4u;
+	}
+
+	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+	{
+		Glm5NextModelState *state = (Glm5NextModelState *)model;
+		int16_t outputs[G5N_LAYERS];
+		if ( state == 0 || plan == 0 || plan->entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < G5N_LAYERS; ++layer )
+			outputs[layer] = -1;
+		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
+		{
+			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+				continue;
+			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= G5N_LAYERS )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+			outputs[plan->entries[index].layer] = (int16_t)index;
+		}
+		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+		state->tap_stride = plan->row_stride_elements;
+		fprintf(stderr, "%s: taps entries=%u capture=%u; layer outputs are the mean of the %u streams\n", G::Tag(), plan->entry_count, plan->capture, G5N_HC);
+		return SPARK_STATUS_OK;
 	}
 
 	static uint32_t ReportFields(const Glm5NextModelState *state, CudaStageReportField *fields)
