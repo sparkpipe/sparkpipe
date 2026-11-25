@@ -33,6 +33,7 @@ SITES = {
     "modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu": 1,
     "modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu": 3,
     "modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu": 1,
+    "modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu": 1,
     "ring/transport/tp_device_collective.c": 29,
     "runtime/spark_weightd_lazy_pack.c": 1,
 }
@@ -46,6 +47,7 @@ HOST_VISIBLE = {
     "modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu": 4,
     "modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu": 5,
     "modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu": 4,
+    "modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu": 4,
     "node/model_residentd.c": 2,
     "ring/transport/tp_device_collective.c": 2,
 }
