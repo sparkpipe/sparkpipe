@@ -134,8 +134,9 @@ static __device__ __forceinline__ float LmWarpMergeScales(const float *__restric
     {
 #if defined(__CUDA_ARCH__)
         const float d = __shfl_sync(0xffffffffu, sd, s);
+        const float w = __shfl_sync(0xffffffffu, sc, s);
         if (lane == 0u)
-            den = fmaf(d, scales[s], den);
+            den = fmaf(d, w, den);
 #else
         const float *meta = meta_base + (uint64_t)s * source_stride;
         const float w = (gm == -INFINITY || meta[0] == -INFINITY) ? 0.0f : __expf(meta[0] - gm);
@@ -165,7 +166,7 @@ static __device__ __forceinline__ void LmWeightedSourcesApply(const float *__res
                 for (uint32_t s = 0u; s < sources; ++s)
                 {
                     const float w = scale_at(slot, s);
-                    const float4 x = ((const float4 *)(src0 + (uint64_t)s * source_stride))[v];
+                    const float4 x = __ldg(((const float4 *)(src0 + (uint64_t)s * source_stride)) + v);
                     m0 = fmaf(x.x, w, m0); m1 = fmaf(x.y, w, m1); m2 = fmaf(x.z, w, m2); m3 = fmaf(x.w, w, m3);
                 }
                 if constexpr (FOLD_F32)

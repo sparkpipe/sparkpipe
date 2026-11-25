@@ -279,8 +279,9 @@ template<class Geometry, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmKvStoreKernel(LmKvView view, const uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ position_of_row, uint32_t row_count, uint32_t elements)
 {
-	uint32_t row = blockIdx.x,index;
+	uint32_t row = blockIdx.x, index;
 	uint8_t *slot;
+	LmDependentWait();
 	LmDependentRelease();
 	if ( row >= row_count )
 		return;
@@ -288,7 +289,17 @@ void LmKvStoreKernel(LmKvView view, const uint16_t *__restrict__ rows_bf16, cons
 		view,sequence_of_row[row],position_of_row[row],row);
 	if ( slot == 0 )
 		return;
+	const uint16_t *src = rows_bf16 + (uint64_t)row * elements;
+	if ( ((elements & 7u) == 0u) && (((uintptr_t)slot & 15u) == 0u) && (((uintptr_t)src & 15u) == 0u) )
+	{
+		const uint32_t vecs = elements >> 3u;
+		uint4 *dst4 = (uint4 *)slot;
+		const uint4 *src4 = (const uint4 *)src;
+		for (index = threadIdx.x; index < vecs; index += THREADS)
+			dst4[index] = src4[index];
+		return;
+	}
 	for (index = threadIdx.x; index < elements; index += THREADS)
-		((uint16_t *)slot)[index] = rows_bf16[((uint64_t)row * elements) + index];
+		((uint16_t *)slot)[index] = src[index];
 }
 #endif
