@@ -25,6 +25,7 @@ EXPECTED_KERNELS = [
     "rmsnorm_bf16_vec16",
     "fused_residual_rmsnorm_bf16x8",
     "swiglu_packed_bf16x8",
+    "swiglu_pdl_exact_bf16x8",
     "latent_attn_decode_512_64",
     "router_softmax_256",
     "router_softmax_bf16_256",

@@ -150,3 +150,39 @@ kernel[BLOCK, 80] swiglu_packed_bf16x8(
     }
     stg256(ptr_add(out_bf16, idx, 32), gv);
 }
+
+kernel[BLOCK, 64] swiglu_pdl_exact_bf16x8(
+    global u32* gate_up_bf16, global u32* out_bf16,
+    u32 dimension
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x();
+    reg u32 chunks8 = dimension >> 3;
+    reg u32 g_base_c = row * (chunks8 << 1);
+    reg u32 u_base_c = g_base_c + chunks8;
+    reg u32 o_base_c = row * chunks8;
+    for (reg u32 c = tid; c < chunks8; c += BLOCK) {
+        reg u32x4 gv = ldg128_stream(ptr_add(gate_up_bf16, g_base_c + c, 16));
+        reg u32x4 uv = ldg128_stream(ptr_add(gate_up_bf16, u_base_c + c, 16));
+        unroll (k = 0..4) {
+            reg f32 g0 = bf16_lo(gv[k]);
+            reg f32 g1 = bf16_hi(gv[k]);
+            reg f32 x0 = g0 * -1.4426950408889634f;
+            reg f32 x1 = g1 * -1.4426950408889634f;
+            reg f32 d0 = exp2_ftz(x0) + 1.0f;
+            reg f32 d1 = exp2_ftz(x1) + 1.0f;
+            reg f32 r0 = rcp(d0);
+            reg f32 r1 = rcp(d1);
+            r0 = fma(r0, fma(-d0, r0, 1.0f), r0);
+            r1 = fma(r1, fma(-d1, r1, 1.0f), r1);
+            reg f32 q0 = g0 * r0;
+            reg f32 q1 = g1 * r1;
+            q0 = fma(r0, fma(-d0, q0, g0), q0);
+            q1 = fma(r1, fma(-d1, q1, g1), q1);
+            gv[k] = pack_bf16x2(q0 * bf16_lo(uv[k]), q1 * bf16_hi(uv[k]));
+        }
+        stg128(ptr_add(out_bf16, o_base_c + c, 16), gv);
+    }
+}
