@@ -204,94 +204,93 @@ static void K3RouteBuildFastKernel(const uint32_t *__restrict__ route_expert, ui
 	LmDependentRelease();
 }
 
-static __device__ __forceinline__ float K3AttnResScoreSinglePass(const uint16_t *values,
-	const uint16_t *score_weight_bf16, float epsilon, float *reduction, uint16_t *cache_smem = 0)
+static __device__ __forceinline__ float K3AttnResFinishScore(const uint4 staged[4], float square,
+	const uint16_t *score_weight_bf16, float epsilon, float *reduction)
 {
-	float square = 0.0f, dot = 0.0f;
+	const float inverse = SparkMathRmsScale(LmBlockSum<256u>(square, reduction), (float)K3_HIDDEN, epsilon);
+	float dot = 0.0f;
 	#pragma unroll
 	for ( uint32_t chunk = 0u; chunk < 4u; ++chunk )
 	{
 		const uint32_t index = (chunk * 256u + threadIdx.x) * 8u;
 		if ( index < K3_HIDDEN )
 		{
-			const uint4 raw = __ldg((const uint4 *)(values + index));
-			if ( cache_smem != 0 )
-				*(uint4 *)(cache_smem + index) = raw;
 			float v[8], w[8];
-			LmLoadBf16x8AsFloat(raw, v);
+			LmLoadBf16x8AsFloat(staged[chunk], v);
 			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(score_weight_bf16 + index)), w);
 			#pragma unroll
 			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				square = fmaf(v[k], v[k], square);
-				dot = fmaf(v[k], w[k], dot);
-			}
+				dot += v[k] * inverse * w[k];
 		}
 	}
-	LmBlockSum2Once<256u>(&square, &dot, reduction);
-	return dot * SparkMathRmsScale(square, (float)K3_HIDDEN, epsilon);
+	return LmBlockSum<256u>(dot, reduction);
+}
+
+static __device__ __forceinline__ float K3AttnResScoreSinglePass(const uint16_t *values,
+	const uint16_t *score_weight_bf16, float epsilon, float *reduction, uint16_t *cache_smem = 0)
+{
+	uint4 staged[4];
+	float square = 0.0f;
+	#pragma unroll
+	for ( uint32_t chunk = 0u; chunk < 4u; ++chunk )
+	{
+		const uint32_t index = (chunk * 256u + threadIdx.x) * 8u;
+		if ( index < K3_HIDDEN )
+		{
+			staged[chunk] = __ldg((const uint4 *)(values + index));
+			if ( cache_smem != 0 )
+				*(uint4 *)(cache_smem + index) = staged[chunk];
+			square = LmSumSqBf16x8(staged[chunk], square);
+		}
+	}
+	return K3AttnResFinishScore(staged, square, score_weight_bf16, epsilon, reduction);
 }
 
 static __device__ __forceinline__ float K3AttnResAddAndScore(uint16_t *partial_row, const uint16_t *addend_row,
 	const uint16_t *score_weight_bf16, float epsilon, float *reduction, uint16_t *cache_smem = 0, bool stream_partial = false)
 {
-	float square = 0.0f, dot = 0.0f;
+	uint4 staged[4];
+	float square = 0.0f;
 	#pragma unroll
 	for ( uint32_t chunk = 0u; chunk < 4u; ++chunk )
 	{
 		const uint32_t index = (chunk * 256u + threadIdx.x) * 8u;
 		if ( index < K3_HIDDEN )
 		{
-			float sum[8], v[8], w[8];
+			float sum[8];
 			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(partial_row + index)), sum);
 			LmAddBf16x8(sum, __ldcs((const uint4 *)(addend_row + index)));
-			const uint4 packed = LmPackUint4FloatToBf16(sum);
+			staged[chunk] = LmPackUint4FloatToBf16(sum);
 			if ( stream_partial )
-				__stcs((uint4 *)(partial_row + index), packed);
+				__stcs((uint4 *)(partial_row + index), staged[chunk]);
 			else
-				*(uint4 *)(partial_row + index) = packed;
+				*(uint4 *)(partial_row + index) = staged[chunk];
 			if ( cache_smem != 0 )
-				*(uint4 *)(cache_smem + index) = packed;
-			LmLoadBf16x8AsFloat(packed, v);
-			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(score_weight_bf16 + index)), w);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				square = fmaf(v[k], v[k], square);
-				dot = fmaf(v[k], w[k], dot);
-			}
+				*(uint4 *)(cache_smem + index) = staged[chunk];
+			square = LmSumSqBf16x8(staged[chunk], square);
 		}
 	}
-	LmBlockSum2Once<256u>(&square, &dot, reduction);
-	return dot * SparkMathRmsScale(square, (float)K3_HIDDEN, epsilon);
+	return K3AttnResFinishScore(staged, square, score_weight_bf16, epsilon, reduction);
 }
 
 static __device__ __forceinline__ float K3AttnResSetAndScore(uint16_t *partial_row, const uint16_t *src_row,
 	const uint16_t *score_weight_bf16, float epsilon, float *reduction, uint16_t *cache_smem)
 {
-	float square = 0.0f, dot = 0.0f;
+	uint4 staged[4];
+	float square = 0.0f;
 	#pragma unroll
 	for ( uint32_t chunk = 0u; chunk < 4u; ++chunk )
 	{
 		const uint32_t index = (chunk * 256u + threadIdx.x) * 8u;
 		if ( index < K3_HIDDEN )
 		{
-			const uint4 raw = __ldcs((const uint4 *)(src_row + index));
-			*(uint4 *)(partial_row + index) = raw;
-			*(uint4 *)(cache_smem + index) = raw;
-			float v[8], w[8];
-			LmLoadBf16x8AsFloat(raw, v);
-			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(score_weight_bf16 + index)), w);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				square = fmaf(v[k], v[k], square);
-				dot = fmaf(v[k], w[k], dot);
-			}
+			staged[chunk] = __ldcs((const uint4 *)(src_row + index));
+			*(uint4 *)(partial_row + index) = staged[chunk];
+			*(uint4 *)(cache_smem + index) = staged[chunk];
+			square = LmSumSqBf16x8(staged[chunk], square);
 		}
 	}
-	LmBlockSum2Once<256u>(&square, &dot, reduction);
-	return dot * SparkMathRmsScale(square, (float)K3_HIDDEN, epsilon);
+	return K3AttnResFinishScore(staged, square, score_weight_bf16, epsilon, reduction);
 }
 
 __global__ __launch_bounds__(256u, 2)
@@ -299,7 +298,7 @@ static void K3AttnResScoreAddKernel(const uint16_t *__restrict__ bank_bf16, uint
 	const uint16_t *__restrict__ addend_bf16, const uint16_t *__restrict__ score_weight_bf16,
 	float *__restrict__ score_f32, uint32_t sources, uint32_t rows, float epsilon)
 {
-	__shared__ float reduction[2u * LmBlockWarps<256u>()];
+	__shared__ float reduction[LmBlockWarps<256u>()];
 	const uint32_t row = blockIdx.x, source = blockIdx.y;
 	LmDependentWait();
 	float dot;
@@ -369,7 +368,7 @@ static void K3PartialAddAttnResNormKernel(const uint16_t *__restrict__ bank_bf16
 	const uint16_t *__restrict__ norm_weight_bf16, uint16_t *__restrict__ hidden_bf16,
 	uint16_t *__restrict__ normed_bf16, uint32_t sources, uint32_t rows, float epsilon)
 {
-	__shared__ float reduction[2u * LmBlockWarps<256u>()], score[K3_ATTNRES_MAX_SOURCES], weight[K3_ATTNRES_MAX_SOURCES];
+	__shared__ float reduction[LmBlockWarps<256u>()], score[K3_ATTNRES_MAX_SOURCES], weight[K3_ATTNRES_MAX_SOURCES];
 	__shared__ __align__(16) uint16_t s_row[K3_HIDDEN];
 	LmDependentWait();
 	const bool stream_out = rows >= 128u;
@@ -445,7 +444,7 @@ static void K3PartialAddAttnResSliceKernel(const uint16_t *__restrict__ bank_bf1
 	uint16_t *__restrict__ in_out_bf16, const uint16_t *__restrict__ score_weight_bf16,
 	uint32_t sources, uint32_t total_rows, uint32_t first, uint32_t count, uint32_t set_partial, float epsilon)
 {
-	__shared__ float reduction[2u * LmBlockWarps<256u>()], score[K3_ATTNRES_MAX_SOURCES], weight[K3_ATTNRES_MAX_SOURCES];
+	__shared__ float reduction[LmBlockWarps<256u>()], score[K3_ATTNRES_MAX_SOURCES], weight[K3_ATTNRES_MAX_SOURCES];
 	__shared__ __align__(16) uint16_t s_row[K3_HIDDEN];
 	const uint32_t local = blockIdx.x;
 	LmDependentWait();

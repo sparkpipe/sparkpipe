@@ -911,7 +911,7 @@ static void K3KdaPrepFinishVecKernel(uint16_t *__restrict__ query_bf16, uint16_t
 	float *__restrict__ retention, float *__restrict__ write_gate,
 	uint32_t heads, float minimum_log_decay, float epsilon, uint32_t rows)
 {
-	static_assert(K3_KDA_KEY_DIM == 128u, "one warp handles four elements per lane across 128-wide KDA key");
+	static_assert(K3_KDA_KEY_DIM == 128u, "one warp handles four 32-strided elements across 128-wide KDA key");
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t task = blockIdx.x * 4u + warp;
 	LmDependentWait();
@@ -920,33 +920,45 @@ static void K3KdaPrepFinishVecKernel(uint16_t *__restrict__ query_bf16, uint16_t
 		LmDependentRelease();
 		return;
 	}
-	const uint32_t head = task % heads, off = lane * 4u;
-	const uint64_t base = (uint64_t)task * K3_KDA_KEY_DIM;
-	const uint2 qv = *(const uint2 *)(query_bf16 + base + off);
-	const uint2 kv = *(const uint2 *)(key_bf16 + base + off);
-	const float q0 = LmBf16ToFloat((uint16_t)(qv.x & 0xffffu)), q1 = LmBf16ToFloat((uint16_t)(qv.x >> 16u));
-	const float q2 = LmBf16ToFloat((uint16_t)(qv.y & 0xffffu)), q3 = LmBf16ToFloat((uint16_t)(qv.y >> 16u));
-	const float k0 = LmBf16ToFloat((uint16_t)(kv.x & 0xffffu)), k1 = LmBf16ToFloat((uint16_t)(kv.x >> 16u));
-	const float k2 = LmBf16ToFloat((uint16_t)(kv.y & 0xffffu)), k3 = LmBf16ToFloat((uint16_t)(kv.y >> 16u));
-	float q_sum = fmaf(q0, q0, fmaf(q1, q1, fmaf(q2, q2, q3 * q3)));
-	float k_sum = fmaf(k0, k0, fmaf(k1, k1, fmaf(k2, k2, k3 * k3)));
+	const uint32_t head = task % heads;
+	const uint64_t base = (uint64_t)task * K3_KDA_KEY_DIM, cb_base = (uint64_t)head * K3_KDA_KEY_DIM;
+	const float q0 = LmBf16ToFloat(query_bf16[base + lane]);
+	const float q1 = LmBf16ToFloat(query_bf16[base + 32u + lane]);
+	const float q2 = LmBf16ToFloat(query_bf16[base + 64u + lane]);
+	const float q3 = LmBf16ToFloat(query_bf16[base + 96u + lane]);
+	const float k0 = LmBf16ToFloat(key_bf16[base + lane]);
+	const float k1 = LmBf16ToFloat(key_bf16[base + 32u + lane]);
+	const float k2 = LmBf16ToFloat(key_bf16[base + 64u + lane]);
+	const float k3 = LmBf16ToFloat(key_bf16[base + 96u + lane]);
+	float qs0 = q0 * q0, qs1 = q1 * q1, qs2 = q2 * q2, qs3 = q3 * q3;
+	float ks0 = k0 * k0, ks1 = k1 * k1, ks2 = k2 * k2, ks3 = k3 * k3;
 	#pragma unroll
 	for ( uint32_t s = 16u; s > 0u; s >>= 1u )
 	{
-		q_sum += __shfl_xor_sync(0xffffffffu, q_sum, s);
-		k_sum += __shfl_xor_sync(0xffffffffu, k_sum, s);
+		qs0 += __shfl_down_sync(0xffffffffu, qs0, s);
+		qs1 += __shfl_down_sync(0xffffffffu, qs1, s);
+		qs2 += __shfl_down_sync(0xffffffffu, qs2, s);
+		qs3 += __shfl_down_sync(0xffffffffu, qs3, s);
+		ks0 += __shfl_down_sync(0xffffffffu, ks0, s);
+		ks1 += __shfl_down_sync(0xffffffffu, ks1, s);
+		ks2 += __shfl_down_sync(0xffffffffu, ks2, s);
+		ks3 += __shfl_down_sync(0xffffffffu, ks3, s);
 	}
-	const float q_inv = rsqrtf(q_sum + epsilon), k_inv = rsqrtf(k_sum + epsilon);
-	*(uint2 *)(query_bf16 + base + off) = make_uint2(LmPackBf16Pair(q0 * q_inv, q1 * q_inv), LmPackBf16Pair(q2 * q_inv, q3 * q_inv));
-	*(uint2 *)(key_bf16 + base + off) = make_uint2(LmPackBf16Pair(k0 * k_inv, k1 * k_inv), LmPackBf16Pair(k2 * k_inv, k3 * k_inv));
-	const uint2 dv = __ldg((const uint2 *)(decay_logit_bf16 + base + off));
-	const float4 cb = __ldg((const float4 *)(channel_bias + (uint64_t)head * K3_KDA_KEY_DIM + off));
+	const float q_inv = rsqrtf(__shfl_sync(0xffffffffu, (qs0 + qs2) + (qs1 + qs3), 0u) + epsilon);
+	const float k_inv = rsqrtf(__shfl_sync(0xffffffffu, (ks0 + ks2) + (ks1 + ks3), 0u) + epsilon);
+	query_bf16[base + lane] = LmFloatToBf16(q0 * q_inv);
+	query_bf16[base + 32u + lane] = LmFloatToBf16(q1 * q_inv);
+	query_bf16[base + 64u + lane] = LmFloatToBf16(q2 * q_inv);
+	query_bf16[base + 96u + lane] = LmFloatToBf16(q3 * q_inv);
+	key_bf16[base + lane] = LmFloatToBf16(k0 * k_inv);
+	key_bf16[base + 32u + lane] = LmFloatToBf16(k1 * k_inv);
+	key_bf16[base + 64u + lane] = LmFloatToBf16(k2 * k_inv);
+	key_bf16[base + 96u + lane] = LmFloatToBf16(k3 * k_inv);
 	const float hls = __ldg(head_log_scale + head);
-	*(float4 *)(retention + base + off) = make_float4(
-		LmBoundedDecay(LmBf16ToFloat((uint16_t)(dv.x & 0xffffu)), cb.x, hls, minimum_log_decay),
-		LmBoundedDecay(LmBf16ToFloat((uint16_t)(dv.x >> 16u)), cb.y, hls, minimum_log_decay),
-		LmBoundedDecay(LmBf16ToFloat((uint16_t)(dv.y & 0xffffu)), cb.z, hls, minimum_log_decay),
-		LmBoundedDecay(LmBf16ToFloat((uint16_t)(dv.y >> 16u)), cb.w, hls, minimum_log_decay));
+	retention[base + lane] = LmBoundedDecay(LmBf16ToFloat(__ldg(decay_logit_bf16 + base + lane)), __ldg(channel_bias + cb_base + lane), hls, minimum_log_decay);
+	retention[base + 32u + lane] = LmBoundedDecay(LmBf16ToFloat(__ldg(decay_logit_bf16 + base + 32u + lane)), __ldg(channel_bias + cb_base + 32u + lane), hls, minimum_log_decay);
+	retention[base + 64u + lane] = LmBoundedDecay(LmBf16ToFloat(__ldg(decay_logit_bf16 + base + 64u + lane)), __ldg(channel_bias + cb_base + 64u + lane), hls, minimum_log_decay);
+	retention[base + 96u + lane] = LmBoundedDecay(LmBf16ToFloat(__ldg(decay_logit_bf16 + base + 96u + lane)), __ldg(channel_bias + cb_base + 96u + lane), hls, minimum_log_decay);
 	if ( lane == 0u )
 		write_gate[task] = SparkMathSigmoidFast(LmBf16ToFloat(__ldg(beta_logit_bf16 + task)));
 	LmDependentRelease();
@@ -1041,24 +1053,33 @@ template<uint32_t THREADS, uint32_t DIM>
 __global__ __launch_bounds__(THREADS, 4)
 void K3RmsNormSliceKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t col_offset, uint32_t slice_width, float epsilon)
 {
-	__shared__ float reduction[LmBlockWarps<THREADS>()];
+	__shared__ float shared[DIM + LmBlockWarps<THREADS>()];
 	const uint64_t base = (uint64_t)blockIdx.x * DIM;
 	float total = 0.0f;
 	LmDependentWait();
 	if ( ((DIM & 7u) == 0u) && LmIsAligned16(input_bf16) )
 	{
 		for ( uint32_t offset = threadIdx.x * 8u; offset < DIM; offset += THREADS * 8u )
-			total = LmSumSqBf16x8(__ldg((const uint4 *)(input_bf16 + base + offset)), total);
+		{
+			float vals[8], sq[8];
+			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(input_bf16 + base + offset)), vals);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k ) sq[k] = vals[k] * vals[k];
+			LmStoreFloat8(shared + offset, sq);
+		}
+		__syncthreads();
+		for ( uint32_t index = threadIdx.x; index < DIM; index += THREADS )
+			total += shared[index];
 	}
 	else
 	{
 		for ( uint32_t index = threadIdx.x; index < DIM; index += THREADS )
 		{
 			const float v = LmBf16ToFloat(input_bf16[base + index]);
-			total = fmaf(v, v, total);
+			total += v * v;
 		}
 	}
-	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)DIM, epsilon);
+	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, shared + DIM), (float)DIM, epsilon);
 	const uint64_t out_base = (uint64_t)blockIdx.x * slice_width;
 	if ( ((col_offset & 7u) == 0u) && ((slice_width & 7u) == 0u) &&
 		LmIsAligned16(input_bf16) && LmIsAligned16(weight_bf16) && LmIsAligned16(output_bf16) )

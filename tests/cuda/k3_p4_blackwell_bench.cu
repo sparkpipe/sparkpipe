@@ -838,9 +838,10 @@ static void BenchSuite5Elementwise(cudaStream_t stream)
 	K3KdaPrepFinishVecKernel<<<(ROWS * HEADS + 3u) / 4u, 128u, 0u, stream>>>(
 		d_q_new, d_k_new, d_dec, d_cbias, d_hls, d_beta, d_ret_new, d_wg_new, HEADS, K3_KDA_GATE_LOWER_BOUND, K3_RMS_EPSILON, ROWS);
 	CHECK_CUDA(cudaStreamSynchronize(stream));
-	CheckBf16Close("KdaPrepFinishVec Q", d_q_ref, d_q_new, (uint64_t)ROWS * HEADS * K3_KDA_KEY_DIM, 1e-3f, 1u);
-	CheckFloatClose("KdaPrepFinishVec retention", d_ret_ref, d_ret_new, (uint64_t)ROWS * HEADS * K3_KDA_KEY_DIM, 1e-6f);
-	CheckFloatClose("KdaPrepFinishVec write_gate", d_wg_ref, d_wg_new, (uint64_t)ROWS * HEADS, 1e-6f);
+	CheckBf16Exact0Ulp("KdaPrepFinishVec Q (0-ULP)", d_q_ref, d_q_new, (uint64_t)ROWS * HEADS * K3_KDA_KEY_DIM);
+	CheckBf16Exact0Ulp("KdaPrepFinishVec K (0-ULP)", d_k_ref, d_k_new, (uint64_t)ROWS * HEADS * K3_KDA_KEY_DIM);
+	CheckFloatClose("KdaPrepFinishVec retention", d_ret_ref, d_ret_new, (uint64_t)ROWS * HEADS * K3_KDA_KEY_DIM, 0.0f);
+	CheckFloatClose("KdaPrepFinishVec write_gate", d_wg_ref, d_wg_new, (uint64_t)ROWS * HEADS, 0.0f);
 
 	const double t_prep_old = TimeUs([&]() {
 		K3KdaPrepFinishKernel<128u, K3_KDA_KEY_DIM><<<dim3(ROWS, HEADS), 128u, 0u, stream>>>(
@@ -898,8 +899,8 @@ static void BenchSuite5Elementwise(cudaStream_t stream)
 			char tag[64];
 			snprintf(tag, sizeof(tag), "AttnResSlice partial set=%u", set_p);
 			CheckBf16Exact0Ulp(tag, d_p_ref + (uint64_t)FIRST * K3_HIDDEN, d_p_new + (uint64_t)FIRST * K3_HIDDEN, (uint64_t)COUNT * K3_HIDDEN);
-			snprintf(tag, sizeof(tag), "AttnResSlice mix set=%u", set_p);
-			CheckBf16Close(tag, d_io_ref, d_io_new, (uint64_t)COUNT * K3_HIDDEN, 1e-3f, 1u);
+			snprintf(tag, sizeof(tag), "AttnResSlice mix set=%u (0-ULP)", set_p);
+			CheckBf16Exact0Ulp(tag, d_io_ref, d_io_new, (uint64_t)COUNT * K3_HIDDEN);
 		}
 		K3LayerBuffers bref = {};
 		bref.attnres_bank_bf16 = d_bank; bref.attnres_partial_bf16 = d_p_ref;
