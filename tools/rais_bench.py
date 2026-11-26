@@ -969,6 +969,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             continue
         if b == 8 and nospec_prose_res is not None:
             b8_max_tokens = max(plan["batch_tokens"], plan["b1_short_tokens"])
+            ep_before_b8 = active_endpoint
             res_b = do_batch(
                 b,
                 b8_max_tokens,
@@ -977,6 +978,12 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 lane0_prompt_field=prose_field,
                 extra_prompt_bases=(CODE_PROMPT, EDIT_PROMPT, PROSE_PROMPT),
             )
+            if active_endpoint != ep_before_b8:
+                re_prose = summarize_stream(
+                    do_stream({"model": model_name, **prose_field, "max_tokens": plan["b1_short_tokens"], "temperature": 0, **nospec_opt})
+                )
+                if re_prose["error"] is None:
+                    nospec_prose_res = re_prose
             lane0_res = res_b.pop("lane0_summary", None)
             if lane0_res is not None and lane0_res.get("error") is None:
                 batch_invariant_exact = outputs_match(nospec_prose_res, lane0_res)
@@ -1023,41 +1030,46 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     spec_metrics["b8_spec_tok_s"] = round(b8_spec_agg, 2)
                     spec_metrics["verify_v_b8"] = round(a_b8 / (b8_spec_agg / b8_nospec), 4)
 
-    nonce_8k = f"pf8k-{time.time_ns()}"
-    _, prompt_8k_handle = encoder.prompt_field_for_target(plan["prefill_8k_tokens"], nonce_8k)
-    cold_8k_field, cold_8k_handle = encoder.extend_prompt(prompt_8k_handle, FOLLOWUP_DELTA_128, delta_target_tokens=plan["warm_new_tokens"])
-    cold_8k_res = summarize_stream(
-        do_stream({"model": model_name, **cold_8k_field, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
-    )
-    prefill_8k_tokens = cold_8k_res.get("prompt_tokens") or plan["prefill_8k_tokens"]
-    prefill_8k_tok_s = None
-    if cold_8k_res["error"] is not None:
-        errors_count += 1
-    elif cold_8k_res.get("ttft_ms") and cold_8k_res["ttft_ms"] > 0:
-        prefill_8k_tok_s = round(prefill_8k_tokens * 1000.0 / cold_8k_res["ttft_ms"], 2)
+    for _warm_attempt in range(2):
+        nonce_8k = f"pf8k-{time.time_ns()}"
+        _, prompt_8k_handle = encoder.prompt_field_for_target(plan["prefill_8k_tokens"], nonce_8k)
+        cold_8k_field, cold_8k_handle = encoder.extend_prompt(prompt_8k_handle, FOLLOWUP_DELTA_128, delta_target_tokens=plan["warm_new_tokens"])
+        cold_8k_res = summarize_stream(
+            do_stream({"model": model_name, **cold_8k_field, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
+        )
+        ep_after_cold = active_endpoint
+        prefill_8k_tokens = cold_8k_res.get("prompt_tokens") or plan["prefill_8k_tokens"]
+        prefill_8k_tok_s = None
+        if cold_8k_res["error"] is not None:
+            errors_count += 1
+        elif cold_8k_res.get("ttft_ms") and cold_8k_res["ttft_ms"] > 0:
+            prefill_8k_tok_s = round(prefill_8k_tokens * 1000.0 / cold_8k_res["ttft_ms"], 2)
 
-    warm_gx_res = summarize_stream(
-        do_stream({"model": model_name, **cold_8k_field, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
-    )
-    prefix_exact = False
-    if warm_gx_res["error"] is not None:
-        errors_count += 1
-    else:
-        prefix_exact = outputs_match(warm_gx_res, cold_8k_res)
+        warm_gx_res = summarize_stream(
+            do_stream({"model": model_name, **cold_8k_field, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
+        )
+        prefix_exact = False
+        if warm_gx_res["error"] is not None:
+            errors_count += 1
+        else:
+            prefix_exact = outputs_match(warm_gx_res, cold_8k_res)
 
-    warm_8k_field, _ = encoder.extend_prompt(
-        cold_8k_handle,
-        FOLLOWUP_TURN2,
-        delta_target_tokens=plan["warm_new_tokens"],
-    )
-    warm_8k_res = summarize_stream(
-        do_stream({"model": model_name, **warm_8k_field, "max_tokens": 16, "temperature": 0, **nospec_opt})
-    )
-    warm_8k_ttft_ms = None
-    if warm_8k_res["error"] is not None:
-        errors_count += 1
-    else:
-        warm_8k_ttft_ms = warm_8k_res.get("ttft_ms")
+        warm_8k_field, _ = encoder.extend_prompt(
+            cold_8k_handle,
+            FOLLOWUP_TURN2,
+            delta_target_tokens=plan["warm_new_tokens"],
+        )
+        warm_8k_res = summarize_stream(
+            do_stream({"model": model_name, **warm_8k_field, "max_tokens": 16, "temperature": 0, **nospec_opt})
+        )
+        if active_endpoint != ep_after_cold and _warm_attempt == 0:
+            continue
+        warm_8k_ttft_ms = None
+        if warm_8k_res["error"] is not None:
+            errors_count += 1
+        else:
+            warm_8k_ttft_ms = warm_8k_res.get("ttft_ms")
+        break
 
     prefill_32k_tok_s = None
     prefill_32k_tokens = None
@@ -1095,10 +1107,24 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             long_prompt_for_decode = p_long_handle
 
     if len(plan["warm_targets"]) > 1 and long_prompt_for_decode is not None:
+        ep_before_w100 = active_endpoint
         w100_field, _ = encoder.extend_prompt(long_prompt_for_decode, FOLLOWUP_DELTA_128, delta_target_tokens=plan["warm_new_tokens"])
         r_w100 = summarize_stream(
             do_stream({"model": model_name, **w100_field, "max_tokens": 16, "temperature": 0, **nospec_opt})
         )
+        if active_endpoint != ep_before_w100:
+            nonce_w = f"pflw-{max(plan['prefill_long_targets'])}-{time.time_ns()}"
+            pw_field, pw_handle = encoder.prompt_field_for_target(max(plan["prefill_long_targets"]), nonce_w)
+            rw_cold = summarize_stream(
+                do_stream({"model": model_name, **pw_field, "max_tokens": 1, "temperature": 0, **nospec_opt})
+            )
+            if rw_cold["error"] is None:
+                b1_long_ctx = rw_cold.get("prompt_tokens") or b1_long_ctx
+                long_prompt_for_decode = pw_handle
+                w100_field, _ = encoder.extend_prompt(pw_handle, FOLLOWUP_DELTA_128, delta_target_tokens=plan["warm_new_tokens"])
+                r_w100 = summarize_stream(
+                    do_stream({"model": model_name, **w100_field, "max_tokens": 16, "temperature": 0, **nospec_opt})
+                )
         if r_w100["error"] is not None:
             errors_count += 1
         else:

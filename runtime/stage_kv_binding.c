@@ -2565,9 +2565,10 @@ static const char *SparkStageKvRestoreInconsistent(const SparkStageKvBinding *bi
 		return("page");
 	if ( binding->blocks[page].residency_reference_count == 0u )
 	{
+		uint32_t cow_index = owner->lane.sequence_position / binding->block_token_count;
 		mutable_page = cache->sequences[slot].mutable_logical_page_index;
-		if ( owner->lane.sequence_position % binding->block_token_count == 0u || mutable_page >= binding->logical_page_count || owner->page_count == 0u ||
-			binding->logical_pages[(uint64_t)slot * binding->pages_per_sequence + owner->page_count - 1u] != mutable_page ||
+		if ( owner->lane.sequence_position % binding->block_token_count == 0u || mutable_page >= binding->logical_page_count || cow_index >= owner->page_count ||
+			binding->logical_pages[(uint64_t)slot * binding->pages_per_sequence + cow_index] != mutable_page ||
 			binding->blocks[mutable_page].residency_reference_count == 0u )
 			return("copy-on-write");
 	}

@@ -570,6 +570,130 @@ int main(void)
 		CheckExact("commit_r6 ring", got_ring.data(), ref_ring.data(), got_ring.size());
 	}
 
+	{
+		const uint32_t wave_layers[3] = { 0u, 2u, 20u };
+		const uint32_t seq_counts[3] = { 12u, 24u, 20u };
+		const uint32_t seq_slots[3] = { 2u, 5u, 1u };
+		const uint32_t total_rows = seq_counts[0] + seq_counts[1] + seq_counts[2];
+		uint16_t *init_hidden = (uint16_t *)AllocFilled((uint64_t)total_rows * D41_HIDDEN * 2u, 1u, 0x4321u);
+		uint16_t *work_hidden = 0;
+		CHECK(cudaMalloc(&work_hidden, (uint64_t)total_rows * D41_HIDDEN * 2u));
+		std::vector<uint32_t> h_pos(total_rows), h_seq(total_rows), h_tok(total_rows), h_len(8u, 1u), h_beg = { 0u, 12u, 36u, 56u }, h_idx(total_rows), h_rec = { 5u, 1u, 2u };
+		uint32_t off = 0u;
+		for ( uint32_t s = 0u; s < 3u; ++s )
+		{
+			h_len[seq_slots[s]] = seq_counts[s];
+			for ( uint32_t k = 0u; k < seq_counts[s]; ++k )
+			{
+				h_pos[off + k] = k;
+				h_seq[off + k] = seq_slots[s];
+				h_tok[off + k] = 100u + off + k;
+				h_idx[off + k] = total_rows - 1u - (off + k);
+			}
+			off += seq_counts[s];
+		}
+		auto run_schedule_waves = [&](SparkStageRunnerStep &step, uint32_t rows, uint32_t src_off, std::vector<uint16_t> &hidden_out, std::vector<uint8_t> &rec_out)
+		{
+			reset_state();
+			CHECK(cudaMemcpy(work_hidden, init_hidden + (uint64_t)src_off * D41_HIDDEN, (uint64_t)rows * D41_HIDDEN * 2u, cudaMemcpyDeviceToDevice));
+			step.hidden_bf16 = work_hidden;
+			D41Cuda::Frame fr;
+			memset(&fr, 0, sizeof(fr));
+			REQ(D41Cuda::Begin(st, &step, 0, &fr) == SPARK_STATUS_OK, "WaveBegin");
+			uint32_t more = 1u;
+			while ( true )
+			{
+				REQ(D41Cuda::Wave(st, fr, &more) == SPARK_STATUS_OK, "WaveNext");
+				if ( more == 0u )
+					break;
+				for ( uint32_t li = 0u; li < 3u; ++li )
+					REQ(D41Schedule<D41Cuda>::Layer(st, fr, wave_layers[li]) == SPARK_STATUS_OK, "WaveLayer");
+				REQ(D41Cuda::WaveEnd(st, fr) == SPARK_STATUS_OK, "WaveEnd");
+			}
+			REQ(D41Cuda::End(st, fr, SPARK_STATUS_OK) == SPARK_STATUS_OK, "WaveStepEnd");
+			CHECK(cudaDeviceSynchronize());
+			hidden_out.resize((size_t)rows * D41_HIDDEN);
+			CHECK(cudaMemcpy(hidden_out.data(), work_hidden, hidden_out.size() * 2u, cudaMemcpyDeviceToHost));
+			rec_out.resize((size_t)8u * st->recurrent_bytes);
+			CHECK(cudaMemcpy(rec_out.data(), st->recurrent, rec_out.size(), cudaMemcpyDeviceToHost));
+		};
+		SparkStageRunnerStep packed;
+		memset(&packed, 0, sizeof(packed));
+		packed.rows = total_rows;
+		packed.sequences = 3u;
+		packed.commit = 1u;
+		packed.multiprocessors = (uint32_t)sms;
+		packed.positions = DevU32(h_pos);
+		packed.context_length = DevU32(h_len);
+		packed.sequence_of_row = DevU32(h_seq);
+		packed.sequence_row_begin = DevU32(h_beg);
+		packed.sequence_row_indices = DevU32(h_idx);
+		packed.recurrent_index = DevU32(h_rec);
+		packed.token_ids = DevU32(h_tok);
+		packed.route_fault = rfault;
+		packed.host_positions = h_pos.data();
+		packed.host_sequence_of_row = h_seq.data();
+		REQ(D41Cuda::GraphKey(st, &packed) == 0u, "TP4 packed prefill disables graph key");
+		std::vector<uint16_t> packed_hidden;
+		std::vector<uint8_t> packed_rec;
+		run_schedule_waves(packed, total_rows, 0u, packed_hidden, packed_rec);
+		uint32_t base = 0u;
+		for ( uint32_t s = 0u; s < 3u; ++s )
+		{
+			const uint32_t cnt = seq_counts[s], slot = seq_slots[s];
+			std::vector<uint32_t> sp(cnt), ss(cnt, slot), st_tok(cnt), sl(8u, 1u), sb = { 0u, cnt }, si(cnt), sr = { slot };
+			sl[slot] = cnt;
+			for ( uint32_t k = 0u; k < cnt; ++k )
+			{
+				sp[k] = k;
+				st_tok[k] = h_tok[base + k];
+				si[k] = k;
+			}
+			SparkStageRunnerStep single;
+			memset(&single, 0, sizeof(single));
+			single.rows = cnt;
+			single.sequences = 1u;
+			single.commit = 1u;
+			single.multiprocessors = (uint32_t)sms;
+			single.positions = DevU32(sp);
+			single.context_length = DevU32(sl);
+			single.sequence_of_row = DevU32(ss);
+			single.sequence_row_begin = DevU32(sb);
+			single.sequence_row_indices = DevU32(si);
+			single.recurrent_index = DevU32(sr);
+			single.token_ids = DevU32(st_tok);
+			single.route_fault = rfault;
+			single.host_positions = sp.data();
+			single.host_sequence_of_row = ss.data();
+			std::vector<uint16_t> single_hidden;
+			std::vector<uint8_t> single_rec;
+			run_schedule_waves(single, cnt, base, single_hidden, single_rec);
+			char label[96];
+			snprintf(label, sizeof(label), "TP4 5c packed prefill wave seq%u(rows=%u,slot=%u)==B1 hidden", s, cnt, slot);
+			CheckExact(label, packed_hidden.data() + (size_t)base * D41_HIDDEN, single_hidden.data(), (size_t)cnt * D41_HIDDEN);
+			REQ(memcmp(packed_rec.data() + (size_t)slot * st->recurrent_bytes, single_rec.data() + (size_t)slot * st->recurrent_bytes, st->recurrent_bytes) == 0,
+				"TP4 5c packed prefill recurrent exact");
+			cudaFree((void *)single.positions);
+			cudaFree((void *)single.context_length);
+			cudaFree((void *)single.sequence_of_row);
+			cudaFree((void *)single.sequence_row_begin);
+			cudaFree((void *)single.sequence_row_indices);
+			cudaFree((void *)single.recurrent_index);
+			cudaFree((void *)single.token_ids);
+			base += cnt;
+		}
+		cudaFree((void *)packed.positions);
+		cudaFree((void *)packed.context_length);
+		cudaFree((void *)packed.sequence_of_row);
+		cudaFree((void *)packed.sequence_row_begin);
+		cudaFree((void *)packed.sequence_row_indices);
+		cudaFree((void *)packed.recurrent_index);
+		cudaFree((void *)packed.token_ids);
+		cudaFree(work_hidden);
+		cudaFree(init_hidden);
+		printf("PASS TP4 5c packed multi-sequence prefill wave (12+24+20=56 rows, non-identity slots/order == B1 hidden+recurrent: 0 bit diffs)\n");
+	}
+
 	cudaFree(rfault);
 	printf("PASS dsv41 tp4 verify exact (P=40/125/200 linear r6/r8/r10/r12, tree r6/r10/r12, 5c B1==B8_lane0 row_inv=0, branching tree, commit r6 ring, select non-overlap)\n");
 	return 0;

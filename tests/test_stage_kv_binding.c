@@ -2534,6 +2534,67 @@ static void TestRecurrentWarmBatchReuseAndFastMiss(void)
 	printf("warm B8 batch reuse and fast miss: all 8 prompt checkpoints survive staged release, cross-slot restore skips state_store read, shared batch dedups reads, and unsaved miss returns NOT_FOUND without PENDING: ok\n");
 }
 
+static void TestMidBlockCowMultiPageRestore(void)
+{
+	TestStep a,reader,fill1,fill2,resume;
+	TestFinished finished = {0};
+	uint8_t expected[TEST_PAGE_BYTES],got[TEST_PAGE_BYTES];
+	uint32_t source,attempt;
+	SparkStatus status;
+	Open();
+	StepInit(&a,801u,0u,0u,3u);
+	StepPublish(&a,3u,0x91u);
+	StepStart(&a);
+	source = LanePage(0u,0u);
+	FillPage(source,0x6au);
+	PageBytes(source,expected);
+	assert(StepFinish(&a,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	StepInit(&reader,805u,1u,3u,4u);
+	StepPrefix(&reader,3u,0x91u);
+	assert(StepAdmit(&reader,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
+	assert(StepAdmit(&reader,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
+	ReleaseSequence(801u,0u);
+	WaitSavesIdle();
+	StepInit(&fill1,802u,0u,0u,8u);
+	StepRun(&fill1);
+	StepInit(&fill2,803u,1u,0u,8u);
+	while ( (status = StepAdmit(&fill2,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE)) == SPARK_STATUS_BUSY )
+		(void)SparkKvPageStoreWaitForTransfers(&BINDING.page_store);
+	assert(status == SPARK_STATUS_OK);
+	assert(StepAdmit(&fill2,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&fill2) == SPARK_STATUS_OK);
+	memset(&finished,0,sizeof(finished));
+	assert(StepFinish(&fill2,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	assert(SparkKvPageStoreWaitForTransfers(&BINDING.page_store) == SPARK_STATUS_OK);
+	ReleaseSequence(802u,0u);
+	ReleaseSequence(803u,1u);
+	assert((BINDING.blocks[source].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+	StepInit(&resume,804u,0u,3u,6u);
+	StepPrefix(&resume,3u,0x91u);
+	status = SPARK_STATUS_PENDING;
+	for (attempt=0u; attempt<1000u && (status == SPARK_STATUS_PENDING || status == SPARK_STATUS_BUSY); attempt++)
+	{
+		status = StepAdmit(&resume,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+		if ( status == SPARK_STATUS_BUSY )
+			(void)SparkKvPageStoreWaitForTransfers(&BINDING.page_store);
+		else if ( status == SPARK_STATUS_PENDING )
+			SleepMs(1u);
+	}
+	assert(status == SPARK_STATUS_OK);
+	assert(StepAdmit(&resume,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&resume) == SPARK_STATUS_OK);
+	assert(LanePage(0u,0u) != source);
+	assert(LanePage(0u,1u) != LanePage(0u,0u));
+	PageBytes(LanePage(0u,0u),got);
+	assert(memcmp(got,expected,sizeof(got)) == 0);
+	memset(&finished,0,sizeof(finished));
+	assert(StepFinish(&resume,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	ReleaseSequence(804u,0u);
+	Close();
+	printf("mid-block CoW multi-page restore: evicted sub-block prefix spanning two mutable pages restores cleanly without false CoW validation failure: ok\n");
+}
+
 static void RunScenarios(void)
 {
 	if ( POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD )
@@ -2578,6 +2639,7 @@ static void RunScenarios(void)
 	TestRecurrentLaneStateLazyAndTrim();
 	TestRecurrentStagedBounceAndStateTrim();
 	TestRecurrentWarmBatchReuseAndFastMiss();
+	TestMidBlockCowMultiPageRestore();
 	TestReleaseAfterFailedRun();
 }
 
