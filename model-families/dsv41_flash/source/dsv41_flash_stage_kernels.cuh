@@ -5503,16 +5503,18 @@ void D41SharedPartialsFusedKernel(const __grid_constant__ D41SharedPartialsDesc 
 	static_assert(OUT_DIM % ROWS_PER_BLK == 0u && MAX_WIDTH % 32u == 0u, "shared partials tile 16 outputs per block");
 	__shared__ __align__(16) uint16_t s_act[MAX_R][MAX_WIDTH];
 	const uint32_t source = blockIdx.x / BLKS_PER_SRC, o_base = (blockIdx.x - source * BLKS_PER_SRC) * ROWS_PER_BLK;
+	const uint32_t row_base = blockIdx.y * MAX_R, live = rows > row_base ? (rows - row_base < MAX_R ? rows - row_base : MAX_R) : 0u;
 	const uint32_t width = desc.width[source], octets = width >> 3u, s_blocks = width >> 5u;
 	LmDependentWait();
+	if ( live == 0u ) { LmDependentRelease(); return; }
 	const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * stride);
 	const uint8_t *scales = bytes + (uint64_t)rows * width;
-	const uint32_t total_oct = rows * octets;
+	const uint32_t total_oct = live * octets;
 	for ( uint32_t idx = threadIdx.x; idx < total_oct; idx += 256u )
 	{
-		const uint32_t r = idx / octets, q = idx - r * octets;
-		const float sc = __uint_as_float((uint32_t)scales[(uint64_t)r * s_blocks + (q >> 2u)] << 23u);
-		((uint4 *)s_act[r])[q] = D41DequantE4m3x8(D41LoadU8x8(bytes + (uint64_t)r * width + (uint64_t)q * 8u), sc);
+		const uint32_t r = idx / octets, q = idx - r * octets, gr = row_base + r;
+		const float sc = __uint_as_float((uint32_t)scales[(uint64_t)gr * s_blocks + (q >> 2u)] << 23u);
+		((uint4 *)s_act[r])[q] = D41DequantE4m3x8(D41LoadU8x8(bytes + (uint64_t)gr * width + (uint64_t)q * 8u), sc);
 	}
 	__syncthreads();
 	const uint32_t hw = threadIdx.x >> 4u, hl = threadIdx.x & 15u, o = o_base + hw;
@@ -5537,7 +5539,7 @@ void D41SharedPartialsFusedKernel(const __grid_constant__ D41SharedPartialsDesc 
 		}
 		#pragma unroll
 		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			if ( r < rows )
+			if ( r < live )
 			{
 				const uint4 a0 = *(const uint4 *)(s_act[r] + k);
 				const uint4 a1 = *(const uint4 *)(s_act[r] + k + 8u);
@@ -5560,7 +5562,7 @@ void D41SharedPartialsFusedKernel(const __grid_constant__ D41SharedPartialsDesc 
 	if ( hl == 0u )
 		#pragma unroll
 		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			if ( r < rows ) desc.out[source][(uint64_t)r * OUT_DIM + o] = LmFloatToBf16(acc[r]);
+			if ( r < live ) desc.out[source][(uint64_t)(row_base + r) * OUT_DIM + o] = LmFloatToBf16(acc[r]);
 	LmDependentRelease();
 }
 
