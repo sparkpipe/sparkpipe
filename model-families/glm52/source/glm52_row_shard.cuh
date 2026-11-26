@@ -31,7 +31,7 @@ static void GlmRowShareNorm(const GlmRowShare *row, const uint16_t *reduced, uin
 	uint16_t *own = residual + (uint64_t)row->first * dimension;
 	if ( row->count == 0u )
 		return;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<THREADS,uint16_t,ROUND_FIRST>), row->count, THREADS, (dimension + 8u) * sizeof(float), stream,
+	LM_LAUNCH_DEPENDENT((LmFusedResidualRmsNormKernel<THREADS,uint16_t,ROUND_FIRST>), row->count, THREADS, (dimension + 8u) * sizeof(float), stream,
 		reduced, own, weight, keep_residual != 0u ? own : (uint16_t *)0, normed, dimension, dimension, epsilon);
 }
 
