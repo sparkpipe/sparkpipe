@@ -1,0 +1,2 @@
++176
+dsv41_flash 5c prefill waves, mid-block CoW multi-page restore, and rais_bench endpoint-fallback prefix re-warm: split multi-sequence contiguous prefill waves per sequence in D41Schedule/D41Cuda for exact B1==B8 prefill invariance without decode/verify/single-stream overhead, fix SparkStageKvRestoreInconsistent CoW page index when sub-block resume spans multiple mutable pages, and re-warm cold prefix + B1 baseline in rais_bench when immediate_eos switches endpoints mid-benchmark.

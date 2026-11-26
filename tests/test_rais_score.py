@@ -947,6 +947,94 @@ class TestRaisPillar5AndStackBadges(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_bench_rewarms_prefix_after_immediate_eos_fallback(self) -> None:
+        cache_lock = threading.Lock()
+        cached_chat_prefixes: list[str] = []
+        warm_8k_chat_hits = {"hits": 0, "misses": 0}
+
+        class FallbackPrefixHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                import time
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                is_chat = self.path.endswith("/chat/completions")
+                if is_chat:
+                    text_in = "\n".join(str(m.get("content") or "") for m in (body.get("messages") or []))
+                else:
+                    text_in = str(body.get("prompt") or "")
+                is_turn2 = rais_bench.FOLLOWUP_TURN2.strip() in text_in
+                if not is_chat and is_turn2:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    item = {"choices": [{"text": "", "finish_reason": "stop"}], "usage": {"prompt_tokens": max(1, len(text_in) // 4), "completion_tokens": 0}}
+                    self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
+                if is_chat:
+                    with cache_lock:
+                        hit = any(text_in.startswith(p) and len(p) > 200 for p in cached_chat_prefixes)
+                        if is_turn2:
+                            if hit:
+                                warm_8k_chat_hits["hits"] += 1
+                            else:
+                                warm_8k_chat_hits["misses"] += 1
+                        if len(text_in) > 200:
+                            cached_chat_prefixes.append(text_in)
+                    time.sleep(0.002 if hit else 0.04)
+                else:
+                    time.sleep(0.01)
+                prompt_tokens = max(1, len(text_in) // 4) + (4 if is_chat else 0)
+                out_text = f"ok:{'chat' if is_chat else 'comp'}:{len(text_in)}"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                if is_chat:
+                    chunks = [
+                        {"choices": [{"delta": {"content": out_text[:6]}, "finish_reason": None}]},
+                        {"choices": [{"delta": {"content": out_text[6:]}, "finish_reason": "length"}], "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 2}},
+                    ]
+                else:
+                    chunks = [
+                        {"choices": [{"text": out_text[:6], "finish_reason": None}]},
+                        {"choices": [{"text": out_text[6:], "finish_reason": "length"}], "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 2}},
+                    ]
+                for item in chunks:
+                    self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
+                self.wfile.write(b"data: [DONE]\n\n")
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FallbackPrefixHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            parser = rais_bench.build_parser()
+            args = parser.parse_args([
+                "--base-url", url,
+                "--model", "deepseek-v4.1-flash",
+                "--hardware", "16x-gb10-1x100g",
+                "--tier", "fast",
+                "--endpoint", "auto",
+                "--max-batch", "8",
+                "--spec-toggle", "none",
+                "--no-b8-spec",
+            ])
+            rec = rais_bench.run_benchmark(args)
+            self.assertEqual(rec["endpoint"], "chat")
+            self.assertEqual(rec["endpoint_fallback"], "immediate_eos")
+            self.assertTrue(rec["gates"]["prefix_exact"])
+            self.assertTrue(rec["metrics"]["batch_invariant_exact"])
+            self.assertEqual(warm_8k_chat_hits["misses"], 1)
+            self.assertEqual(warm_8k_chat_hits["hits"], 1)
+            self.assertIsNotNone(rec["metrics"]["warm_8k_ttft_ms"])
+            self.assertLess(rec["metrics"]["warm_8k_ttft_ms"], 25.0)
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

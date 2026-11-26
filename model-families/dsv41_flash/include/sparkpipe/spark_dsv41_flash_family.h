@@ -42,6 +42,18 @@ static inline int32_t D41EngramIndex(uint32_t layer)
 	return layer == 1u ? 0 : layer == 14u ? 1 : -1;
 }
 
+template<class B, class = void>
+struct D41HasWaves
+{
+	static constexpr bool kValue = false;
+};
+
+template<class B>
+struct D41HasWaves<B, decltype((void)B::kWaves)>
+{
+	static constexpr bool kValue = B::kWaves;
+};
+
 template<class B>
 struct D41Schedule
 {
@@ -90,6 +102,16 @@ struct D41Schedule
 		return B::Begin(state, step, queue, frame);
 	}
 
+	static SparkStatus Wave(State *state, Frame &frame, uint32_t *more)
+	{
+		return B::Wave(state, frame, more);
+	}
+
+	static SparkStatus WaveEnd(State *state, Frame &frame)
+	{
+		return B::WaveEnd(state, frame);
+	}
+
 	static SparkStatus Layer(State *state, Frame &frame, uint32_t index)
 	{
 		SparkStatus status = B::LayerRows(state, frame, index);
@@ -110,8 +132,25 @@ struct D41Schedule
 		SparkStatus status = Begin(state, step, queue, &frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		for ( uint32_t index = 0u; index < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT && status == SPARK_STATUS_OK; ++index )
-			status = Layer(state, frame, index);
+		if constexpr ( D41HasWaves<B>::kValue )
+		{
+			uint32_t more = 1u;
+			while ( status == SPARK_STATUS_OK )
+			{
+				status = Wave(state, frame, &more);
+				if ( status != SPARK_STATUS_OK || more == 0u )
+					break;
+				for ( uint32_t index = 0u; index < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT && status == SPARK_STATUS_OK; ++index )
+					status = Layer(state, frame, index);
+				if ( status == SPARK_STATUS_OK )
+					status = WaveEnd(state, frame);
+			}
+		}
+		else
+		{
+			for ( uint32_t index = 0u; index < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT && status == SPARK_STATUS_OK; ++index )
+				status = Layer(state, frame, index);
+		}
 		return End(state, frame, status);
 	}
 };

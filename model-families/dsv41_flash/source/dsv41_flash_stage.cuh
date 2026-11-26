@@ -326,7 +326,7 @@ struct D41ModelState : CudaStageState
 	uint8_t *o_b_all, *o_b_all_scale;
 	float *c_kv, *c_score;
 	uint16_t *c_latent, *c_latent_store, *idx_key, *idx_pack_local, *idx_query, *idx_w_full;
-	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *fork_ratio2, *offset_ratio2, *row_lane, *row_ordinal, *tail_row_begin;
+	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *fork_ratio2, *offset_ratio2, *row_lane, *row_ordinal, *tail_row_begin, *wave_row_indices;
 	uint32_t tail_target, tail_first_position, compress_done, row_invariant, step_reach;
 	uint32_t local_attention, local_upper, landing_keys[2], landing_rows[2];
 	int16_t tap_output[D41_LAYERS];
@@ -3603,6 +3603,13 @@ static void D41TailRebase(D41ModelState *state, uint32_t rows)
 		state->block_mask += (uint64_t)rows * state->local_block_stride;
 }
 
+static __global__ void D41WaveRowIndicesKernel(uint32_t *__restrict__ indices, uint32_t count)
+{
+	const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( i < count )
+		indices[i] = i;
+}
+
 static SparkStatus D41TailStep(D41ModelState *state, const SparkStageRunnerStep *step, uint32_t first, SparkStageRunnerStep *tail,
 	SparkGpuStream stream)
 {
@@ -3657,6 +3664,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 	static constexpr bool kKeepRows = true;
 	static constexpr bool kTapPlan = true;
 	static constexpr bool kCheck = true;
+	static constexpr bool kWaves = true;
 	static constexpr uint32_t kTpDegree = D41_TP;
 
 	static const char *Tag(void)
@@ -3722,11 +3730,14 @@ struct D41Cuda : CudaStage<D41Cuda>
 
 	struct Frame
 	{
+		const SparkStageRunnerStep *root;
 		const SparkStageRunnerStep *step;
 		SparkGpuStream stream;
+		SparkStageRunnerStep wave_step;
 		SparkStageRunnerStep tail;
 		const SparkStageRunnerStep *current;
 		uint32_t shifted;
+		uint32_t wave_split, wave_next, wave_first, wave_seq, wave_active;
 		uint16_t *streams;
 		float *pre_head;
 		uint32_t *selected;
@@ -3734,16 +3745,41 @@ struct D41Cuda : CudaStage<D41Cuda>
 		float2 *rope_sc_full, *rope_sc_compress;
 	};
 
+	static uint32_t ContiguousPrefillWaves(const SparkStageRunnerStep *step)
+	{
+		uint32_t runs = 1u;
+		if ( step->commit == 0u || step->tree != 0u || step->sequences <= 1u ||
+			step->rows <= step->sequences || step->host_sequence_of_row == 0 )
+			return 0u;
+		for ( uint32_t row = 1u; row < step->rows; ++row )
+			if ( step->host_sequence_of_row[row] != step->host_sequence_of_row[row - 1u] )
+				runs++;
+		return runs == step->sequences ? 1u : 0u;
+	}
+
 	static SparkStatus Begin(D41ModelState *state, const SparkStageRunnerStep *step, void *stream_void, Frame *frame)
 	{
-		SparkGpuStream stream = (SparkGpuStream)stream_void;
-		const uint32_t rows = step->rows;
-		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots || state->kv_attached == 0u || step->token_ids == 0 )
+		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots || state->kv_attached == 0u || step->token_ids == 0 )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 ||
 			step->slot_offsets == 0 || step->parent_rows == 0) )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		frame->root = step;
+		frame->step = step;
+		frame->stream = (SparkGpuStream)stream_void;
+		frame->wave_split = ContiguousPrefillWaves(step);
+		frame->wave_next = 0u;
+		frame->wave_first = 0u;
+		frame->wave_seq = 0u;
+		frame->wave_active = 0u;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus BeginWave(D41ModelState *state, const SparkStageRunnerStep *step, Frame *frame)
+	{
+		SparkGpuStream stream = frame->stream;
+		const uint32_t rows = step->rows;
+		SparkStatus status = SPARK_STATUS_OK;
 		if ( state->dump != 0 )
 		{
 			SparkGpuCaptureStatus capturing = SPARK_GPU_CAPTURE_STATUS_NONE;
@@ -3757,7 +3793,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		status = D41StepReach(state, step);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( state->tap_first_row != 0 && state->tail_target != 0u && state->tap_reach < state->tail_target )
+		if ( frame->wave_split == 0u && state->tap_first_row != 0 && state->tail_target != 0u && state->tap_reach < state->tail_target )
 		{
 			const uint32_t first = state->tail_target - state->tap_reach;
 			*state->tap_first_row = first <= state->tail_first_position ? 0u :
@@ -3807,7 +3843,6 @@ struct D41Cuda : CudaStage<D41Cuda>
 				return status;
 		}
 		frame->step = step;
-		frame->stream = stream;
 		frame->streams = state->streams;
 		frame->pre_head = state->pre_head;
 		frame->selected = state->selected;
@@ -3818,6 +3853,62 @@ struct D41Cuda : CudaStage<D41Cuda>
 		frame->current = step;
 		frame->shifted = 0u;
 		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Wave(D41ModelState *state, Frame &frame, uint32_t *more)
+	{
+		if ( frame.wave_split == 0u )
+		{
+			if ( frame.wave_seq != 0u )
+			{
+				*more = 0u;
+				return SPARK_STATUS_OK;
+			}
+			frame.wave_seq = 1u;
+			frame.wave_first = 0u;
+			frame.wave_step = *frame.root;
+		}
+		else
+		{
+			if ( frame.wave_next >= frame.root->rows )
+			{
+				*more = 0u;
+				return SPARK_STATUS_OK;
+			}
+			const uint32_t first = frame.wave_next, seq_idx = frame.wave_seq;
+			uint32_t end = first + 1u;
+			while ( end < frame.root->rows && frame.root->host_sequence_of_row[end] == frame.root->host_sequence_of_row[first] )
+				++end;
+			const uint32_t count = end - first;
+			frame.wave_step = *frame.root;
+			frame.wave_step.rows = count;
+			frame.wave_step.sequences = 1u;
+			frame.wave_step.gather_context = 0u;
+			frame.wave_step.gather_sequence = 0u;
+			frame.wave_step.hidden_bf16 = frame.root->hidden_bf16 + (uint64_t)first * D41_HIDDEN;
+			frame.wave_step.positions = frame.root->positions + first;
+			frame.wave_step.sequence_of_row = frame.root->sequence_of_row + first;
+			frame.wave_step.sequence_row_begin = state->tail_row_begin;
+			frame.wave_step.sequence_row_indices = state->wave_row_indices;
+			frame.wave_step.recurrent_index = frame.root->sequence_of_row + first;
+			frame.wave_step.token_ids = frame.root->token_ids + first;
+			frame.wave_step.host_positions = frame.root->host_positions != 0 ? frame.root->host_positions + first : 0;
+			frame.wave_step.host_sequence_of_row = frame.root->host_sequence_of_row + first;
+			frame.wave_step.host_state_target = 0;
+			frame.wave_step.slots = frame.wave_step.positions;
+			frame.wave_step.host_slots = frame.wave_step.host_positions;
+			frame.wave_step.dispatch_row_offset = frame.root->dispatch_row_offset + first;
+			LM_LAUNCH((LmDenseRowOffsetsKernel), 1u, 1u, 0, frame.stream, state->tail_row_begin, count);
+			LM_LAUNCH((D41WaveRowIndicesKernel), (count + 255u) / 256u, 256u, 0, frame.stream, state->wave_row_indices, count);
+			frame.wave_first = first;
+			frame.wave_next = end;
+			frame.wave_seq = seq_idx + 1u;
+		}
+		*more = 1u;
+		const SparkStatus status = BeginWave(state, &frame.wave_step, &frame);
+		if ( status == SPARK_STATUS_OK )
+			frame.wave_active = 1u;
+		return status;
 	}
 
 	static SparkStatus WholeRows(D41ModelState *state, SparkGpuStream stream)
@@ -4014,7 +4105,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 			state->services->layer_done(state->services->context, index);
 	}
 
-	static SparkStatus End(D41ModelState *state, Frame &frame, SparkStatus status)
+	static SparkStatus EndWave(D41ModelState *state, Frame &frame, SparkStatus status)
 	{
 		const SparkStageRunnerStep *step = frame.step;
 		SparkGpuStream stream = frame.stream;
@@ -4049,6 +4140,22 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( D41_ENGRAM_DISK )
 			D41NgramHistory(state, step, stream);
 		return D41Launched();
+	}
+
+	static SparkStatus WaveEnd(D41ModelState *state, Frame &frame)
+	{
+		frame.wave_active = 0u;
+		return EndWave(state, frame, SPARK_STATUS_OK);
+	}
+
+	static SparkStatus End(D41ModelState *state, Frame &frame, SparkStatus status)
+	{
+		if ( frame.wave_active != 0u )
+		{
+			frame.wave_active = 0u;
+			return EndWave(state, frame, status);
+		}
+		return status;
 	}
 
 	static SparkStatus Engram(D41ModelState *state, Frame &frame, uint32_t which)
@@ -4264,7 +4371,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( state->taps == 0u || state->tap_output[index] < 0 )
 			return SPARK_STATUS_OK;
 		const uint32_t rows = frame.current->rows, own = state->own_rows;
-		const uint64_t offset = (uint64_t)frame.shifted * state->tap_stride + (uint64_t)state->tap_output[index] * D41_HIDDEN;
+		const uint64_t offset = (uint64_t)(frame.wave_first + frame.shifted) * state->tap_stride + (uint64_t)state->tap_output[index] * D41_HIDDEN;
 		const dim3 grid((D41_HIDDEN + D41_THREADS - 1u) / D41_THREADS, own != 0u ? own : rows);
 		SparkStatus status;
 		if ( own == 0u )
@@ -4437,6 +4544,7 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->length_ratio2, s * 4u }, { (void **)&state->length_ratio1, s * 4u },
 		{ (void **)&state->fork_ratio2, r * 4u }, { (void **)&state->offset_ratio2, r * 4u },
 		{ (void **)&state->row_lane, r * 4u }, { (void **)&state->row_ordinal, r * 4u }, { (void **)&state->tail_row_begin, 2u * 4u },
+		{ (void **)&state->wave_row_indices, r * 4u },
 		{ (void **)&state->selected, r * D41_INDEX_TOPK * 4u },
 		{ (void **)&state->block_mask, r * state->local_block_stride },
 		{ (void **)&state->verify_window, (uint64_t)D41_LAYERS * D41_VERIFY_ROWS * D41_HEAD_DIM * 2u },
@@ -5531,6 +5639,8 @@ inline SparkStatus D41Cuda::Upload(D41ModelState *state)
 inline uint32_t D41Cuda::GraphKey(void *model, const SparkStageRunnerStep *step)
 {
 	(void)model;
+	if ( step->commit != 0u && step->sequences > 1u && step->rows > step->sequences )
+		return 0u;
 	return step->commit == 0u && step->last_rows_only == 0u && step->sequences == 1u && step->rows > 1u && step->rows <= D41_VERIFY_ROWS ? 2u : 1u;
 }
 
