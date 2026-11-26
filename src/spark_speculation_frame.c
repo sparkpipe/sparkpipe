@@ -4,8 +4,7 @@
 
 static const uint16_t SparkSpeculationFrameCandidates[] =
 {
-	1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u, 19u, 23u, 27u, 31u, 39u, 47u, 55u, 63u,
-	79u, 95u, 111u, 127u, 159u, 191u, 223u, 255u
+	1u, 2u, 3u, 5u, 7u, 11u, 15u, 23u, 31u, 47u, 63u, 95u, 127u, 191u, 255u
 };
 
 static uint32_t SparkSpeculationFrameLog2Ceil(uint32_t value)
@@ -146,12 +145,16 @@ float SparkSpeculationFrameExpected(const SparkSpeculationHazard *engine, const 
 	return(expected);
 }
 
-static void SparkSpeculationCostObserve(SparkSpeculationCost *cost, float rows, float ns)
+static void SparkSpeculationCostUpdate(SparkSpeculationCost *cost, float rows, float ns, float weight)
 {
-	const float weight = cost->samples == 0.0f ? 1.0f : SPARK_SPECULATION_FRAME_COST_WEIGHT;
 	cost->ns += weight * (ns - cost->ns);
 	cost->rows += weight * (rows - cost->rows);
 	cost->samples += 1.0f;
+}
+
+static void SparkSpeculationCostObserve(SparkSpeculationCost *cost, float rows, float ns)
+{
+	SparkSpeculationCostUpdate(cost,rows,ns,cost->samples == 0.0f ? 1.0f : SPARK_SPECULATION_FRAME_COST_WEIGHT);
 }
 
 static uint32_t SparkSpeculationCostUsable(const SparkSpeculationCost *cost, uint64_t observed, uint32_t fresh)
@@ -226,6 +229,53 @@ void SparkSpeculationFrameObserveBatchStep(SparkSpeculationFrameModel *model, ui
 	SparkSpeculationCostObserve(&model->batch_step[SparkSpeculationFrameContextBucket(context)][lanes - 1u],(float)lanes,(float)ns / (float)steps);
 }
 
+void SparkSpeculationFrameObserveBatchFrame(SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t rows, uint32_t context, uint64_t ns)
+{
+	uint32_t bucket;
+	SparkSpeculationCost *cost;
+	float step;
+	if ( model == 0 || lanes < 2u || lanes > SPARK_SPECULATION_FRAME_BATCH_LANES || rows <= lanes || ns == 0u )
+		return;
+	bucket = SparkSpeculationFrameContextBucket(context);
+	if ( model->batch_lanes[bucket] != lanes )
+	{
+		memset(model->batch_frame[bucket],0,sizeof(model->batch_frame[bucket]));
+		model->batch_observed[bucket] = 0u;
+		model->batch_lanes[bucket] = lanes;
+	}
+	model->batch_observed[bucket]++;
+	step = SparkSpeculationFrameBatchStepCost(model,lanes,context);
+	if ( step == 0.0f )
+		step = SparkSpeculationFrameTokenCost(model,context);
+	if ( model->batch_observed[bucket] == 1u && step > 0.0f )
+		model->batch_frame[bucket][SparkSpeculationFrameRowBucket(lanes)] =
+			(SparkSpeculationCost){ (float)ns > step ? 0.5f * (step + (float)ns) : step, (float)lanes, 1.0f, 1u };
+	cost = &model->batch_frame[bucket][SparkSpeculationFrameRowBucket(rows)];
+	if ( SparkSpeculationCostUsable(cost,model->batch_observed[bucket],1u) == 0u )
+		cost->samples = 0.0f;
+	SparkSpeculationCostUpdate(cost,(float)rows,(float)ns,cost->samples == 0.0f ? 1.0f : (float)ns > cost->ns ? 0.5f : 0.25f);
+	cost->seen = model->batch_observed[bucket];
+}
+
+static uint32_t SparkSpeculationFrameBatchSlot(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context)
+{
+	const uint32_t bucket = SparkSpeculationFrameContextBucket(context);
+	uint32_t distance;
+	for (distance=0u; model != 0 && lanes >= 2u && lanes <= SPARK_SPECULATION_FRAME_BATCH_LANES && distance<SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS; distance++)
+	{
+		if ( bucket + distance < SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS && model->batch_lanes[bucket + distance] == lanes && model->batch_observed[bucket + distance] != 0u )
+			return(bucket + distance);
+		if ( distance != 0u && distance <= bucket && model->batch_lanes[bucket - distance] == lanes && model->batch_observed[bucket - distance] != 0u )
+			return(bucket - distance);
+	}
+	return(SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS);
+}
+
+uint32_t SparkSpeculationFrameBatchObserved(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context)
+{
+	return(SparkSpeculationFrameBatchSlot(model,lanes,context) < SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS ? 1u : 0u);
+}
+
 float SparkSpeculationFrameBatchStepCost(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context)
 {
 	const uint32_t bucket = SparkSpeculationFrameContextBucket(context);
@@ -289,18 +339,12 @@ float SparkSpeculationFrameCost(const SparkSpeculationFrameModel *model, uint32_
 		return(0.0f);
 	for (distance=0u; distance<SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS; distance++)
 	{
-		if ( bucket + distance < SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS )
-		{
-			cost = SparkSpeculationFrameRowCost(model->frame[bucket + distance],(float)rows,model->observed[bucket + distance]);
-			if ( cost != 0.0f )
-				return(cost);
-		}
-		if ( distance != 0u && distance <= bucket )
-		{
-			cost = SparkSpeculationFrameRowCost(model->frame[bucket - distance],(float)rows,model->observed[bucket - distance]);
-			if ( cost != 0.0f )
-				return(cost);
-		}
+		if ( bucket + distance < SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS &&
+			(cost = SparkSpeculationFrameRowCost(model->frame[bucket + distance],(float)rows,model->observed[bucket + distance])) != 0.0f )
+			return(cost);
+		if ( distance != 0u && distance <= bucket &&
+			(cost = SparkSpeculationFrameRowCost(model->frame[bucket - distance],(float)rows,model->observed[bucket - distance])) != 0.0f )
+			return(cost);
 	}
 	single = SparkSpeculationFrameSingleCost(model,context);
 	return(single * (1.0f + (float)(rows - 1u) / 8.0f));
@@ -318,13 +362,32 @@ float SparkSpeculationFrameBatchSpread(const SparkSpeculationFrameModel *model, 
 
 float SparkSpeculationFrameBatchCost(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t rows, uint32_t context)
 {
-	float cost = SparkSpeculationFrameCost(model,rows,context),step;
+	const uint32_t slot = lanes >= 2u && rows >= lanes ? SparkSpeculationFrameBatchSlot(model,lanes,context) : SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS;
+	float cost,step;
 	if ( lanes < 2u )
+		return(SparkSpeculationFrameCost(model,rows,context));
+	if ( slot < SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS &&
+		((cost = SparkSpeculationFrameRowEstimate(model->batch_frame[slot],(float)rows,model->batch_observed[slot],1u)) != 0.0f ||
+		 (cost = SparkSpeculationFrameRowEstimate(model->batch_frame[slot],(float)rows,model->batch_observed[slot],0u)) != 0.0f) )
 		return(cost);
+	cost = SparkSpeculationFrameCost(model,rows,context);
 	if ( cost != 0.0f )
 		return(cost + SparkSpeculationFrameBatchSpread(model,lanes,context));
 	step = SparkSpeculationFrameBatchStepCost(model,lanes,context);
-	return(step != 0.0f && rows >= lanes ? step * (1.0f + (float)(rows - lanes) / 8.0f) : 0.0f);
+	return(step != 0.0f && rows >= lanes ? step * (1.0f + (float)(rows - lanes) / (float)(2u * lanes)) : 0.0f);
+}
+
+float SparkSpeculationFrameScore(float rate, float cost, float plain_ns, uint32_t lanes)
+{
+	float excess;
+	if ( !(rate > 0.0f) )
+		return(0.0f);
+	if ( !(plain_ns > 0.0f) || cost <= plain_ns )
+		return(rate);
+	if ( lanes > 1u )
+		return(rate / (0.25f + 0.75f * cost / plain_ns));
+	excess = cost / plain_ns - 2.0f;
+	return(excess > 0.0f ? rate / (1.0f + 0.25f * excess * excess) : rate);
 }
 
 static uint32_t SparkSpeculationFrameFreeDrafts(const SparkSpeculationFrameModel *model, const SparkSpeculationFrameRequest *request, uint32_t lanes,
@@ -365,11 +428,22 @@ static void SparkSpeculationFrameProbe(const SparkSpeculationFrameModel *model, 
 	choice->frame_ns = cost;
 }
 
+const SparkSpeculationHazard *SparkSpeculationFrameClassHazard(const SparkSpeculationFrameModel *model, uint32_t frame_class, uint32_t inherit)
+{
+	uint32_t base = frame_class >= SPARK_SPECULATION_FRAME_MATCH_CLASSES ? SPARK_SPECULATION_FRAME_MATCH_CLASSES : 0u, fallback = frame_class;
+	if ( inherit != 0u && frame_class < 2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES && model->classes[frame_class].frames == 0u )
+		while ( fallback > base )
+			if ( model->classes[--fallback].frames != 0u )
+				return(&model->classes[fallback]);
+	return(&model->classes[frame_class]);
+}
+
 void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const SparkSpeculationHazard *request_hazard,
 	const SparkSpeculationFrameRequest *request, SparkSpeculationFrameChoice *choice)
 {
 	const SparkSpeculationHazard *engine_hazard;
-	float best_rate = 0.0f,expected,cost;
+	const uint32_t candidate_count = (uint32_t)(sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]));
+	float best_score = 0.0f,expected,cost,plain_ns;
 	uint32_t index,drafts,feasible,pass,lanes,frame_class;
 	memset(choice,0,sizeof(*choice));
 	if ( model == 0 || request == 0 || request->feasible == 0u )
@@ -378,23 +452,11 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 	choice->chain_token_ns = SparkSpeculationFrameTokenCost(model,request->context);
 	if ( choice->chain_token_ns == 0.0f && request->base_rows == 0u )
 		return;
-	frame_class = SparkSpeculationFrameClass(request->match_length,request->sampled);
-	engine_hazard = &model->classes[frame_class];
-	if ( engine_hazard->frames == 0u && feasible > 8u )
-	{
-		const uint32_t base_class = request->sampled != 0u ? SPARK_SPECULATION_FRAME_MATCH_CLASSES : 0u;
-		uint32_t fallback = frame_class;
-		while ( fallback > base_class )
-		{
-			fallback--;
-			if ( model->classes[fallback].frames != 0u )
-			{
-				engine_hazard = &model->classes[fallback];
-				break;
-			}
-		}
-	}
 	lanes = request->lanes > 1u ? request->lanes : 1u;
+	frame_class = SparkSpeculationFrameClass(request->match_length,request->sampled);
+	engine_hazard = SparkSpeculationFrameClassHazard(model,frame_class,lanes == 1u && feasible > 8u ? 1u : 0u);
+	if ( engine_hazard != &model->classes[frame_class] && feasible > SPARK_SPECULATION_FRAME_PROBE_DRAFTS )
+		feasible = SPARK_SPECULATION_FRAME_PROBE_DRAFTS;
 	if ( engine_hazard->frames == 0u )
 	{
 		SparkSpeculationFrameProbe(model,engine_hazard,request_hazard,request,lanes,feasible,choice);
@@ -402,31 +464,32 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 	}
 	if ( request_hazard != 0 && request->proven_drafts != 0u && SPARK_SPECULATION_FRAME_GROWTH * request->proven_drafts < feasible )
 		feasible = SPARK_SPECULATION_FRAME_GROWTH * request->proven_drafts;
+	plain_ns = request->base_rows != 0u ? SparkSpeculationFrameBatchCost(model,lanes,request->base_rows + 1u,request->context) : choice->chain_token_ns;
 	for (pass=request->minimum != 0u ? 0u : 1u; pass<2u && choice->drafts == 0u; pass++)
-		for (index=0u; index<=sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]); index++)
+		for (index=0u; index<=candidate_count; index++)
 		{
-			drafts = index < sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]) ? SparkSpeculationFrameCandidates[index] : feasible;
+			float rate,score;
+			if ( index == candidate_count && choice->drafts != 0u && feasible > 3u )
+				continue;
+			drafts = index < candidate_count ? SparkSpeculationFrameCandidates[index] : feasible;
 			if ( drafts > feasible || (pass == 0u && drafts < request->minimum) )
 				continue;
 			cost = SparkSpeculationFrameBatchCost(model,lanes,request->base_rows + drafts + 1u,request->context);
 			if ( cost == 0.0f || (request->cost_cap_ns != 0.0f && cost > request->cost_cap_ns) )
 				continue;
 			expected = SparkSpeculationFrameExpected(engine_hazard,request_hazard,drafts);
-			if ( (request->base_tokens + expected) / cost > best_rate )
+			rate = (request->base_tokens + expected) / cost;
+			if ( request->base_rows != 0u ? plain_ns != 0.0f && rate * plain_ns <= request->base_tokens + 1.0f : rate * choice->chain_token_ns < SPARK_SPECULATION_FRAME_MARGIN )
+				continue;
+			score = SparkSpeculationFrameScore(rate,cost,plain_ns,lanes);
+			if ( score > best_score )
 			{
-				best_rate = (request->base_tokens + expected) / cost;
+				best_score = score;
 				choice->drafts = drafts;
 				choice->expected_tokens = expected;
 				choice->frame_ns = cost;
 			}
 		}
-	cost = request->base_rows != 0u ? SparkSpeculationFrameBatchCost(model,lanes,request->base_rows + 1u,request->context) : 0.0f;
-	if ( request->base_rows != 0u ? cost != 0.0f && best_rate * cost <= request->base_tokens + 1.0f : best_rate * choice->chain_token_ns < SPARK_SPECULATION_FRAME_MARGIN )
-	{
-		choice->drafts = 0u;
-		choice->expected_tokens = 0.0f;
-		choice->frame_ns = 0.0f;
-	}
 	if ( choice->drafts != 0u && request_hazard != 0 && request->proven_drafts == 0u )
 		SparkSpeculationFrameProbe(model,engine_hazard,request_hazard,request,lanes,choice->drafts,choice);
 }

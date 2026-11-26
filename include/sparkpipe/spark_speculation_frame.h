@@ -47,7 +47,10 @@ typedef struct SparkSpeculationFrameModel
 	SparkSpeculationCost token[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 	SparkSpeculationCost single[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 	SparkSpeculationCost batch_step[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS][SPARK_SPECULATION_FRAME_BATCH_LANES];
+	SparkSpeculationCost batch_frame[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS][SPARK_SPECULATION_FRAME_ROW_BUCKETS];
 	uint64_t observed[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
+	uint64_t batch_observed[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
+	uint32_t batch_lanes[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 } SparkSpeculationFrameModel;
 
 typedef struct SparkSpeculationFrameRequest
@@ -92,9 +95,13 @@ float SparkSpeculationFrameCost(const SparkSpeculationFrameModel *model, uint32_
 float SparkSpeculationFrameTokenCost(const SparkSpeculationFrameModel *model, uint32_t context);
 float SparkSpeculationFrameSingleCost(const SparkSpeculationFrameModel *model, uint32_t context);
 void SparkSpeculationFrameObserveBatchStep(SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t steps, uint32_t context, uint64_t ns);
+void SparkSpeculationFrameObserveBatchFrame(SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t rows, uint32_t context, uint64_t ns);
+uint32_t SparkSpeculationFrameBatchObserved(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context);
 float SparkSpeculationFrameBatchStepCost(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context);
 float SparkSpeculationFrameBatchSpread(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t context);
 float SparkSpeculationFrameBatchCost(const SparkSpeculationFrameModel *model, uint32_t lanes, uint32_t rows, uint32_t context);
+float SparkSpeculationFrameScore(float rate, float cost, float plain_ns, uint32_t lanes);
+const SparkSpeculationHazard *SparkSpeculationFrameClassHazard(const SparkSpeculationFrameModel *model, uint32_t frame_class, uint32_t inherit);
 void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const SparkSpeculationHazard *request_hazard,
 	const SparkSpeculationFrameRequest *request, SparkSpeculationFrameChoice *choice);
 

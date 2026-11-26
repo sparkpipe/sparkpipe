@@ -5139,8 +5139,8 @@ static void TestScenarioLongVerify(const SparkModelResidentDeployment *deploymen
 		SparkModelBatchEngineDestroy(engine);
 	}
 	{
-		uint32_t pass,strides[2];
-		for (pass=0u; pass<2u; pass++)
+		uint32_t pass,strides[3];
+		for (pass=0u; pass<3u; pass++)
 		{
 			SparkModelBatchSubmitRequest request;
 			SparkModelBatchRequestHandle handle = 0u;
@@ -5152,8 +5152,8 @@ static void TestScenarioLongVerify(const SparkModelResidentDeployment *deploymen
 				return;
 			MockResidentClientSetScript(script,512u);
 			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
-			MockResidentClientSetRowCost(10000u);
-			if ( pass == 1u )
+			MockResidentClientSetRowCost(pass == 0u ? 250u : 10000u);
+			if ( pass == 2u )
 			{
 				memset(&request,0,sizeof(request));
 				request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
@@ -5169,13 +5169,14 @@ static void TestScenarioLongVerify(const SparkModelResidentDeployment *deploymen
 				TestDriveUntilTerminal(engine,&state,1u,4000u);
 			}
 			TestSubmitPrompt(engine,1u,923u,120u,script,124u);
-			TestDriveUntilTerminal(engine,&state,1u + pass,4000u);
+			TestDriveUntilTerminal(engine,&state,1u + (pass == 2u ? 1u : 0u),4000u);
 			CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,124u,120u) != 0u,"long verify: a copy at either priority emits exactly the greedy stream");
 			strides[pass] = MockResidentClientTakeVerifyMaxStride();
 			SparkModelBatchEngineDestroy(engine);
 		}
-		CHECK(strides[0] > 32u,"long verify: a request at the default priority verifies frames longer than eight chained tokens cost");
-		CHECK(strides[1] != 0u && strides[1] <= SPARK_SPECULATION_FRAME_PROBE_DRAFTS + 1u,"long verify: a request below a served foreground priority keeps its frames priced within eight chained tokens");
+		CHECK(strides[0] > 32u,"long verify: a memory-bound copy at default priority scales past 32-row frames");
+		CHECK(strides[1] != 0u && strides[1] <= SPARK_SPECULATION_FRAME_PROBE_DRAFTS + 1u,"long verify: steep per-row verify cost keeps frame stride V-efficient");
+		CHECK(strides[2] != 0u && strides[2] <= SPARK_SPECULATION_FRAME_PROBE_DRAFTS + 1u,"long verify: a request below a served foreground priority keeps its frames priced within eight chained tokens");
 	}
 	script[124u + 40u] = 6100u;
 	MockResidentClientReset();
