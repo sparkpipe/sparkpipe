@@ -1,0 +1,2 @@
++1381
+qwen3.8-flash and muse-glimmer-30b live 5c batch invariance and qwen3.8-flash BF16 MoE/HC performance: multi-sequence local prefill attention plans (QwenPrefillSeqPlan, GemmaPrefillSeqPlan) for 0-ULP cold+warm B1==B8 prefill invariance; per-target Split-K multi-projection dispatch for Muse TP16 qkv(288)+gate(256); fused BF16 MoE skinny (count 1/2/4 specialized), grouped Tensor Core MMA W1W3Act/W2, and fused SharedDownFinalize kernels; Split-K HC DownGateInject and 3-stage/L2-tiled HC DownGateInjectMma/UpMixMma kernels.

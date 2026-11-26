@@ -1366,19 +1366,19 @@ static inline SparkGpuError LmDeltaRuleChunkLaunch(uint8_t *state_pool, uint32_t
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if constexpr ( (VALUE_DIM % 16u) == 0u && VALUE_DIM > 16u && (KEY_DIM % 64u) == 0u )
 	{
-		if ( (uint64_t)sequences * key_heads <= 8u )
+		if ( (uint64_t)key_heads <= 8u )
 			return(LmDeltaRuleChunkDispatch<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State,16u,256u>(state_pool,slot_bytes,state_index,sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,
 				forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices,stream));
 	}
 	if constexpr ( (VALUE_DIM % 32u) == 0u && VALUE_DIM > 32u && (KEY_DIM % 32u) == 0u )
 	{
-		if ( (uint64_t)sequences * key_heads <= 12u )
+		if ( (uint64_t)key_heads <= 12u )
 			return(LmDeltaRuleChunkDispatch<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State,32u,256u>(state_pool,slot_bytes,state_index,sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,
 				forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices,stream));
 	}
 	if constexpr ( (VALUE_DIM % 64u) == 0u && VALUE_DIM > 64u && (KEY_DIM % 16u) == 0u )
 	{
-		if ( (uint64_t)sequences * key_heads <= 24u )
+		if ( (uint64_t)key_heads <= 24u )
 			return(LmDeltaRuleChunkDispatch<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State,64u,256u>(state_pool,slot_bytes,state_index,sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,
 				forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices,stream));
 	}

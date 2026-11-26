@@ -513,26 +513,46 @@ static void GemmaAttnPrepStoreLocalKernel(const uint16_t *__restrict__ gathered,
 	LmDependentRelease();
 }
 
+#define GM_PREFILL_MAX_SEQS 64u
+
+typedef struct GemmaPrefillSeqPlan
+{
+	uint32_t count;
+	uint32_t total_prior;
+	uint32_t total_peer;
+	uint32_t seq_id[GM_PREFILL_MAX_SEQS];
+	uint32_t row_begin[GM_PREFILL_MAX_SEQS];
+	uint32_t row_len[GM_PREFILL_MAX_SEQS];
+	uint32_t old_ctx[GM_PREFILL_MAX_SEQS];
+	uint32_t win_begin[GM_PREFILL_MAX_SEQS];
+	uint32_t b0[GM_PREFILL_MAX_SEQS];
+	uint32_t prior_off[GM_PREFILL_MAX_SEQS];
+	uint32_t prior_keys[GM_PREFILL_MAX_SEQS];
+	uint32_t peer_off[GM_PREFILL_MAX_SEQS];
+	uint32_t peer_keys[GM_PREFILL_MAX_SEQS];
+}
+GemmaPrefillSeqPlan;
+
 template<class Kv, uint32_t KVH, uint32_t HD>
 __global__ __launch_bounds__(GM_THREADS, 2)
-static void GemmaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row, uint32_t win_begin, uint32_t prior_keys,
-	uint32_t kv_first, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
+static void GemmaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row,
+	const __grid_constant__ GemmaPrefillSeqPlan plan, uint32_t kv_first, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t HD_V = HD >> 3u;
 	constexpr uint32_t KV_V = KVH * HD_V;
-	const uint32_t k_idx = blockIdx.x, lh = blockIdx.y;
+	const uint32_t k_idx = blockIdx.x, lh = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
-	if ( k_idx < prior_keys && lh < local_kvh )
+	if ( s < plan.count && k_idx < plan.prior_keys[s] && lh < local_kvh )
 	{
-		const uint32_t seq = __ldg(sequence_of_row);
-		const uint32_t pos = win_begin + k_idx;
+		const uint32_t seq = plan.count == 1u ? __ldg(sequence_of_row) : plan.seq_id[s];
+		const uint32_t pos = plan.win_begin[s] + k_idx;
 		const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, seq, pos, 0u, LM_KV_ACCESS_READ);
 		if ( slot != 0 )
 		{
 			const uint32_t kh = kv_first + lh;
 			const uint4 *ks = (const uint4 *)slot + kh * HD_V;
 			const uint4 *vs = (const uint4 *)slot + KV_V + kh * HD_V;
-			uint4 *kd = (uint4 *)kv_prior + (((uint64_t)lh * prior_keys + k_idx) * 2u) * HD_V;
+			uint4 *kd = (uint4 *)kv_prior + (((uint64_t)lh * plan.total_prior + (plan.prior_off[s] + k_idx)) * 2u) * HD_V;
 			uint4 *vd = kd + HD_V;
 			for ( uint32_t c = threadIdx.x; c < HD_V; c += GM_THREADS )
 			{
@@ -546,35 +566,40 @@ static void GemmaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__re
 
 template<class Kv, uint32_t KVH, uint32_t HD>
 __global__ __launch_bounds__(GM_THREADS, 2)
-static void GemmaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row, uint32_t win_begin, uint32_t old_ctx,
-	uint32_t b0, uint32_t max_peer_keys, uint32_t rank_heads, uint32_t group, uint32_t local_kvh, uint64_t a2a_stride_bytes, uint8_t *__restrict__ send_bytes)
+static void GemmaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row,
+	const __grid_constant__ GemmaPrefillSeqPlan plan, uint32_t rank_heads, uint32_t group, uint32_t local_kvh,
+	uint64_t a2a_stride_bytes, uint8_t *__restrict__ send_bytes)
 {
 	constexpr uint32_t HD_V = HD >> 3u;
 	constexpr uint32_t KV_V = KVH * HD_V;
-	const uint32_t idx = blockIdx.x, peer = blockIdx.y;
-	const uint32_t degree = kv_view.shard.degree, grain = kv_view.shard.grain, my_rank = kv_view.shard.rank;
-	const uint32_t first_b = b0 + ((my_rank + degree - (b0 % degree)) % degree);
-	const uint32_t pos = (first_b + (idx / grain) * degree) * grain + (idx % grain);
+	const uint32_t idx = blockIdx.x, peer = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
-	if ( idx < max_peer_keys && peer < degree && pos >= win_begin && pos < old_ctx )
+	if ( s < plan.count && idx < plan.peer_keys[s] && peer < kv_view.shard.degree )
 	{
-		const uint32_t seq = __ldg(sequence_of_row);
-		const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, seq, pos, 0u, LM_KV_ACCESS_READ);
-		if ( slot != 0 )
+		const uint32_t degree = kv_view.shard.degree, grain = kv_view.shard.grain, my_rank = kv_view.shard.rank;
+		const uint32_t s_b0 = plan.b0[s];
+		const uint32_t first_b = s_b0 + ((my_rank + degree - (s_b0 % degree)) % degree);
+		const uint32_t pos = (first_b + (idx / grain) * degree) * grain + (idx % grain);
+		if ( pos >= plan.win_begin[s] && pos < plan.old_ctx[s] )
 		{
-			const uint32_t peer_kv_first = (peer * rank_heads) / group;
-			uint4 *peer_dst = (uint4 *)(send_bytes + (uint64_t)peer * a2a_stride_bytes);
-			for ( uint32_t lh = 0u; lh < local_kvh; ++lh )
+			const uint32_t seq = plan.count == 1u ? __ldg(sequence_of_row) : plan.seq_id[s];
+			const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, seq, pos, 0u, LM_KV_ACCESS_READ);
+			if ( slot != 0 )
 			{
-				const uint32_t kh = peer_kv_first + lh;
-				const uint4 *ks = (const uint4 *)slot + kh * HD_V;
-				const uint4 *vs = (const uint4 *)slot + KV_V + kh * HD_V;
-				uint4 *kd = peer_dst + (((uint64_t)lh * max_peer_keys + idx) * 2u) * HD_V;
-				uint4 *vd = kd + HD_V;
-				for ( uint32_t c = threadIdx.x; c < HD_V; c += GM_THREADS )
+				const uint32_t peer_kv_first = (peer * rank_heads) / group;
+				uint4 *peer_dst = (uint4 *)(send_bytes + (uint64_t)peer * a2a_stride_bytes);
+				for ( uint32_t lh = 0u; lh < local_kvh; ++lh )
 				{
-					kd[c] = __ldg(ks + c);
-					vd[c] = __ldg(vs + c);
+					const uint32_t kh = peer_kv_first + lh;
+					const uint4 *ks = (const uint4 *)slot + kh * HD_V;
+					const uint4 *vs = (const uint4 *)slot + KV_V + kh * HD_V;
+					uint4 *kd = peer_dst + (((uint64_t)lh * plan.total_peer + (plan.peer_off[s] + idx)) * 2u) * HD_V;
+					uint4 *vd = kd + HD_V;
+					for ( uint32_t c = threadIdx.x; c < HD_V; c += GM_THREADS )
+					{
+						kd[c] = __ldg(ks + c);
+						vd[c] = __ldg(vs + c);
+					}
 				}
 			}
 		}
@@ -584,25 +609,29 @@ static void GemmaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__rest
 
 template<uint32_t HD>
 __global__ __launch_bounds__(GM_THREADS, 2)
-static void GemmaPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restrict__ recv_bytes, uint64_t a2a_stride_bytes, uint32_t win_begin,
-	uint32_t old_ctx, uint32_t b0, uint32_t max_peer_keys, uint32_t prior_keys, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
+static void GemmaPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restrict__ recv_bytes, uint64_t a2a_stride_bytes,
+	const __grid_constant__ GemmaPrefillSeqPlan plan, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t HD_V = HD >> 3u;
-	const uint32_t idx = blockIdx.x, src_rank = blockIdx.y;
-	const uint32_t degree = shard.degree, grain = shard.grain;
-	const uint32_t first_b = b0 + ((src_rank + degree - (b0 % degree)) % degree);
-	const uint32_t pos = (first_b + (idx / grain) * degree) * grain + (idx % grain);
+	const uint32_t idx = blockIdx.x, src_rank = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
-	if ( idx < max_peer_keys && src_rank < degree && pos >= win_begin && pos < old_ctx )
+	if ( s < plan.count && idx < plan.peer_keys[s] && src_rank < shard.degree )
 	{
-		const uint32_t k_idx = pos - win_begin;
-		const uint4 *src_base = (const uint4 *)(recv_bytes + (uint64_t)src_rank * a2a_stride_bytes);
-		for ( uint32_t lh = 0u; lh < local_kvh; ++lh )
+		const uint32_t degree = shard.degree, grain = shard.grain;
+		const uint32_t s_b0 = plan.b0[s];
+		const uint32_t first_b = s_b0 + ((src_rank + degree - (s_b0 % degree)) % degree);
+		const uint32_t pos = (first_b + (idx / grain) * degree) * grain + (idx % grain);
+		if ( pos >= plan.win_begin[s] && pos < plan.old_ctx[s] )
 		{
-			const uint4 *s4 = src_base + (((uint64_t)lh * max_peer_keys + idx) * 2u) * HD_V;
-			uint4 *d4 = (uint4 *)kv_prior + (((uint64_t)lh * prior_keys + k_idx) * 2u) * HD_V;
-			for ( uint32_t c = threadIdx.x; c < 2u * HD_V; c += GM_THREADS )
-				d4[c] = __ldg(s4 + c);
+			const uint32_t k_idx = pos - plan.win_begin[s];
+			const uint4 *src_base = (const uint4 *)(recv_bytes + (uint64_t)src_rank * a2a_stride_bytes);
+			for ( uint32_t lh = 0u; lh < local_kvh; ++lh )
+			{
+				const uint4 *s4 = src_base + (((uint64_t)lh * plan.total_peer + (plan.peer_off[s] + idx)) * 2u) * HD_V;
+				uint4 *d4 = (uint4 *)kv_prior + (((uint64_t)lh * plan.total_prior + (plan.prior_off[s] + k_idx)) * 2u) * HD_V;
+				for ( uint32_t c = threadIdx.x; c < 2u * HD_V; c += GM_THREADS )
+					d4[c] = __ldg(s4 + c);
+			}
 		}
 	}
 	LmDependentRelease();
@@ -629,8 +658,9 @@ static __host__ __device__ constexpr uint32_t GemmaLocalPrefillSharedBytes(void)
 template<uint32_t HD>
 __global__ __launch_bounds__((HD <= 128u ? 128u : (HD <= 256u ? 128u : 256u)), HD <= 256u ? 2 : 1)
 static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
-	const uint16_t *__restrict__ kv_cur, const uint32_t *__restrict__ positions, uint32_t rows, uint32_t rank_heads, uint32_t q_first,
-	uint32_t group, uint32_t kv_first, uint32_t win_begin, uint32_t prior_keys, uint32_t window, float qk_scale, uint16_t *__restrict__ merged_out)
+	const uint16_t *__restrict__ kv_cur, const uint32_t *__restrict__ positions, const __grid_constant__ GemmaPrefillSeqPlan plan,
+	uint32_t rows, uint32_t rank_heads, uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t window, float qk_scale,
+	uint16_t *__restrict__ merged_out)
 {
 	constexpr uint32_t KV_TILE = GemmaLocalPrefillKvTile<HD>();
 	constexpr uint32_t V_WARPS = HD <= 128u ? 1u : (HD / 128u);
@@ -652,21 +682,29 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 	float *score_buf = (float *)(gm_prefill_smem + 2u * TILE_BYTES);
 	const uint32_t k_base = (uint32_t)__cvta_generic_to_shared(k_smem);
 	const uint32_t v_base = (uint32_t)__cvta_generic_to_shared(v_smem);
-	const uint32_t local_h = blockIdx.x, q_block = blockIdx.y;
+	const uint32_t local_h = blockIdx.x, q_block = blockIdx.y, seq_idx = blockIdx.z;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t q_warp = warp / V_WARPS, v_warp = warp % V_WARPS;
-	const uint32_t row_first = q_block * Q_TILE;
-	const uint32_t row_end = row_first + Q_TILE < rows ? row_first + Q_TILE : rows;
-	const uint32_t lkvh = ((q_first + local_h) / group) - kv_first;
-	const uint32_t total_kv = prior_keys + rows;
-	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	LmDependentWait();
-	if ( row_first >= rows )
+	if ( seq_idx >= plan.count )
 	{
 		LmDependentRelease();
 		return;
 	}
+	const uint32_t s_row_begin = plan.row_begin[seq_idx], s_rows = plan.row_len[seq_idx];
+	const uint32_t s_win_begin = plan.win_begin[seq_idx], s_prior_keys = plan.prior_keys[seq_idx], s_prior_off = plan.prior_off[seq_idx];
+	const uint32_t local_first = q_block * Q_TILE;
+	if ( local_first >= s_rows )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t row_first = s_row_begin + local_first;
+	const uint32_t row_end = s_row_begin + (local_first + Q_TILE < s_rows ? local_first + Q_TILE : s_rows);
+	const uint32_t lkvh = ((q_first + local_h) / group) - kv_first;
+	const uint32_t total_kv = s_prior_keys + s_rows;
+	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	for ( uint32_t idx = threadIdx.x; idx < Q_TILE * CHUNKS; idx += THREADS )
 	{
 		const uint32_t r = idx / CHUNKS, c = idx % CHUNKS;
@@ -692,8 +730,8 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 	const uint32_t max_pos = __ldg(positions + row_end - 1u);
 	const uint32_t cta_start = (window != 0u && min_pos + 1u > window) ? (min_pos + 1u - window) : 0u;
 	const uint32_t cta_end = max_pos + 1u;
-	const uint32_t tile_first = cta_start > win_begin ? (cta_start - win_begin) / KV_TILE : 0u;
-	const uint32_t tile_end = cta_end > win_begin ? (cta_end - win_begin + KV_TILE - 1u) / KV_TILE : 0u;
+	const uint32_t tile_first = cta_start > s_win_begin ? (cta_start - s_win_begin) / KV_TILE : 0u;
+	const uint32_t tile_end = cta_end > s_win_begin ? (cta_end - s_win_begin + KV_TILE - 1u) / KV_TILE : 0u;
 	const uint32_t row_lo = row_first + q_warp * 16u + (lane >> 2u);
 	const uint32_t row_hi = row_lo + 8u;
 	const bool valid_row[2] = { row_lo < row_end, row_hi < row_end };
@@ -710,9 +748,9 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 			const uint32_t k_idx = tile * KV_TILE + s;
 			const bool valid = k_idx < total_kv;
 			const uint16_t *src = valid ?
-				(k_idx < prior_keys ?
-					kv_prior + (((uint64_t)lkvh * prior_keys + k_idx) * 2u + is_v) * HD + c * 8u :
-					kv_cur + (((uint64_t)lkvh * rows + (k_idx - prior_keys)) * 2u + is_v) * HD + c * 8u) :
+				(k_idx < s_prior_keys ?
+					kv_prior + (((uint64_t)lkvh * plan.total_prior + (s_prior_off + k_idx)) * 2u + is_v) * HD + c * 8u :
+					kv_cur + (((uint64_t)lkvh * rows + (s_row_begin + k_idx - s_prior_keys)) * 2u + is_v) * HD + c * 8u) :
 				query_bf16;
 			LmPrefillCopy(dst_base + s * ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
 		}
@@ -781,7 +819,7 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 					score[f][e] = s;
 				}
 		}
-		const uint32_t tile_pos0 = win_begin + tile * KV_TILE;
+		const uint32_t tile_pos0 = s_win_begin + tile * KV_TILE;
 		const uint32_t tile_pos1 = tile_pos0 + KV_TILE - 1u;
 		const bool whole = __all_sync(0xffffffffu, valid_row[0] && valid_row[1] &&
 			tile_pos0 >= rstart[0] && tile_pos1 <= rpos[0] && tile_pos0 >= rstart[1] && tile_pos1 <= rpos[1]);
@@ -2858,9 +2896,14 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static const char *ReportTag(void) { return G::ReportTag(); }
 	static const char *WeightdModel(void) { return G::Name(); }
 
+	static bool PrefillWave(const SparkStageRunnerStep *step)
+	{
+		return step->commit != 0u && step->last_rows_only != 0u && step->tree == 0u;
+	}
+
 	static bool PrefillUnified(const SparkStageRunnerStep *step)
 	{
-		return step->commit != 0u && step->last_rows_only != 0u && step->sequences == 1u && step->tree == 0u;
+		return PrefillWave(step) && step->sequences == 1u;
 	}
 
 	static int32_t DenseMma(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t K, uint32_t N,
@@ -3030,9 +3073,9 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
-		const bool prefill_unified = PrefillUnified(step);
+		const bool prefill_wave = PrefillWave(step);
 		const bool mma_n_ok = (output_dimension & 31u) == 0u || (output_dimension <= 1024u && (output_dimension & 15u) == 0u);
-		if ( prefill_unified )
+		if ( prefill_wave )
 		{
 			if ( destination_f32 == 0 && (input_dimension & 63u) == 0u && mma_n_ok )
 				return DenseMma(weight, source, destination, rows, input_dimension, output_dimension, step->multiprocessors, stream);
@@ -3068,10 +3111,10 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
-		const bool prefill_unified = PrefillUnified(step);
-		if ( exact == 0u && (routes.rows > 1u || prefill_unified) )
+		const bool prefill_wave = PrefillWave(step);
+		if ( exact == 0u && (routes.rows > 1u || prefill_wave) )
 		{
-			const bool use_stream = prefill_unified || (down != 0u ? (routes.routes >= 8u) : (routes.rows >= 16u || routes.routes >= 128u));
+			const bool use_stream = prefill_wave || (down != 0u ? (routes.routes >= 8u) : (routes.rows >= 16u || routes.routes >= 128u));
 			if ( use_stream )
 			{
 				const int32_t launch = LmStreamGemmGrouped<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, routes.group_row_offset,
@@ -3124,7 +3167,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		constexpr uint32_t TASKS = HEADS + 2u * KVH;
 		const uint32_t rows = step->rows, degree = state->tp_degree, local_rows = FUSED / degree;
 		const uint32_t width = QW / degree, exact = step->commit == 0u ? 1u : 0u;
-		const bool prefill_unified = PrefillUnified(step);
+		const bool prefill_wave = PrefillWave(step);
 		const uint64_t units = ((uint64_t)rows * LmGqaShardRecordFloats(HEADS, HD, degree) * sizeof(float) + G::kHidden * sizeof(uint16_t) - 1u) /
 			(G::kHidden * sizeof(uint16_t));
 		const uint64_t stride = units * G::kHidden * sizeof(uint16_t) / sizeof(float);
@@ -3136,17 +3179,17 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		if constexpr ( G::kOutputGate || G::kHeadGate )
 		{
 			const uint32_t gate_out = G::kOutputGate ? width : (FULL ? S::kFullGateRows : S::kSlidingGateRows);
-			const bool allow_multi = local_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS || (local_rows + gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS) ||
-				(exact == 0u && rows > 1u);
+			const bool both_split = local_rows <= LM_SKINNY_SPLIT_MAX_OUTPUTS && gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS;
+			const bool both_nosplit = local_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS && gate_out > LM_SKINNY_SPLIT_MAX_OUTPUTS;
+			const bool allow_multi = both_split || both_nosplit;
 			const bool dual_n_ok = ((local_rows + gate_out <= 1024u) && (local_rows & 15u) == 0u && (gate_out & 15u) == 0u) ||
 				((local_rows & 31u) == 0u && (gate_out & 31u) == 0u);
-			if ( (prefill_unified || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && dual_n_ok )
+			if ( (prefill_wave || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && dual_n_ok )
 			{
 				if ( DualDenseMma(layer->qkv, layer->gate, state->normed, state->attn_local, state->gate_logits, rows, G::kHidden, local_rows, gate_out, stream) == LM_LAUNCH_OK )
 					gate_done = true;
 			}
-			else if ( !prefill_unified && exact != 0u && rows > 8u && local_rows <= LM_SKINNY_SPLIT_MAX_OUTPUTS && gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS &&
-				G::kHidden >= 2048u )
+			else if ( !prefill_wave && exact != 0u && rows > 8u && both_split && G::kHidden >= 2048u )
 			{
 				const uint32_t nt = (local_rows + 3u) / 4u + (gate_out + 3u) / 4u;
 				(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseKernel<true>), dim3(nt, (rows + 7u) / 8u), GM_THREADS, 0, stream,
@@ -3154,9 +3197,9 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 				if ( CudaStageLaunched() == SPARK_STATUS_OK )
 					gate_done = true;
 			}
-			else if ( !prefill_unified && allow_multi && (rows <= 8u || exact != 0u) )
+			else if ( !prefill_wave && allow_multi && (rows <= 8u || exact != 0u) )
 			{
-				const uint32_t allow_split = local_rows + gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS ? 1u : 0u;
+				const uint32_t allow_split = both_split ? 2u : 0u;
 				const LmSkinnyDenseTarget targets[2] =
 				{
 					{ layer->qkv, state->attn_local, (float *)0, local_rows, local_rows, 0u, LmScaleTensorNone() },
@@ -3178,25 +3221,97 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		const uint32_t kv_first = q_first / group;
 		const uint32_t kv_last = (q_first + rank_heads - 1u) / group;
 		const uint32_t local_kvh = kv_last - kv_first + 1u;
-		const uint32_t total_ctx = step->gather_context;
-		const uint32_t old_ctx = total_ctx > rows ? total_ctx - rows : 0u;
 		const uint32_t window = FULL ? 0u : layer->window;
-		const uint32_t raw_win_begin = (window != 0u && old_ctx + 1u > window) ? (old_ctx + 1u - window) : 0u;
-		constexpr uint32_t KV_TILE_ALIGN = GemmaLocalPrefillKvTile<HD>();
-		const uint32_t win_begin = raw_win_begin & ~(KV_TILE_ALIGN - 1u);
-		const uint32_t prior_keys = old_ctx > win_begin ? old_ctx - win_begin : 0u;
 		const uint32_t grain = view->shard.grain;
-		const uint32_t b0 = win_begin / grain;
-		const uint32_t b1 = (old_ctx + grain - 1u) / grain;
-		const uint32_t max_peer_keys = prior_keys != 0u ? (((b1 - b0 + degree - 1u) / degree) * grain) : 0u;
+		constexpr uint32_t KV_TILE_ALIGN = GemmaLocalPrefillKvTile<HD>();
+		GemmaPrefillSeqPlan plan;
+		memset(&plan, 0, sizeof(plan));
+		bool plan_ok = false;
+		uint32_t max_seq_rows = 0u, max_seq_prior = 0u, max_seq_peer = 0u;
+		if ( prefill_wave && uniform_kvh && (HD % 64u) == 0u && step->sequences != 0u && step->sequences <= GM_PREFILL_MAX_SEQS )
+		{
+			if ( step->sequences == 1u )
+			{
+				const uint32_t total_ctx = step->gather_context;
+				if ( total_ctx >= rows )
+				{
+					const uint32_t old_ctx = total_ctx - rows;
+					const uint32_t raw_win = (window != 0u && old_ctx + 1u > window) ? (old_ctx + 1u - window) : 0u;
+					const uint32_t win_begin = raw_win & ~(KV_TILE_ALIGN - 1u);
+					const uint32_t prior_keys = old_ctx > win_begin ? old_ctx - win_begin : 0u;
+					const uint32_t b0 = win_begin / grain;
+					const uint32_t b1 = (old_ctx + grain - 1u) / grain;
+					const uint32_t peer_keys = prior_keys != 0u ? (((b1 - b0 + degree - 1u) / degree) * grain) : 0u;
+					plan.count = 1u;
+					plan.row_begin[0] = 0u;
+					plan.row_len[0] = rows;
+					plan.old_ctx[0] = old_ctx;
+					plan.win_begin[0] = win_begin;
+					plan.b0[0] = b0;
+					plan.prior_off[0] = 0u;
+					plan.prior_keys[0] = prior_keys;
+					plan.peer_off[0] = 0u;
+					plan.peer_keys[0] = peer_keys;
+					plan.total_prior = prior_keys;
+					plan.total_peer = peer_keys;
+					max_seq_rows = rows;
+					max_seq_prior = prior_keys;
+					max_seq_peer = peer_keys;
+					plan_ok = true;
+				}
+			}
+			else if ( step->host_positions != 0 && step->host_sequence_of_row != 0 )
+			{
+				uint32_t r = 0u, s = 0u;
+				bool valid = true;
+				while ( r < rows && s < step->sequences )
+				{
+					const uint32_t seq_id = step->host_sequence_of_row[r];
+					const uint32_t old_ctx = step->host_positions[r];
+					const uint32_t r0 = r;
+					++r;
+					while ( r < rows && step->host_sequence_of_row[r] == seq_id && step->host_positions[r] == old_ctx + (r - r0) )
+						++r;
+					const uint32_t len = r - r0;
+					const uint32_t raw_win = (window != 0u && old_ctx + 1u > window) ? (old_ctx + 1u - window) : 0u;
+					const uint32_t win_begin = raw_win & ~(KV_TILE_ALIGN - 1u);
+					const uint32_t prior_keys = old_ctx > win_begin ? old_ctx - win_begin : 0u;
+					const uint32_t b0 = win_begin / grain;
+					const uint32_t b1 = (old_ctx + grain - 1u) / grain;
+					const uint32_t peer_keys = prior_keys != 0u ? (((b1 - b0 + degree - 1u) / degree) * grain) : 0u;
+					plan.seq_id[s] = seq_id;
+					plan.row_begin[s] = r0;
+					plan.row_len[s] = len;
+					plan.old_ctx[s] = old_ctx;
+					plan.win_begin[s] = win_begin;
+					plan.b0[s] = b0;
+					plan.prior_off[s] = plan.total_prior;
+					plan.prior_keys[s] = prior_keys;
+					plan.peer_off[s] = plan.total_peer;
+					plan.peer_keys[s] = peer_keys;
+					plan.total_prior += prior_keys;
+					plan.total_peer += peer_keys;
+					if ( len > max_seq_rows )
+						max_seq_rows = len;
+					if ( prior_keys > max_seq_prior )
+						max_seq_prior = prior_keys;
+					if ( peer_keys > max_seq_peer )
+						max_seq_peer = peer_keys;
+					++s;
+				}
+				if ( r != rows || s != step->sequences )
+					valid = false;
+				plan.count = s;
+				plan_ok = valid;
+			}
+		}
 		const uint64_t unit_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
-		const uint64_t peer_bytes = (uint64_t)max_peer_keys * local_kvh * (2u * HD) * sizeof(uint16_t);
-		const uint32_t a2a_units = (degree > 1u && prior_keys != 0u) ? (uint32_t)((peer_bytes + unit_bytes - 1u) / unit_bytes) : 0u;
+		const uint64_t peer_bytes = (uint64_t)plan.total_peer * local_kvh * (2u * HD) * sizeof(uint16_t);
+		const uint32_t a2a_units = (degree > 1u && plan.total_prior != 0u) ? (uint32_t)((peer_bytes + unit_bytes - 1u) / unit_bytes) : 0u;
 		const uint64_t a2a_stride_bytes = (uint64_t)a2a_units * unit_bytes;
-		const uint64_t prior_bytes = (uint64_t)local_kvh * prior_keys * (2u * HD) * sizeof(uint16_t);
+		const uint64_t prior_bytes = (uint64_t)local_kvh * plan.total_prior * (2u * HD) * sizeof(uint16_t);
 		const uint64_t buf_cap_bytes = (uint64_t)degree * state->record_stride * sizeof(float);
-		const bool use_local_prefill = prefill_unified && uniform_kvh && total_ctx >= rows && (HD % 64u) == 0u &&
-			(uint64_t)degree * a2a_stride_bytes <= buf_cap_bytes && prior_bytes <= buf_cap_bytes;
+		const bool use_local_prefill = plan_ok && (uint64_t)degree * a2a_stride_bytes <= buf_cap_bytes && prior_bytes <= buf_cap_bytes;
 		if ( use_local_prefill )
 		{
 			const uint32_t local_tasks = rank_heads + 2u * KVH;
@@ -3210,28 +3325,26 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			if ( prior_keys != 0u )
+			if ( plan.total_prior != 0u )
 			{
 				if ( degree > 1u )
 				{
-					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvPackKernel<Kv, KVH, HD>), dim3(max_peer_keys, degree), GM_THREADS, 0, stream,
-						*view, step->sequence_of_row, win_begin, old_ctx, b0, max_peer_keys, rank_heads, group, local_kvh, a2a_stride_bytes,
-						(uint8_t *)state->send);
+					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvPackKernel<Kv, KVH, HD>), dim3(max_seq_peer, degree, plan.count), GM_THREADS, 0, stream,
+						*view, step->sequence_of_row, plan, rank_heads, group, local_kvh, a2a_stride_bytes, (uint8_t *)state->send);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 					status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, a2a_units, 0u, state->send, state->received);
 					if ( status != SPARK_STATUS_OK )
 						return status;
-					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvUnpackKernel<HD>), dim3(max_peer_keys, degree), GM_THREADS, 0, stream,
-						view->shard, (const uint8_t *)state->received, a2a_stride_bytes, win_begin, old_ctx, b0, max_peer_keys, prior_keys,
-						local_kvh, kv_prior);
+					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvUnpackKernel<HD>), dim3(max_seq_peer, degree, plan.count), GM_THREADS, 0, stream,
+						view->shard, (const uint8_t *)state->received, a2a_stride_bytes, plan, local_kvh, kv_prior);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 				else
 				{
-					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvDirectKernel<Kv, KVH, HD>), dim3(prior_keys, local_kvh), GM_THREADS, 0, stream,
-						*view, step->sequence_of_row, win_begin, prior_keys, kv_first, local_kvh, kv_prior);
+					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvDirectKernel<Kv, KVH, HD>), dim3(max_seq_prior, local_kvh, plan.count), GM_THREADS, 0, stream,
+						*view, step->sequence_of_row, plan, kv_first, local_kvh, kv_prior);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
@@ -3255,9 +3368,9 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 					lp_granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
 				}
 			}
-			(void)LM_LAUNCH_DEPENDENT((GemmaLocalPrefillAttnKernel<HD>), dim3(rank_heads, (rows + Q_TILE - 1u) / Q_TILE), ATTN_THREADS, shared_bytes, stream,
-				state->query, kv_prior, kv_cur, step->positions, rows, rank_heads, q_first, group, kv_first, win_begin, prior_keys, window,
-				G::kAttentionScale, state->merged);
+			(void)LM_LAUNCH_DEPENDENT((GemmaLocalPrefillAttnKernel<HD>), dim3(rank_heads, (max_seq_rows + Q_TILE - 1u) / Q_TILE, plan.count),
+				ATTN_THREADS, shared_bytes, stream, state->query, kv_prior, kv_cur, step->positions, plan, rows, rank_heads, q_first, group,
+				kv_first, window, G::kAttentionScale, state->merged);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -3329,23 +3442,24 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		const SparkStageRunnerStep *step = frame.step;
 		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, ffn_rows = layer->ffn_rows, exact = step->commit == 0u ? 1u : 0u;
-		const bool prefill_unified = PrefillUnified(step);
+		const bool prefill_wave = PrefillWave(step);
 		bool fused_router = false;
 		if constexpr ( G::kMoe && G::kSigmoidRouter )
 		{
 			const uint32_t gu_out = 2u * ffn_rows;
-			const bool allow_multi = gu_out > LM_SKINNY_SPLIT_MAX_OUTPUTS || (gu_out + G::kExperts <= LM_SKINNY_SPLIT_MAX_OUTPUTS) ||
-				(exact == 0u && rows > 1u);
+			const bool both_split = gu_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kExperts <= LM_SKINNY_SPLIT_MAX_OUTPUTS;
+			const bool both_nosplit = gu_out > LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kExperts > LM_SKINNY_SPLIT_MAX_OUTPUTS;
+			const bool allow_multi = both_split || both_nosplit;
 			const bool dual_n_ok = ((gu_out + G::kExperts <= 1024u) && (gu_out & 15u) == 0u && (G::kExperts & 15u) == 0u) ||
 				((gu_out & 31u) == 0u && (G::kExperts & 31u) == 0u);
-			if ( !G::kRouterFloat && layer->router_proj != 0 && (prefill_unified || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && dual_n_ok )
+			if ( !G::kRouterFloat && layer->router_proj != 0 && (prefill_wave || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && dual_n_ok )
 			{
 				if ( DualDenseMma(layer->gate_up, layer->router_proj, state->normed, state->gate_up, state->router_logits, rows, G::kHidden, gu_out, G::kExperts, stream) == LM_LAUNCH_OK )
 					fused_router = true;
 			}
-			else if ( !prefill_unified && allow_multi && layer->router_proj != 0 && (rows <= 8u || exact != 0u) )
+			else if ( !prefill_wave && allow_multi && layer->router_proj != 0 && (rows <= 8u || exact != 0u) )
 			{
-				const uint32_t allow_split = gu_out + G::kExperts <= LM_SKINNY_SPLIT_MAX_OUTPUTS ? 1u : 0u;
+				const uint32_t allow_split = both_split ? 2u : 0u;
 				const LmSkinnyDenseTarget targets[2] =
 				{
 					{ layer->gate_up, state->gate_up, (float *)0, gu_out, gu_out, 0u, LmScaleTensorNone() },
@@ -3379,8 +3493,8 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		const uint16_t *act_in, uint16_t *output)
 	{
 		const uint32_t rows = step->rows, routes = rows * G::kTopK;
-		const bool prefill_unified = PrefillUnified(step);
-		if ( !prefill_unified && rows == 1u )
+		const bool prefill_wave = PrefillWave(step);
+		if ( !prefill_wave && rows == 1u )
 		{
 			constexpr uint32_t WARPS = 4u;
 			const uint32_t w1_blocks = (G::kMoeInter + WARPS * 2u - 1u) / (WARPS * 2u);
@@ -3399,8 +3513,8 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		ExpertRoutes(state, step, rows, &expert_routes);
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
 		const uint32_t local_mean = (routes + G::kExperts - 1u) / G::kExperts;
-		const bool use_fast_moe = (exact != 0u) || (!prefill_unified && (rows <= 8u || (G::kLocalExperts >= 16u && local_mean <= 3u)));
-		if ( !use_fast_moe && (prefill_unified || rows >= 16u || routes >= 128u) && (G::kHidden & 63u) == 0u && (G::kMoeInter & 63u) == 0u && G::kLocalExperts <= 256u )
+		const bool use_fast_moe = (exact != 0u) || (!prefill_wave && (rows <= 8u || (G::kLocalExperts >= 16u && local_mean <= 3u)));
+		if ( !use_fast_moe && (prefill_wave || rows >= 16u || routes >= 128u) && (G::kHidden & 63u) == 0u && (G::kMoeInter & 63u) == 0u && G::kLocalExperts <= 256u )
 		{
 			if ( MoeW1W3ActMma<GELU>(state, layer, act_in, rows, step->multiprocessors, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -3422,7 +3536,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( !use_fast_moe && (prefill_unified || routes >= 8u) && (G::kMoeInter & 63u) == 0u && (G::kHidden & 63u) == 0u && G::kLocalExperts <= 256u )
+		if ( !use_fast_moe && (prefill_wave || routes >= 8u) && (G::kMoeInter & 63u) == 0u && (G::kHidden & 63u) == 0u && G::kLocalExperts <= 256u )
 		{
 			if ( MoeDownMma(state, layer, rows, step->multiprocessors, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
