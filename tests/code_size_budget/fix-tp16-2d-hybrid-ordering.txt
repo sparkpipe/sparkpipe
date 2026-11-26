@@ -1,0 +1,2 @@
++22
+Fix TP16 2D 4x4 RS+AG compact-tail staging cap2d sizing, Phase 2 in_use_half ship-wait propagation, CPU-doorbell vs Hybrid MODE 0 ordering guard in GPU acquire and weightd_mesh.c HybridPollLocked, and dsv41_flash D41CellMxDirect lookup-verify batch invariance.

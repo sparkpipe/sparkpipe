@@ -171,7 +171,7 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
         uint64_t p_tail_off = tail_off;
         if ( is_2d != 0u )
         {
-            const uint64_t cap2d = 4u * (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t));
+            const uint64_t cap2d = SPARK_TP_MESH_FAST_2D_CAP_ELEMENTS;
             const uint64_t chunks_2d = st->total_elements > 0u ? ((st->total_elements + cap2d - 1u) / cap2d) : 1u;
             const uint64_t cidx = (st->chunk_idx / 4u) % chunks_2d;
             const uint64_t cbegin = cidx * cap2d;
@@ -561,7 +561,7 @@ static void TestRsagExact(LargeFixture *f, uint32_t rank, uint64_t elements, uin
     CHECK(memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0, "RSAG large output is 0-ULP bitwise exact");
     if ( expect_2d != 0u )
     {
-        const uint64_t cap2d = 4u * (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t));
+        const uint64_t cap2d = SPARK_TP_MESH_FAST_2D_CAP_ELEMENTS;
         const uint64_t chunks = (elements + cap2d - 1u) / cap2d;
         CHECK(__atomic_load_n(&f->responder.rounds_serviced, __ATOMIC_ACQUIRE) == 4u * chunks,
             "2D 4x4 RS+AG executes 4 3-peer hops per chunk");

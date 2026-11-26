@@ -4014,6 +4014,37 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         "tp16-20us phase3: CPU writes dbrec[1] and rings BlueFlame cleanly in dbrec_in_shm=0 mode");
     test_complete_range(first,spark_stub_ibv_posted_count());
 
+    {
+        uint64_t cpu_seq = ++seq;
+        uint64_t cpu_tag = (UINT64_C(0x71) << 32u) | cpu_seq;
+        uint64_t cpu_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((cpu_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint64_t hyb_seq = ++seq;
+        uint64_t hyb_tag = (UINT64_C(0x71) << 32u) | hyb_seq;
+        uint64_t hyb_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((hyb_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        SparkWeightdMeshRoute cpu_route = {0};
+        volatile uint64_t *cpu_cell = SparkWeightdMeshDoorbellAt(
+            band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank,(uint32_t)(cpu_seq & 1u));
+        cpu_route.fields.peer_mask = peer_mask;
+        cpu_route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+            ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + cpu_slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
+            SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u) = cpu_tag;
+        cpu_cell[1] = 256u;
+        cpu_cell[2] = cpu_slot;
+        cpu_cell[3] = cpu_route.word;
+        __atomic_store_n(&cpu_cell[0],cpu_tag,__ATOMIC_RELEASE);
+        CHECK(test_hybrid_write_wqe(ctrl,band,hyb_slot,hyb_seq,hyb_tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7171000000000000)) == 1u,
+            "tp16-20us phase3: queue higher-seq hybrid trigger while lower-seq CPU doorbell is pending");
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == cpu_tag &&
+              spark_stub_ibv_posted_count() - first == 2u * SPARK_WEIGHTD_MESH_PEERS,
+            "tp16-20us phase3: hybrid poll yields to lower-seq CPU doorbell instead of skipping it");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     SparkWeightdMeshHybridRevokeLocked();
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)

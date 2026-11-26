@@ -309,7 +309,7 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
         uint64_t p_tail_off = tail_off;
         if ( is_2d != 0u )
         {
-            const uint64_t cap2d = 4u * (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t));
+            const uint64_t cap2d = SPARK_TP_MESH_FAST_2D_CAP_ELEMENTS;
             const uint64_t cidx = st->chunk_idx / 4u;
             const uint64_t cbegin = cidx * cap2d;
             const uint64_t ccount = st->total_elements > cbegin ? (st->total_elements - cbegin < cap2d ? st->total_elements - cbegin : cap2d) : 0u;

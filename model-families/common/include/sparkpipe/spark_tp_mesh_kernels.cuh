@@ -516,6 +516,7 @@ __global__ void SparkTpMeshRoundLoopKernel(
 		{
 			cursor = cursor + 1ull;
 			prev_tag = s_tag;
+			control->round_seq_prior = UINT64_MAX;
 			control->slot_cursor = cursor;
 			control->rounds_done = control->rounds_done + 1ull;
 		}
@@ -683,6 +684,7 @@ __global__ void SparkTpMeshTreeKernel(
         }
         if ( tid == 0u )
         {
+            control->round_seq_prior = UINT64_MAX;
             control->slot_cursor = control->seq;
             control->rounds_done++;
         }
@@ -1499,7 +1501,7 @@ static __device__ void SparkTpMeshHardwareCombineDone(SparkTpMeshRoundControl *c
             control->combine_ns += SparkTpLdcvU64(&control->math_finished_ns) - SparkTpLdcvU64(&control->math_started_ns);
             control->math_started_ns = 0u; control->math_finished_ns = 0u; control->math_blocks_done = 0u;
             control->slot_cursor = control->seq;
-            if ( last != 0u ) control->rounds_done++;
+            if ( last != 0u ) { control->round_seq_prior = UINT64_MAX; control->rounds_done++; }
         }
     }
 }
@@ -1696,7 +1698,7 @@ static __global__ void SparkTpMeshHardwareFusedDirectKernel(
         else
         {
             control->slot_cursor = seq;
-            if ( last != 0u ) control->rounds_done++;
+            if ( last != 0u ) { control->round_seq_prior = UINT64_MAX; control->rounds_done++; }
         }
     }
     LmDependentRelease();
@@ -2281,7 +2283,7 @@ static __global__ void SparkTpMeshHardwarePieceStreamGatherKernel(SparkTpMeshPie
         {
             if ( start_ns != 0u && end_ns > start_ns ) control->combine_ns += end_ns - start_ns;
             control->slot_cursor = control->seq;
-            if ( piece.last != 0u ) control->rounds_done++;
+            if ( piece.last != 0u ) { control->round_seq_prior = UINT64_MAX; control->rounds_done++; }
         }
     }
 }
@@ -2351,7 +2353,7 @@ static __global__ void SparkTpMeshHardwareFinishKernel(
         control->combine_ns += SparkTpGlobalTimerNs() - started;
         control->seq += phases;
         control->slot_cursor = control->seq;
-        if ( last != 0u ) control->rounds_done++;
+        if ( last != 0u ) { control->round_seq_prior = UINT64_MAX; control->rounds_done++; }
     }
 }
 
