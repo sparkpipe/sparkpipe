@@ -743,8 +743,11 @@ def expert_warm(model: dict, root: str, expert_pool_cap_bytes: int | None) -> di
         return {}
     revision = warm.get("revision") or json.loads((ROOT / model["contract"]).read_text())["revision"]
     cap = f"--expert-pool-cap {expert_pool_cap_bytes} " if expert_pool_cap_bytes else ""
-    return {"node_warm": (f"cd {root} && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
-                          f"--model {warm['model_tag']} --shared {cap}{warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1")}
+    return {
+        "warm_with_engines": True,
+        "node_warm": (f"cd {root} && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
+                      f"--model {warm['model_tag']} --shared --wait-shared {cap}{warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1"),
+    }
 
 
 def hub_deployment(model: dict, lane: int, args) -> dict:
