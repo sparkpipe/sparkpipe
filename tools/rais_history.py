@@ -21,6 +21,7 @@ RELEASE_LABELS: dict[str, tuple[str, str]] = {
     "454edc951": ("Wave-4A", "5x GQA/attn/linear-attn shard pass + MoE fusion"),
     "dff7b5a96": ("Wave-4B", "E2 k3.1-pro +4.5, E4 q3.8-flash +9.2, E11 mimo/hy4, q3.8-27b tree fix"),
     "wave6-ededce093": ("Wave-6", "17/17 swept VALID (44.87 RAIS, Pillar 5 systems physics + cold-boot -40.6 s)"),
+    "wave7h-b33686ea2": ("Wave-7H", "18/19 VALID (97.0% cov, 50.34 RAIS; +5.47 vs Wave-6; B64 2D 4x4 deadlock fixed, 0 errors across 19/19 models)"),
 }
 
 def _round2(val: float | None) -> float | None:
