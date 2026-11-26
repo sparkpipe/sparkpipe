@@ -684,14 +684,14 @@ static void RunMimoMxfp4Tests(const char *tag, uint32_t sms, cudaStream_t stream
 		MimoMoeFastW1W3SiluKernel<G><<<sms * 4u, 128u, 0, stream>>>(w1, s1, w3, s3, act, d_src, d_off, act_ref, 512u);
 		MimoMoeFastW2Kernel<G><<<sms * 4u, 128u, 0, stream>>>(w2, s2, act_ref, d_off, out_ref);
 
-		Check(Model::template Mxfp4Launch<16u, 64u, 1u, 8u, 2u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u16");
-		Check(Model::template Mxfp4Launch<32u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u32");
-		Check(Model::template Mxfp4Launch<64u, 64u, 2u, 4u, 3u, false, true>(w1, s1, w3, s3, act, act_64, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u64");
-		Check(Model::template Mxfp4Launch<96u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_96, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u96");
-		Check(Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 2u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d16");
-		Check(Model::template Mxfp4Launch<32u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d32");
-		Check(Model::template Mxfp4Launch<64u, 128u, 2u, 4u, 3u, true, false>(w2, s2, 0, 0, act_64, out_64, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d64");
-		Check(Model::template Mxfp4Launch<96u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_96, out_96, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d96");
+		Check(Model::template Mxfp4Launch<1u, 2u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u16");
+		Check(Model::template Mxfp4Launch<2u, 2u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u32");
+		Check(Model::template Mxfp4Launch<4u, 3u, false, true>(w1, s1, w3, s3, act, act_64, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u64");
+		Check(Model::template Mxfp4Launch<6u, 2u, false, true>(w1, s1, w3, s3, act, act_96, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u96");
+		Check(Model::template Mxfp4Launch<1u, 2u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d16");
+		Check(Model::template Mxfp4Launch<2u, 2u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d32");
+		Check(Model::template Mxfp4Launch<4u, 3u, true, false>(w2, s2, 0, 0, act_64, out_64, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d64");
+		Check(Model::template Mxfp4Launch<6u, 2u, true, false>(w2, s2, 0, 0, act_96, out_96, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d96");
 		cudaStreamSynchronize(stream);
 
 		std::vector<uint16_t> ha_ref((uint64_t)packed * I), ha16((uint64_t)packed * I), ha32((uint64_t)packed * I), ha64((uint64_t)packed * I), ha96((uint64_t)packed * I);
@@ -744,25 +744,25 @@ static void RunMimoMxfp4Tests(const char *tag, uint32_t sms, cudaStream_t stream
 			}
 		});
 		const double t_new = TimeUs(stream, 2, 10, [&]() {
-			if ( mean > 40u )
+			if ( mean > 48u )
 			{
-				Model::template Mxfp4Launch<96u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_96, d_off, d_src, packed, H, I, sms, stream);
-				Model::template Mxfp4Launch<96u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_96, out_96, d_off, 0, packed, I, H, sms, stream);
+				Model::template Mxfp4Launch<6u, 2u, false, true>(w1, s1, w3, s3, act, act_96, d_off, d_src, rows * G::kTopK, H, I, sms, stream);
+				Model::template Mxfp4Launch<6u, 2u, true, false>(w2, s2, 0, 0, act_96, out_96, d_off, 0, rows * G::kTopK, I, H, sms, stream);
 			}
-			else if ( mean > 24u )
+			else if ( mean > 32u )
 			{
-				Model::template Mxfp4Launch<64u, 64u, 2u, 4u, 3u, false, true>(w1, s1, w3, s3, act, act_64, d_off, d_src, packed, H, I, sms, stream);
-				Model::template Mxfp4Launch<64u, 128u, 2u, 4u, 3u, true, false>(w2, s2, 0, 0, act_64, out_64, d_off, 0, packed, I, H, sms, stream);
+				Model::template Mxfp4Launch<4u, 3u, false, true>(w1, s1, w3, s3, act, act_64, d_off, d_src, rows * G::kTopK, H, I, sms, stream);
+				Model::template Mxfp4Launch<4u, 3u, true, false>(w2, s2, 0, 0, act_64, out_64, d_off, 0, rows * G::kTopK, I, H, sms, stream);
 			}
-			else if ( mean > 10u )
+			else if ( mean > 16u )
 			{
-				Model::template Mxfp4Launch<32u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream);
-				Model::template Mxfp4Launch<32u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream);
+				Model::template Mxfp4Launch<2u, 2u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, rows * G::kTopK, H, I, sms, stream);
+				Model::template Mxfp4Launch<2u, 2u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, rows * G::kTopK, I, H, sms, stream);
 			}
 			else
 			{
-				Model::template Mxfp4Launch<16u, 64u, 1u, 8u, 2u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream);
-				Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 2u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream);
+				Model::template Mxfp4Launch<1u, 2u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, rows * G::kTopK, H, I, sms, stream);
+				Model::template Mxfp4Launch<1u, 2u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, rows * G::kTopK, I, H, sms, stream);
 			}
 		});
 		const double flops = 6.0 * (double)packed * (double)H * (double)I;
