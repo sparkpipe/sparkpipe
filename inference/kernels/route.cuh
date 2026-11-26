@@ -171,13 +171,91 @@ static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_e
 {
 	constexpr uint32_t LANES = THREADS < LM_WARP_LANES ? THREADS : LM_WARP_LANES, WARPS = THREADS / LANES;
 	static_assert(THREADS % LANES == 0u, "whole warps rank the routes of a chunk");
-	__shared__ uint32_t count[EXPERTS];
-	__shared__ __align__(4) uint8_t warp_count[WARPS][EXPERTS];
-	__shared__ uint32_t staged[LM_ROUTE_STAGED_MAX];
-	const uint32_t *source = routes <= LM_ROUTE_STAGED_MAX ? staged : route_expert;
 	const uint32_t lane = threadIdx.x % LANES, warp = threadIdx.x / LANES;
 	const bool tk_pow2 = top_k != 0u && (top_k & (top_k - 1u)) == 0u;
 	const uint32_t tk_shift = tk_pow2 ? (31u - (uint32_t)__clz((int)top_k)) : 0u;
+	__shared__ uint32_t count[EXPERTS];
+	if constexpr ( EXPERTS <= 512u && LANES == 32u && WARPS >= 2u )
+	{
+		if ( routes <= 65535u )
+		{
+			__shared__ __align__(4) uint16_t w_hist[WARPS][EXPERTS];
+			uint32_t *wh32 = (uint32_t *)&w_hist[0][0];
+			constexpr uint32_t wh_words = (WARPS * EXPERTS) >> 1u;
+			for ( uint32_t i = threadIdx.x; i < wh_words; i += THREADS )
+				wh32[i] = 0u;
+			if constexpr ( ((WARPS * EXPERTS) & 1u) != 0u )
+			{
+				if ( threadIdx.x == 0u )
+					w_hist[WARPS - 1u][EXPERTS - 1u] = 0u;
+			}
+			__syncthreads();
+			const uint32_t slice = (routes + WARPS - 1u) / WARPS;
+			const uint32_t w_beg = warp * slice;
+			const uint32_t w_end = w_beg + slice < routes ? w_beg + slice : routes;
+			for ( uint32_t p = w_beg; p < w_end; p += 32u )
+			{
+				const uint32_t i = p + lane;
+				const bool active = i < w_end;
+				const uint32_t e = active ? __ldg(route_expert + i) : EXPERTS;
+				const uint32_t amask = __ballot_sync(0xffffffffu, active);
+				if ( active && e < EXPERTS )
+				{
+					const uint32_t m = __match_any_sync(amask, e);
+					if ( lane == (uint32_t)(__ffs((int)m) - 1) )
+						w_hist[warp][e] = (uint16_t)(w_hist[warp][e] + (uint16_t)__popc(m));
+				}
+			}
+			__syncthreads();
+			for ( uint32_t e = threadIdx.x; e < EXPERTS; e += THREADS )
+			{
+				uint32_t c = 0u;
+				#pragma unroll
+				for ( uint32_t w = 0u; w < WARPS; ++w )
+				{
+					const uint32_t v = w_hist[w][e];
+					w_hist[w][e] = (uint16_t)c;
+					c += v;
+				}
+				count[e] = c;
+			}
+			__syncthreads();
+			LmRouteBuildPrefix<THREADS, EXPERTS>(count, group_row_offset, tile_m, neuron_tiles_up, tile_prefix_up, neuron_tiles_down, tile_prefix_down);
+			__syncthreads();
+			for ( uint32_t e = threadIdx.x; e < EXPERTS; e += THREADS )
+			{
+				const uint32_t base_off = count[e];
+				#pragma unroll
+				for ( uint32_t w = 0u; w < WARPS; ++w )
+					w_hist[w][e] = (uint16_t)(base_off + w_hist[w][e]);
+			}
+			__syncthreads();
+			for ( uint32_t p = w_beg; p < w_end; p += 32u )
+			{
+				const uint32_t i = p + lane;
+				const bool active = i < w_end;
+				const uint32_t e = active ? __ldg(route_expert + i) : EXPERTS;
+				const uint32_t amask = __ballot_sync(0xffffffffu, active);
+				if ( active && e < EXPERTS )
+				{
+					const uint32_t m = __match_any_sync(amask, e);
+					const uint32_t leader = (uint32_t)(__ffs((int)m) - 1);
+					const uint32_t rnk = (uint32_t)__popc(m & ((1u << lane) - 1u));
+					const uint32_t base = w_hist[warp][e];
+					const uint32_t packed = base + rnk;
+					route_packed_row[i] = packed;
+					route_source_token[packed] = LmRouteDivPow2OrGeneral(i, top_k, tk_pow2, tk_shift);
+					if ( lane == leader )
+						w_hist[warp][e] = (uint16_t)(base + (uint32_t)__popc(m));
+				}
+			}
+			return;
+		}
+	}
+	__shared__ __align__(4) uint8_t warp_count[WARPS][EXPERTS];
+	__shared__ uint32_t staged[(EXPERTS <= 512u && LANES == 32u && WARPS >= 2u) ? 1u : LM_ROUTE_STAGED_MAX];
+	constexpr uint32_t STAGED_LIM = (EXPERTS <= 512u && LANES == 32u && WARPS >= 2u) ? 0u : LM_ROUTE_STAGED_MAX;
+	const uint32_t *source = (STAGED_LIM > 0u && routes <= STAGED_LIM) ? staged : route_expert;
 	uint32_t index, expert, packed, earlier, same;
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
 		count[index] = 0u;
@@ -193,8 +271,11 @@ static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_e
 		for (index = threadIdx.x; index < WARPS * EXPERTS; index += THREADS)
 			warp_count[index / EXPERTS][index % EXPERTS] = 0u;
 	}
-	for (index = threadIdx.x; index < routes && index < LM_ROUTE_STAGED_MAX; index += THREADS)
-		staged[index] = route_expert[index];
+	if constexpr ( STAGED_LIM > 0u )
+	{
+		for (index = threadIdx.x; index < routes && index < STAGED_LIM; index += THREADS)
+			staged[index] = route_expert[index];
+	}
 	__syncthreads();
 	for (index = threadIdx.x - lane; index < routes; index += THREADS)
 	{

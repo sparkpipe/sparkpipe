@@ -852,6 +852,65 @@ struct LmIndexSelectMergeShared
 template<uint32_t THREADS>
 static __device__ void LmIndexSelectBitonicSort(uint32_t *values, uint32_t padded)
 {
+	const uint32_t lane = threadIdx.x & 31u;
+	const uint32_t warp = threadIdx.x >> 5u;
+	const uint32_t warps = THREADS >> 5u;
+	if ( padded >= 32u )
+	{
+		for ( uint32_t base = warp * 32u; base < padded; base += warps * 32u )
+		{
+			const uint32_t idx = base + lane;
+			uint32_t v = values[idx];
+			#pragma unroll
+			for ( uint32_t size = 2u; size <= 32u; size <<= 1u )
+			{
+				const bool asc = (idx & size) == 0u;
+				#pragma unroll
+				for ( uint32_t stride = size >> 1u; stride > 0u; stride >>= 1u )
+				{
+					const uint32_t other = __shfl_xor_sync(0xffffffffu, v, stride);
+					const bool take_min = ((lane & stride) == 0u) == asc;
+					v = take_min ? (v < other ? v : other) : (v > other ? v : other);
+				}
+			}
+			values[idx] = v;
+		}
+		__syncthreads();
+		for ( uint32_t size = 64u; size <= padded; size <<= 1u )
+		{
+			for ( uint32_t stride = size >> 1u; stride >= 32u; stride >>= 1u )
+			{
+				for ( uint32_t index = threadIdx.x; index < (padded >> 1u); index += THREADS )
+				{
+					const uint32_t low = 2u * index - (index & (stride - 1u));
+					const uint32_t high = low + stride;
+					const uint32_t a = values[low], b = values[high];
+					if ( (a > b) == ((low & size) == 0u) )
+					{
+						values[low] = b;
+						values[high] = a;
+					}
+				}
+				__syncthreads();
+			}
+			for ( uint32_t base = warp * 32u; base < padded; base += warps * 32u )
+			{
+				const uint32_t idx = base + lane;
+				uint32_t v = values[idx];
+				const bool asc = (idx & size) == 0u;
+				#pragma unroll
+				for ( uint32_t stride = 16u; stride > 0u; stride >>= 1u )
+				{
+					const uint32_t other = __shfl_xor_sync(0xffffffffu, v, stride);
+					const bool take_min = ((lane & stride) == 0u) == asc;
+					v = take_min ? (v < other ? v : other) : (v > other ? v : other);
+				}
+				values[idx] = v;
+			}
+			__syncthreads();
+		}
+		return;
+	}
 	for ( uint32_t size = 2u; size <= padded; size <<= 1u )
 		for ( uint32_t stride = size >> 1u; stride > 0u; stride >>= 1u )
 		{

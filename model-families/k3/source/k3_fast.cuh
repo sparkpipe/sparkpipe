@@ -537,10 +537,9 @@ static __device__ __forceinline__ void K3CellMmaW1SituRows(const uint8_t *gate_b
 			activation + (uint64_t)route_source_token[packed] * input_dim + vector * 8u : (const uint16_t *)0;
 	}
 	const uint8_t *g_ptr = gate_base, *u_ptr = up_base;
-	auto load_stage = [&](uint32_t s_slot)
+	auto load_a = [&](uint32_t s_slot)
 	{
 		uint16_t *s_buf = stage + s_slot * STAGE_ELEMENTS;
-		uint8_t *w_buf = weights + s_slot * LM_CELL_MMA_WEIGHT_TILE_BYTES;
 		#pragma unroll
 		for ( uint32_t m = 0u; m < COPIES; ++m )
 		{
@@ -553,32 +552,42 @@ static __device__ __forceinline__ void K3CellMmaW1SituRows(const uint8_t *gate_b
 					source[m] += LM_CELL_MMA_STAGE_K;
 			}
 		}
-		#pragma unroll
-		for ( uint32_t idx = threadIdx.x; idx < 2u * HALF_VECS; idx += LM_CELL_MMA_THREADS )
-		{
-			const uint8_t *src = idx < HALF_VECS ? g_ptr + idx * 16u : u_ptr + (idx - HALF_VECS) * 16u;
-			K3CpAsync16L256Ptr(w_buf + idx * 16u, src, 16u);
-		}
+		LmCellMmaCommit();
+	};
+	uint4 w_reg0, w_reg1;
+	auto pref_w = [&]()
+	{
+		w_reg0 = __ldcs((const uint4 *)(threadIdx.x < HALF_VECS ? g_ptr + threadIdx.x * 16u : u_ptr + (threadIdx.x - HALF_VECS) * 16u));
+		if ( threadIdx.x + LM_CELL_MMA_THREADS < 2u * HALF_VECS )
+			w_reg1 = __ldcs((const uint4 *)(u_ptr + (threadIdx.x + LM_CELL_MMA_THREADS - HALF_VECS) * 16u));
 		g_ptr += tile_stride;
 		u_ptr += tile_stride;
 	};
-	#pragma unroll
-	for ( uint32_t t = 0u; t + 1u < LM_CELL_MMA_STAGES; ++t )
+	auto store_w = [&](uint32_t s_slot)
 	{
-		if ( t < k_tiles )
-			load_stage(t);
-		LmCellMmaCommit();
+		uint8_t *w_buf = weights + s_slot * LM_CELL_MMA_WEIGHT_TILE_BYTES;
+		*(uint4 *)(w_buf + threadIdx.x * 16u) = w_reg0;
+		if ( threadIdx.x + LM_CELL_MMA_THREADS < 2u * HALF_VECS )
+			*(uint4 *)(w_buf + (threadIdx.x + LM_CELL_MMA_THREADS) * 16u) = w_reg1;
+	};
+	if ( k_tiles != 0u )
+	{
+		load_a(0u);
+		pref_w();
+		store_w(0u);
 	}
+	uint32_t sc = 0u, sp = 1u;
 	for ( uint32_t t = 0u; t < k_tiles; ++t )
 	{
-		const uint32_t slot = t % LM_CELL_MMA_STAGES, ahead = t + LM_CELL_MMA_STAGES - 1u;
-		const uint16_t *buffer = stage + slot * STAGE_ELEMENTS;
-		const uint8_t *w_slot = weights + slot * LM_CELL_MMA_WEIGHT_TILE_BYTES;
-		LmCellMmaWait<LM_CELL_MMA_STAGES - 2u>();
+		const uint16_t *buffer = stage + sc * STAGE_ELEMENTS;
+		const uint8_t *w_slot = weights + sc * LM_CELL_MMA_WEIGHT_TILE_BYTES;
+		LmCellMmaWait<0u>();
 		__syncthreads();
-		if ( ahead < k_tiles )
-			load_stage(ahead % LM_CELL_MMA_STAGES);
-		LmCellMmaCommit();
+		if ( t + 1u < k_tiles )
+		{
+			load_a(sp);
+			pref_w();
+		}
 		uint32_t current[4], scale_bits[4], b[4][4];
 		const uint8_t *g_cell = w_slot + warp * LM_CELL_MMA_CELL_BYTES;
 		const uint8_t *u_cell = w_slot + (4u + warp) * LM_CELL_MMA_CELL_BYTES;
@@ -615,6 +624,10 @@ static __device__ __forceinline__ void K3CellMmaW1SituRows(const uint8_t *gate_b
 			}
 			if ( m + 1u < CHUNKS ) { low = next_low; high = next_high; }
 		}
+		if ( t + 1u < k_tiles )
+			store_w(sp);
+		sc ^= 1u;
+		sp ^= 1u;
 	}
 	LmCellMmaWait<0u>();
 	__syncthreads();
@@ -652,8 +665,8 @@ static void K3CellMmaW1SituKernel(const uint8_t *__restrict__ weight, const uint
 {
 	constexpr uint32_t MAX_ROWS = MAX_CHUNKS * 16u;
 	constexpr uint32_t STAGE_ELEMENTS = MAX_ROWS * LM_CELL_MMA_STAGE_PITCH;
-	__shared__ __align__(16) uint16_t stage[LM_CELL_MMA_STAGES * STAGE_ELEMENTS];
-	__shared__ __align__(16) uint8_t weights[LM_CELL_MMA_STAGES * LM_CELL_MMA_WEIGHT_TILE_BYTES];
+	__shared__ __align__(16) uint16_t stage[2u * STAGE_ELEMENTS];
+	__shared__ __align__(16) uint8_t weights[2u * LM_CELL_MMA_WEIGHT_TILE_BYTES];
 	LmDependentWait();
 	const uint32_t col_blocks = half_cells / 4u;
 	const uint32_t active_idx = blockIdx.x / col_blocks;
@@ -748,6 +761,94 @@ static __device__ __forceinline__ void K3CellMmaW2SliceRows(const uint8_t *cells
 			activation + (uint64_t)packed * input_dim + vector * 8u : (const uint16_t *)0;
 	}
 	const uint8_t *c_ptr = cells_base;
+	if constexpr ( STAGES == 2u )
+	{
+		auto load_a = [&](uint32_t s_slot)
+		{
+			uint16_t *s_buf = stage + s_slot * STAGE_ELEMENTS;
+			#pragma unroll
+			for ( uint32_t m = 0u; m < COPIES; ++m )
+			{
+				const uint32_t local = row + m * LM_CELL_MMA_STAGE_ROW_STEP;
+				if ( local < CHUNKS * 16u )
+				{
+					LmCellMmaCopy(s_buf + local * LM_CELL_MMA_STAGE_PITCH + vector * 8u,
+						source[m] != 0 ? source[m] : activation, source[m] != 0 ? 16u : 0u);
+					if ( source[m] != 0 )
+						source[m] += LM_CELL_MMA_STAGE_K;
+				}
+			}
+			LmCellMmaCommit();
+		};
+		uint4 w_reg0, w_reg1;
+		auto pref_w = [&]()
+		{
+			w_reg0 = __ldcs((const uint4 *)(c_ptr + threadIdx.x * 16u));
+			if ( threadIdx.x + LM_CELL_MMA_THREADS < LM_CELL_MMA_WEIGHT_TILE_VECTORS )
+				w_reg1 = __ldcs((const uint4 *)(c_ptr + (threadIdx.x + LM_CELL_MMA_THREADS) * 16u));
+			c_ptr += tile_stride;
+		};
+		auto store_w = [&](uint32_t s_slot)
+		{
+			uint8_t *w_buf = weights + s_slot * LM_CELL_MMA_WEIGHT_TILE_BYTES;
+			*(uint4 *)(w_buf + threadIdx.x * 16u) = w_reg0;
+			if ( threadIdx.x + LM_CELL_MMA_THREADS < LM_CELL_MMA_WEIGHT_TILE_VECTORS )
+				*(uint4 *)(w_buf + (threadIdx.x + LM_CELL_MMA_THREADS) * 16u) = w_reg1;
+		};
+		if ( k_tiles != 0u )
+		{
+			load_a(0u);
+			pref_w();
+			store_w(0u);
+		}
+		uint32_t sc = 0u, sp = 1u;
+		for ( uint32_t t = 0u; t < k_tiles; ++t )
+		{
+			const uint16_t *buffer = stage + sc * STAGE_ELEMENTS;
+			LmCellMmaWait<0u>();
+			__syncthreads();
+			if ( t + 1u < k_tiles )
+			{
+				load_a(sp);
+				pref_w();
+			}
+			uint32_t current[4], scale_bits[4], b[4][4];
+			LmCellMmaLoad(weights + sc * LM_CELL_MMA_WEIGHT_TILE_BYTES + warp_offset, lane, g, current, scale_bits);
+			K3DecodeCellFrags(current, scale_bits, b);
+			uint4 low = *(const uint4 *)(buffer + g * LM_CELL_MMA_STAGE_PITCH + c * 8u);
+			uint4 high = *(const uint4 *)(buffer + (g + 8u) * LM_CELL_MMA_STAGE_PITCH + c * 8u);
+			#pragma unroll
+			for ( uint32_t m = 0u; m < CHUNKS; ++m )
+			{
+				uint4 next_low, next_high;
+				if ( m + 1u < CHUNKS )
+				{
+					const uint16_t *next_row = buffer + ((m + 1u) * 16u + g) * LM_CELL_MMA_STAGE_PITCH + c * 8u;
+					next_low = *(const uint4 *)next_row;
+					next_high = *(const uint4 *)(next_row + 8u * LM_CELL_MMA_STAGE_PITCH);
+				}
+				const uint32_t a0[4] = {low.x, high.x, low.y, high.y};
+				const uint32_t a1[4] = {low.z, high.z, low.w, high.w};
+				#pragma unroll
+				for ( uint32_t f = 0u; f < 4u; ++f )
+				{
+					const uint32_t b0[2] = {b[f][0], b[f][1]};
+					const uint32_t b1[2] = {b[f][2], b[f][3]};
+					LmMmaBf16(acc[m][f], a0, b0);
+					LmMmaBf16(acc[m][f], a1, b1);
+				}
+				if ( m + 1u < CHUNKS ) { low = next_low; high = next_high; }
+			}
+			if ( t + 1u < k_tiles )
+				store_w(sp);
+			sc ^= 1u;
+			sp ^= 1u;
+		}
+		LmCellMmaWait<0u>();
+		__syncthreads();
+	}
+	else
+	{
 	auto load_stage = [&](uint32_t s_slot)
 	{
 		uint16_t *s_buf = stage + s_slot * STAGE_ELEMENTS;
@@ -815,6 +916,7 @@ static __device__ __forceinline__ void K3CellMmaW2SliceRows(const uint8_t *cells
 	}
 	LmCellMmaWait<0u>();
 	__syncthreads();
+	}
 	#pragma unroll
 	for ( uint32_t m = 0u; m < CHUNKS; ++m )
 	{
@@ -1053,11 +1155,11 @@ static int32_t K3MoeCellsMmaFastLaunch(const void *w1_weight, const void *w2_wei
 		static std::atomic<bool> w1_carveout_set(false);
 		if ( !w1_carveout_set.load(std::memory_order_acquire) )
 		{
-			(void)SparkGpuFuncSetAttribute((const void *)K3CellMmaW1SituKernel<8u>,
+			(void)SparkGpuFuncSetAttribute((const void *)K3CellMmaW1SituKernel<4u>,
 				SPARK_GPU_FUNCTION_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT, 100);
 			w1_carveout_set.store(true, std::memory_order_release);
 		}
-		LM_LAUNCH_DEPENDENT((K3CellMmaW1SituKernel<8u>), max_active * w1_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
+		LM_LAUNCH_DEPENDENT((K3CellMmaW1SituKernel<4u>), max_active * w1_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
 			(const uint8_t *)w1_weight, latent_full_bf16, intermediate_bf16, group_row_offset, route_source_token,
 			active_experts, w1_group_bytes, w1_k_tiles, half_cells, K3_ROUTED_EXPERT_HIDDEN, channels);
 	}
@@ -1068,13 +1170,13 @@ static int32_t K3MoeCellsMmaFastLaunch(const void *w1_weight, const void *w2_wei
 	const uint64_t w2_group_bytes = (uint64_t)w2_k_tiles * w2_total_cells * LM_CELL_MMA_CELL_BYTES;
 	const uint64_t full_out_bytes = (uint64_t)packed_rows * K3_ROUTED_EXPERT_HIDDEN * sizeof(uint16_t);
 	uint32_t slice_cells = w2_total_cells;
-	if ( full_out_bytes > 16u * 1024u * 1024u && packed_rows <= 16384u )
+	if ( full_out_bytes > 16u * 1024u * 1024u )
 	{
 		const uint64_t target_bytes = 10u * 1024u * 1024u;
 		uint32_t raw_cells = (uint32_t)(target_bytes / ((uint64_t)packed_rows * LM_SKINNY_CELL_NEURONS * sizeof(uint16_t)));
 		raw_cells = (raw_cells / LM_CELL_MMA_BLOCK_CELLS) * LM_CELL_MMA_BLOCK_CELLS;
-		if ( raw_cells < 2u * LM_CELL_MMA_BLOCK_CELLS )
-			raw_cells = 2u * LM_CELL_MMA_BLOCK_CELLS;
+		if ( raw_cells < LM_CELL_MMA_BLOCK_CELLS )
+			raw_cells = LM_CELL_MMA_BLOCK_CELLS;
 		if ( raw_cells > w2_total_cells )
 			raw_cells = w2_total_cells;
 		slice_cells = raw_cells;
@@ -1083,11 +1185,11 @@ static int32_t K3MoeCellsMmaFastLaunch(const void *w1_weight, const void *w2_wei
 	{
 		const uint32_t w2_col_blocks = w2_total_cells / LM_CELL_MMA_BLOCK_CELLS;
 		if ( packed_rows <= 2048u )
-			LM_LAUNCH_DEPENDENT((K3CellMmaW2SliceKernel<2u, 3u, false>), max_active * w2_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
+			LM_LAUNCH_DEPENDENT((K3CellMmaW2SliceKernel<2u, 2u, false>), max_active * w2_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
 				(const uint8_t *)w2_weight, intermediate_bf16, gate_up_bf16, group_row_offset, active_experts,
 				w2_group_bytes, w2_k_tiles, w2_total_cells, 0u, w2_total_cells, channels);
 		else
-			LM_LAUNCH_DEPENDENT((K3CellMmaW2SliceKernel<4u, 3u, true>), max_active * w2_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
+			LM_LAUNCH_DEPENDENT((K3CellMmaW2SliceKernel<4u, 2u, true>), max_active * w2_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
 				(const uint8_t *)w2_weight, intermediate_bf16, gate_up_bf16, group_row_offset, active_experts,
 				w2_group_bytes, w2_k_tiles, w2_total_cells, 0u, w2_total_cells, channels);
 		LM_LAUNCH_DEPENDENT((K3MoeFinalizeToken224Kernel), rows, 224u, 0u, stream,
@@ -1099,7 +1201,7 @@ static int32_t K3MoeCellsMmaFastLaunch(const void *w1_weight, const void *w2_wei
 		const uint32_t cur_cells = w2_total_cells - cell_begin < slice_cells ? w2_total_cells - cell_begin : slice_cells;
 		const uint32_t cur_col_blocks = cur_cells / LM_CELL_MMA_BLOCK_CELLS;
 		const uint32_t cur_cols = cur_cells * LM_SKINNY_CELL_NEURONS;
-		LM_LAUNCH_DEPENDENT((K3CellMmaW2SliceKernel<4u, 3u, false>), max_active * cur_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
+		LM_LAUNCH_DEPENDENT((K3CellMmaW2SliceKernel<4u, 2u, false>), max_active * cur_col_blocks, LM_CELL_MMA_THREADS, 0u, stream,
 			(const uint8_t *)w2_weight, intermediate_bf16, gate_up_bf16, group_row_offset, active_experts,
 			w2_group_bytes, w2_k_tiles, w2_total_cells, cell_begin, cur_cells, channels);
 		LM_LAUNCH_DEPENDENT((K3MoeFinalizeWarpSliceKernel), (rows + 3u) / 4u, 128u, 0u, stream,

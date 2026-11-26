@@ -21,7 +21,7 @@ SITES = {
     "inference/runner/stage_runner.cu": 2,
     "model-families/dsv41_flash/source/dsv41_flash_stage.cuh": 19,
     "model-families/gemma4/source/gemma4_stage.cuh": 1,
-    "model-families/glm52/source/glm52_stage.cuh": 1,
+    "model-families/glm52/source/glm52_stage.cuh": 2,
     "model-families/glm5_next/source/glm5_next_stage_model.cuh": 1,
     "model-families/k3/source/k3_resident_decode_stage_cuda.cu": 10,
     "model-families/k3/source/k3_stage.cuh": 2,

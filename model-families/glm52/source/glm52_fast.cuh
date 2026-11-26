@@ -2257,13 +2257,13 @@ static void GlmMoeMmaW1ActBf16Kernel(const uint16_t *__restrict__ exp_w1, const 
 	LmDependentRelease();
 }
 
-template<class S, uint32_t TILE_M, uint32_t WARPS_M>
+template<class S, uint32_t TILE_M, uint32_t WARPS_M, bool STREAM_OUT = true>
 __global__ __launch_bounds__(256u, 1)
 static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const float *__restrict__ exp_s2,
-	const uint16_t *__restrict__ inter_in, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ tile_prefix,
-	uint16_t *__restrict__ out_bf16)
+	const uint16_t *__restrict__ inter_in, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ row_tile_prefix,
+	uint16_t *__restrict__ out_bf16, uint32_t col_tile_begin, uint32_t slice_n_tiles)
 {
-	constexpr uint32_t K = 128u, N = S::kHidden, TILE_N = 128u, N_TILES = N / TILE_N;
+	constexpr uint32_t K = 128u, N = S::kHidden, TILE_N = 128u;
 	constexpr uint32_t WARPS = 8u, WARPS_N = WARPS / WARPS_M, WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
 	constexpr uint32_t A_ROW_BYTES = K * 2u, A_ROW_CHUNKS = A_ROW_BYTES / 16u, B_ROW_BYTES = K, B_ROW_CHUNKS = B_ROW_BYTES / 16u;
@@ -2277,12 +2277,15 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 	const uint32_t a_row0 = threadIdx.x / A_ROW_CHUNKS, a_col0 = threadIdx.x % A_ROW_CHUNKS;
 	const uint32_t b_row0 = threadIdx.x / B_ROW_CHUNKS, b_col0 = threadIdx.x % B_ROW_CHUNKS;
 	const uint32_t ldm_a_row = warp_m * WARP_M + (lane & 15u), ldm_a_col = (lane >> 4u) & 1u;
+	const uint32_t slice_cols = slice_n_tiles * TILE_N;
 	LmDependentWait();
-	const uint32_t total_tiles = __ldg(tile_prefix + S::kExperts);
+	const uint32_t total_tiles = __ldg(row_tile_prefix + S::kExperts) * slice_n_tiles;
 	auto issue_tile = [&](uint32_t t_idx, uint32_t st_off, uint32_t &grp_o, uint32_t &rb_o, uint32_t &rl_o, uint32_t &nt_o)
 	{
-		GlmGroupedTileLookupGlobal(group_row_offset, tile_prefix, S::kExperts, t_idx, TILE_M, N_TILES, grp_o, rb_o, rl_o, nt_o);
-		const uint32_t stage = shared_base + st_off, col_base = nt_o * TILE_N;
+		uint32_t dummy_nt = 0u;
+		GlmGroupedTileLookupGlobal(group_row_offset, row_tile_prefix, S::kExperts, t_idx / slice_n_tiles, TILE_M, 1u, grp_o, rb_o, rl_o, dummy_nt);
+		nt_o = t_idx % slice_n_tiles;
+		const uint32_t stage = shared_base + st_off, col_base = (col_tile_begin + nt_o) * TILE_N;
 		#pragma unroll
 		for ( uint32_t q = 0u; q < A_PER_T; ++q )
 		{
@@ -2318,7 +2321,8 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 		const uint32_t has_next = tile + gridDim.x < total_tiles ? 1u : 0u;
 		if ( has_next != 0u )
 			issue_tile(tile + gridDim.x, cur_off ^ STAGE_BYTES, nxt_grp, nxt_rb, nxt_rl, nxt_nt);
-		const uint32_t col_base = cur_nt * TILE_N;
+		const uint32_t col_base = (col_tile_begin + cur_nt) * TILE_N;
+		const uint32_t out_col_base = cur_nt * TILE_N;
 		float sc[NF][2];
 		#pragma unroll
 		for ( uint32_t j = 0u; j < NF; ++j )
@@ -2369,12 +2373,17 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 				for ( uint32_t e = 0u; e < 4u; e += 2u )
 				{
 					const uint32_t r = cur_rb + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
-					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+					const uint32_t c = out_col_base + warp_n * WARP_N + j * 8u + quad * 2u;
 					if ( r < cur_rl )
 					{
 						const uint16_t lo = LmFloatToBf16(fmaf(acc[i][j][e], sc[j][0], 0.0f));
 						const uint16_t hi = LmFloatToBf16(fmaf(acc[i][j][e + 1u], sc[j][1], 0.0f));
-						__stcs((uint32_t *)(out_bf16 + (uint64_t)r * N + c), (uint32_t)lo | ((uint32_t)hi << 16u));
+						const uint32_t packed_pair = (uint32_t)lo | ((uint32_t)hi << 16u);
+						uint32_t *dst = (uint32_t *)(out_bf16 + (uint64_t)r * slice_cols + c);
+						if constexpr ( STREAM_OUT )
+							__stcs(dst, packed_pair);
+						else
+							*dst = packed_pair;
 					}
 				}
 		cur_grp = nxt_grp;
@@ -2386,12 +2395,13 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 	LmDependentRelease();
 }
 
-template<class S, uint32_t TILE_M, uint32_t WARPS_M>
+template<class S, uint32_t TILE_M, uint32_t WARPS_M, bool STREAM_OUT = true>
 __global__ __launch_bounds__(256u, 1)
 static void GlmMoeMmaW2K128Bf16Kernel(const uint16_t *__restrict__ exp_w2, const uint16_t *__restrict__ inter_in,
-	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ tile_prefix, uint16_t *__restrict__ out_bf16)
+	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ row_tile_prefix, uint16_t *__restrict__ out_bf16,
+	uint32_t col_tile_begin, uint32_t slice_n_tiles)
 {
-	constexpr uint32_t K = 128u, N = S::kHidden, TILE_N = 128u, TILE_K = 64u, N_TILES = N / TILE_N;
+	constexpr uint32_t K = 128u, N = S::kHidden, TILE_N = 128u, TILE_K = 64u;
 	constexpr uint32_t WARPS = 8u, WARPS_N = WARPS / WARPS_M, WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
@@ -2402,11 +2412,12 @@ static void GlmMoeMmaW2K128Bf16Kernel(const uint16_t *__restrict__ exp_w2, const
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
 	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
 	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
+	const uint32_t slice_cols = slice_n_tiles * TILE_N;
 	LmDependentWait();
-	const uint32_t total_tiles = __ldg(tile_prefix + S::kExperts);
+	const uint32_t total_tiles = __ldg(row_tile_prefix + S::kExperts) * slice_n_tiles;
 	auto issue_half = [&](uint32_t grp, uint32_t rb, uint32_t rl, uint32_t nt, uint32_t k_off, uint32_t st_off)
 	{
-		const uint32_t stage = shared_base + st_off, col_base = nt * TILE_N;
+		const uint32_t stage = shared_base + st_off, col_base = (col_tile_begin + nt) * TILE_N;
 		#pragma unroll
 		for ( uint32_t q = 0u; q < A_PER_T; ++q )
 		{
@@ -2434,8 +2445,9 @@ static void GlmMoeMmaW2K128Bf16Kernel(const uint16_t *__restrict__ exp_w2, const
 		LmDependentRelease();
 		return;
 	}
-	uint32_t cur_grp, cur_rb, cur_rl, cur_nt;
-	GlmGroupedTileLookupGlobal(group_row_offset, tile_prefix, S::kExperts, blockIdx.x, TILE_M, N_TILES, cur_grp, cur_rb, cur_rl, cur_nt);
+	uint32_t cur_grp, cur_rb, cur_rl, cur_nt, dummy_nt = 0u;
+	GlmGroupedTileLookupGlobal(group_row_offset, row_tile_prefix, S::kExperts, blockIdx.x / slice_n_tiles, TILE_M, 1u, cur_grp, cur_rb, cur_rl, dummy_nt);
+	cur_nt = blockIdx.x % slice_n_tiles;
 	issue_half(cur_grp, cur_rb, cur_rl, cur_nt, 0u, 0u);
 	uint32_t a_reg[2][MF][4], b_reg[2][NF][2];
 	auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
@@ -2488,7 +2500,9 @@ static void GlmMoeMmaW2K128Bf16Kernel(const uint16_t *__restrict__ exp_w2, const
 		__syncthreads();
 		if ( has_next != 0u )
 		{
-			GlmGroupedTileLookupGlobal(group_row_offset, tile_prefix, S::kExperts, tile + gridDim.x, TILE_M, N_TILES, nxt_grp, nxt_rb, nxt_rl, nxt_nt);
+			const uint32_t nt_idx = tile + gridDim.x;
+			GlmGroupedTileLookupGlobal(group_row_offset, row_tile_prefix, S::kExperts, nt_idx / slice_n_tiles, TILE_M, 1u, nxt_grp, nxt_rb, nxt_rl, dummy_nt);
+			nxt_nt = nt_idx % slice_n_tiles;
 			issue_half(nxt_grp, nxt_rb, nxt_rl, nxt_nt, 0u, 0u);
 		}
 		load_frag(0u, 0u, shared_base + STAGE_BYTES);
@@ -2504,7 +2518,7 @@ static void GlmMoeMmaW2K128Bf16Kernel(const uint16_t *__restrict__ exp_w2, const
 				for ( uint32_t j = 0u; j < NF; ++j )
 					LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[cur][j]);
 		}
-		const uint32_t col_base = cur_nt * TILE_N;
+		const uint32_t out_col_base = cur_nt * TILE_N;
 		#pragma unroll
 		for ( uint32_t i = 0u; i < MF; ++i )
 			#pragma unroll
@@ -2513,14 +2527,57 @@ static void GlmMoeMmaW2K128Bf16Kernel(const uint16_t *__restrict__ exp_w2, const
 				for ( uint32_t e = 0u; e < 4u; e += 2u )
 				{
 					const uint32_t r = cur_rb + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
-					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+					const uint32_t c = out_col_base + warp_n * WARP_N + j * 8u + quad * 2u;
 					if ( r < cur_rl )
-						__stcs((uint32_t *)(out_bf16 + (uint64_t)r * N + c), (uint32_t)LmFloatToBf16(acc[i][j][e]) | ((uint32_t)LmFloatToBf16(acc[i][j][e + 1u]) << 16u));
+					{
+						const uint32_t packed_pair = (uint32_t)LmFloatToBf16(acc[i][j][e]) | ((uint32_t)LmFloatToBf16(acc[i][j][e + 1u]) << 16u);
+						uint32_t *dst = (uint32_t *)(out_bf16 + (uint64_t)r * slice_cols + c);
+						if constexpr ( STREAM_OUT )
+							__stcs(dst, packed_pair);
+						else
+							*dst = packed_pair;
+					}
 				}
 		cur_grp = nxt_grp;
 		cur_rb = nxt_rb;
 		cur_rl = nxt_rl;
 		cur_nt = nxt_nt;
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t TOPK>
+__global__ __launch_bounds__(128u, 4)
+static void GlmMoeFinalizeAddSliceKernel(const uint16_t *__restrict__ packed_slice_bf16,
+	const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight,
+	const uint16_t *__restrict__ addend_bf16, uint16_t *__restrict__ output_bf16,
+	uint32_t tokens, uint32_t col_offset, uint32_t slice_cols, uint32_t total_cols)
+{
+	LmDependentWait();
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t token = blockIdx.x * 4u + warp;
+	if ( token >= tokens )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t my_pr = lane < TOPK ? __ldg(packed_row_of_token_route + (uint64_t)token * TOPK + lane) : 0u;
+	const float my_wt = lane < TOPK ? __ldg(route_weight + (uint64_t)token * TOPK + lane) : 0.0f;
+	for ( uint32_t elem = lane * 8u; elem < slice_cols; elem += 32u * 8u )
+	{
+		float total[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, add[8];
+		#pragma unroll
+		for ( uint32_t route = 0u; route < TOPK; ++route )
+		{
+			const uint32_t pr = __shfl_sync(0xffffffffu, my_pr, route);
+			const float wt = __shfl_sync(0xffffffffu, my_wt, route);
+			LmFmaBf16x8(total, __ldcs((const uint4 *)(packed_slice_bf16 + (uint64_t)pr * slice_cols + elem)), wt);
+		}
+		LmLoadBf16x8AsFloat(__ldcs((const uint4 *)(addend_bf16 + (uint64_t)token * total_cols + col_offset + elem)), add);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k )
+			total[k] = SparkMathRoundBf16(total[k]) + add[k];
+		*(uint4 *)(output_bf16 + (uint64_t)token * total_cols + col_offset + elem) = LmPackUint4FloatToBf16(total);
 	}
 	LmDependentRelease();
 }
@@ -2951,32 +3008,33 @@ static int32_t GlmMoeMmaW1ActLaunch(const GlmBuffers *b, uint32_t packed_rows, u
 	const uint32_t tile_m = mean >= 22u ? 64u : mean >= 10u ? 32u : 16u;
 	LM_LAUNCH_DEPENDENT((GlmBuildTilePrefixKernel), 1u, 32u, 0, stream, b->group_row_offset, b->group_tile_prefix_w1, S::kExperts, tile_m, 2u);
 	if ( tile_m == 64u )
-		return GlmMoeMmaW1LaunchTile<S, 64u, 2u, 3u, 4u, 1u>(b, sms, stream);
+		return GlmMoeMmaW1LaunchTile<S, 64u, 2u, 2u, 4u, 1u>(b, sms, stream);
 	if ( tile_m == 32u )
 		return GlmMoeMmaW1LaunchTile<S, 32u, 2u, 2u, 2u, 2u>(b, sms, stream);
 	return GlmMoeMmaW1LaunchTile<S, 16u, 1u, 2u, 2u, 3u>(b, sms, stream);
 }
 
-template<class S, uint32_t TILE_M, uint32_t WARPS_M, uint32_t TAG>
-static int32_t GlmMoeMmaW2LaunchTile(const GlmBuffers *b, uint32_t sms, SparkGpuStream stream)
+template<class S, uint32_t TILE_M, uint32_t WARPS_M, uint32_t TAG, bool STREAM_OUT = true>
+static int32_t GlmMoeMmaW2LaunchTile(const GlmBuffers *b, uint32_t sms, uint32_t col_tile_begin, uint32_t slice_n_tiles, SparkGpuStream stream)
 {
 	uint32_t blocks = sms;
 	if constexpr ( S::kExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
 	{
 		constexpr uint32_t sh = 2u * (TILE_M * 256u + 128u * 128u);
-		if ( GlmMoeMmaSetup<S, TAG>(GlmMoeMmaW2K128Fp8Kernel<S, TILE_M, WARPS_M>, sh, sms, &blocks) != LM_LAUNCH_OK )
+		if ( GlmMoeMmaSetup<S, TAG>(GlmMoeMmaW2K128Fp8Kernel<S, TILE_M, WARPS_M, STREAM_OUT>, sh, sms, &blocks) != LM_LAUNCH_OK )
 			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Fp8Kernel<S, TILE_M, WARPS_M>), blocks, 256u, sh, stream,
+		LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Fp8Kernel<S, TILE_M, WARPS_M, STREAM_OUT>), blocks, 256u, sh, stream,
 			(const uint8_t *)b->expert_w2_weight, (const float *)b->expert_w2_scale, b->intermediate_bf16, b->group_row_offset,
-			b->group_tile_prefix_w2, b->expert_out_bf16);
+			b->group_tile_prefix_w2, b->expert_out_bf16, col_tile_begin, slice_n_tiles);
 	}
 	else
 	{
 		constexpr uint32_t sh = 2u * (TILE_M * 128u + 128u * 128u);
-		if ( GlmMoeMmaSetup<S, TAG + 3u>(GlmMoeMmaW2K128Bf16Kernel<S, TILE_M, WARPS_M>, sh, sms, &blocks) != LM_LAUNCH_OK )
+		if ( GlmMoeMmaSetup<S, TAG + 3u>(GlmMoeMmaW2K128Bf16Kernel<S, TILE_M, WARPS_M, STREAM_OUT>, sh, sms, &blocks) != LM_LAUNCH_OK )
 			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Bf16Kernel<S, TILE_M, WARPS_M>), blocks, 256u, sh, stream,
-			(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2, b->expert_out_bf16);
+		LM_LAUNCH_DEPENDENT((GlmMoeMmaW2K128Bf16Kernel<S, TILE_M, WARPS_M, STREAM_OUT>), blocks, 256u, sh, stream,
+			(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2,
+			b->expert_out_bf16, col_tile_begin, slice_n_tiles);
 	}
 	return GlmLaunched();
 }
@@ -2984,14 +3042,47 @@ static int32_t GlmMoeMmaW2LaunchTile(const GlmBuffers *b, uint32_t sms, SparkGpu
 template<class S>
 static int32_t GlmMoeMmaW2K128Launch(const GlmBuffers *b, uint32_t packed_rows, uint32_t sms, SparkGpuStream stream)
 {
+	constexpr uint32_t TOTAL_N_TILES = S::kHidden / 128u;
 	const uint32_t mean = (packed_rows + S::kExperts - 1u) / S::kExperts;
 	const uint32_t tile_m = mean >= 22u ? 64u : mean >= 10u ? 32u : 16u;
-	LM_LAUNCH_DEPENDENT((GlmBuildTilePrefixKernel), 1u, 32u, 0, stream, b->group_row_offset, b->group_tile_prefix_w2, S::kExperts, tile_m, S::kHidden / 128u);
+	LM_LAUNCH_DEPENDENT((GlmBuildTilePrefixKernel), 1u, 32u, 0, stream, b->group_row_offset, b->group_tile_prefix_w2, S::kExperts, tile_m, 1u);
 	if ( tile_m == 64u )
-		return GlmMoeMmaW2LaunchTile<S, 64u, 2u, 11u>(b, sms, stream);
+		return GlmMoeMmaW2LaunchTile<S, 64u, 2u, 11u, true>(b, sms, 0u, TOTAL_N_TILES, stream);
 	if ( tile_m == 32u )
-		return GlmMoeMmaW2LaunchTile<S, 32u, 2u, 12u>(b, sms, stream);
-	return GlmMoeMmaW2LaunchTile<S, 16u, 1u, 13u>(b, sms, stream);
+		return GlmMoeMmaW2LaunchTile<S, 32u, 2u, 12u, true>(b, sms, 0u, TOTAL_N_TILES, stream);
+	return GlmMoeMmaW2LaunchTile<S, 16u, 1u, 13u, true>(b, sms, 0u, TOTAL_N_TILES, stream);
+}
+
+template<class S>
+static int32_t GlmMoeMmaW2K128SlicedFinalizeLaunch(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, SparkGpuStream stream)
+{
+	constexpr uint32_t TOTAL_N_TILES = S::kHidden / 128u;
+	const uint32_t mean = (packed_rows + S::kExperts - 1u) / S::kExperts;
+	const uint32_t tile_m = mean >= 22u ? 64u : mean >= 10u ? 32u : 16u;
+	const uint64_t target_bytes = 12u * 1024u * 1024u;
+	uint32_t slice_n_tiles = (uint32_t)(target_bytes / ((uint64_t)packed_rows * 128u * sizeof(uint16_t)));
+	if ( slice_n_tiles < 1u )
+		slice_n_tiles = 1u;
+	if ( slice_n_tiles > TOTAL_N_TILES )
+		slice_n_tiles = TOTAL_N_TILES;
+	LM_LAUNCH_DEPENDENT((GlmBuildTilePrefixKernel), 1u, 32u, 0, stream, b->group_row_offset, b->group_tile_prefix_w2, S::kExperts, tile_m, 1u);
+	for ( uint32_t col_tile = 0u; col_tile < TOTAL_N_TILES; col_tile += slice_n_tiles )
+	{
+		const uint32_t cur_n_tiles = TOTAL_N_TILES - col_tile < slice_n_tiles ? TOTAL_N_TILES - col_tile : slice_n_tiles;
+		int32_t status;
+		if ( tile_m == 64u )
+			status = GlmMoeMmaW2LaunchTile<S, 64u, 2u, 51u, false>(b, sms, col_tile, cur_n_tiles, stream);
+		else if ( tile_m == 32u )
+			status = GlmMoeMmaW2LaunchTile<S, 32u, 2u, 52u, false>(b, sms, col_tile, cur_n_tiles, stream);
+		else
+			status = GlmMoeMmaW2LaunchTile<S, 16u, 1u, 53u, false>(b, sms, col_tile, cur_n_tiles, stream);
+		if ( status != LM_LAUNCH_OK )
+			return status;
+		LM_LAUNCH_DEPENDENT((GlmMoeFinalizeAddSliceKernel<S::kTopK>), (rows + 3u) / 4u, 128u, 0, stream,
+			b->expert_out_bf16, b->route_packed_row, b->route_weight, b->shared_out_bf16, b->hidden_bf16,
+			rows, col_tile * 128u, cur_n_tiles * 128u, S::kHidden);
+	}
+	return GlmLaunched();
 }
 
 template<class S, uint32_t TILE_M, uint32_t WARPS_M, uint32_t STAGES, uint32_t TAG>

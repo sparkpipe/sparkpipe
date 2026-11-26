@@ -43,7 +43,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `inference/runner/stage_runner.cu` | 1 readback, 1 fill | Readback after sync: the group offsets, after `SparkGpuStreamSynchronize(state->stream)`. Load fill: `chain_step_device` zeroed once at creation before any step runs. |
 | `model-families/dsv41_flash/source/dsv41_flash_stage.cuh` | 7 uploads, 11 readbacks, 1 device copy | Uploads: load (expert placement, token map, engram tables and resident engram rows, `Upload`). Readbacks: after sync (route and step dumps, the frame readback at 3039). Device copy: load, ordered on the legacy stream with the cell packing kernel it feeds, and followed by `SparkGpuDeviceSynchronize`. |
 | `model-families/gemma4/source/gemma4_stage.cuh` | 1 upload | Load: the YaRN table. |
-| `model-families/glm52/source/glm52_stage.cuh` | 1 upload | Load: the rope table. |
+| `model-families/glm52/source/glm52_stage.cuh` | 1 upload, 1 fill | Load: the rope table and cooperative split-K done counters (`shard_split_done`). |
 | `model-families/glm5_next/source/glm5_next_stage_model.cuh` | 1 fill | Load. |
 | `model-families/k3/source/k3_resident_decode_stage_cuda.cu` | 10 fills | Load: the dispatch's pools, scratch and index scratch. Each fill's result is checked, and a failed fill fails the dispatch's creation. |
 | `model-families/k3/source/k3_stage.cuh` | 2 fills | Load. |

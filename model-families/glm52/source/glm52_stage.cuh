@@ -306,6 +306,9 @@ typedef struct GlmBuffers
 	float *shard_partials;
 	float *shard_partials_received;
 	uint64_t shard_partial_stride;
+	uint32_t *shard_split_done;
+	uint32_t shard_split_done_count;
+	uint64_t shard_coop_floats;
 	uint32_t *index_bitmaps;
 	uint32_t index_bitmap_words;
 	uint32_t index_bitmap_rows;
@@ -1448,7 +1451,7 @@ static int32_t GlmShardScatterMid(const GlmBuffers *b, uint32_t rows, uint32_t c
 				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		}
 	}
-	if ( !(LmLatentShardAttendLaunch<GlmKv<S>,LmKvShardView,S::kLatent,S::kRope>(b->cache_shard, b->shard_received_bf16, b->shard_rank_stride_bytes / sizeof(uint16_t), b->attn_heads, b->sequence_of_row, b->context_length, b->row_positions, context > S::kSelected ? b->selected_positions : 0, S::kSelected, S::kSelected, S::kQkScale, b->shard_partials, b->shard_partial_stride, rows, stream, b->fork_positions, b->slot_offsets) == SPARK_GPU_SUCCESS) )
+	if ( !(LmLatentShardAttendCoopLaunch<GlmKv<S>,LmKvShardView,S::kLatent,S::kRope>(b->cache_shard, b->shard_received_bf16, b->shard_rank_stride_bytes / sizeof(uint16_t), b->attn_heads, b->sequence_of_row, b->context_length, b->row_positions, context > S::kSelected ? b->selected_positions : 0, S::kSelected, S::kSelected, S::kQkScale, (float *)b->expert_out_bf16, b->shard_coop_floats, b->shard_split_done, b->shard_split_done_count, b->shard_partials, b->shard_partial_stride, rows, stream, b->fork_positions, b->slot_offsets) == SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return LM_LAUNCH_OK;
 }
@@ -2026,6 +2029,14 @@ static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed
 			LmIsAligned16(b->expert_w1_weight) && LmIsAligned16(b->expert_w2_weight) && LmIsAligned16(b->normed_bf16) &&
 			LmIsAligned16(b->intermediate_bf16) && LmIsAligned16(b->expert_out_bf16) )
 		{
+			const bool w2_mma = b->row_exact == 0u && (b->single_sequence_rows != 0u || rows >= GLM_STREAM_EXPERT_W2_ROWS);
+			const bool w2_sliced = w2_mma && (uint64_t)packed_rows * S::kHidden * sizeof(uint16_t) > 16u * 1024u * 1024u;
+			if ( w2_sliced )
+			{
+				status = GlmMoeSharedProject<S>(b, rows, sms, stream);
+				if ( status != LM_LAUNCH_OK )
+					return status;
+			}
 			if ( b->row_exact == 0u && (b->single_sequence_rows != 0u || rows >= GlmStreamExpertW1Rows<S>()) )
 			{
 				status = GlmMoeMmaW1ActLaunch<S>(b, packed_rows, sms, stream);
@@ -2049,7 +2060,9 @@ static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed
 			}
 			if ( status != LM_LAUNCH_OK )
 				return status;
-			if ( b->row_exact == 0u && (b->single_sequence_rows != 0u || rows >= GLM_STREAM_EXPERT_W2_ROWS) )
+			if ( w2_sliced )
+				return GlmMoeMmaW2K128SlicedFinalizeLaunch<S>(b, rows, packed_rows, sms, stream);
+			if ( w2_mma )
 				status = GlmMoeMmaW2K128Launch<S>(b, packed_rows, sms, stream);
 			else if ( rows <= 8u )
 				status = GlmExpertsDown<S>(b, rows, packed_rows, sms, stream);
@@ -2194,6 +2207,9 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		uint16_t *shard_received;
 		float *shard_partials;
 		float *shard_partials_received;
+		uint32_t *shard_split_done;
+		uint32_t shard_split_done_count;
+		uint64_t shard_coop_floats;
 		uint32_t *index_bitmaps;
 		uint8_t *latent_pack;
 		uint8_t *latent_pool;
@@ -2342,7 +2358,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			{ (void **)&state->projection_gather, degree * rows * width * sizeof(uint16_t) },
 			{ (void **)&state->gate_up, rows * (2u * S::kMlpScratchInter / degree) * sizeof(uint16_t) },
 			{ (void **)&state->intermediate, rows * (S::kMlpScratchInter / degree) * sizeof(uint16_t) },
-			{ (void **)&state->expert_out, packed * S::kHidden * sizeof(uint16_t) },
+			{ (void **)&state->expert_out, packed * S::kHidden * sizeof(uint16_t) > (uint64_t)((S::kHeads + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES) * LM_LATENT_SHARD_COOP_MAX_SPLITS * LM_LATENT_SHARD_QUERIES * LM_LATENT_SHARD_RECORD_FLOATS(S::kLatent) * sizeof(float) ? packed * S::kHidden * sizeof(uint16_t) : (uint64_t)((S::kHeads + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES) * LM_LATENT_SHARD_COOP_MAX_SPLITS * LM_LATENT_SHARD_QUERIES * LM_LATENT_SHARD_RECORD_FLOATS(S::kLatent) * sizeof(float) },
 			{ (void **)&state->shared_out, hidden },
 			{ (void **)&state->router_logits, rows * S::kExperts * sizeof(float) },
 			{ (void **)&state->selection_scores, (uint64_t)state->selection_rows * state->max_positions * sizeof(float) },
@@ -2371,6 +2387,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			{ (void **)&state->shard_received, degree * state->indexing_units_max * S::kUnitBytes },
 			{ (void **)&state->shard_partials, degree * state->partial_units_max * S::kUnitBytes },
 			{ (void **)&state->shard_partials_received, degree * state->partial_units_max * S::kUnitBytes },
+			{ (void **)&state->shard_split_done, (uint64_t)state->scatter_rows * ((S::kHeads + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES) * sizeof(uint32_t) },
 			{ (void **)&state->index_bitmaps, (uint64_t)state->scatter_rows * 2u * LmIndexSelectBitmapWords(state->max_positions) * sizeof(uint32_t) },
 			{ (void **)&state->latent_pack, state->latent_bytes },
 			{ (void **)&state->latent_pool, degree * state->latent_bytes + rows * S::kSlotBytes },
@@ -2586,6 +2603,14 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		state->latent_bytes = (uint64_t)state->latent_max.chunks * state->latent_max.chunk_bytes;
 		state->tail_slot = state->tp_degree * state->latent_bytes / state->latent_max.slot_bytes;
 		state->select_rows_max = (state->max_rows + state->tp_degree - 1u) / state->tp_degree * state->tp_degree;
+		{
+			const uint64_t packed = (uint64_t)state->max_rows * S::kTopK;
+			const uint64_t min_coop_bytes = (uint64_t)((S::kHeads + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES) *
+				LM_LATENT_SHARD_COOP_MAX_SPLITS * LM_LATENT_SHARD_QUERIES * LM_LATENT_SHARD_RECORD_FLOATS(S::kLatent) * sizeof(float);
+			const uint64_t eo_bytes = packed * S::kHidden * sizeof(uint16_t);
+			state->shard_coop_floats = (eo_bytes > min_coop_bytes ? eo_bytes : min_coop_bytes) / sizeof(float);
+			state->shard_split_done_count = state->scatter_rows * ((S::kHeads + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES);
+		}
 		state->arena_bytes = Plan(state, 0, 0u);
 		return SPARK_STATUS_OK;
 	}
@@ -2855,6 +2880,11 @@ struct GlmModel : CudaStage<GlmModel<G>>
 				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 			}
 		}
+		if ( state->shard_split_done != 0 && state->shard_split_done_count != 0u )
+		{
+			if ( SparkGpuMemset(state->shard_split_done, 0, (size_t)state->shard_split_done_count * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
 		fprintf(stderr, "%s rank=%u arena_bytes=%llu rows=%u slots=%u positions=%u scatter_units=%u/%u/%u gather_latent=%u x %u units select_rows=%u\n",
 			G::Tag(), state->tp_rank, (unsigned long long)state->arena_bytes, state->max_rows, state->slots, state->max_positions,
 			state->query_units_max, state->indexing_units_max, state->partial_units_max, state->latent_max.chunks, state->latent_max.chunk_units,
@@ -3013,6 +3043,9 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		b->shard_partials = state->shard_partials;
 		b->shard_partials_received = state->shard_partials_received;
 		b->shard_partial_stride = (uint64_t)wave->partial_units * (S::kUnitBytes / sizeof(float));
+		b->shard_split_done = state->shard_split_done;
+		b->shard_split_done_count = state->shard_split_done_count;
+		b->shard_coop_floats = state->shard_coop_floats;
 		b->index_bitmaps = state->index_bitmaps;
 		b->index_bitmap_words = LmIndexSelectBitmapWords(state->max_positions);
 		b->index_bitmap_rows = state->scatter_rows;
