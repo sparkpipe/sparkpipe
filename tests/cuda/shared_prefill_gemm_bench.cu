@@ -12,9 +12,9 @@
 #define BENCH_WARMUP 5u
 #define BENCH_ITERS 20u
 
-#define CHECK_CUDA(call) do { cudaError_t err_ = (call); if ( err_ != cudaSuccess ) { printf("FAIL cuda %s: %s\n", #call, cudaGetErrorString(err_)); exit(1); } } while (0)
-#define CHECK_GPU(call) do { SparkGpuError err_ = (call); if ( err_ != SPARK_GPU_SUCCESS ) { printf("FAIL gpu %s: %d\n", #call, (int)err_); exit(1); } } while (0)
-#define CHECK_OK(call) do { int32_t st_ = (call); if ( st_ != LM_LAUNCH_OK ) { printf("FAIL launch %s: %d\n", #call, st_); exit(1); } } while (0)
+#define CHECK_CUDA(...) do { cudaError_t err_ = (__VA_ARGS__); if ( err_ != cudaSuccess ) { printf("FAIL cuda %s: %s\n", #__VA_ARGS__, cudaGetErrorString(err_)); exit(1); } } while (0)
+#define CHECK_GPU(...) do { SparkGpuError err_ = (__VA_ARGS__); if ( err_ != SPARK_GPU_SUCCESS ) { printf("FAIL gpu %s: %d\n", #__VA_ARGS__, (int)err_); exit(1); } } while (0)
+#define CHECK_OK(...) do { int32_t st_ = (__VA_ARGS__); if ( st_ != LM_LAUNCH_OK ) { printf("FAIL launch %s: %d\n", #__VA_ARGS__, st_); exit(1); } } while (0)
 
 static int g_failures;
 static uint32_t g_sms;
