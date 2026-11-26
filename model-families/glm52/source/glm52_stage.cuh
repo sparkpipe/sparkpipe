@@ -61,7 +61,8 @@
 #define GLM_CANDIDATE_BYTES 8u
 #define GLM_SCATTER_ROWS 256u
 #define GLM_PREFILL_HEADS 4u
-#define GLM_PREFILL_BLOCK_ROWS LM_PREFILL_ATTN_BLOCK_ROWS(GLM_PREFILL_HEADS)
+#define GLM_PREFILL_QUERIES 32u
+#define GLM_PREFILL_BLOCK_ROWS (GLM_PREFILL_QUERIES / GLM_PREFILL_HEADS)
 #define GLM_PREFILL_SPANS 8u
 #define GLM_PREFILL_TABLE_BLOCKS(rows) (((rows) + GLM_PREFILL_BLOCK_ROWS - 1u) / GLM_PREFILL_BLOCK_ROWS + GLM_PREFILL_SPANS)
 #define GLM_PLAN_ARRAYS 3u
@@ -365,81 +366,95 @@ static __device__ __forceinline__ void GlmProjectionSource(uint32_t column, uint
 
 template<class S, uint32_t TOTAL, uint32_t NORM, bool CONCAT>
 static __device__ __forceinline__ void GlmProjectionNormBody(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ norm,
-	uint16_t *__restrict__ out_row, uint16_t *__restrict__ query_input_row, float *__restrict__ buf, float *__restrict__ reduction,
+	uint16_t *__restrict__ out_row, uint16_t *__restrict__ query_input_row, float *__restrict__ reduction,
 	uint32_t row, uint32_t rows, uint32_t tp_degree, uint32_t width, uint32_t col_offset, float epsilon)
 {
-	uint32_t rank, offset, index;
+	constexpr uint32_t SLOTS = (TOTAL + GLM_THREADS * 8u - 1u) / (GLM_THREADS * 8u);
+	uint32_t rank, offset;
 	float total = 0.0f;
 	const bool vec_ok = ((width & 7u) == 0u) && ((col_offset & 7u) == 0u) && ((TOTAL & 7u) == 0u) && ((NORM & 7u) == 0u) &&
 		LmIsAligned16(gathered) && LmIsAligned16(norm) && LmIsAligned16(out_row) && (!CONCAT || LmIsAligned16(query_input_row));
 	if ( vec_ok )
 	{
-		for ( index = threadIdx.x * 8u; index < TOTAL; index += GLM_THREADS * 8u )
+		uint4 staged[SLOTS];
+		#pragma unroll
+		for ( uint32_t s = 0u; s < SLOTS; ++s )
 		{
-			float vals[8];
-			GlmProjectionSource(index, TOTAL, tp_degree, &rank, &offset);
-			LmLoadBf16x8AsFloat(*(const uint4 *)(gathered + ((uint64_t)rank * rows + row) * width + col_offset + offset), vals);
-			LmStoreFloat8(buf + index, vals);
-			if ( index < NORM )
+			const uint32_t index = (s * GLM_THREADS + threadIdx.x) * 8u;
+			if ( index < TOTAL )
 			{
-				#pragma unroll
-				for ( uint32_t k = 0u; k < 8u; ++k )
-					total += vals[k] * vals[k];
+				float vals[8];
+				GlmProjectionSource(index, TOTAL, tp_degree, &rank, &offset);
+				staged[s] = *(const uint4 *)(gathered + ((uint64_t)rank * rows + row) * width + col_offset + offset);
+				if ( index < NORM )
+				{
+					LmLoadBf16x8AsFloat(staged[s], vals);
+					#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k )
+						total += vals[k] * vals[k];
+				}
 			}
+			else
+				staged[s] = make_uint4(0u, 0u, 0u, 0u);
 		}
 		const float scale = SparkMathRmsScale(LmBlockSumOnce<GLM_THREADS>(total, reduction), (float)NORM, epsilon);
-		for ( index = threadIdx.x * 8u; index < TOTAL; index += GLM_THREADS * 8u )
+		#pragma unroll
+		for ( uint32_t s = 0u; s < SLOTS; ++s )
 		{
-			float vals[8], gain[8], out_f[8];
-			LmLoadFloat8(buf + index, vals);
+			const uint32_t index = (s * GLM_THREADS + threadIdx.x) * 8u;
+			if ( index >= TOTAL )
+				continue;
+			uint4 out_v = staged[s];
 			if ( index < NORM )
 			{
+				float vals[8], gain[8], out_f[8];
+				LmLoadBf16x8AsFloat(staged[s], vals);
 				LmLoadWeight8(norm, index, gain);
 				#pragma unroll
 				for ( uint32_t k = 0u; k < 8u; ++k )
 					out_f[k] = S::kNormRoundFirst ? SparkMathNormGainRounded(vals[k] * scale, gain[k]) : vals[k] * scale * gain[k];
+				out_v = LmPackUint4FloatToBf16(out_f);
 			}
-			const uint4 out_v = LmPackUint4FloatToBf16(index < NORM ? out_f : vals);
 			*(uint4 *)(out_row + index) = out_v;
 			if constexpr ( CONCAT )
 			{
 				*(uint4 *)(query_input_row + index) = out_v;
-				*(uint4 *)(query_input_row + TOTAL + index) = LmPackUint4FloatToBf16(vals);
+				*(uint4 *)(query_input_row + TOTAL + index) = staged[s];
 			}
 		}
 		return;
 	}
-	for ( index = threadIdx.x; index < TOTAL; index += GLM_THREADS )
+	for ( uint32_t index = threadIdx.x; index < NORM; index += GLM_THREADS )
 	{
 		GlmProjectionSource(index, TOTAL, tp_degree, &rank, &offset);
 		const float value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + col_offset + offset]);
-		buf[index] = value;
-		if ( index < NORM )
-			total += value * value;
+		total += value * value;
 	}
 	const float scale = SparkMathRmsScale(LmBlockSumOnce<GLM_THREADS>(total, reduction), (float)NORM, epsilon);
-	for ( index = threadIdx.x; index < TOTAL; index += GLM_THREADS )
+	for ( uint32_t index = threadIdx.x; index < TOTAL; index += GLM_THREADS )
 	{
+		GlmProjectionSource(index, TOTAL, tp_degree, &rank, &offset);
+		const uint16_t raw = gathered[((uint64_t)rank * rows + row) * width + col_offset + offset];
+		const float value = LmBf16ToFloat(raw);
 		const uint16_t out = index < NORM ? LmFloatToBf16(S::kNormRoundFirst ?
-			SparkMathNormGainRounded(buf[index] * scale, LmScalarToFloat(norm[index])) : buf[index] * scale * LmScalarToFloat(norm[index])) :
-			LmFloatToBf16(buf[index]);
+			SparkMathNormGainRounded(value * scale, LmScalarToFloat(norm[index])) : value * scale * LmScalarToFloat(norm[index])) : raw;
 		out_row[index] = out;
 		if constexpr ( CONCAT )
 		{
 			query_input_row[index] = out;
-			query_input_row[TOTAL + index] = LmFloatToBf16(buf[index]);
+			query_input_row[TOTAL + index] = raw;
 		}
 	}
 }
 
 template<class S>
-static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ query_norm,
+static __global__ __launch_bounds__(GLM_THREADS, 4) void GlmProjectionNormKernel(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ query_norm,
 	const uint16_t *__restrict__ latent_norm, const uint32_t *__restrict__ positions, uint16_t *__restrict__ query_out, uint16_t *__restrict__ slot_out,
 	uint32_t rows, uint32_t tp_degree, uint32_t width, uint32_t query_max, uint32_t rope_dimension, float theta, float epsilon,
 	uint16_t *__restrict__ query_input_out, const float *__restrict__ rope_table, LmKvShardView cache_shard,
 	const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ store_positions, uint32_t store_kv)
 {
-	__shared__ __align__(16) float buf[S::kQueryA > S::kSlot ? S::kQueryA : S::kSlot];
+	__shared__ __align__(16) uint16_t s_slot[S::kSlot];
 	__shared__ float reduction[LmBlockWarps<GLM_THREADS>()];
 	const uint32_t row = blockIdx.x, half = rope_dimension / 2u;
 	LmDependentWait();
@@ -447,35 +462,45 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 	if ( blockIdx.y == 0u )
 	{
 		GlmProjectionNormBody<S, S::kQueryA, S::kQueryA, S::kQueryConcat>(gathered, query_norm, query_out + (uint64_t)row * S::kQueryA,
-			query_input_out + (uint64_t)row * S::kQueryInput, buf, reduction, row, rows, tp_degree, width, 0u, epsilon);
+			query_input_out + (uint64_t)row * S::kQueryInput, reduction, row, rows, tp_degree, width, 0u, epsilon);
 		return;
 	}
-	GlmProjectionNormBody<S, S::kSlot, S::kLatent, false>(gathered, latent_norm, slot_out + (uint64_t)row * S::kSlot, (uint16_t *)0,
-		buf, reduction, row, rows, tp_degree, width, query_max, epsilon);
+	GlmProjectionNormBody<S, S::kSlot, S::kLatent, false>(gathered, latent_norm, s_slot, (uint16_t *)0,
+		reduction, row, rows, tp_degree, width, query_max, epsilon);
 	__syncthreads();
 	const float position = (float)positions[row];
 	for ( uint32_t index = threadIdx.x; index < half; index += GLM_THREADS )
-		LmRopeRotate<LM_ROPE_INTERLEAVED, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index,
+		LmRopeRotate<LM_ROPE_INTERLEAVED, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(s_slot, S::kLatent, index,
 			half, position * (S::kRopeTable ? rope_table[index] : __powf(theta, -2.0f * (float)index / (float)rope_dimension)));
+	__syncthreads();
+	uint16_t *out_ptr = slot_out + (uint64_t)row * S::kSlot;
+	if ( ((S::kSlot & 7u) == 0u) && LmIsAligned16(out_ptr) )
+	{
+		for ( uint32_t v = threadIdx.x; v < (S::kSlot >> 3u); v += GLM_THREADS )
+			((uint4 *)out_ptr)[v] = ((const uint4 *)s_slot)[v];
+	}
+	else
+	{
+		for ( uint32_t index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
+			out_ptr[index] = s_slot[index];
+	}
 	if ( store_kv == 0u )
 		return;
-	__syncthreads();
 	const uint32_t store_pos = store_positions[row];
 	if ( SparkKvShardOwns(cache_shard.shard, store_pos) == 0u )
 		return;
 	uint8_t *slot = (uint8_t *)LmKvShardSlotRequired<GlmKv<S>>(cache_shard, sequence_of_row[row], store_pos, row, LM_KV_ACCESS_WRITE);
 	if ( slot == 0 )
 		return;
-	const uint16_t *src = slot_out + (uint64_t)row * S::kSlot;
 	uint16_t *dst = (uint16_t *)slot;
-	if ( ((S::kSlot & 7u) == 0u) && LmIsAligned16(dst) && LmIsAligned16(src) )
+	if ( ((S::kSlot & 7u) == 0u) && LmIsAligned16(dst) )
 	{
 		for ( uint32_t v = threadIdx.x; v < (S::kSlot >> 3u); v += GLM_THREADS )
-			((uint4 *)dst)[v] = ((const uint4 *)src)[v];
+			((uint4 *)dst)[v] = ((const uint4 *)s_slot)[v];
 		return;
 	}
 	for ( uint32_t index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
-		dst[index] = src[index];
+		dst[index] = s_slot[index];
 }
 
 static __global__ void GlmWaveContextKernel(const uint32_t *slots, const uint32_t *positions, uint32_t *context_lengths, uint32_t rows)
@@ -638,13 +663,13 @@ static int32_t GlmLinear(const uint16_t *activation, GlmLinearWeight weight, uin
 }
 
 template<class S>
-static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmIndexKeyNormRopeStoreKernel(uint16_t *__restrict__ index_key_bf16,
+static __global__ __launch_bounds__(32u, 8) void GlmIndexKeyNormRopeStoreKernel(uint16_t *__restrict__ index_key_bf16,
 	const uint16_t *__restrict__ norm_weight, const uint16_t *__restrict__ norm_bias, const uint32_t *__restrict__ positions,
 	const float *__restrict__ rope_table, LmKvShardView index_shard, const uint32_t *__restrict__ sequence_of_row,
 	const uint32_t *__restrict__ store_positions)
 {
 	__shared__ __align__(16) uint16_t s_key[S::kIndexDim];
-	__shared__ float pair_reduction[2u * LmBlockWarps<GLM_THREADS>()];
+	__shared__ float pair_reduction[2u];
 	const uint32_t row = blockIdx.x, half = S::kRope / 2u;
 	const uint64_t base = (uint64_t)row * S::kIndexDim;
 	const uint32_t offset = threadIdx.x * 8u;
@@ -664,21 +689,21 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmIndexKeyNormRopeStor
 			total_squared += v[k] * v[k];
 		}
 	}
-	LmLayerNormStats<GLM_THREADS>(total, total_squared, pair_reduction, S::kIndexDim, S::kIndexEpsilon, &mean, &inverse);
+	LmLayerNormStats<32u>(total, total_squared, pair_reduction, S::kIndexDim, S::kIndexEpsilon, &mean, &inverse);
 	if ( offset < S::kIndexDim )
 	{
 		float v[8];
 		LmLoadBf16x8AsFloat(staged, v);
 		LmLayerNormStore8(v, norm_weight, norm_bias, offset, mean, inverse, s_key + offset);
 	}
-	__syncthreads();
+	__syncwarp();
 	const float position = (float)positions[row];
-	for ( uint32_t index = threadIdx.x; index < half; index += GLM_THREADS )
+	for ( uint32_t index = threadIdx.x; index < half; index += 32u )
 	{
 		const float angle = position * (S::kRopeTable ? rope_table[index] : __powf(S::kRopeTheta, -2.0f * (float)index / (float)S::kRope));
 		LmRopeRotate<S::kIndexPairing, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(s_key, 0u, index, half, angle);
 	}
-	__syncthreads();
+	__syncwarp();
 	if ( offset < S::kIndexDim )
 		*(uint4 *)(index_key_bf16 + base + offset) = *(const uint4 *)(s_key + offset);
 	const uint32_t store_pos = store_positions[row];
@@ -693,7 +718,7 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmIndexKeyNormRopeStor
 			*(uint4 *)((uint16_t *)slot + offset) = *(const uint4 *)(s_key + offset);
 		return;
 	}
-	for ( uint32_t index = threadIdx.x; index < S::kIndexDim; index += GLM_THREADS )
+	for ( uint32_t index = threadIdx.x; index < S::kIndexDim; index += 32u )
 		((uint16_t *)slot)[index] = s_key[index];
 }
 
@@ -879,10 +904,10 @@ static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, 
 		if ( status != LM_LAUNCH_OK )
 			return status;
 	}
-	if constexpr ( (S::kIndexDim & 7u) == 0u && S::kIndexDim <= GLM_THREADS * 8u )
+	if constexpr ( (S::kIndexDim & 7u) == 0u && S::kIndexDim <= 32u * 8u )
 		if ( LmIsAligned16(b->index_key_bf16) && LmIsAligned16(b->weights->index_norm_weight) && LmIsAligned16(b->weights->index_norm_bias) )
 		{
-			LM_LAUNCH_DEPENDENT((GlmIndexKeyNormRopeStoreKernel<S>), rows, GLM_THREADS, 0, stream, b->index_key_bf16, b->weights->index_norm_weight,
+			LM_LAUNCH_DEPENDENT((GlmIndexKeyNormRopeStoreKernel<S>), rows, 32u, 0, stream, b->index_key_bf16, b->weights->index_norm_weight,
 				b->weights->index_norm_bias, b->positions, b->rope_table, b->index_shard, b->sequence_of_row, b->slots != 0 ? b->slots : b->positions);
 			return GlmLaunched();
 		}
@@ -952,16 +977,23 @@ static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms,
 	if ( index_q_done == 0u )
 		status = GlmLinear<S>(b->q_compressed_bf16, b->weights->index_q, b->index_query_bf16, rows, S::kQueryA, S::kIndexQuery, S::kIndexQuery, 0u, sms, b->row_exact, stream, b->single_sequence_rows);
 	if ( status == LM_LAUNCH_OK )
-		status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
-			b->row_exact, stream, b->single_sequence_rows);
+	{
+		if constexpr ( S::kHidden % 64u == 0u && (S::kIndexHeads == 32u || S::kIndexHeads == 64u) )
+		{
+			if ( b->single_sequence_rows != 0u && b->row_exact == 0u && LmIsAligned16(b->weights->index_head) && LmIsAligned16(b->normed_bf16) )
+				status = GlmPrefillIndexHeadMmaLaunch<S>(b->weights->index_head, b->normed_bf16, b->index_head_weight, rows, sms, stream);
+			else
+				status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
+					b->row_exact, stream, b->single_sequence_rows);
+		}
+		else
+			status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
+				b->row_exact, stream, b->single_sequence_rows);
+	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	if constexpr ( S::kRopeTable )
-		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
-			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, S::kRope, S::kRopeTheta, b->rope_table, 1.0f, 0u);
-	else
-		LM_LAUNCH((LmRopeOffsetPerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
-			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, 0u, S::kRope, S::kRopeTheta);
+	LM_LAUNCH_DEPENDENT((GlmIndexQueryRopeSkipKernel<S>), dim3(rows, (S::kIndexHeads + 7u) / 8u), GLM_THREADS, 0, stream, b->index_query_bf16, b->positions,
+		b->rope_table, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0, 0u);
 	return GlmLaunched();
 }
 
@@ -986,7 +1018,7 @@ static int32_t GlmIndexerScore(const GlmBuffers *b, LmKvShardView pages, uint32_
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		if ( candidates != 0 && keep == score_stride )
 		{
-			LM_LAUNCH((GlmIndexPackDirectKernel), dim3((score_stride + GLM_THREADS - 1u) / GLM_THREADS, count), GLM_THREADS, 0, stream,
+			LM_LAUNCH_DEPENDENT((GlmIndexPackDirectKernel), dim3((score_stride + GLM_THREADS - 1u) / GLM_THREADS, count), GLM_THREADS, 0, stream,
 				b->kv_shard, b->selection_scores, score_stride, count, candidates + (uint64_t)first * keep);
 			continue;
 		}
@@ -1102,6 +1134,22 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	GlmProjectionSlice(S::kSlot, b->tp_degree, b->tp_rank, &kv_first, &kv_count);
 	width = GlmProjectionSliceWidth<S>(b->tp_degree);
 	query_max = GlmProjectionSliceMax(S::kQueryA, b->tp_degree);
+	if constexpr ( (S::kLinearCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 || S::kLinearCodec == SPARK_WEIGHT_CODEC_BF16) && S::kHidden % 128u == 0u )
+		if ( b->single_sequence_rows != 0u && b->row_exact == 0u && q_count != 0u && kv_count != 0u &&
+			LmIsAligned16(b->normed_bf16) && LmIsAligned16(b->projection_local_bf16) )
+		{
+			const GlmLinearWeight q_a = GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden);
+			const GlmLinearWeight kv_a = GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden);
+			if ( LmIsAligned16(q_a.weight) && LmIsAligned16(kv_a.weight) )
+			{
+				const uint32_t fuse_ik = (with_index_k != 0u && b->weights->index_k.weight != 0 && (!GlmLinearScaled<S> || b->weights->index_k.scale != 0) &&
+					b->index_key_bf16 != 0 && LmIsAligned16(b->weights->index_k.weight) && LmIsAligned16(b->index_key_bf16)) ? 1u : 0u;
+				status = GlmPrefillQkvIndexMmaLaunch<S>(b, q_a, q_count, kv_a, kv_count, width, query_max, fuse_ik, rows, sms, stream);
+				if ( status == LM_LAUNCH_OK && fuse_ik != 0u && index_k_done != 0 )
+					*index_k_done = 1u;
+				return status;
+			}
+		}
 	if ( q_count != 0u && kv_count != 0u && ((rows <= LM_SKINNY_ROWS_WIDE && b->single_sequence_rows == 0u) || b->row_exact != 0u) )
 	{
 		const GlmLinearWeight q_a = GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden), kv_a = GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden);
@@ -1228,15 +1276,35 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 						b->q_bf16, kv_w, b->positions, b->rope_table, packed_query, b->attn_heads, rows);
 				return GlmLaunched();
 			}
-		LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
-			b->q_bf16, packed_query, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table, S::kLatent + S::kRope, S::kLatent);
+		if constexpr ( S::kRope == 64u )
+		{
+			if ( b->attn_heads == 4u )
+				LM_LAUNCH_DEPENDENT((GlmPrefillExtractRopeKernel<S, S::kLatent + S::kRope, S::kLatent>), (rows + 1u) / 2u, GLM_THREADS, 0, stream,
+					b->q_bf16, packed_query, b->positions, b->rope_table, rows);
+			else
+				LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
+					b->q_bf16, packed_query, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table, S::kLatent + S::kRope, S::kLatent);
+		}
+		else
+			LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
+				b->q_bf16, packed_query, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table, S::kLatent + S::kRope, S::kLatent);
 		if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u,S::kLatent + S::kRope>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
 				b->attn_heads * S::kLatent * S::kNope, packed_query, b->attn_heads, rows, stream, b->row_exact, b->single_sequence_rows) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return LM_LAUNCH_OK;
 	}
-	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
-		b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table);
+	if constexpr ( S::kRope == 64u )
+	{
+		if ( b->attn_heads == 4u )
+			LM_LAUNCH_DEPENDENT((GlmPrefillExtractRopeKernel<S, S::kRope, 0u>), (rows + 1u) / 2u, GLM_THREADS, 0, stream,
+				b->q_bf16, b->query_rope_bf16, b->positions, b->rope_table, rows);
+		else
+			LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
+				b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table);
+	}
+	else
+		LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
+			b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table);
 	if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
 			b->attn_heads * S::kLatent * S::kNope, b->query_latent_bf16, b->attn_heads, rows, stream, b->row_exact, b->single_sequence_rows) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
@@ -1258,13 +1326,13 @@ static int32_t GlmLatentAttentionGathered(const GlmBuffers *b, LmKvView cache, u
 	const uint32_t selected_count = context > S::kSelected ? b->selected_position_count : 0u;
 	if ( (b->single_sequence_rows != 0u || b->prefill_block_table != 0) && (rows > LM_SKINNY_ROWS || b->single_sequence_rows != 0u) && selected == 0 )
 	{
-		if ( !(LmLatentAttentionPrefillLaunch<GlmKvGathered<S>,S::kLatent,S::kRope>(b->query_latent_bf16, b->query_rope_bf16, cache, b->sequence_of_row, b->row_positions, b->attn_heads, S::kQkScale, b->attention_latent_bf16, rows, b->prefill_block_table, b->prefill_table_blocks, stream) == SPARK_GPU_SUCCESS) )
+		if ( !(LmLatentAttentionPrefillLaunch<GlmKvGathered<S>,S::kLatent,S::kRope,GLM_PREFILL_QUERIES>(b->query_latent_bf16, b->query_rope_bf16, cache, b->sequence_of_row, b->row_positions, b->attn_heads, S::kQkScale, b->attention_latent_bf16, rows, b->prefill_block_table, b->prefill_table_blocks, stream) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return LM_LAUNCH_OK;
 	}
 	if ( (b->single_sequence_rows != 0u || b->prefill_block_table != 0) && (rows > LM_SKINNY_ROWS || b->single_sequence_rows != 0u) && selected != 0 && b->prefill_union_positions != 0 )
 	{
-		if ( !(LmLatentAttentionSparsePrefillLaunch<GlmKvGathered<S>,S::kLatent,S::kRope,S::kSelected>(b->query_latent_bf16, b->query_rope_bf16, cache, b->sequence_of_row, b->row_positions, b->attn_heads, S::kQkScale, b->attention_latent_bf16, rows, b->prefill_block_table, b->prefill_table_blocks, selected, selected_count, b->prefill_union_positions, b->prefill_union_masks, b->prefill_union_counts, b->prefill_union_entries, stream) == SPARK_GPU_SUCCESS) )
+		if ( !(LmLatentAttentionSparsePrefillLaunch<GlmKvGathered<S>,S::kLatent,S::kRope,S::kSelected,GLM_PREFILL_QUERIES>(b->query_latent_bf16, b->query_rope_bf16, cache, b->sequence_of_row, b->row_positions, b->attn_heads, S::kQkScale, b->attention_latent_bf16, rows, b->prefill_block_table, b->prefill_table_blocks, selected, selected_count, b->prefill_union_positions, b->prefill_union_masks, b->prefill_union_counts, b->prefill_union_entries, stream) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return LM_LAUNCH_OK;
 	}
@@ -1300,6 +1368,17 @@ static int32_t GlmAttentionOutput(const GlmBuffers *b, uint32_t rows, uint32_t s
 			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 			gated = 1u;
+		}
+		else if constexpr ( S::kQueryGate != 0u && S::kLatent % 64u == 0u && S::kValue % 64u == 0u )
+		{
+			if ( b->row_exact == 0u && (b->single_sequence_rows != 0u || rows > 8u) )
+			{
+				LM_LAUNCH_DEPENDENT((GlmKvBValueMmaGateKernel<S>), dim3(S::kValue / 64u, b->attn_heads, (rows + 63u) / 64u), 128u, 0, stream,
+					b->attention_latent_bf16, kv_v, b->q_bf16, b->attention_value_bf16, b->attn_heads, rows);
+				if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+				gated = 1u;
+			}
 		}
 	}
 	if ( gated == 0u )
@@ -2499,7 +2578,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		state->selection_rows = LmTopkExactSelectionRows(state->max_rows, state->max_positions);
 		state->topk_entries = LmTopkExactScratchEntries(state->selection_rows, state->max_positions, S::kSelected);
 		state->union_entries = state->max_positions > S::kSelected ?
-			LmPrefillSparseUnionEntries(GLM_PREFILL_TABLE_BLOCKS(state->max_rows), GLM_PREFILL_HEADS, S::kSelected) : 0u;
+			LmPrefillSparseUnionEntries<GLM_PREFILL_QUERIES>(GLM_PREFILL_TABLE_BLOCKS(state->max_rows), GLM_PREFILL_HEADS, S::kSelected) : 0u;
 		ScatterSizes(state, state->scatter_rows, &state->query_units_max, &state->indexing_units_max, &state->partial_units_max, &candidate_offset);
 		state->latent_max = GatherLayout(state, state->max_positions);
 		if ( state->latent_max.chunks == 0u )
@@ -3223,7 +3302,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		{
 			LmKvView cache;
 			View(state, &cache, state->kv_pool);
-			if ( LmPrefillBlockTableLaunch<GLM_PREFILL_HEADS>(cache, slots, rows, state->block_table, GLM_PREFILL_TABLE_BLOCKS(rows), 0, GLM_PREFILL_SPANS,
+			if ( LmPrefillBlockTableLaunch<GLM_PREFILL_HEADS, GLM_PREFILL_QUERIES>(cache, slots, rows, state->block_table, GLM_PREFILL_TABLE_BLOCKS(rows), 0, GLM_PREFILL_SPANS,
 					stream) != SPARK_GPU_SUCCESS )
 				return Fail("prefill block table", 0u, LM_LAUNCH_ERR_LAUNCH);
 		}
