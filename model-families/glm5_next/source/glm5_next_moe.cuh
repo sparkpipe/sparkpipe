@@ -1539,8 +1539,8 @@ static void Glm5NextSharedDownFinalizeAddMmaKernel(const uint16_t *__restrict__ 
 	const uint16_t *__restrict__ expert_out, const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight,
 	uint16_t *__restrict__ output_bf16, uint32_t rows)
 {
-	constexpr uint32_t K = 128u, N = G5N_HIDDEN, TILE_M = 64u, TILE_N = 128u, TILE_K = 64u;
-	constexpr uint32_t WARPS_M = 4u, WARPS_N = 2u, WARP_M = 16u, WARP_N = 64u, NF = 8u;
+	constexpr uint32_t K = 128u, N = G5N_HIDDEN, TILE_M = 64u, TILE_N = 128u;
+	constexpr uint32_t WARPS_N = 2u, WARP_M = 16u, WARP_N = 64u, NF = 8u;
 	constexpr uint32_t ROW_CHUNKS = 8u, ROW_BYTES = 128u, A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
 	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / 256u, B_PER_T = (TILE_N * ROW_CHUNKS) / 256u, ROW_STEP = 256u / ROW_CHUNKS;
 	extern __shared__ __align__(128) uint8_t smem[];

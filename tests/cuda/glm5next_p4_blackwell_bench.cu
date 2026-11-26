@@ -181,113 +181,9 @@ static void CheckTol(const char *name, const ErrStats &st, double abs_tol, doubl
 		g_failures++;
 }
 
-static void BenchHcPostDotMma(cudaStream_t stream)
-{
-	printf("\n=== 1. HC Post+Dot+Norm MMA (90 sites/step) ===\n");
-	const uint32_t max_rows = 1024u;
-	uint16_t *streams_in = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_HC_FLAT * 2u);
-	uint16_t *post_out = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_HIDDEN * 2u);
-	uint16_t *streams_ref = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_HC_FLAT * 2u);
-	uint16_t *streams_opt = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_HC_FLAT * 2u);
-	uint16_t *norm_w = (uint16_t *)DevAlloc((uint64_t)G5N_HIDDEN * 2u);
-	uint16_t *normed_ref = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_HIDDEN * 2u);
-	uint16_t *normed_opt = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_HIDDEN * 2u);
-	float *fn_f32 = (float *)DevAlloc((uint64_t)G5N_HC_MIX * G5N_HC_FLAT * 4u);
-	float *base_f32 = (float *)DevAlloc((uint64_t)G5N_HC_MIX * 4u);
-	float *scale_f32 = (float *)DevAlloc(3u * 4u);
-	float *post_init = (float *)DevAlloc((uint64_t)max_rows * G5N_HC * 4u);
-	float *comb_init = (float *)DevAlloc((uint64_t)max_rows * 16u * 4u);
-	float *post_ref = (float *)DevAlloc((uint64_t)max_rows * G5N_HC * 4u);
-	float *comb_ref = (float *)DevAlloc((uint64_t)max_rows * 16u * 4u);
-	float *post_opt = (float *)DevAlloc((uint64_t)max_rows * G5N_HC * 4u);
-	float *comb_opt = (float *)DevAlloc((uint64_t)max_rows * 16u * 4u);
-	float *partials = (float *)DevAlloc((uint64_t)max_rows * LM_HC_SITE_CLUSTER * (LM_HC_SITE_MIX + 1u) * 4u);
-
-	FillBf16(streams_in, (uint64_t)max_rows * G5N_HC_FLAT, 101u, 0.0f, 0.5f, stream);
-	FillBf16(post_out, (uint64_t)max_rows * G5N_HIDDEN, 102u, 0.0f, 0.5f, stream);
-	FillBf16(norm_w, G5N_HIDDEN, 103u, 1.0f, 0.1f, stream);
-	FillF32(fn_f32, (uint64_t)G5N_HC_MIX * G5N_HC_FLAT, 104u, 0.0f, 0.02f, stream);
-	FillF32(base_f32, G5N_HC_MIX, 105u, 0.0f, 0.2f, stream);
-	FillF32(scale_f32, 3u, 106u, 0.25f, 0.05f, stream);
-	FillF32(post_init, (uint64_t)max_rows * G5N_HC, 107u, 1.0f, 0.2f, stream);
-	FillF32(comb_init, (uint64_t)max_rows * 16u, 108u, 0.25f, 0.05f, stream);
-
-	const uint32_t row_cases[3] = {64u, 256u, 1024u};
-	for ( uint32_t ci = 0u; ci < 3u; ++ci )
-	{
-		const uint32_t rows = row_cases[ci];
-		auto run_ref = [&]()
-		{
-			CHECK_CUDA(cudaMemcpyAsync(post_ref, post_init, (uint64_t)rows * G5N_HC * 4u, cudaMemcpyDeviceToDevice, stream));
-			CHECK_CUDA(cudaMemcpyAsync(comb_ref, comb_init, (uint64_t)rows * 16u * 4u, cudaMemcpyDeviceToDevice, stream));
-			Glm5NextLayerBuffers b;
-			memset(&b, 0, sizeof(b));
-			b.prefill_unified = 0u;
-			b.hc_collapsed_bf16 = (uint16_t *)partials;
-			b.hc_post_f32 = post_ref;
-			b.hc_comb_f32 = comb_ref;
-			b.normed_bf16 = normed_ref;
-			CHECK_OK(Glm5NextHcPostNorm(&b, streams_in, post_out, streams_ref, fn_f32, base_f32, scale_f32, norm_w, rows, (SparkGpuStream)stream));
-		};
-		auto run_opt = [&]()
-		{
-			CHECK_CUDA(cudaMemcpyAsync(post_opt, post_init, (uint64_t)rows * G5N_HC * 4u, cudaMemcpyDeviceToDevice, stream));
-			CHECK_CUDA(cudaMemcpyAsync(comb_opt, comb_init, (uint64_t)rows * 16u * 4u, cudaMemcpyDeviceToDevice, stream));
-			Glm5NextLayerBuffers b;
-			memset(&b, 0, sizeof(b));
-			b.prefill_unified = 1u;
-			b.hc_collapsed_bf16 = (uint16_t *)partials;
-			b.hc_post_f32 = post_opt;
-			b.hc_comb_f32 = comb_opt;
-			b.normed_bf16 = normed_opt;
-			CHECK_OK(Glm5NextHcPostNorm(&b, streams_in, post_out, streams_opt, fn_f32, base_f32, scale_f32, norm_w, rows, (SparkGpuStream)stream));
-		};
-		run_ref();
-		run_opt();
-		char label[64];
-		snprintf(label, sizeof(label), "HC streams_out 0-ULP (rows=%u)", rows);
-		CheckTol(label, CompareBf16(streams_opt, streams_ref, (uint64_t)rows * G5N_HC_FLAT, stream), 0.0, 0.0, true);
-		snprintf(label, sizeof(label), "HC normed_bf16 (rows=%u)", rows);
-		CheckTol(label, CompareBf16(normed_opt, normed_ref, (uint64_t)rows * G5N_HIDDEN, stream), 2e-2, 2e-2);
-		snprintf(label, sizeof(label), "HC post_f32 (rows=%u)", rows);
-		CheckTol(label, CompareF32(post_opt, post_ref, (uint64_t)rows * G5N_HC, stream), 5e-4, 5e-4);
-
-		auto time_ref = [&]()
-		{
-			Glm5NextLayerBuffers b;
-			memset(&b, 0, sizeof(b));
-			b.prefill_unified = 0u;
-			b.hc_collapsed_bf16 = (uint16_t *)partials;
-			b.hc_post_f32 = post_ref;
-			b.hc_comb_f32 = comb_ref;
-			b.normed_bf16 = normed_ref;
-			CHECK_OK(Glm5NextHcPostNorm(&b, streams_in, post_out, streams_ref, fn_f32, base_f32, scale_f32, norm_w, rows, (SparkGpuStream)stream));
-		};
-		auto time_opt = [&]()
-		{
-			Glm5NextLayerBuffers b;
-			memset(&b, 0, sizeof(b));
-			b.prefill_unified = 1u;
-			b.hc_collapsed_bf16 = (uint16_t *)partials;
-			b.hc_post_f32 = post_opt;
-			b.hc_comb_f32 = comb_opt;
-			b.normed_bf16 = normed_opt;
-			CHECK_OK(Glm5NextHcPostNorm(&b, streams_in, post_out, streams_opt, fn_f32, base_f32, scale_f32, norm_w, rows, (SparkGpuStream)stream));
-		};
-		const float ms_ref = TimeMs(time_ref, stream), ms_opt = TimeMs(time_opt, stream);
-		printf("  [PERF] HC PostNorm rows=%4u: ref=%.3f ms  opt=%.3f ms  speedup=%.2fx  (90 sites: %.1f -> %.1f ms)\n",
-			rows, ms_ref, ms_opt, ms_ref / ms_opt, ms_ref * 90.0f, ms_opt * 90.0f);
-	}
-
-	cudaFree(streams_in); cudaFree(post_out); cudaFree(streams_ref); cudaFree(streams_opt);
-	cudaFree(norm_w); cudaFree(normed_ref); cudaFree(normed_opt); cudaFree(fn_f32);
-	cudaFree(base_f32); cudaFree(scale_f32); cudaFree(post_init); cudaFree(comb_init);
-	cudaFree(post_ref); cudaFree(comb_ref); cudaFree(post_opt); cudaFree(comb_opt); cudaFree(partials);
-}
-
 static void BenchKdaFusedAndWy(cudaStream_t stream)
 {
-	printf("\n=== 2. KDA UpDecayBeta MMA + NormGate + WY C=32 (34 layers/step) ===\n");
+	printf("\n=== 1. KDA UpDecayBeta MMA + NormGate 0-ULP + WY C=32 + Gate GX (34 layers/step) ===\n");
 	const uint32_t max_rows = 1024u, heads = 4u, rank_qk = heads * G5N_KDA_KEY, fused = 3u * rank_qk + heads;
 	uint16_t *fused_dg = (uint16_t *)DevAlloc((uint64_t)max_rows * 2u * G5N_KDA_LOW_RANK * 2u);
 	uint16_t *decay_lat = (uint16_t *)DevAlloc((uint64_t)max_rows * G5N_KDA_LOW_RANK * 2u);
@@ -352,12 +248,12 @@ static void BenchKdaFusedAndWy(cudaStream_t stream)
 	};
 	auto run_ng_opt = [&]()
 	{
-		LM_LAUNCH_DEPENDENT((Glm5NextKdaNormGatePrefillKernel), (rows * heads + 7u) / 8u, 256u, 0, (SparkGpuStream)stream,
+		LM_LAUNCH_DEPENDENT((Glm5NextKdaNormGatePrefillKernel), (rows * heads + 15u) / 16u, 256u, 0, (SparkGpuStream)stream,
 			q_tmp, gate_ref, kda_norm_w, ng_opt, rows * heads);
 	};
 	run_ng_ref();
 	run_ng_opt();
-	CheckTol("KDA NormGatePrefill rows=1024", CompareBf16(ng_opt, ng_ref, (uint64_t)rows * rank_qk, stream), 1e-2, 1e-2);
+	CheckTol("KDA NormGatePrefill 0-ULP rows=1024", CompareBf16(ng_opt, ng_ref, (uint64_t)rows * rank_qk, stream), 0.0, 0.0, true);
 	const float ms_ng_ref = TimeMs(run_ng_ref, stream), ms_ng_opt = TimeMs(run_ng_opt, stream);
 	printf("  [PERF] KDA NormGate rows=1024:    ref=%.3f ms  opt=%.3f ms  speedup=%.2fx  (34 layers: %.1f -> %.1f ms)\n",
 		ms_ng_ref, ms_ng_opt, ms_ng_ref / ms_ng_opt, ms_ng_ref * 34.0f, ms_ng_opt * 34.0f);
@@ -424,6 +320,71 @@ static void BenchKdaFusedAndWy(cudaStream_t stream)
 			r, ms_ref, ms_opt, ms_ref / ms_opt, ms_ref * 34.0f, ms_opt * 34.0f);
 	}
 
+	const uint32_t gx_deltas[3] = {1u, 23u, 64u};
+	const uint32_t gx_cached = 128u;
+	uint8_t *state_cached = (uint8_t *)DevAlloc(slot_bytes);
+	{
+		const uint32_t h_sb[2] = {0u, gx_cached};
+		CHECK_CUDA(cudaMemcpyAsync(seq_begin, h_sb, sizeof(h_sb), cudaMemcpyHostToDevice, stream));
+		CHECK_CUDA(cudaMemcpyAsync(state_cached, state_init, slot_bytes, cudaMemcpyDeviceToDevice, stream));
+		Glm5NextLayerBuffers b;
+		memset(&b, 0, sizeof(b));
+		b.kda_heads = heads;
+		b.kda_state_pool = state_cached;
+		b.kda_state_slot_bytes = slot_bytes;
+		b.kda_state_index = state_idx;
+		b.sequence_row_begin = seq_begin;
+		b.q_bf16 = q_tmp;
+		b.kv_slot_bf16 = k_tmp;
+		b.gate_up_bf16 = v_tmp;
+		b.kda_retention = ret_ref;
+		b.kda_write_gate = wg_ref;
+		b.attention_out_bf16 = out_ref;
+		b.expert_out_bf16 = wy_ws;
+		CHECK_OK(Glm5NextKdaWyLaunch(&b, gx_cached, 1u, (SparkGpuStream)stream));
+	}
+	for ( uint32_t di = 0u; di < 3u; ++di )
+	{
+		const uint32_t delta = gx_deltas[di], total = gx_cached + delta;
+		const uint32_t sb_cold[2] = {0u, total}, sb_warm[2] = {0u, delta};
+		CHECK_CUDA(cudaMemcpyAsync(state_ref, state_init, slot_bytes, cudaMemcpyDeviceToDevice, stream));
+		CHECK_CUDA(cudaMemcpyAsync(seq_begin, sb_cold, sizeof(sb_cold), cudaMemcpyHostToDevice, stream));
+		Glm5NextLayerBuffers bc;
+		memset(&bc, 0, sizeof(bc));
+		bc.kda_heads = heads;
+		bc.kda_state_pool = state_ref;
+		bc.kda_state_slot_bytes = slot_bytes;
+		bc.kda_state_index = state_idx;
+		bc.sequence_row_begin = seq_begin;
+		bc.q_bf16 = q_tmp;
+		bc.kv_slot_bf16 = k_tmp;
+		bc.gate_up_bf16 = v_tmp;
+		bc.kda_retention = ret_ref;
+		bc.kda_write_gate = wg_ref;
+		bc.attention_out_bf16 = out_ref;
+		bc.expert_out_bf16 = wy_ws;
+		CHECK_OK(Glm5NextKdaWyLaunch(&bc, total, 1u, (SparkGpuStream)stream));
+
+		CHECK_CUDA(cudaMemcpyAsync(state_opt, state_cached, slot_bytes, cudaMemcpyDeviceToDevice, stream));
+		CHECK_CUDA(cudaMemcpyAsync(seq_begin, sb_warm, sizeof(sb_warm), cudaMemcpyHostToDevice, stream));
+		Glm5NextLayerBuffers bw = bc;
+		bw.kda_state_pool = state_opt;
+		bw.q_bf16 = q_tmp + (uint64_t)gx_cached * rank_qk;
+		bw.kv_slot_bf16 = k_tmp + (uint64_t)gx_cached * rank_qk;
+		bw.gate_up_bf16 = v_tmp + (uint64_t)gx_cached * rank_qk;
+		bw.kda_retention = ret_ref + (uint64_t)gx_cached * rank_qk;
+		bw.kda_write_gate = wg_ref + (uint64_t)gx_cached * heads;
+		bw.attention_out_bf16 = out_opt;
+		CHECK_OK(Glm5NextKdaWyLaunch(&bw, delta, 1u, (SparkGpuStream)stream));
+
+		char label[64];
+		snprintf(label, sizeof(label), "Gate GX KDA WY output 0-ULP (d=%u)", delta);
+		CheckTol(label, CompareBf16(out_opt, out_ref + (uint64_t)gx_cached * rank_qk, (uint64_t)delta * rank_qk, stream), 0.0, 0.0, true);
+		snprintf(label, sizeof(label), "Gate GX KDA WY state 0-ULP (d=%u)", delta);
+		CheckTol(label, CompareF32((const float *)state_opt, (const float *)state_ref, rank_qk * G5N_KDA_VALUE, stream), 0.0, 0.0, true);
+	}
+	cudaFree(state_cached);
+
 	cudaFree(fused_dg); cudaFree(decay_lat); cudaFree(gate_lat); cudaFree(decay_up_w); cudaFree(gate_up_w);
 	cudaFree(fused_qkvb); cudaFree(beta_only); cudaFree(decay_logit); cudaFree(gate_ref); cudaFree(gate_opt);
 	cudaFree(decay_bias); cudaFree(head_log); cudaFree(ret_ref); cudaFree(ret_opt); cudaFree(wg_ref); cudaFree(wg_opt);
@@ -434,7 +395,7 @@ static void BenchKdaFusedAndWy(cudaStream_t stream)
 
 static void BenchDsaPoolScoreAndProj(cudaStream_t stream)
 {
-	printf("\n=== 3. DSA PoolScore MMA + Fused IndexProj + IndexQ 3-Stage + SmallN MMA ===\n");
+	printf("\n=== 2. DSA PoolScore MMA + Fused IndexProj + IndexQ 3-Stage ===\n");
 	const uint32_t rows = 1024u, degree = 16u, owner_rank = 3u;
 	uint16_t *query_bf16 = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_HEADS * G5N_INDEX_DIM * 2u);
 	uint16_t *hw_bf16 = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_HEADS * 2u);
@@ -491,20 +452,16 @@ static void BenchDsaPoolScoreAndProj(cudaStream_t stream)
 	uint16_t *w_k = (uint16_t *)DevAlloc((uint64_t)G5N_INDEX_DIM * G5N_HIDDEN * 2u);
 	uint16_t *w_g = (uint16_t *)DevAlloc((uint64_t)G5N_INDEX_DIM * G5N_HIDDEN * 2u);
 	uint16_t *w_h = (uint16_t *)DevAlloc((uint64_t)G5N_INDEX_HEADS * G5N_HIDDEN * 2u);
-	uint16_t *w_r = (uint16_t *)DevAlloc((uint64_t)G5N_EXPERTS * G5N_HIDDEN * 2u);
 	uint16_t *ok_ref = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_DIM * 2u);
 	uint16_t *og_ref = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_DIM * 2u);
 	uint16_t *oh_ref = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_HEADS * 2u);
 	uint16_t *ok_opt = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_DIM * 2u);
 	uint16_t *og_opt = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_DIM * 2u);
 	uint16_t *oh_opt = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_HEADS * 2u);
-	float *rlog_ref = (float *)DevAlloc((uint64_t)rows * G5N_EXPERTS * 4u);
-	float *rlog_opt = (float *)DevAlloc((uint64_t)rows * G5N_EXPERTS * 4u);
 	FillBf16(normed, (uint64_t)rows * G5N_HIDDEN, 310u, 0.0f, 0.3f, stream);
 	FillBf16(w_k, (uint64_t)G5N_INDEX_DIM * G5N_HIDDEN, 311u, 0.0f, 0.05f, stream);
 	FillBf16(w_g, (uint64_t)G5N_INDEX_DIM * G5N_HIDDEN, 312u, 0.0f, 0.05f, stream);
 	FillBf16(w_h, (uint64_t)G5N_INDEX_HEADS * G5N_HIDDEN, 313u, 0.0f, 0.05f, stream);
-	FillBf16(w_r, (uint64_t)G5N_EXPERTS * G5N_HIDDEN, 314u, 0.0f, 0.05f, stream);
 
 	Glm5NextLayerWeights lw;
 	memset(&lw, 0, sizeof(lw));
@@ -539,21 +496,6 @@ static void BenchDsaPoolScoreAndProj(cudaStream_t stream)
 	printf("  [PERF] DsaIndexProj rows=1024:        ref=%.3f ms  opt=%.3f ms  speedup=%.2fx  (11 layers: %.1f -> %.1f ms)\n",
 		ms_idx_ref, ms_idx_opt, ms_idx_ref / ms_idx_opt, ms_idx_ref * 11.0f, ms_idx_opt * 11.0f);
 
-	auto run_rtr_ref = [&]()
-	{
-		CHECK_OK(LmStreamGemmDense<LmBf16Format>(w_r, LmScaleTensorNone(), normed, (uint16_t *)0, rlog_ref, rows, G5N_HIDDEN, G5N_EXPERTS, G5N_EXPERTS, 0u, g_sms, (SparkGpuStream)stream));
-	};
-	auto run_rtr_opt = [&]()
-	{
-		CHECK_OK(Glm5NextSmallNMmaLaunch(normed, w_r, (uint16_t *)0, rlog_opt, rows, G5N_HIDDEN, G5N_EXPERTS, (SparkGpuStream)stream));
-	};
-	run_rtr_ref();
-	run_rtr_opt();
-	CheckTol("SmallNMma router N=288 f32", CompareF32(rlog_opt, rlog_ref, (uint64_t)rows * G5N_EXPERTS, stream), 5e-4, 5e-4);
-	const float ms_rtr_ref = TimeMs(run_rtr_ref, stream), ms_rtr_opt = TimeMs(run_rtr_opt, stream);
-	printf("  [PERF] SmallNMma router rows=1024:    ref=%.3f ms  opt=%.3f ms  speedup=%.2fx  (42 layers: %.1f -> %.1f ms)\n",
-		ms_rtr_ref, ms_rtr_opt, ms_rtr_ref / ms_rtr_opt, ms_rtr_ref * 42.0f, ms_rtr_opt * 42.0f);
-
 	uint16_t *q_comp = (uint16_t *)DevAlloc((uint64_t)rows * G5N_QA * 2u);
 	uint16_t *w_iq = (uint16_t *)DevAlloc((uint64_t)G5N_INDEX_QUERY * G5N_QA * 2u);
 	uint16_t *iq_ref = (uint16_t *)DevAlloc((uint64_t)rows * G5N_INDEX_QUERY * 2u);
@@ -583,9 +525,8 @@ static void BenchDsaPoolScoreAndProj(cudaStream_t stream)
 	cudaFree(q_comp); cudaFree(w_iq); cudaFree(iq_ref); cudaFree(iq_opt);
 
 	cudaFree(query_bf16); cudaFree(hw_bf16); cudaFree(seq_of_row); cudaFree(ctx_len); cudaFree(row_pos);
-	cudaFree(normed); cudaFree(w_k); cudaFree(w_g); cudaFree(w_h); cudaFree(w_r);
+	cudaFree(normed); cudaFree(w_k); cudaFree(w_g); cudaFree(w_h);
 	cudaFree(ok_ref); cudaFree(og_ref); cudaFree(oh_ref); cudaFree(ok_opt); cudaFree(og_opt); cudaFree(oh_opt);
-	cudaFree(rlog_ref); cudaFree(rlog_opt);
 }
 
 static void BuildSyntheticRouting(uint32_t rows, bool skewed, uint32_t *d_group_off, uint32_t *d_src_tok,
@@ -848,7 +789,6 @@ int main(void)
 	cudaStream_t stream = 0;
 	CHECK_CUDA(cudaStreamCreate(&stream));
 
-	BenchHcPostDotMma(stream);
 	BenchKdaFusedAndWy(stream);
 	BenchDsaPoolScoreAndProj(stream);
 	BenchMoeCodec<SPARK_WEIGHT_CODEC_FP8_E4M3>("FP8", stream);
