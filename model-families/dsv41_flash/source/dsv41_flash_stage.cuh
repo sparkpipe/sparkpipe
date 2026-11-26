@@ -141,7 +141,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_SKINNY_EXPERT_ROWS 0u
 #define D41_MX_MIN_ROWS 1u
 #define D41_VERIFY_INVARIANT_SEQS 8u
-#define D41_SHARED_SPLIT_ROWS (D41_TP >= 16u ? D41_VERIFY_INVARIANT_SEQS : 64u)
+#define D41_SHARED_SPLIT_ROWS 64u
 #define D41_ATTEND_TILES 2u
 #define D41_OWN_ROWS_MIN ((!D41_ROWS && D41_WHOLE) ? 512u : (D41_WHOLE ? 2048u : UINT32_MAX))
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
@@ -1658,7 +1658,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	D41QKvNormRopeQdq(state->q_latent, layer->q_norm, q_mx != 0u ? (uint16_t *)0 : state->qrq,
 		q_mx != 0u ? state->mx.codes : (uint8_t *)0, q_mx != 0u ? state->mx.scales : (uint8_t *)0,
 		state->kv, layer->kv_norm, step->positions, frequency, state->window_kv, rows, stream, rope_sc);
-	const uint32_t idx_skip = rows == 1u && state->dump == 0 ? D41_INDEX_TOPK : 0u;
+	const uint32_t idx_skip = rows <= 64u && state->dump == 0 ? D41_INDEX_TOPK : 0u;
 	if ( (q_mx != 0u ? (indexed != 0u ? D41LinearPairMx(&q_part, &layer->idx_q_b, &state->mx, state->q_local, state->idx_pack_local, rows, D41_QLORA, width,
 			D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, stream,
 			idx_skip != 0u ? step->sequence_of_row : (const uint32_t *)0, idx_skip != 0u ? length : (const uint32_t *)0,
@@ -1710,7 +1710,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 			step->commit);
 	}
 #if D41_SPREAD_HEADS == 4u
-	else if ( rows <= 8u )
+	else if ( rows <= 8u || state->row_invariant != 0u )
 	{
 		LM_LAUNCH_DEPENDENT((D41WindowFoldSpreadClusterKernel<D41_SPREAD_HEADS>), dim3(D41K_WINDOW_PARTS, rows), D41K_THREADS, 0, stream,
 			state->records_received, ratio > 0u ? 1u : 0u, state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
@@ -1924,7 +1924,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	const uint32_t split_s = state->row_invariant != 0u || rows <= 8u ? 8u : 4u;
 	const uint32_t split_decode_ok = D41_LOCAL_HEADS == D41A_QUERIES && state->own_rows == 0u && state->dump == 0 && state->mix_counters != 0 &&
 		((state->row_invariant != 0u && split_max >= 1u) ||
-		(step->tree == 0u && rows >= 1u && rows <= 16u && rows * split_s <= D41_RECORDED_ROWS(state))) ? 1u : 0u;
+		(step->tree == 0u && rows >= 1u && rows <= 8u && rows * split_s <= D41_RECORDED_ROWS(state))) ? 1u : 0u;
 	const uint32_t coded = (fused != 0u || split_decode_ok != 0u) && D41MxReady(&state->mx, rows, D41_GROUP_WIDTH, state->row_invariant) != 0u ? 1u : 0u;
 	uint16_t *const merged = coded != 0u ? (uint16_t *)0 : state->attn_merged;
 	uint8_t *const merged_codes = coded != 0u ? (uint8_t *)state->attn_merged : (uint8_t *)0;
@@ -2688,12 +2688,12 @@ static int32_t D41FusedRoutes(D41ModelState *state, const D41Layer *layer, const
 #if D41_HELD_EXPERTS + 1u <= 96u
 template<uint32_t MAX_R>
 static SparkStatus D41LaunchFusedRouterBalanceShape(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
-	uint32_t index, uint32_t copies, uint32_t rows, SparkGpuStream stream)
+	uint32_t index, uint32_t copies, uint32_t rows, uint32_t bal_row_inv, SparkGpuStream stream)
 {
 	LmWeightPrefetchNote(stream, layer->router, (uint64_t)D41_EXPERTS * D41_HIDDEN * sizeof(uint16_t));
 	LM_LAUNCH_DEPENDENT((D41FusedRouterBalanceKernel<D41_TP, D41_EXPERTS, D41_LOCAL_EXPERTS, D41_THREADS, D41_HELD_EXPERTS + 1u, D41_TOPK, D41_BACKUP_COPIES, D41_HIDDEN, MAX_R>),
 		D41_EXPERTS, D41_THREADS, 0, stream, layer->router, state->x, state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault,
-		state->route_expert, state->route_weight, state->route_global, rows, state->tp_rank, copies, state->row_invariant,
+		state->route_expert, state->route_weight, state->route_global, rows, state->tp_rank, copies, bal_row_inv,
 		state->expert_owner + (uint64_t)index * D41_EXPERTS, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS,
 		state->expert_group + (uint64_t)index * D41_EXPERTS, state->group_row_offset, state->route_packed_row, state->route_source_token,
 		(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
@@ -2703,11 +2703,55 @@ static SparkStatus D41LaunchFusedRouterBalanceShape(D41ModelState *state, const 
 }
 
 static SparkStatus D41LaunchFusedRouterBalance(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
-	uint32_t index, uint32_t copies, uint32_t rows, SparkGpuStream stream)
+	uint32_t index, uint32_t copies, uint32_t rows, uint32_t bal_row_inv, SparkGpuStream stream)
 {
-	return D41LaunchFusedRouterBalanceShape<1u>(state, layer, step, index, copies, rows, stream);
+	if ( rows == 1u ) return D41LaunchFusedRouterBalanceShape<1u>(state, layer, step, index, copies, rows, bal_row_inv, stream);
+	if ( rows <= 4u ) return D41LaunchFusedRouterBalanceShape<4u>(state, layer, step, index, copies, rows, bal_row_inv, stream);
+	if ( rows <= 8u ) return D41LaunchFusedRouterBalanceShape<8u>(state, layer, step, index, copies, rows, bal_row_inv, stream);
+	return D41LaunchFusedRouterBalanceShape<12u>(state, layer, step, index, copies, rows, bal_row_inv, stream);
 }
 #endif
+
+static int32_t D41MoeWholeSplitW13(D41ModelState *state, const D41Layer *layer, uint16_t *gate_up, uint32_t balanced, uint32_t groups,
+	uint32_t routes, uint32_t fast_direct, SparkGpuStream stream)
+{
+#if D41_ROWS
+	if ( fast_direct != 0u )
+	{
+		const uint32_t max_active = routes < groups ? routes : groups;
+		LM_LAUNCH_DEPENDENT((D41CompactActiveExpertsKernel<D41_HELD_EXPERTS>), 1u, 256u, 0, stream, state->group_row_offset, state->tile_prefix_up, groups);
+		LM_LAUNCH_DEPENDENT((D41CellMxSplitW13DirectKernel<1u, 3u, D41_HELD_EXPERTS, D41_HIDDEN, 2u * D41_MOE_INTER>),
+			max_active * ((2u * D41_MOE_INTER) / 128u), 256u, 0, stream, layer->e_w13_cells, balanced != 0u ? layer->e_w13_backup : (const uint8_t *)0,
+			balanced != 0u ? D41_LOCAL_EXPERTS : 0u, state->mx.codes, state->mx.scales, gate_up, state->group_row_offset, state->route_source_token,
+			state->tile_prefix_up, routes);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+#endif
+	(void)fast_direct;
+	return LmCellMxExpertsSplit(layer->e_w13_cells, balanced != 0u ? layer->e_w13_backup : (const uint8_t *)0, balanced != 0u ? D41_LOCAL_EXPERTS : 0u,
+		LmCellMxPacked(state->mx.codes, state->mx.scales, D41_HIDDEN), gate_up, state->group_row_offset, state->route_source_token, groups, routes, 0u,
+		D41_HIDDEN, 2u * D41_MOE_INTER, stream);
+}
+
+static int32_t D41MoeWholeSplitW2(D41ModelState *state, const D41Layer *layer, const uint8_t *codes, uint32_t balanced, uint32_t groups,
+	uint32_t routes, uint32_t fast_direct, SparkGpuStream stream)
+{
+#if D41_ROWS
+	if ( fast_direct != 0u )
+	{
+		const uint32_t max_active = routes < groups ? routes : groups;
+		LM_LAUNCH_DEPENDENT((D41CellMxSplitW2DirectKernel<1u, 3u, D41_HELD_EXPERTS, D41_MOE_INTER, D41_HIDDEN>),
+			max_active * (D41_HIDDEN / 128u), 256u, 0, stream, layer->e_w2_cells, balanced != 0u ? layer->e_w2_backup : (const uint8_t *)0,
+			balanced != 0u ? D41_LOCAL_EXPERTS : 0u, codes, codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset,
+			state->tile_prefix_up, routes);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+#endif
+	(void)fast_direct;
+	return LmCellMxExpertsSplit(layer->e_w2_cells, balanced != 0u ? layer->e_w2_backup : (const uint8_t *)0, balanced != 0u ? D41_LOCAL_EXPERTS : 0u,
+		LmCellMxPacked(codes, codes + (uint64_t)routes * D41_MOE_INTER, D41_MOE_INTER), state->expert_slice, state->group_row_offset,
+		(const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream);
+}
 
 template<uint32_t MAX_R>
 static SparkStatus D41LaunchFusedRouterPackedShape(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step,
@@ -2769,14 +2813,15 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	if ( D41_ROWS && split == 0u && SparkGpuMemsetAsync(state->shared_out, 0, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	const uint32_t routed = balanced == 0u ? D41RoutesFuse(state, rows) : 0u;
+	const uint32_t bal_row_inv = state->row_invariant != 0u || rows <= D41_VERIFY_INVARIANT_SEQS ? 1u : 0u;
 	const uint32_t fused_bal = balanced != 0u && state->own_rows == 0u && state->dump == 0 && rows <= 256u && D41_HELD_EXPERTS + 1u <= 96u ? 1u : 0u;
-	const uint32_t fused_router_bal = fused_bal != 0u && rows == 1u &&
+	const uint32_t fused_router_bal = fused_bal != 0u && (rows <= D41_VERIFY_INVARIANT_SEQS || (state->row_invariant != 0u && rows <= 12u)) &&
 		(((uintptr_t)layer->router | (uintptr_t)state->x) & 15u) == 0u ? 1u : 0u;
 	const uint32_t fused_bal_topk = fused_bal != 0u && rows <= 8u ? 1u : 0u;
 	if ( fused_router_bal != 0u )
 	{
 #if D41_HELD_EXPERTS + 1u <= 96u
-		if ( D41LaunchFusedRouterBalance(state, layer, step, index, copies, rows, stream) != SPARK_STATUS_OK )
+		if ( D41LaunchFusedRouterBalance(state, layer, step, index, copies, rows, bal_row_inv, stream) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 #endif
 	}
@@ -2799,7 +2844,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		if ( fused_bal_topk != 0u )
 			LM_LAUNCH_DEPENDENT((D41TopkBalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u,D41_TOPK,D41_BACKUP_COPIES,true>), 1u, D41_THREADS, 0, stream,
 				state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->route_global,
-				rows, state->tp_rank, copies, state->row_invariant, state->expert_owner + (uint64_t)index * D41_EXPERTS,
+				rows, state->tp_rank, copies, bal_row_inv, state->expert_owner + (uint64_t)index * D41_EXPERTS,
 				state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, state->expert_group + (uint64_t)index * D41_EXPERTS,
 				state->group_row_offset, state->route_packed_row, state->route_source_token,
 				(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
@@ -2807,7 +2852,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		else
 			LM_LAUNCH_DEPENDENT((D41TopkBalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u,D41_TOPK,D41_BACKUP_COPIES,false>), 1u, D41_THREADS, 0, stream,
 				state->router_logits, layer->router_bias, D41_ROUTE_SCALE, step->route_fault, state->route_expert, state->route_weight, state->route_global,
-				rows, state->tp_rank, copies, state->row_invariant, state->expert_owner + (uint64_t)index * D41_EXPERTS,
+				rows, state->tp_rank, copies, bal_row_inv, state->expert_owner + (uint64_t)index * D41_EXPERTS,
 				state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, state->expert_group + (uint64_t)index * D41_EXPERTS,
 				state->group_row_offset, state->route_packed_row, state->route_source_token,
 				(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
@@ -2816,7 +2861,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	}
 	else if ( balanced != 0u )
 		LM_LAUNCH_DEPENDENT((D41BalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u>), 1u, D41_THREADS, 0, stream,
-			state->route_expert, state->route_weight, state->route_global, rows, D41_TOPK, state->tp_rank, copies, state->row_invariant,
+			state->route_expert, state->route_weight, state->route_global, rows, D41_TOPK, state->tp_rank, copies, bal_row_inv,
 			state->expert_owner + (uint64_t)index * D41_EXPERTS, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS,
 			state->expert_group + (uint64_t)index * D41_EXPERTS, state->group_row_offset, state->route_packed_row, state->route_source_token,
 			(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
@@ -2832,13 +2877,12 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight,
 			routes);
 	}
+	const uint32_t fast_r16_moe = D41_ROWS && state->dump == 0 && (rows <= 12u || (state->row_invariant != 0u && routes <= 512u)) ? 1u : 0u;
 	const uint32_t split_mx = split != 0u && in_mx != 0u && D41MxReady(&state->mx, rows, split_width, state->row_invariant) != 0u ? 1u : 0u;
 	const uint32_t sh_mx = shared_rows != 0u && D41MxReady(&state->mx, shared_rows, state->shared_width, state->row_invariant) != 0u ? 1u : 0u;
 	D41Mx sh_in = { state->mx.codes + (uint64_t)shared_first * D41_HIDDEN, state->mx.scales + (uint64_t)shared_first * (D41_HIDDEN / D41_FP8_BLOCK), state->mx.grid };
 	if ( (in_mx != 0u && mx_down != 0u ?
-		LmCellMxExpertsSplit(layer->e_w13_cells, balanced != 0u ? layer->e_w13_backup : (const uint8_t *)0, balanced != 0u ? D41_LOCAL_EXPERTS : 0u,
-			LmCellMxPacked(state->mx.codes, state->mx.scales, D41_HIDDEN), gate_up, state->group_row_offset, state->route_source_token, groups, routes, 0u,
-			D41_HIDDEN, 2u * D41_MOE_INTER, stream) :
+		D41MoeWholeSplitW13(state, layer, gate_up, balanced, groups, routes, fast_r16_moe, stream) :
 		D41Experts(layer->e_w13_cells, state->xq, gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, groups, stream,
 			balanced != 0u ? layer->e_w13_backup : (const uint8_t *)0, D41_LOCAL_EXPERTS)) != LM_LAUNCH_OK ||
 		(split != 0u ? (split_mx != 0u ?
@@ -2883,14 +2927,20 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out + (uint64_t)shared_first * D41_HIDDEN, shared_rows,
 		state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK) ||
 		(mx_down != 0u ?
-		LmCellMxExpertsSplit(layer->e_w2_cells, balanced != 0u ? layer->e_w2_backup : (const uint8_t *)0, balanced != 0u ? D41_LOCAL_EXPERTS : 0u,
-			LmCellMxPacked(codes, codes + (uint64_t)routes * D41_MOE_INTER, D41_MOE_INTER), state->expert_slice, state->group_row_offset,
-			(const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) :
+		D41MoeWholeSplitW2(state, layer, codes, balanced, groups, routes, in_mx != 0u ? fast_r16_moe : 0u, stream) :
 		D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN, groups, stream,
 			balanced != 0u ? layer->e_w2_backup : (const uint8_t *)0, D41_LOCAL_EXPERTS)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( split != 0u )
 	{
+		if ( D41_TP >= 8u && state->dump == 0 )
+		{
+			LM_LAUNCH_DEPENDENT((D41MoeFinalizeF32ToBf16Kernel), dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream, state->expert_slice,
+				state->route_packed_row, state->route_expert, (const float *)state->shared_out, state->moe_final, D41_TOPK, groups, D41_HIDDEN);
+			status = D41Launched();
+			return status != SPARK_STATUS_OK ? status :
+				CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->moe_final, state->partial);
+		}
 		float *partial = (float *)state->moe_final;
 		LM_LAUNCH_DEPENDENT((D41MoeFinalizeF32Kernel), dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream, state->expert_slice, state->route_packed_row,
 			state->route_expert, (const float *)state->shared_out, partial, D41_TOPK, groups, D41_HIDDEN);
@@ -2945,9 +2995,9 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		return D41MoeWhole(state, layer, step, stream);
 #if D41_TP == 4u && D41_MOE_CODES != 0u && D41_SHARED_ROUTED != 0u
 	const uint32_t fast_tp4_w13 = state->dump == 0 && (2u * D41_EXPERT_SLICE) % 128u == 0u && D41_HIDDEN % 128u == 0u &&
-		(rows <= 12u || state->row_invariant != 0u || routes > 512u) ? 1u : 0u;
+		(rows <= 12u || (state->row_invariant != 0u && routes <= 512u)) ? 1u : 0u;
 	const uint32_t fast_tp4_w2 = state->dump == 0 && D41_HIDDEN_SLICE % 128u == 0u && D41_MOE_INTER % 128u == 0u &&
-		(rows <= 12u || state->row_invariant != 0u || routes > 512u) ? 1u : 0u;
+		(rows <= 12u || (state->row_invariant != 0u && routes <= 512u)) ? 1u : 0u;
 #else
 	const uint32_t fast_tp4_w13 = 0u;
 	const uint32_t fast_tp4_w2 = 0u;
@@ -2997,19 +3047,14 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	const uint32_t in_mx = state->mx_valid, mx_up = in_mx != 0u && state->dump == 0 && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
 	state->mx_valid = 0u;
 	if ( need_active != 0u && fused_tp4_route == 0u )
-		LM_LAUNCH_DEPENDENT((D41CompactActiveExpertsKernel<D41_EXPERTS>), 1u, 256u, 0, stream, state->group_row_offset, state->tile_prefix_up);
+		LM_LAUNCH_DEPENDENT((D41CompactActiveExpertsKernel<D41_EXPERTS>), 1u, 256u, 0, stream, state->group_row_offset, state->tile_prefix_up, D41_EXPERTS);
 	if ( fast_tp4_w13 != 0u && mx_up != 0u )
 	{
 #if D41_TP == 4u && D41_MOE_CODES != 0u && D41_SHARED_ROUTED != 0u
 		const uint32_t max_active = routes < D41_EXPERTS ? routes : D41_EXPERTS;
-		if ( routes <= 512u )
-			LM_LAUNCH_DEPENDENT((D41CellMxW13DirectKernel<1u, 3u, D41_EXPERTS, D41_HIDDEN, 2u * D41_EXPERT_SLICE>),
-				max_active * ((2u * D41_EXPERT_SLICE) / 128u), 256u, 0, stream, layer->e_w13_cells, state->mx.codes, state->mx.scales,
-				state->expert_gate_up, state->group_row_offset, state->route_source_token, state->tile_prefix_up, routes);
-		else
-			LM_LAUNCH_DEPENDENT((D41CellMxW13DirectKernel<2u, 2u, D41_EXPERTS, D41_HIDDEN, 2u * D41_EXPERT_SLICE>),
-				max_active * ((2u * D41_EXPERT_SLICE) / 128u), 256u, 0, stream, layer->e_w13_cells, state->mx.codes, state->mx.scales,
-				state->expert_gate_up, state->group_row_offset, state->route_source_token, state->tile_prefix_up, routes);
+		LM_LAUNCH_DEPENDENT((D41CellMxW13DirectKernel<1u, 3u, D41_EXPERTS, D41_HIDDEN, 2u * D41_EXPERT_SLICE>),
+			max_active * ((2u * D41_EXPERT_SLICE) / 128u), 256u, 0, stream, layer->e_w13_cells, state->mx.codes, state->mx.scales,
+			state->expert_gate_up, state->group_row_offset, state->route_source_token, state->tile_prefix_up, routes);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS || D41SharedUp(state, layer, rows, sms, in_mx, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 #endif
@@ -3060,14 +3105,9 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	{
 #if D41_TP == 4u && D41_MOE_CODES != 0u && D41_SHARED_ROUTED != 0u
 		const uint32_t max_active = routes < D41_EXPERTS ? routes : D41_EXPERTS;
-		if ( routes <= 512u )
-			LM_LAUNCH_DEPENDENT((D41CellMxW2DirectKernel<1u, 3u, D41_EXPERTS, D41_EXPERT_SLICE, D41_MOE_INTER, D41_HIDDEN_SLICE>),
-				max_active * (D41_HIDDEN_SLICE / 128u), 256u, 0, stream, layer->e_w2_cells, state->moe_received + route_base,
-				state->expert_slice, state->group_row_offset, state->tile_prefix_up, routes, stride);
-		else
-			LM_LAUNCH_DEPENDENT((D41CellMxW2DirectKernel<2u, 2u, D41_EXPERTS, D41_EXPERT_SLICE, D41_MOE_INTER, D41_HIDDEN_SLICE>),
-				max_active * (D41_HIDDEN_SLICE / 128u), 256u, 0, stream, layer->e_w2_cells, state->moe_received + route_base,
-				state->expert_slice, state->group_row_offset, state->tile_prefix_up, routes, stride);
+		LM_LAUNCH_DEPENDENT((D41CellMxW2DirectKernel<1u, 3u, D41_EXPERTS, D41_EXPERT_SLICE, D41_MOE_INTER, D41_HIDDEN_SLICE>),
+			max_active * (D41_HIDDEN_SLICE / 128u), 256u, 0, stream, layer->e_w2_cells, state->moe_received + route_base,
+			state->expert_slice, state->group_row_offset, state->tile_prefix_up, routes, stride);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 #endif

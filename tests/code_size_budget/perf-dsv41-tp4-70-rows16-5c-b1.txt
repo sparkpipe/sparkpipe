@@ -1,0 +1,2 @@
++85
+dsv41_flash: fix live ROWS16 5c batch invariance (bal_row_inv + fused router balance up to 12 rows + cluster window fold for verify), recover TP4 cold prefill regression by restoring LmCellMxExperts for routes > 512, cut ROWS16 B1..B8/verify MoE wire 2x-16x via BF16 AllReduce with D41MoeFinalizeF32ToBf16Kernel and restore D41_SHARED_SPLIT_ROWS=64, add active-compacted D41CellMxSplitDirect kernels for ROWS16 B1..B12 MoE, skip short-ctx index work on ROWS16 B2..B64, and tighten TP4 SplitDecode to rows <= 8.
