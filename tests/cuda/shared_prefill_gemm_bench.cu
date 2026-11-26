@@ -383,7 +383,7 @@ static void VerifyBf16GemmExact(uint32_t groups, uint32_t rows, uint32_t input, 
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
-	gemm.prefix_built = groups == 1u ? 1u : 0u;
+	gemm.prefix_built = 0u;
 	gemm.group_row_offset = d_off;
 	gemm.group_tile_prefix = d_prefix;
 	gemm.output_bf16 = d_out;
@@ -433,7 +433,7 @@ static void BenchBf16GemmShapes(cudaStream_t stream)
 			memset(&gemm, 0, sizeof(gemm));
 			gemm.scale_a = LmScaleTensorNone();
 			gemm.scale_b = LmScaleTensorNone();
-			gemm.prefix_built = 1u;
+			gemm.prefix_built = 0u;
 			gemm.group_row_offset = d_off;
 			gemm.group_tile_prefix = d_prefix;
 			gemm.output_bf16 = d_out;
