@@ -13,6 +13,7 @@ SUITES = [
     "skinny_decode.skl",
     "mx_gemm.skl",
     "norm_act.skl",
+    "stage_ops.skl",
     "attn_decode.skl",
     "moe_route.skl",
     "tp_mesh_mem.skl",
@@ -31,6 +32,13 @@ EXPECTED_KERNELS = [
     "head_rmsnorm_silu_gate_pdl_exact_128_bf16",
     "attn_tp1_merge_sigmoid_gate_pdl_exact_bf16",
     "add_elements_pdl_exact_bf16x8",
+    "gqa_split_reduce_sigmoid_gate_pdl_exact_bf16",
+    "head_certified_reduce_f32",
+    "stage_embedding_lookup_pdl_bf16x8",
+    "stage_store_outputs_u32_f32",
+    "stage_chain_advance_u32",
+    "stage_last_rows_gather_pdl_bf16x8",
+    "stage_last_rows_scatter_pdl_u32_f32",
     "latent_attn_decode_512_64",
     "router_softmax_256",
     "router_softmax_bf16_256",
@@ -96,6 +104,18 @@ def verify_long_name_manifest():
         assert res.returncode == 0, f"sklc failed for long kernel name: {res.stderr}"
         mtxt = manifest_path.read_text()
         assert f"kernel {long_name} short {expected_short} " in mtxt, f"expected NVRM hashed short name {expected_short} in manifest:\n{mtxt}"
+    mangled = "_Z26SampleLongTemplateKernelOpILj24ELj256ELj14336EEvPKfPKtPKjS5_S5_Ptj"
+    expected_mangled = f"SampleLongTemplateKernelOp_{hashlib.sha256(mangled.encode('utf-8')).hexdigest()[:12]}"
+    with tempfile.TemporaryDirectory() as tmp:
+        skl_path = pathlib.Path(tmp) / "mangled.skl"
+        cubin_path = pathlib.Path(tmp) / "mangled.cubin"
+        manifest_path = pathlib.Path(tmp) / "mangled.manifest"
+        skl_path.write_text(f"kernel[256, 32] {mangled}(global u32* dst, global u32* src, u32 n) {{ reg u32 i = ctaid_x() * 256 + tid_x(); if (i >= n) {{ return; }} reg u32 v = ldg32_stream(ptr_add(src, i, 4)); stg32(ptr_add(dst, i, 4), v); }}\n")
+        cmd = [sys.executable, str(SKLC), "--arch", "sm121", str(skl_path), "-o", str(cubin_path), "--manifest", str(manifest_path)]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"sklc failed for mangled long kernel name: {res.stderr}"
+        mtxt = manifest_path.read_text()
+        assert f"kernel {mangled} short {expected_mangled} " in mtxt, f"expected NVRM demangled short name {expected_mangled} in manifest:\n{mtxt}"
 
 
 def verify_codegen_invariants():

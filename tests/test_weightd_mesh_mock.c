@@ -442,9 +442,9 @@ static void test_slot_lifetimes(uint32_t local_rank)
     SparkStubIbvPostedWork stale;
     test_complete_range(0u,spark_stub_ibv_posted_count());
     first = spark_stub_ibv_posted_count();
-    memset(payload,0x5a,64u);
+    memset(payload,0x5a,1024u);
     entry[2] = slot;
-    entry[1] = 64u;
+    entry[1] = 1024u;
     entry[3] = all_peers;
     __sync_synchronize();
     *(volatile uint64_t *)(payload + SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u) = seq;
@@ -468,7 +468,7 @@ static void test_slot_lifetimes(uint32_t local_rank)
             CHECK((work.flags & IBV_SEND_SIGNALED) == 0u && spark_stub_ibv_posted(i + 1u,&tail) == 0 &&
                 tail.qp_number == work.qp_number && tail.wqe_index == work.wqe_index + 1u && (tail.wr_id & 3u) == 3u,
                 "every payload is chained directly before its signaled tail on the same queue");
-            CHECK(work.source == (uint64_t)(uintptr_t)payload && work.length == 64u,
+            CHECK(work.source == (uint64_t)(uintptr_t)payload && work.length == 1024u,
                 "B1 source and payload extent remain unchanged");
             CHECK(*(const uint8_t *)(uintptr_t)work.source == 0x5au,"NIC source retains original contribution until completion");
         }
@@ -596,9 +596,16 @@ static void test_expect_route(uint32_t first, uint32_t last, uint64_t slot_base,
             continue;
         }
         data++;
-        CHECK(length != 0u && work.source == slot_base + offset && work.length == length,label);
-        CHECK(work.remote - weightd_mesh.qp_info[peer].remote_addr ==
-            work.source - (uint64_t)(uintptr_t)weightd_mesh.recv_buffer,label);
+        if ( length <= weightd_mesh.send_queues[peer].max_inline )
+            CHECK(length != 0u && (work.flags & IBV_SEND_INLINE) != 0u && work.length == length &&
+                work.remote - weightd_mesh.qp_info[peer].remote_addr ==
+                    slot_base + offset - (uint64_t)(uintptr_t)weightd_mesh.recv_buffer,label);
+        else
+        {
+            CHECK(length != 0u && work.source == slot_base + offset && work.length == length,label);
+            CHECK(work.remote - weightd_mesh.qp_info[peer].remote_addr ==
+                work.source - (uint64_t)(uintptr_t)weightd_mesh.recv_buffer,label);
+        }
     }
     CHECK(tails == TEST_MESH_PEERS,label);
     CHECK(data <= TEST_MESH_PEERS,label);
@@ -1434,6 +1441,7 @@ static void test_permutation_schedule(uint32_t local_rank)
             weightd_mesh.send_queues[s].doorbell = &fake_bf[rail][0];
             weightd_mesh.send_queues[s].combining_bytes = 256u;
         }
+        SparkWeightdMeshRebuildFastMaps();
         route.fields.peer_mask = 0xffffu & ~(1u << 3u);
         first = spark_stub_ibv_posted_count();
         CHECK(test_post_route(band, 3u, (UINT64_C(32) << 32u) | 1u, 1024u, route) == SPARK_STATUS_OK,
@@ -1446,6 +1454,7 @@ static void test_permutation_schedule(uint32_t local_rank)
             weightd_mesh.send_queues[s].doorbell = saved_db[s];
             weightd_mesh.send_queues[s].combining_bytes = saved_comb[s];
         }
+        SparkWeightdMeshRebuildFastMaps();
     }
 
     weightd_mesh.local_rank = saved_rank;
@@ -1520,11 +1529,11 @@ static void test_e14_rdma_verbs_fastpath(uint32_t local_rank)
         SparkStubIbvPostedWork pwork, swork;
         CHECK(spark_stub_ibv_posted(i, &pwork) == 0 && spark_stub_ibv_posted(i + 1u, &swork) == 0,
             "e14: broadcast payload and seq WRs captured");
-        if ( (pwork.flags & IBV_SEND_SIGNALED) == 0u && pwork.length == 64u )
+        if ( (pwork.flags & IBV_SEND_SIGNALED) == 0u && (pwork.flags & IBV_SEND_INLINE) != 0u && pwork.length == 64u )
             unsignaled_bcast++;
         if ( (swork.flags & IBV_SEND_SIGNALED) != 0u && (swork.flags & IBV_SEND_INLINE) != 0u &&
              swork.inline_word == seq + 7u && swork.qp_number == pwork.qp_number &&
-             swork.wqe_index == pwork.wqe_index + 1u )
+             swork.wqe_index == ((pwork.wqe_index + 2u) & 0xffffu) )
             signaled_seq++;
     }
     CHECK(unsignaled_bcast == TEST_MESH_PEERS && signaled_seq == TEST_MESH_PEERS,
@@ -2144,7 +2153,9 @@ static void test_mesh_topology(void)
         if (i != first) offset += SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u;
         CHECK(work.qp_number == weightd_mesh.send_qps[5u]->qp_num &&
             (i != first ? work.inline_word == *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + offset) :
-                work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + offset) &&
+                ((work.flags & IBV_SEND_INLINE) != 0u ?
+                    work.inline_word == *(const uint64_t *)((const uint8_t *)weightd_mesh.recv_buffer + offset) :
+                    work.source == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer + offset)) &&
             work.remote == weightd_mesh.qp_info[5u].remote_addr + offset,
             "physical QP translation preserves the logical payload, tail tag and remote offsets");
     }
@@ -2832,7 +2843,7 @@ static void test_mesh_second_rail(uint32_t local_rank)
             spark_stub_ibv_qp_remote_address(weightd_mesh.send_qps[peer]->qp_num) == (second != 0u ? test_address(10u,10u,200u,rank) : test_address(10u,10u,100u,10u + rank)),
             "a peer of the other parity is wired through the second port, one of the same parity through the first");
         first = spark_stub_ibv_posted_count();
-        CHECK(SparkWeightdMeshPostWrite(rank,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
+        CHECK(SparkWeightdMeshPostWrite(rank,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,1024u,0u) == SPARK_STATUS_OK &&
             spark_stub_ibv_posted(first,&work) == 0 &&
             work.lkey == (second != 0u ? weightd_mesh.pair_recv_mr->lkey : weightd_mesh.recv_mr->lkey),
             "a write posts with the registration of its peer's port");
@@ -2865,7 +2876,7 @@ static void test_mesh_second_rail(uint32_t local_rank)
     CHECK(status.peers[moved].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS | SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED),
         "status flags the link as degraded on the first port");
     first = spark_stub_ibv_posted_count();
-    CHECK(SparkWeightdMeshPostWrite(moved,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
+    CHECK(SparkWeightdMeshPostWrite(moved,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,1024u,0u) == SPARK_STATUS_OK &&
         spark_stub_ibv_posted(first,&work) == 0 && work.lkey == weightd_mesh.recv_mr->lkey &&
         work.qp_number == weightd_mesh.slot_send_qps[0][peer]->qp_num,
         "a write to the degraded peer posts on the first port's queue pair and registration");
@@ -3049,11 +3060,11 @@ static void test_mesh_pair_link(uint32_t local_rank)
         weightd_mesh.qp_info[other_peer].rkey == other_record.rkey,
         "the partner is wired through the pair link, every other peer through the switch");
     first = spark_stub_ibv_posted_count();
-    CHECK(SparkWeightdMeshPostWrite(partner,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
+    CHECK(SparkWeightdMeshPostWrite(partner,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,1024u,0u) == SPARK_STATUS_OK &&
         spark_stub_ibv_posted(first,&work) == 0 && work.lkey == weightd_mesh.pair_recv_mr->lkey &&
         work.qp_number == weightd_mesh.send_qps[partner_peer]->qp_num,
         "a write to the partner posts with the pair link's registration");
-    CHECK(SparkWeightdMeshPostWrite(other,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
+    CHECK(SparkWeightdMeshPostWrite(other,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,1024u,0u) == SPARK_STATUS_OK &&
         spark_stub_ibv_posted(first + 1u,&work) == 0 && work.lkey == weightd_mesh.recv_mr->lkey,
         "a write to any other peer posts with the switch registration");
     test_status(&status);
@@ -3400,7 +3411,7 @@ static void test_sq_occupancy_guard(uint32_t local_rank)
     char log_path[256];
     test_complete_range(0u,spark_stub_ibv_posted_count());
     depth = queue->depth;
-    CHECK(depth == SPARK_WEIGHTD_MESH_SQ_SLOTS,"SQ guard fixture uses full 512-slot mlx5 SQ");
+    CHECK(depth == 1024u && depth <= SPARK_WEIGHTD_MESH_SQ_SLOTS,"SQ guard fixture uses full 1024-slot mlx5 SQ");
     CHECK(queue->produced == queue->retired,"SQ starts drained before occupancy guard test");
     produced_before = queue->produced;
     retired_before = queue->retired;
@@ -3412,7 +3423,7 @@ static void test_sq_occupancy_guard(uint32_t local_rank)
         uint64_t wr_id = ((uint64_t)(weightd_mesh.wire_epoch[peer] + 1000u + i) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT) | (uint64_t)peer;
         uint32_t signaled = (i & 1u) != 0u ? 1u : 0u;
         CHECK(SparkWeightdMeshSqWrite(peer,wr_id,signaled,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,
-            weightd_mesh.recv_mr->lkey,signaled != 0u ? 0u : 64u,(uint64_t)i * 64u,signaled != 0u ? &tag : 0) == SPARK_STATUS_OK,
+            weightd_mesh.recv_mr->lkey,signaled != 0u ? 0u : 1024u,(uint64_t)i * 64u,signaled != 0u ? &tag : 0) == SPARK_STATUS_OK,
             "filling SQ up to depth succeeds without waiting");
         if ( signaled != 0u )
             SparkWeightdMeshSqRing(1u << peer);
@@ -3448,7 +3459,7 @@ static void test_sq_occupancy_guard(uint32_t local_rank)
         CHECK(spark_stub_ibv_complete(first_tail_wr,IBV_WC_SUCCESS) == 0,"inject single signaled completion for WQE pair 0..1");
         pthread_mutex_lock(&SparkWeightdMeshWireLock);
         CHECK(SparkWeightdMeshSqWrite(peer,next_wr0,0u,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,
-            weightd_mesh.recv_mr->lkey,64u,0u,0) == SPARK_STATUS_OK,
+            weightd_mesh.recv_mr->lkey,1024u,0u,0) == SPARK_STATUS_OK,
             "SQ guard drains CQ internally and retires unsignaled + signaled WQEs");
         CHECK(weightd_mesh.stat_sq_full_waits == waits_before + 3u,"CQ-drain recovery counts as one SQ full wait");
         CHECK(queue->retired == retired_before + 2u,"signaled completion advances retired past both unsignaled WQE 0 and signaled WQE 1");
@@ -3478,6 +3489,219 @@ static void test_sq_occupancy_guard(uint32_t local_rank)
         CHECK(queue->produced == queue->retired,"final signaled completion retires all 514 WQEs cleanly");
     }
     weightd_mesh_sq_wait_ns = saved_wait_ns;
+}
+
+static void test_tp16_20us_weightd_upgrades(uint32_t local_rank)
+{
+    uint32_t band = 6u;
+    uint32_t peer,p2,first,count,ok,i;
+    uint32_t peer_mask = 0xffffu & ~(1u << local_rank);
+    uint64_t seq = (UINT64_C(51) << 32u) | 1u;
+    uint64_t slot,slot_base,tag,word0,barriers_before;
+    SparkWeightdMeshRoute route;
+    SparkStubIbvPostedWork work;
+    test_complete_range(0u,spark_stub_ibv_posted_count());
+
+    ok = 1u;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        if (weightd_mesh.slot_send_tds[0][peer] == 0 || weightd_mesh.slot_send_pds[0][peer] == 0 ||
+            weightd_mesh.slot_send_inline[0][peer] != 828u || weightd_mesh.send_queues[peer].max_inline != 828u)
+            ok = 0u;
+        for (p2 = peer + 1u; p2 < SPARK_WEIGHTD_MESH_PEERS; p2++)
+            if (weightd_mesh.send_queues[peer].doorbell == weightd_mesh.send_queues[p2].doorbell)
+                ok = 0u;
+    }
+    CHECK(ok == 1u && weightd_mesh.bf_all_unique == 1u,
+        "tp16-20us: every send QP gets a dedicated TD+parent PD, unique BlueFlame UAR, and 828 B max_inline");
+
+    slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + (seq & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    slot_base = ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    tag = (UINT64_C(0x11) << 32u) | seq;
+    word0 = UINT64_C(0x55aa112233445566);
+    *(uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base) = word0;
+    *(uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base + 640u) = tag;
+    memset(&route,0,sizeof(route));
+    route.fields.peer_mask = peer_mask;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+    route.fields.compact_tail = 1u;
+    first = spark_stub_ibv_posted_count();
+    barriers_before = weightd_mesh.timing.ring_barriers;
+    CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq,slot,640u,route,UINT64_C(1000)) == SPARK_STATUS_OK,
+        "tp16-20us: compact_tail FULL 640 B route posts cleanly");
+    count = spark_stub_ibv_posted_count() - first;
+    ok = count == SPARK_WEIGHTD_MESH_PEERS ? 1u : 0u;
+    for (i = 0u; i < count; i++)
+    {
+        if (spark_stub_ibv_posted(first + i,&work) != 0 || work.source != 0u ||
+            work.length != 648u || (work.flags & IBV_SEND_SIGNALED) == 0u ||
+            work.inline_word != word0 || work.inline_tail != tag)
+            ok = 0u;
+    }
+    CHECK(ok == 1u && weightd_mesh.timing.ring_barriers == barriers_before,
+        "tp16-20us: compact_tail FULL 640 B emits 15 single inline 648 B WQEs with zero ring barriers");
+    test_complete_range(first,spark_stub_ibv_posted_count());
+
+    seq++;
+    slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + (seq & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    slot_base = ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    tag = (UINT64_C(0x12) << 32u) | seq;
+    *(uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base) = UINT64_C(0x9988776655443322);
+    *(uint64_t *)((uint8_t *)weightd_mesh.recv_buffer + slot_base + 4096u) = tag;
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq,slot,4096u,route,UINT64_C(2000)) == SPARK_STATUS_OK,
+        "tp16-20us: compact_tail FULL 4096 B DMA route posts cleanly");
+    count = spark_stub_ibv_posted_count() - first;
+    ok = count == SPARK_WEIGHTD_MESH_PEERS ? 1u : 0u;
+    for (i = 0u; i < count; i++)
+    {
+        if (spark_stub_ibv_posted(first + i,&work) != 0 || work.source == 0u ||
+            work.length != 4104u || (work.flags & IBV_SEND_SIGNALED) == 0u ||
+            *(uint64_t *)(uintptr_t)(work.source + 4096u) != tag)
+            ok = 0u;
+    }
+    CHECK(ok == 1u,"tp16-20us: compact_tail FULL 4096 B emits 15 single fused 4104 B DMA WQEs");
+    test_complete_range(first,spark_stub_ibv_posted_count());
+
+    for (i = 0u; i < 2u; i++)
+    {
+        uint64_t half_off;
+        seq++;
+        slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((slot + 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        slot_base = ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+        half_off = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot);
+        tag = (((uint64_t)(0x20u + i)) << 32u) | seq;
+        for (peer = 0u; peer < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer++)
+        {
+            uint8_t *dst = (uint8_t *)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,peer) + half_off;
+            *(uint64_t *)dst = UINT64_C(0xabc0000000000000) | ((uint64_t)i << 8u) | (uint64_t)peer;
+            *(uint64_t *)(dst + 640u) = tag;
+        }
+        memset(&route,0,sizeof(route));
+        route.fields.peer_mask = peer_mask;
+        route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+        route.fields.slice_bytes = 640u;
+        route.fields.compact_tail = 1u;
+        first = spark_stub_ibv_posted_count();
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq,slot,640u,route,UINT64_C(3000) + i * 1000u) == SPARK_STATUS_OK,
+            "tp16-20us: compact_tail PEER 640 B double-buffered staging half posts cleanly");
+        count = spark_stub_ibv_posted_count() - first;
+        ok = count == SPARK_WEIGHTD_MESH_PEERS ? 1u : 0u;
+        for (p2 = 0u; p2 < count; p2++)
+        {
+            if (spark_stub_ibv_posted(first + p2,&work) != 0 || work.source != 0u ||
+                work.length != 648u || (work.flags & IBV_SEND_SIGNALED) == 0u ||
+                work.inline_tail != tag || ((work.inline_word >> 8u) & 0xffu) != i)
+                ok = 0u;
+        }
+        CHECK(ok == 1u,"tp16-20us: compact_tail PEER 640 B emits 15 single inline 648 B WQEs from rotating staging halves");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
+    seq++;
+    slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((slot + 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    slot_base = ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    tag = (UINT64_C(0x30) << 32u) | seq;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer++)
+    {
+        uint8_t *dst = (uint8_t *)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,peer);
+        *(uint64_t *)(dst + 600000u) = tag;
+    }
+    memset(&route,0,sizeof(route));
+    route.fields.peer_mask = peer_mask;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+    route.fields.slice_bytes = 600000u;
+    route.fields.compact_tail = 1u;
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq,slot,600000u,route,UINT64_C(5000)) == SPARK_STATUS_OK,
+        "tp16-20us: compact_tail PEER 600 KB above half-staging uses full slot offset 0");
+    count = spark_stub_ibv_posted_count() - first;
+    ok = count == SPARK_WEIGHTD_MESH_PEERS ? 1u : 0u;
+    for (p2 = 0u; p2 < count; p2++)
+    {
+        if (spark_stub_ibv_posted(first + p2,&work) != 0 || work.source == 0u ||
+            work.length != 600008u || (work.flags & IBV_SEND_SIGNALED) == 0u || *(uint64_t *)(uintptr_t)(work.source + 600000u) != tag)
+            ok = 0u;
+    }
+    CHECK(ok == 1u,"tp16-20us: compact_tail PEER 600 KB emits 15 fused 600008 B DMA WQEs");
+    test_complete_range(first,spark_stub_ibv_posted_count());
+
+    {
+        SparkWeightdMeshRoute bad;
+        memset(&bad,0,sizeof(bad));
+        bad.fields.peer_mask = peer_mask;
+        bad.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+        bad.fields.compact_tail = 1u;
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq + 1u,slot,644u,bad,UINT64_C(6000)) == SPARK_STATUS_INVALID_ARGUMENT,
+            "tp16-20us: unaligned compact_tail rejects");
+        bad.fields.pair = 1u;
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq + 1u,slot,640u,bad,UINT64_C(6000)) == SPARK_STATUS_INVALID_ARGUMENT,
+            "tp16-20us: compact_tail with pair rejects");
+        bad.fields.pair = 0u;
+        bad.fields.half = SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER;
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq + 1u,slot,640u,bad,UINT64_C(6000)) == SPARK_STATUS_INVALID_ARGUMENT,
+            "tp16-20us: compact_tail with half-slot rejects");
+        bad.fields.half = SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE;
+        bad.fields.reserved = 1u;
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq + 1u,slot,640u,bad,UINT64_C(6000)) == SPARK_STATUS_INVALID_ARGUMENT,
+            "tp16-20us: compact_tail with reserved bit rejects");
+        bad.fields.reserved = 0u;
+        bad.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+        bad.fields.slice_bytes = SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES;
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq + 1u,slot,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES,bad,UINT64_C(6000)) == SPARK_STATUS_INVALID_ARGUMENT,
+            "tp16-20us: compact_tail PEER overflowing staging slot by 8 B rejects");
+    }
+
+    {
+        SparkWeightdMeshSendQueue *q = &weightd_mesh.send_queues[0];
+        uint32_t wrap_ok = 1u;
+        uint8_t buf[648];
+        for (i = 0u; i < 120u; i++)
+        {
+            uint64_t wr_id = ((uint64_t)(weightd_mesh.wire_epoch[0] + 7000u + i) << SPARK_WEIGHTD_MESH_RPC_EPOCH_SHIFT);
+            uint64_t w_head = UINT64_C(0xdeadbeef00000000) | (uint64_t)i;
+            uint64_t w_tail = UINT64_C(0xcafebabe00000000) | (uint64_t)i;
+            first = spark_stub_ibv_posted_count();
+            memset(buf,(int)(i & 0xffu),sizeof(buf));
+            memcpy(buf,&w_head,8u);
+            memcpy(buf + 640u,&w_tail,8u);
+            pthread_mutex_lock(&SparkWeightdMeshWireLock);
+            if (SparkWeightdMeshSqWrite(0u,wr_id,1u,(uint64_t)(uintptr_t)buf,weightd_mesh.recv_mr->lkey,648u,(uint64_t)i * 64u,0) != SPARK_STATUS_OK)
+                wrap_ok = 0u;
+            SparkWeightdMeshSqRing(1u);
+            pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+            if (spark_stub_ibv_posted_count() != first + 1u || spark_stub_ibv_posted(first,&work) != 0 ||
+                work.source != 0u || work.length != 648u || work.inline_word != w_head || work.inline_tail != w_tail)
+                wrap_ok = 0u;
+            if (spark_stub_ibv_complete(wr_id,IBV_WC_SUCCESS) != 0)
+                wrap_ok = 0u;
+            SparkWeightdMeshDrainCq();
+        }
+        CHECK(wrap_ok == 1u && q->produced == q->retired,
+            "tp16-20us: 120x 648 B (1320 WQEBBs) multi-BB inline writes wrap cleanly across 1024-BB SQ ring");
+    }
+}
+
+static void test_tp16_20us_fallback(uint32_t local_rank)
+{
+    uint32_t peer,ok;
+    test_rank_mask = 0xffffu;
+    test_clean_dir();
+    (void)mkdir(SPARK_WEIGHTD_MESH_DIR,0755);
+    spark_stub_ibv_set_td_fail(1u);
+    spark_stub_ibv_set_max_inline(256u);
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) == SPARK_STATUS_BUSY,
+        "tp16-20us fallback: init succeeds when ibv_alloc_td fails and max_inline is capped at 256 B");
+    ok = 1u;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+        if (weightd_mesh.slot_send_tds[0][peer] != 0 || weightd_mesh.slot_send_pds[0][peer] != 0 ||
+            weightd_mesh.slot_send_qps[0][peer] == 0 || weightd_mesh.slot_send_inline[0][peer] != 256u)
+            ok = 0u;
+    CHECK(ok == 1u,"tp16-20us fallback: falls back cleanly to shared PD and 256 B negotiated inline limit");
+    spark_stub_ibv_set_td_fail(0u);
+    spark_stub_ibv_set_max_inline(828u);
+    test_clean_dir();
+    (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
 }
 
 int main(void)
@@ -3684,6 +3908,7 @@ int main(void)
     test_e14_rdma_verbs_fastpath(local_rank);
     test_e14_r2_poll_fastpath(local_rank);
     test_sq_occupancy_guard(local_rank);
+    test_tp16_20us_weightd_upgrades(local_rank);
     test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not
@@ -3779,6 +4004,7 @@ int main(void)
     test_mesh_pair_link(local_rank);
     test_mesh_second_rail(local_rank);
     test_mesh_ports(local_rank);
+    test_tp16_20us_fallback(local_rank);
     fprintf(stderr,"%s: %u checks, %u failures\n",
         "test_weightd_mesh_mock",test_checks,test_failures);
     return test_failures != 0u ? 1 : 0;

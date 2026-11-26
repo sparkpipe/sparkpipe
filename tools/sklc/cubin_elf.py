@@ -114,7 +114,31 @@ def align_up(value, align):
 
 
 def nvrm_short_name(name):
-    return name if len(name) <= 64 else f"{name[:51]}_{hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]}"
+    if len(name) <= 64:
+        return name
+    base = name
+    if name.startswith("_Z"):
+        idx = 2
+        if idx < len(name) and name[idx] == "N":
+            idx += 1
+            while idx < len(name) and name[idx] in "rVKRO":
+                idx += 1
+        while idx < len(name):
+            if name[idx] == "L":
+                idx += 1
+                continue
+            if not name[idx].isdigit():
+                break
+            end = idx
+            while end < len(name) and name[end].isdigit():
+                end += 1
+            count = int(name[idx:end])
+            if count == 0 or len(name) - end < count:
+                break
+            base = name[end:end + count]
+            idx = end + count
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    return f"{base[:51]}_{digest}"
 
 
 ARCH_SM_NUM = {

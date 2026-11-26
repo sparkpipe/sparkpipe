@@ -370,7 +370,7 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 {
 	const SparkSpeculationHazard *engine_hazard;
 	float best_rate = 0.0f,expected,cost;
-	uint32_t index,drafts,feasible,pass,lanes;
+	uint32_t index,drafts,feasible,pass,lanes,frame_class;
 	memset(choice,0,sizeof(*choice));
 	if ( model == 0 || request == 0 || request->feasible == 0u )
 		return;
@@ -378,7 +378,22 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 	choice->chain_token_ns = SparkSpeculationFrameTokenCost(model,request->context);
 	if ( choice->chain_token_ns == 0.0f && request->base_rows == 0u )
 		return;
-	engine_hazard = &model->classes[SparkSpeculationFrameClass(request->match_length,request->sampled)];
+	frame_class = SparkSpeculationFrameClass(request->match_length,request->sampled);
+	engine_hazard = &model->classes[frame_class];
+	if ( engine_hazard->frames == 0u && feasible > 8u )
+	{
+		const uint32_t base_class = request->sampled != 0u ? SPARK_SPECULATION_FRAME_MATCH_CLASSES : 0u;
+		uint32_t fallback = frame_class;
+		while ( fallback > base_class )
+		{
+			fallback--;
+			if ( model->classes[fallback].frames != 0u )
+			{
+				engine_hazard = &model->classes[fallback];
+				break;
+			}
+		}
+	}
 	lanes = request->lanes > 1u ? request->lanes : 1u;
 	if ( engine_hazard->frames == 0u )
 	{

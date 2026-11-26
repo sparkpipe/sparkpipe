@@ -1,0 +1,2 @@
++267
+TP16-20us Collective Engine Phase 1: per-send-QP dedicated BlueFlame UAR domains (ibv_alloc_td + ibv_alloc_parent_domain with shared-PD fallback and send-before-recv QP allocation) eliminating ring_barriers; negotiated ConnectX-7 max_inline_data (up to 828 B) with multi-WQEBB direct mlx5 SQ encoding and fused single-WQE compact_tail [payload | 8B tail] halving WQEs per AllReduce; and double-buffered staging halves with ALT doorbell ping-pong and prior-round ship_wait overlap eliminating the 16-32 us mid-round TX CQE stall between RS and AG.
