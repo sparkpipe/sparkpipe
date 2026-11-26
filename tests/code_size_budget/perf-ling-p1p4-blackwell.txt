@@ -1,0 +1,2 @@
++1057
+ling Blackwell P1-P4 optimizations for solar-open-2 and ling-3.x (sm_121a): local-head KV-gather FlashAttention MMA GQA prefill with fixed KV_CHUNK=512 split-K merge and fused OutputGate (0-ULP Gate GX), rows<=8 0-ULP fused KDA/MLA/GQA output (2-barrier KDA norm, BF16 RG=8 1-col and FP8 RG=4 2-col) and zero-SMEM B1/batched KDA low-rank pair projections, zero-spill 1/2-col exact MoE W1W3/W2 with restored solar-open-2 packed W1W3 and warp-compacted finalize, and vectorized per-row KDA gates.
