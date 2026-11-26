@@ -680,7 +680,8 @@ void D41AttendSplitDecodeKernel(
 	const uint32_t *__restrict__ recurrent_slot, const float *__restrict__ sink, float qk_scale,
 	const float2 *__restrict__ rope_sc, uint32_t group_heads, uint16_t *__restrict__ group_input, uint8_t *__restrict__ codes,
 	float *__restrict__ partials, uint32_t *__restrict__ counters, uint32_t rows, uint32_t splits, uint32_t commit, uint32_t row_base = 0u,
-	const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, const uint32_t *__restrict__ parent_rows = 0)
+	const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, const uint32_t *__restrict__ parent_rows = 0,
+	uint32_t out_rows = 0u)
 {
 	constexpr uint32_t ROW_BYTES = DIM * 2u, PITCH = ROW_BYTES + LM_LATENT_SHARD_ROW_PAD, CHUNKS = DIM / 8u;
 	constexpr uint32_t QUERIES = D41A_QUERIES, TILE = 16u, HALF_STEPS = DIM / 32u, WARPS = 4u, WARP_COLUMNS = DIM / WARPS;
@@ -940,9 +941,10 @@ void D41AttendSplitDecodeKernel(
 			else
 			{
 				const uint32_t grp = h / group_heads, width = group_heads * DIM, base = (h % group_heads) * DIM;
-				uint8_t *g_codes = codes + ((uint64_t)grp * rows + row) * width + base;
-				uint8_t *g_scales = codes + (uint64_t)(QUERIES / group_heads) * rows * width +
-					((uint64_t)grp * rows + row) * (width / 32u) + base / 32u;
+				const uint32_t o_rows = out_rows != 0u ? out_rows : rows, o_row = out_rows != 0u ? g_row : row;
+				uint8_t *g_codes = codes + ((uint64_t)grp * o_rows + o_row) * width + base;
+				uint8_t *g_scales = codes + (uint64_t)(QUERIES / group_heads) * o_rows * width +
+					((uint64_t)grp * o_rows + o_row) * (width / 32u) + base / 32u;
 				#pragma unroll
 				for ( uint32_t p = 0u; p < 2u; ++p )
 				{
@@ -972,7 +974,8 @@ static inline SparkGpuError D41AttendSplitDecodeLaunch(
 	const uint32_t *recurrent_slot, const float *sink, float qk_scale,
 	const float2 *rope_sc, uint32_t group_heads, uint16_t *group_input, uint8_t *codes,
 	float *partials, uint32_t *counters, uint32_t rows, uint32_t splits, uint32_t commit, SparkGpuStream stream,
-	uint32_t row_base = 0u, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, const uint32_t *parent_rows = 0)
+	uint32_t row_base = 0u, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, const uint32_t *parent_rows = 0,
+	uint32_t out_rows = 0u)
 {
 	constexpr uint32_t shared = D41AttendSplitSharedBytes<DIM>();
 	static bool granted = false;
@@ -986,6 +989,6 @@ static inline SparkGpuError D41AttendSplitDecodeLaunch(
 	LM_LAUNCH_DEPENDENT((D41AttendSplitDecodeKernel<Geometry, DIM, MODE>), rows * splits, 128u, shared, stream,
 		cache, compressed, query, sequence_of_row, length, bound, selected, topk, wave_kv, ring, ring_slot_stride, ring_rows,
 		positions, row_lane, row_ordinal, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, rope_sc,
-		group_heads, group_input, codes, partials, counters, rows, splits, commit, row_base, fork_positions, slot_offsets, parent_rows);
+		group_heads, group_input, codes, partials, counters, rows, splits, commit, row_base, fork_positions, slot_offsets, parent_rows, out_rows);
 	return SparkGpuPeekAtLastError();
 }

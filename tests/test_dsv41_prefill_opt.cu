@@ -1850,11 +1850,22 @@ static void TestTp4Batch16AndSkip(uint32_t *rng)
 	desc.act[1] = da1; desc.act_scale[1] = das1; desc.w[1] = dw1; desc.ws[1] = dws1; desc.out[1] = dg;
 	desc.in_dim[1] = k1; desc.out_dim[1] = n1; desc.out_stride[1] = stride; desc.out_col[1] = n0; desc.tile_end[1] = (n0 + n1) / 16u;
 	desc.tile_end[2] = desc.tile_end[1]; desc.tile_end[3] = desc.tile_end[1];
-	D41MxGemmBatch16Kernel<3u><<<dim3(desc.tile_end[1], 1u, 1u), 128u>>>(desc, rows);
+	D41MxGemmBatch16Kernel<4u, 16u><<<dim3(desc.tile_end[1], 1u, 1u), 128u>>>(desc, rows);
+	uint16_t *dg8 = 0;
+	TEST_CHECK(cudaMalloc(&dg8, (size_t)rows * stride * 2u));
+	D41MxBatchDesc desc8 = desc;
+	desc8.out[0] = dg8; desc8.out[1] = dg8;
+	desc8.tile_end[0] = n0 / 8u;
+	desc8.tile_end[1] = (n0 + n1) / 8u;
+	desc8.tile_end[2] = desc8.tile_end[1]; desc8.tile_end[3] = desc8.tile_end[1];
+	D41MxGemmBatch16Kernel<4u, 8u><<<dim3(desc8.tile_end[1], 1u, 1u), 128u>>>(desc8, rows);
 	TEST_CHECK(cudaDeviceSynchronize());
-	std::vector<uint16_t> vr((size_t)rows * stride), vg((size_t)rows * stride);
+	std::vector<uint16_t> vr((size_t)rows * stride), vg((size_t)rows * stride), vg8((size_t)rows * stride);
 	TEST_CHECK(cudaMemcpy(vr.data(), dr, vr.size() * 2u, cudaMemcpyDeviceToHost));
 	TEST_CHECK(cudaMemcpy(vg.data(), dg, vg.size() * 2u, cudaMemcpyDeviceToHost));
+	TEST_CHECK(cudaMemcpy(vg8.data(), dg8, vg8.size() * 2u, cudaMemcpyDeviceToHost));
+	if ( vg != vg8 ) { fprintf(stderr, "MISMATCH D41MxGemmBatch16Kernel TILE_N=8 vs TILE_N=16\n"); exit(1); }
+	cudaFree(dg8);
 	float max_rel = 0.0f;
 	for ( size_t i = 0; i < vr.size(); ++i )
 	{
@@ -1889,7 +1900,24 @@ static void TestTp4Batch16AndSkip(uint32_t *rng)
 	uint32_t changed = 0u;
 	for ( auto v : sk ) if ( v != 0x5a5au ) ++changed;
 	if ( changed == 0u ) { fprintf(stderr, "MISMATCH idx_skip skipped when row exceeded bound\n"); exit(1); }
-	printf("PASS D41MxGemmBatch16Kernel (max_rel=%.6g) & multi-row idx_skip\n", max_rel);
+	D41MxBatchDesc dsk = desc;
+	dsk.out[0] = dout0; dsk.out_stride[0] = n0; dsk.out_col[0] = 0u;
+	dsk.out[1] = dout1; dsk.out_stride[1] = n1; dsk.out_col[1] = 0u;
+	dsk.skip_seq = dseq; dsk.skip_len = dlen; dsk.skip_bound = 0; dsk.skip_max = 2048u; dsk.skip_grp = 1u;
+	TEST_CHECK(cudaMemcpy(dlen, hlen_lo, 32u, cudaMemcpyHostToDevice));
+	TEST_CHECK(cudaMemset(dout1, 0x5a, (size_t)rows * n1 * 2u));
+	D41MxGemmBatch16Kernel<4u, 16u><<<dim3(dsk.tile_end[1], 1u, 1u), 128u>>>(dsk, rows);
+	TEST_CHECK(cudaDeviceSynchronize());
+	TEST_CHECK(cudaMemcpy(sk.data(), dout1, sk.size() * 2u, cudaMemcpyDeviceToHost));
+	for ( auto v : sk ) if ( v != 0x5a5au ) { fprintf(stderr, "MISMATCH Batch16 skip did not skip\n"); exit(1); }
+	TEST_CHECK(cudaMemcpy(dlen, hlen_hi, 32u, cudaMemcpyHostToDevice));
+	D41MxGemmBatch16Kernel<4u, 16u><<<dim3(dsk.tile_end[1], 1u, 1u), 128u>>>(dsk, rows);
+	TEST_CHECK(cudaDeviceSynchronize());
+	TEST_CHECK(cudaMemcpy(sk.data(), dout1, sk.size() * 2u, cudaMemcpyDeviceToHost));
+	changed = 0u;
+	for ( auto v : sk ) if ( v != 0x5a5au ) ++changed;
+	if ( changed == 0u ) { fprintf(stderr, "MISMATCH Batch16 skip skipped when row exceeded bound\n"); exit(1); }
+	printf("PASS D41MxGemmBatch16Kernel (TILE_N=8==16 0 diffs, max_rel=%.6g) & multi-row idx_skip\n", max_rel);
 	cudaFree(da0); cudaFree(das0); cudaFree(da1); cudaFree(das1); cudaFree(dw0); cudaFree(dws0); cudaFree(dw1); cudaFree(dws1);
 	cudaFree(dr); cudaFree(dg); cudaFree(dseq); cudaFree(dlen); cudaFree(dout0); cudaFree(dout1);
 }
@@ -1953,6 +1981,76 @@ static void TestTp4W2DirectParity(uint32_t *rng)
 	printf("PASS D41CellMxW2DirectKernel (<1,3> & <2,2>): 0 diffs\n");
 }
 
+static void TestTp4W13DirectParity(uint32_t *rng)
+{
+	const uint32_t experts = 384u, in_dim = 5120u, out_dim = 1152u, active_e = 6u;
+	const uint64_t gbytes = (uint64_t)(in_dim / LM_SKINNY_CELL_TILE_K) * (out_dim / LM_SKINNY_CELL_NEURONS) * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	std::vector<uint8_t> hw((size_t)experts * gbytes, 0u);
+	for ( uint32_t e = 0u; e < active_e; ++e )
+	{
+		uint8_t *ep = hw.data() + (size_t)e * gbytes;
+		for ( size_t i = 0; i < gbytes; ++i ) ep[i] = (uint8_t)(TestNext(rng) & 0xffu);
+		for ( uint32_t c = 0u; c < (in_dim / 32u) * (out_dim / 16u); ++c )
+			for ( uint32_t j = 0u; j < 16u; ++j )
+				ep[(size_t)c * 272u + 256u + j] = (uint8_t)(124u + (TestNext(rng) & 3u));
+	}
+	const uint32_t max_rows = 12u;
+	std::vector<uint8_t> ha((size_t)max_rows * in_dim), has((size_t)max_rows * (in_dim / 32u));
+	for ( auto &v : ha ) v = (uint8_t)((TestNext(rng) & 0x3eu) | 0x20u);
+	for ( auto &v : has ) v = (uint8_t)(124u + (TestNext(rng) & 3u));
+	uint8_t *dw = 0, *da = 0, *das = 0;
+	TEST_CHECK(cudaMalloc(&dw, hw.size()));
+	TEST_CHECK(cudaMalloc(&da, ha.size()));
+	TEST_CHECK(cudaMalloc(&das, has.size()));
+	TEST_CHECK(cudaMemcpy(dw, hw.data(), hw.size(), cudaMemcpyHostToDevice));
+	TEST_CHECK(cudaMemcpy(da, ha.data(), ha.size(), cudaMemcpyHostToDevice));
+	TEST_CHECK(cudaMemcpy(das, has.data(), has.size(), cudaMemcpyHostToDevice));
+	std::vector<uint16_t> out_r1, out_r12_row0;
+	for ( uint32_t rows : { 1u, 6u, 12u } )
+	{
+		const uint32_t routes = rows * active_e;
+		std::vector<uint32_t> off(experts + 1u, routes), src(routes);
+		for ( uint32_t e = 0u; e < active_e; ++e )
+		{
+			off[e] = e * rows;
+			for ( uint32_t r = 0u; r < rows; ++r ) src[e * rows + r] = r;
+		}
+		uint16_t *dr = 0, *dg = 0;
+		uint32_t *doff = 0, *dsrc = 0, *dact_e = 0;
+		TEST_CHECK(cudaMalloc(&dr, (size_t)routes * out_dim * 2u));
+		TEST_CHECK(cudaMalloc(&dg, (size_t)routes * out_dim * 2u));
+		TEST_CHECK(cudaMalloc(&doff, off.size() * 4u));
+		TEST_CHECK(cudaMalloc(&dsrc, src.size() * 4u));
+		TEST_CHECK(cudaMalloc(&dact_e, (experts + 1u) * 4u));
+		TEST_CHECK(cudaMemcpy(doff, off.data(), off.size() * 4u, cudaMemcpyHostToDevice));
+		TEST_CHECK(cudaMemcpy(dsrc, src.data(), src.size() * 4u, cudaMemcpyHostToDevice));
+		if ( LmCellMxExperts(dw, da, das, dr, doff, dsrc, experts, routes, 0u, in_dim, out_dim, 0) != LM_LAUNCH_OK )
+			exit(1);
+		D41CompactActiveExpertsKernel<384u><<<1u, 256u>>>(doff, dact_e);
+		if ( routes <= 48u )
+			D41CellMxW13DirectKernel<1u, 3u, 384u, 5120u, 1152u><<<routes * (out_dim / 128u), 256u>>>(dw, da, das, dg, doff, dsrc, dact_e, routes);
+		else
+			D41CellMxW13DirectKernel<2u, 2u, 384u, 5120u, 1152u><<<routes * (out_dim / 128u), 256u>>>(dw, da, das, dg, doff, dsrc, dact_e, routes);
+		TEST_CHECK(cudaDeviceSynchronize());
+		std::vector<uint16_t> vr((size_t)routes * out_dim), vg((size_t)routes * out_dim);
+		TEST_CHECK(cudaMemcpy(vr.data(), dr, vr.size() * 2u, cudaMemcpyDeviceToHost));
+		TEST_CHECK(cudaMemcpy(vg.data(), dg, vg.size() * 2u, cudaMemcpyDeviceToHost));
+		if ( vr != vg ) { fprintf(stderr, "MISMATCH D41CellMxW13DirectKernel rows=%u\n", rows); exit(1); }
+		if ( rows == 1u )
+			out_r1 = vg;
+		else if ( rows == 12u )
+		{
+			out_r12_row0.resize((size_t)active_e * out_dim);
+			for ( uint32_t e = 0u; e < active_e; ++e )
+				memcpy(out_r12_row0.data() + (size_t)e * out_dim, vg.data() + (size_t)(e * rows) * out_dim, out_dim * 2u);
+		}
+		cudaFree(dr); cudaFree(dg); cudaFree(doff); cudaFree(dsrc); cudaFree(dact_e);
+	}
+	if ( out_r1 != out_r12_row0 ) { fprintf(stderr, "MISMATCH D41CellMxW13DirectKernel rows=1 vs rows=12 row 0\n"); exit(1); }
+	cudaFree(dw); cudaFree(da); cudaFree(das);
+	printf("PASS D41CellMxW13DirectKernel (<1,3> & <2,2>, rows=1/6/12, row1==row12): 0 diffs\n");
+}
+
 static float TestBf16ToFloat(uint16_t v)
 {
 	const uint32_t u = (uint32_t)v << 16u;
@@ -1996,7 +2094,7 @@ static void TestTp4BaseRLeapfrogParity(uint32_t *rng)
 		TEST_CHECK(cudaMemcpy(dsc, h_sc.data(), 12u, cudaMemcpyHostToDevice));
 		TEST_CHECK(cudaMemcpy(dbs, h_bs.data(), mix * 4u, cudaMemcpyHostToDevice));
 		TEST_CHECK(cudaMemcpy(dnw, h_nw.data(), hidden * 2u, cudaMemcpyHostToDevice));
-		for ( uint32_t rows : { 4u, 8u, 16u, 64u } )
+		for ( uint32_t rows : { 1u, 4u, 8u, 16u, 64u } )
 		{
 			std::vector<uint16_t> h_st((size_t)rows * flat);
 			std::vector<float> h_cpre((size_t)rows * hc);
@@ -2018,7 +2116,10 @@ static void TestTp4BaseRLeapfrogParity(uint32_t *rng)
 			TEST_CHECK(cudaMemcpy(dcpre, h_cpre.data(), h_cpre.size() * 4u, cudaMemcpyHostToDevice));
 			if ( LmHcSinkhornMixes<4u>(dst, dfn, dsc, dbs, dpart, dpr1, dpo1, dcb1, rows, hidden, 1e-20f, 20u, 1e-6f, 0) != LM_LAUNCH_OK ) exit(1);
 			TestRmsNormMxKernel<256u><<<rows, 256u, (hidden + 8u) * 4u>>>(0, dst, dcpre, dnw, dx1, (uint16_t *)0, hidden, 1e-20f, dc1, ds1);
-			if ( rows <= 4u )
+			if ( rows == 1u )
+				D41HcMixNormK40Kernel<1u, 5120u><<<40u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+					(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
+			else if ( rows <= 4u )
 				D41HcMixNormK40Kernel<4u, 5120u><<<40u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 					(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 			else if ( rows <= 8u )
@@ -2459,6 +2560,7 @@ int main(void)
 	TestTp4HcMixK32Parity(&rng);
 	TestTp4Batch16AndSkip(&rng);
 	TestTp4W2DirectParity(&rng);
+	TestTp4W13DirectParity(&rng);
 	TestTp4BaseRLeapfrogParity(&rng);
 	printf("PASS dsv41 prefill opt parity\n");
 	return 0;
