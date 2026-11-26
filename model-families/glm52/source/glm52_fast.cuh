@@ -2265,8 +2265,10 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 		LmDependentRelease();
 		return;
 	}
-	auto issue_tile = [&](uint32_t t_idx, uint32_t st_off, uint32_t &grp_o, uint32_t &rb_o, uint32_t &rl_o, uint32_t &nt_o)
+	static_assert(STAGES == 3u || STAGES == 4u, "w2 fp8 pipeline uses 3 or 4 stages");
+	auto issue_tile = [&](uint32_t t_idx, uint32_t st_off) -> uint4
 	{
+		uint32_t grp_o, rb_o, rl_o, nt_o;
 		GlmGroupedTileLookupGlobal(group_row_offset, tile_prefix, S::kExperts, t_idx, TILE_M, N_TILES, grp_o, rb_o, rl_o, nt_o);
 		const uint32_t stage = shared_base + st_off, col_base = nt_o * TILE_N;
 		#pragma unroll
@@ -2285,17 +2287,31 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 			const uint32_t r = b_row0 + q * B_STEP;
 			LmStreamCopy(stage + A_BYTES + LmStreamWeight<LmFp8>::template Offset<B_ROW_BYTES>(r, b_col0), b_ptr + q * b_ptr_step, 16u);
 		}
+		return make_uint4(grp_o, rb_o, rl_o, nt_o);
 	};
-	uint32_t t_grp[STAGES], t_rb[STAGES], t_rl[STAGES], t_nt[STAGES];
+	uint4 m0{}, m1{}, m2{};
 	uint32_t sp = 0u, sc = 0u, next_tile = blockIdx.x;
-	#pragma unroll
-	for ( uint32_t p = 0u; p < STAGES - 1u; ++p )
+	if ( next_tile < total_tiles )
+	{
+		m0 = issue_tile(next_tile, 0u);
+		next_tile += gridDim.x;
+		sp = 1u;
+	}
+	LmStreamCommit();
+	if ( next_tile < total_tiles )
+	{
+		m1 = issue_tile(next_tile, STAGE_BYTES);
+		next_tile += gridDim.x;
+		sp = 2u;
+	}
+	LmStreamCommit();
+	if constexpr ( STAGES == 4u )
 	{
 		if ( next_tile < total_tiles )
 		{
-			issue_tile(next_tile, sp * STAGE_BYTES, t_grp[sp], t_rb[sp], t_rl[sp], t_nt[sp]);
+			m2 = issue_tile(next_tile, 2u * STAGE_BYTES);
 			next_tile += gridDim.x;
-			sp = sp + 1u == STAGES ? 0u : sp + 1u;
+			sp = 3u;
 		}
 		LmStreamCommit();
 	}
@@ -2303,14 +2319,22 @@ static void GlmMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, const f
 	{
 		LmStreamWait<STAGES - 2u>();
 		__syncthreads();
+		const uint4 cur_m = m0;
+		m0 = m1;
+		if constexpr ( STAGES == 4u )
+			m1 = m2;
 		if ( next_tile < total_tiles )
 		{
-			issue_tile(next_tile, sp * STAGE_BYTES, t_grp[sp], t_rb[sp], t_rl[sp], t_nt[sp]);
+			const uint4 nxt_m = issue_tile(next_tile, sp * STAGE_BYTES);
+			if constexpr ( STAGES == 4u )
+				m2 = nxt_m;
+			else
+				m1 = nxt_m;
 			next_tile += gridDim.x;
 			sp = sp + 1u == STAGES ? 0u : sp + 1u;
 		}
 		LmStreamCommit();
-		const uint32_t cur_grp = t_grp[sc], cur_rb = t_rb[sc], cur_rl = t_rl[sc], col_base = t_nt[sc] * TILE_N;
+		const uint32_t cur_grp = cur_m.x, cur_rb = cur_m.y, cur_rl = cur_m.z, col_base = cur_m.w * TILE_N;
 		const uint32_t stage_a = shared_base + sc * STAGE_BYTES, stage_b = stage_a + A_BYTES;
 		float sc_w[NF][2];
 		#pragma unroll
