@@ -172,7 +172,8 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
         if ( is_2d != 0u )
         {
             const uint64_t cap2d = 4u * (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t));
-            const uint64_t cidx = st->chunk_idx / 4u;
+            const uint64_t chunks_2d = st->total_elements > 0u ? ((st->total_elements + cap2d - 1u) / cap2d) : 1u;
+            const uint64_t cidx = (st->chunk_idx / 4u) % chunks_2d;
             const uint64_t cbegin = cidx * cap2d;
             const uint64_t ccount = st->total_elements > cbegin ? (st->total_elements - cbegin < cap2d ? st->total_elements - cbegin : cap2d) : 0u;
             const uint64_t sub_slice = ((ccount + 15u) / 16u + 7u) & ~UINT64_C(7);

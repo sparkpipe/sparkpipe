@@ -413,6 +413,8 @@ static void FixtureResetEpoch(MeshFixture *f, uint32_t rank, uint32_t degree, ui
     f->doorbell_host[alt_words + 2u] = 0u;
     f->doorbell_host[alt_words + 3u] = 0u;
     *f->shipped_host = 0u;
+    if ( f->responder.hybrid_ctrl != 0 )
+        memset(f->responder.hybrid_ctrl->trigger, 0, sizeof(f->responder.hybrid_ctrl->trigger));
     f->responder.rank = rank;
     f->responder.degree = degree;
     f->responder.payload_bytes = payload_bytes;
@@ -1168,22 +1170,36 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
                 f->responder.peer_payloads[p][i] = PatternBf16(p, i, 1301u);
         for ( uint32_t i = 0u; i < elements; ++i )
             h_local[i] = PatternBf16(rank, i % slice, 1301u);
+        for ( uint32_t p = 0u; p < degree; ++p )
+        {
+            if ( p == rank )
+            {
+                for ( uint32_t i = 0u; i < slice; ++i )
+                {
+                    float acc = 0.0f;
+                    for ( uint32_t q = 0u; q < degree; ++q )
+                    {
+                        uint32_t bits = (uint32_t)f->responder.peer_payloads[q][i] << 16u;
+                        float fv;
+                        memcpy(&fv, &bits, sizeof(fv));
+                        acc += fv;
+                    }
+                    uint32_t bits;
+                    memcpy(&bits, &acc, sizeof(bits));
+                    bits += 0x7fffu + ((bits >> 16u) & 1u);
+                    h_ref[p * slice + i] = (uint16_t)(bits >> 16u);
+                }
+            }
+            else
+                memcpy(h_ref + p * slice, f->responder.peer_payloads[p], slice * sizeof(uint16_t));
+        }
         SetSkewOrder(f, rank, 1u);
-        f->gate_host->capabilities = 0u;
         __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
-        FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
-        CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
-            f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
-            elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
-        CUDA_OK(cudaStreamSynchronize(f->stream));
-        CUDA_OK(cudaMemcpy(h_ref, f->out_ref, elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         memset(f->staging_host, 0x5a, 16u * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
-        memset(ctrl_host->trigger, 0, sizeof(ctrl_host->trigger));
         CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
         cudaGraph_t graph = 0;
         cudaGraphExec_t exec = 0;
@@ -1255,7 +1271,6 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
 
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
-        memset(ctrl_host->trigger, 0, sizeof(ctrl_host->trigger));
         CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
         for ( uint32_t rep = 0u; rep < 16u; ++rep )
             CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
@@ -1289,7 +1304,6 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
 
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
-        memset(ctrl_host->trigger, 0, sizeof(ctrl_host->trigger));
         CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
         for ( uint32_t rep = 0u; rep < 8u; ++rep )
             CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
