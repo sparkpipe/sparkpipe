@@ -532,6 +532,8 @@ struct K3Cuda
 	static int32_t LatentMoe(Context &c, uint32_t lane, uint32_t rows, uint32_t packed_rows, uint32_t phase, uint32_t stream)
 	{
 		K3LayerBuffers *b = Lane(c, lane);
+		if ( phase == 2u )
+			b->fuse_shared_out = K3_EXPERT_CELLS(b) && b->tp_sharded != 0u && c.state->layer_collective != 0 ? 1u : 0u;
 		const int32_t status = K3LayerLatentMoe<Format>(b, rows, packed_rows, c.multiprocessors, Stream(c, stream), phase);
 		if ( phase == 0u )
 			b->normed_ready = 0u;

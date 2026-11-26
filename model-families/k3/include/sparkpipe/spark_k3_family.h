@@ -498,7 +498,11 @@ struct K3Schedule
 					if ( B::GatherWindows(c, K3_LANE_A) != 0u )
 						K3_PAIR_DO(B::Fence(c, K3_STREAM_B, K3_STREAM_MAIN));
 					if ( B::GatherExpanded(c, K3_LANE_A) != 0u )
+					{
+						if ( B::GatherWindows(c, K3_LANE_A) == 0u )
+							K3_PAIR_DO(B::Fence(c, K3_STREAM_A, K3_STREAM_B));
 						K3_PAIR_DO(B::MlaExpandValues(c, K3_LANE_A, 0u, K3_STREAM_A));
+					}
 					K3_PAIR_DO(B::MlaGatherPartials(c, K3_LANE_A, 0u, K3_STREAM_A));
 					K3_PAIR_DO(B::MlaGatherMerge(c, K3_LANE_A, K3_STREAM_A));
 					K3_PAIR_DO(B::MlaOutput(c, K3_LANE_A, 0u, K3_STREAM_A));

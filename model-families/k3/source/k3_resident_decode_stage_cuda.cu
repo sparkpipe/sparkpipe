@@ -900,6 +900,14 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 		b->shard_gather_list = d->gather_plan;
 		b->shard_gather_offset = d->gather_plan + d->sequences;
 		b->shard_gather_context = d->gather_plan + 2u * d->sequences;
+		if ( indexed == 0u && b->shard_gather_values != 0 && rows >= K3_DISPATCH_EXPANDED_MIN_ROWS &&
+			heads % LM_EXPANDED_PREFILL_HEADS == 0u &&
+			(uint64_t)context * heads * K3_V_HEAD_DIM * sizeof(uint16_t) <= b->shard_gather_values_bytes )
+		{
+			b->shard_gather_expanded = 1u;
+			b->shard_gather_passes = 1u;
+			b->shard_gather_value_keys = context;
+		}
 		return 1;
 	}
 	if ( indexed != 0u && units > landing_units )
@@ -1015,6 +1023,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->normed_ready = 0u;
 	b->defer_partial_add = 0u;
 	b->pending_partial_add = 0;
+	b->fuse_shared_out = 0u;
 	b->row_invariant = commit == 0u ? 1u : 0u;
 	b->shard_gather = 0u;
 	b->shard_gather_expanded = 0u;
