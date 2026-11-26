@@ -1036,7 +1036,7 @@ static void LingKdaNormGateOutKernel(const uint16_t *__restrict__ mixed, const u
 			__syncthreads();
 			if ( h < HEADS )
 			{
-				const float sum = s_wsum[half_id * 4u] + s_wsum[half_id * 4u + 1u] + s_wsum[half_id * 4u + 2u] + s_wsum[half_id * 4u + 3u];
+				const float sum = (s_wsum[half_id * 4u] + s_wsum[half_id * 4u + 2u]) + (s_wsum[half_id * 4u + 1u] + s_wsum[half_id * 4u + 3u]);
 				const float scale = SparkMathRmsScale(sum, (float)HD, G::kNormEpsilon);
 				const float g = LmBf16ToFloat(__ldg(gate + idx));
 				s_in[r][h * HD + within] = LmFloatToBf16(G::kKdaNormRoundOnce ? SparkMathRmsNormGateOnce(v, scale, nw, SparkMathSigmoidFast(g))
