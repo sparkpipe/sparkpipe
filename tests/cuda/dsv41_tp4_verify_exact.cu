@@ -195,9 +195,9 @@ int main(void)
 	st->tp_degree = D41_TP;
 	st->tp_rank = 0u;
 	st->max_rows = 64u;
-	st->slots = 4u;
+	st->slots = 8u;
 	st->kv_attached = 1u;
-	st->context_slots = 4u;
+	st->context_slots = 8u;
 	st->max_positions = 512u;
 	st->moe_whole = 0u;
 	D41SharedSlice(0u, &st->shared_first, &st->shared_width);
@@ -235,7 +235,7 @@ int main(void)
 	REQ(Overlaps(st->moe_send, moe_send_bytes, st->local_scores, lscores_bytes) == 0u, "moe_send vs local_scores");
 	REQ(Overlaps(st->moe_send, moe_send_bytes, st->selected, sel_bytes) == 0u, "moe_send vs selected");
 
-	st->recurrent = (uint8_t *)AllocFilled((uint64_t)4u * st->recurrent_bytes, 1u, 0x111u);
+	st->recurrent = (uint8_t *)AllocFilled((uint64_t)8u * st->recurrent_bytes, 1u, 0x111u);
 	std::vector<float> hfreq(D41K_ROPE_PAIRS * 2u);
 	for ( uint32_t i = 0u; i < D41K_ROPE_PAIRS; ++i )
 	{
@@ -257,15 +257,15 @@ int main(void)
 	{
 		const uint32_t pslots = c < 3u ? D41Ratio2Kv::kPageSlots : D41Ratio1Kv::kPageSlots;
 		const uint32_t pages = 4u;
-		std::vector<uint32_t> pt(4u * pages);
-		for ( uint32_t s = 0u; s < 4u * pages; ++s )
+		std::vector<uint32_t> pt(8u * pages);
+		for ( uint32_t s = 0u; s < 8u * pages; ++s )
 			pt[s] = s;
-		kv_pool_sz[c] = (size_t)4u * pages * pslots * D41_SLOT_BYTES;
+		kv_pool_sz[c] = (size_t)8u * pages * pslots * D41_SLOT_BYTES;
 		kv_pools[c] = (uint8_t *)AllocFilled(kv_pool_sz[c], 1u, 0x500u + c);
 		kv_pools_init[c] = (uint8_t *)AllocFilled(kv_pool_sz[c], 1u, 0x500u + c);
 		LmKvShardView v;
 		memset(&v, 0, sizeof(v));
-		REQ(LmKvViewInitialize(&v.pages, kv_pools[c], DevU32(pt), pages, 4u, 4u * pages, kverr) == 0, "kv");
+		REQ(LmKvViewInitialize(&v.pages, kv_pools[c], DevU32(pt), pages, 8u, 8u * pages, kverr) == 0, "kv");
 		v.shard = st->shard;
 		st->latent_views[c] = v;
 		st->index_views[c] = v;
@@ -279,15 +279,15 @@ int main(void)
 	for ( uint32_t li = 0u; li < 4u; ++li )
 		st->layers[test_layers[li]] = MakeLayer(0x1000u + li * 100u, st->shared_width, w13, w2);
 
-	const uint32_t N = 10u;
+	const uint32_t N = 12u;
 	uint16_t *init_streams = (uint16_t *)AllocFilled((uint64_t)N * D41K_HC * D41_HIDDEN * 2u, 1u, 0x777u);
-	uint8_t *init_rec = (uint8_t *)AllocFilled((uint64_t)4u * st->recurrent_bytes, 1u, 0x888u);
+	uint8_t *init_rec = (uint8_t *)AllocFilled((uint64_t)8u * st->recurrent_bytes, 1u, 0x888u);
 	float *init_pre = (float *)AllocFilled((uint64_t)N * D41K_HC * 4u, 2u, 0x999u);
 	CHECK(cudaDeviceSynchronize());
 
 	auto reset_state = [&]()
 	{
-		CHECK(cudaMemcpy(st->recurrent, init_rec, (uint64_t)4u * st->recurrent_bytes, cudaMemcpyDeviceToDevice));
+		CHECK(cudaMemcpy(st->recurrent, init_rec, (uint64_t)8u * st->recurrent_bytes, cudaMemcpyDeviceToDevice));
 		for ( uint32_t c = 0u; c < 4u; ++c )
 			CHECK(cudaMemcpy(kv_pools[c], kv_pools_init[c], kv_pool_sz[c], cudaMemcpyDeviceToDevice));
 	};
@@ -328,7 +328,10 @@ int main(void)
 		step.commit = commit;
 		step.tree = tree;
 		step.multiprocessors = (uint32_t)sms;
-		std::vector<uint32_t> len = { ctx_len, 1u, 1u, 1u }, seq(nr, 0u), beg = { 0u, nr }, idx(nr), rec = { 0u, 1u, 2u, 3u };
+		std::vector<uint32_t> len(8u, 1u), seq(nr, 0u), beg = { 0u, nr }, idx(nr), rec(8u);
+		len[0] = ctx_len;
+		for ( uint32_t s = 0u; s < 8u; ++s )
+			rec[s] = s;
 		for ( uint32_t r = 0u; r < nr; ++r )
 			idx[r] = r;
 		step.positions = DevU32(pos);
@@ -355,8 +358,46 @@ int main(void)
 		LM_LAUNCH((LmRowLanesKernel), 1u, 256u, 0, (SparkGpuStream)0, step.sequence_row_begin, step.sequence_row_indices, st->row_lane, st->row_ordinal);
 		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
 		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio2, 4u, 2u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio1, 4u, 1u);
+		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
+		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
+		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
+	};
+
+	auto prep_batch_decode = [&](SparkStageRunnerStep &step, uint32_t nr, const std::vector<uint32_t> &pos, uint32_t *rfault)
+	{
+		memset(&step, 0, sizeof(step));
+		step.rows = nr;
+		step.sequences = nr;
+		step.commit = 1u;
+		step.tree = 0u;
+		step.multiprocessors = (uint32_t)sms;
+		std::vector<uint32_t> len(8u, 1u), seq(nr), beg(nr + 1u), idx(nr), rec(8u);
+		for ( uint32_t s = 0u; s < 8u; ++s )
+			rec[s] = s;
+		for ( uint32_t r = 0u; r < nr; ++r )
+		{
+			len[r] = pos[r] + 1u;
+			seq[r] = r;
+			beg[r] = r;
+			idx[r] = r;
+		}
+		beg[nr] = nr;
+		step.positions = DevU32(pos);
+		step.context_length = DevU32(len);
+		step.sequence_of_row = DevU32(seq);
+		step.sequence_row_begin = DevU32(beg);
+		step.sequence_row_indices = DevU32(idx);
+		step.recurrent_index = DevU32(rec);
+		step.route_fault = rfault;
+		st->row_invariant = 0u;
+		st->own_rows = 0u;
+		st->step_score_stride = 512u;
+		st->step_ratio2_stride = 512u;
+		LM_LAUNCH((LmRowLanesKernel), nr, 256u, 0, (SparkGpuStream)0, step.sequence_row_begin, step.sequence_row_indices, st->row_lane, st->row_ordinal);
+		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
+		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
+		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
+		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
 		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
 	};
 
@@ -420,17 +461,19 @@ int main(void)
 
 	for ( uint32_t P : { 40u, 125u, 200u } )
 	{
-		std::vector<uint32_t> ids10 = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u };
-		std::vector<uint16_t> ref10;
-		run_seq_order(P, ids10, test_layers, 4u, ref10);
+		std::vector<uint32_t> ids12 = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u };
+		std::vector<uint16_t> ref12;
+		run_seq_order(P, ids12, test_layers, 4u, ref12);
 
 		struct Case { const char *name; uint32_t rows; uint32_t tree; };
 		const Case cases[] = {
 			{ "linear_r6", 6u, 0u },
 			{ "linear_r8", 8u, 0u },
 			{ "linear_r10", 10u, 0u },
+			{ "linear_r12", 12u, 0u },
 			{ "tree_r6", 6u, 1u },
-			{ "tree_r10", 10u, 1u }
+			{ "tree_r10", 10u, 1u },
+			{ "tree_r12", 12u, 1u }
 		};
 		for ( const Case &c : cases )
 		{
@@ -452,7 +495,26 @@ int main(void)
 			free_step(step);
 			char label[64];
 			snprintf(label, sizeof(label), "P=%u %s", P, c.name);
-			CheckExact(label, got.data(), ref10.data(), got.size());
+			CheckExact(label, got.data(), ref12.data(), got.size());
+		}
+
+		{
+			reset_state();
+			const uint32_t b8 = 8u;
+			CHECK(cudaMemcpy(st->streams, init_streams, (uint64_t)b8 * D41K_HC * D41_HIDDEN * 2u, cudaMemcpyDeviceToDevice));
+			CHECK(cudaMemcpy(st->pre_init, init_pre, (uint64_t)b8 * D41K_HC * 4u, cudaMemcpyDeviceToDevice));
+			const std::vector<uint32_t> pos = { P, P + 3u, P + 11u, P + 17u, P + 29u, P + 43u, P + 59u, P + 71u };
+			SparkStageRunnerStep step;
+			prep_batch_decode(step, b8, pos, rfault);
+			REQ(st->row_invariant == 0u, "5c row_invariant must be 0");
+			run_layers(step, test_layers, 4u);
+			CHECK(cudaDeviceSynchronize());
+			std::vector<uint16_t> got_lane0(D41K_HC * D41_HIDDEN);
+			CHECK(cudaMemcpy(got_lane0.data(), st->streams, got_lane0.size() * 2u, cudaMemcpyDeviceToHost));
+			free_step(step);
+			char label[64];
+			snprintf(label, sizeof(label), "5c P=%u B1==B8_lane0", P);
+			CheckExact(label, got_lane0.data(), ref12.data(), got_lane0.size());
 		}
 	}
 
@@ -509,6 +571,6 @@ int main(void)
 	}
 
 	cudaFree(rfault);
-	printf("PASS dsv41 tp4 verify exact (P=40/125/200 linear r6/r8/r10, tree r6/r10, branching tree, commit r6 ring, select non-overlap)\n");
+	printf("PASS dsv41 tp4 verify exact (P=40/125/200 linear r6/r8/r10/r12, tree r6/r10/r12, 5c B1==B8_lane0 row_inv=0, branching tree, commit r6 ring, select non-overlap)\n");
 	return 0;
 }

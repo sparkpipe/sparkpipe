@@ -5360,13 +5360,18 @@ struct D41MxBatchDesc
 	uint32_t out_stride[4];
 	uint32_t out_col[4];
 	uint32_t tile_end[4];
+	const uint32_t *skip_seq;
+	const uint32_t *skip_len;
+	const uint32_t *skip_bound;
+	uint32_t skip_max;
+	uint32_t skip_grp;
 };
 
-template<uint32_t STAGES>
-static __global__ __launch_bounds__(128, 3)
+template<uint32_t STAGES, uint32_t TILE_N = 16u>
+static __global__ __launch_bounds__(128, 4)
 void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_t rows)
 {
-	constexpr uint32_t TILE_M = 16u, TILE_N = 16u, TILE_K = 128u, BLK = 32u;
+	constexpr uint32_t TILE_M = 16u, TILE_K = 128u, BLK = 32u, N_FRAGS = TILE_N / 8u;
 	constexpr uint32_t A_BYTES = TILE_M * TILE_K, B_BYTES = TILE_N * TILE_K;
 	constexpr uint32_t STAGE_BYTES = A_BYTES + B_BYTES + (TILE_M + TILE_N) * 4u;
 	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
@@ -5392,10 +5397,26 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 	const uint32_t out_stride = desc.out_stride[grp], out_col = desc.out_col[grp];
 	const uint32_t k_tiles = input_dim / TILE_K, sc_cols = input_dim / BLK;
 	LmDependentWait();
+	if ( desc.skip_max != 0u && desc.skip_seq != 0 && desc.skip_len != 0 && grp == desc.skip_grp )
+	{
+		const uint32_t row_end = row_base + TILE_M < rows ? row_base + TILE_M : rows;
+		uint32_t any_sparse = 0u;
+		for ( uint32_t r = row_base; r < row_end; ++r )
+		{
+			uint32_t b = __ldg(desc.skip_len + __ldg(desc.skip_seq + r));
+			if ( desc.skip_bound != 0 )
+			{
+				const uint32_t rp = __ldg(desc.skip_bound + r);
+				b = rp == D41K_NO_ROW ? 0u : (rp + 1u < b ? rp + 1u : b);
+			}
+			if ( b > desc.skip_max ) { any_sparse = 1u; break; }
+		}
+		if ( any_sparse == 0u ) { LmDependentRelease(); return; }
+	}
 	auto swz = [](uint32_t r, uint32_t c) { return r * TILE_K + ((c ^ (r & 7u)) << 4u); };
 	const uint32_t ch = threadIdx.x, r_cp = ch >> 3u, c_cp = ch & 7u;
 	const uint32_t a_live = row_base + r_cp < rows ? 16u : 0u;
-	const uint32_t b_live = n_base + r_cp < out_dim ? 16u : 0u;
+	const uint32_t b_live = r_cp < TILE_N && n_base + r_cp < out_dim ? 16u : 0u;
 	const uint8_t *a_row = act + (uint64_t)(a_live != 0u ? row_base + r_cp : 0u) * input_dim + c_cp * 16u;
 	const uint8_t *b_row = w + (uint64_t)(b_live != 0u ? n_base + r_cp : 0u) * input_dim + c_cp * 16u;
 	const uint32_t sa_dst = swz(r_cp, c_cp), sb_dst = A_BYTES + sa_dst;
@@ -5407,24 +5428,27 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 	auto issue = [&](uint32_t k)
 	{
 		const uint32_t st = sbase + (k % STAGES) * STAGE_BYTES;
-		asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sa_dst), "l"(a_row + (uint64_t)k * TILE_K), "r"(a_live) : "memory");
-		asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
+		asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sa_dst), "l"(a_row + (uint64_t)k * TILE_K), "r"(a_live) : "memory");
+		if constexpr ( TILE_N == 16u )
+			asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
+		else if ( r_cp < TILE_N )
+			asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
 		if ( sc_src != 0 )
 			asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(st + A_BYTES + B_BYTES + threadIdx.x * 4u),
 				"l"(sc_src + (uint64_t)k * 4u) : "memory");
 	};
-	float total[2][4];
+	float total[N_FRAGS][4];
 	#pragma unroll
-	for ( uint32_t j = 0u; j < 2u; ++j ) total[j][0] = total[j][1] = total[j][2] = total[j][3] = 0.0f;
+	for ( uint32_t j = 0u; j < N_FRAGS; ++j ) total[j][0] = total[j][1] = total[j][2] = total[j][3] = 0.0f;
 	for ( uint32_t p = 0u; p + 1u < STAGES; ++p )
 	{
 		if ( p < k_tiles ) issue(p);
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 	}
 	const uint32_t a_ldm_r = ((lane >> 3u) & 1u) * 8u + (lane & 7u), a_ldm_c = warp_k * 2u + (lane >> 4u);
-	const uint32_t b_ldm_r = (lane >> 4u) * 8u + (lane & 7u), b_ldm_c = warp_k * 2u + ((lane >> 3u) & 1u);
+	const uint32_t b_ldm_r = (TILE_N == 16u ? (lane >> 4u) * 8u : 0u) + (lane & 7u), b_ldm_c = warp_k * 2u + ((lane >> 3u) & 1u);
 	const uint32_t a_ldm_off = swz(a_ldm_r, a_ldm_c), b_ldm_off = A_BYTES + swz(b_ldm_r, b_ldm_c);
-	const uint32_t sa_idx = group + ((lane & 1u) << 3u), sb0_idx = TILE_M + group, sb1_idx = TILE_M + 8u + group;
+	const uint32_t sa_idx = group + ((lane & 1u) << 3u), sb0_idx = TILE_M + group, sb1_idx = TILE_M + (TILE_N == 16u ? 8u : 0u) + group;
 	for ( uint32_t k = 0u; k < k_tiles; ++k )
 	{
 		asm volatile("cp.async.wait_group %0;\n" :: "n"(STAGES - 2u) : "memory");
@@ -5433,17 +5457,30 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 		const uint32_t st = sbase + (k % STAGES) * STAGE_BYTES;
 		const uint32_t *words = (const uint32_t *)(smem + (k % STAGES) * STAGE_BYTES + A_BYTES + B_BYTES);
-		const uint32_t scale_a = words[sa_idx], scale_b0 = words[sb0_idx], scale_b1 = words[sb1_idx];
-		uint32_t a[4], b0[2], b1[2];
+		const uint32_t scale_a = words[sa_idx], scale_b0 = words[sb0_idx];
+		uint32_t a[4], b0[2];
 		asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
 			: "=r"(a[0]), "=r"(a[1]), "=r"(a[2]), "=r"(a[3]) : "r"(st + a_ldm_off));
-		asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
-			: "=r"(b0[0]), "=r"(b0[1]), "=r"(b1[0]), "=r"(b1[1]) : "r"(st + b_ldm_off));
-		float blk0[4], blk1[4];
-		LmMmaMxf8Block(blk0, a, b0, scale_a, (uint16_t)warp_k, scale_b0, (uint16_t)warp_k);
-		LmMmaMxf8Block(blk1, a, b1, scale_a, (uint16_t)warp_k, scale_b1, (uint16_t)warp_k);
-		total[0][0] += blk0[0]; total[0][1] += blk0[1]; total[0][2] += blk0[2]; total[0][3] += blk0[3];
-		total[1][0] += blk1[0]; total[1][1] += blk1[1]; total[1][2] += blk1[2]; total[1][3] += blk1[3];
+		if constexpr ( TILE_N == 16u )
+		{
+			const uint32_t scale_b1 = words[sb1_idx];
+			uint32_t b1[2];
+			asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+				: "=r"(b0[0]), "=r"(b0[1]), "=r"(b1[0]), "=r"(b1[1]) : "r"(st + b_ldm_off));
+			float blk0[4], blk1[4];
+			LmMmaMxf8Block(blk0, a, b0, scale_a, (uint16_t)warp_k, scale_b0, (uint16_t)warp_k);
+			LmMmaMxf8Block(blk1, a, b1, scale_a, (uint16_t)warp_k, scale_b1, (uint16_t)warp_k);
+			total[0][0] += blk0[0]; total[0][1] += blk0[1]; total[0][2] += blk0[2]; total[0][3] += blk0[3];
+			total[1][0] += blk1[0]; total[1][1] += blk1[1]; total[1][2] += blk1[2]; total[1][3] += blk1[3];
+		}
+		else
+		{
+			asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
+				: "=r"(b0[0]), "=r"(b0[1]) : "r"(st + b_ldm_off));
+			float blk0[4];
+			LmMmaMxf8Block(blk0, a, b0, scale_a, (uint16_t)warp_k, scale_b0, (uint16_t)warp_k);
+			total[0][0] += blk0[0]; total[0][1] += blk0[1]; total[0][2] += blk0[2]; total[0][3] += blk0[3];
+		}
 	}
 	asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 	__syncthreads();
@@ -5451,16 +5488,16 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 	if ( warp_k != 0u )
 	{
 		#pragma unroll
-		for ( uint32_t j = 0u; j < 2u; ++j )
+		for ( uint32_t j = 0u; j < N_FRAGS; ++j )
 			#pragma unroll
 			for ( uint32_t e = 0u; e < 4u; ++e )
-				ep[(((warp_k - 1u) * 2u + j) * 4u + e) * 32u + lane] = total[j][e];
+				ep[(((warp_k - 1u) * N_FRAGS + j) * 4u + e) * 32u + lane] = total[j][e];
 	}
 	__syncthreads();
 	if ( warp_k == 0u )
 	{
 		#pragma unroll
-		for ( uint32_t j = 0u; j < 2u; ++j )
+		for ( uint32_t j = 0u; j < N_FRAGS; ++j )
 			#pragma unroll
 			for ( uint32_t e = 0u; e < 4u; e += 2u )
 			{
@@ -5468,10 +5505,10 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 				const uint32_t col = n_base + j * 8u + quad * 2u;
 				if ( r < rows && col < out_dim )
 				{
-					const float v0 = total[j][e] + ep[((0u * 2u + j) * 4u + e) * 32u + lane]
-						+ ep[((1u * 2u + j) * 4u + e) * 32u + lane] + ep[((2u * 2u + j) * 4u + e) * 32u + lane];
-					const float v1 = total[j][e + 1u] + ep[((0u * 2u + j) * 4u + e + 1u) * 32u + lane]
-						+ ep[((1u * 2u + j) * 4u + e + 1u) * 32u + lane] + ep[((2u * 2u + j) * 4u + e + 1u) * 32u + lane];
+					const float v0 = total[j][e] + ep[((0u * N_FRAGS + j) * 4u + e) * 32u + lane]
+						+ ep[((1u * N_FRAGS + j) * 4u + e) * 32u + lane] + ep[((2u * N_FRAGS + j) * 4u + e) * 32u + lane];
+					const float v1 = total[j][e + 1u] + ep[((0u * N_FRAGS + j) * 4u + e + 1u) * 32u + lane]
+						+ ep[((1u * N_FRAGS + j) * 4u + e + 1u) * 32u + lane] + ep[((2u * N_FRAGS + j) * 4u + e + 1u) * 32u + lane];
 					*(uint32_t *)(out_ptr + (uint64_t)r * out_stride + out_col + col) = LmPackBf16Pair(v0, v1);
 				}
 			}
@@ -5566,25 +5603,28 @@ void D41SharedPartialsFusedKernel(const __grid_constant__ D41SharedPartialsDesc 
 	LmDependentRelease();
 }
 
-template<uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t SLICE, uint32_t INTER, uint32_t OUT_DIM>
-static __global__ __launch_bounds__(256, 2)
-void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_t *__restrict__ recv_base,
-	uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ active_experts,
+template<uint32_t MODE_RECV, uint32_t CELLS_PER_BLK, uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t SLICE, uint32_t IN_DIM, uint32_t OUT_DIM>
+static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__restrict__ w_cells, const uint8_t *__restrict__ act_codes,
+	const uint8_t *__restrict__ act_scales, const uint16_t *__restrict__ recv_base, uint16_t *__restrict__ output_bf16,
+	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ active_experts,
 	uint32_t routes, uint64_t recv_stride)
 {
-	constexpr uint32_t THREADS = 256u, TILE_M = 2u * WARP_CHUNKS * 16u, COPIES = TILE_M / 32u;
-	constexpr uint32_t TILE_K = 128u, K_STEPS = 4u, K_ITERS = INTER / TILE_K;
-	constexpr uint32_t TOTAL_CELLS = OUT_DIM / 16u, N_BLOCKS = TOTAL_CELLS / 8u;
+	constexpr uint32_t WARPS_M = CELLS_PER_BLK == 8u ? 2u : 1u, WARPS_N = 4u, THREADS = WARPS_M * WARPS_N * 32u;
+	constexpr uint32_t CELLS_PER_WARP = CELLS_PER_BLK / WARPS_N, N_FRAGS = CELLS_PER_WARP * 2u;
+	constexpr uint32_t TILE_M = WARPS_M * WARP_CHUNKS * 16u, ROW_STEP = THREADS / 8u, COPIES = TILE_M / ROW_STEP;
+	constexpr uint32_t TILE_K = 128u, K_STEPS = 4u, K_ITERS = IN_DIM / TILE_K;
+	constexpr uint32_t TOTAL_CELLS = OUT_DIM / 16u, N_BLOCKS = TOTAL_CELLS / CELLS_PER_BLK;
 	constexpr uint32_t CELL_VECS = 17u, CELL_BYTES = CELL_VECS * 16u;
-	constexpr uint32_t TILE_VECS = 8u * CELL_VECS, TILE_BYTES = 8u * CELL_BYTES;
+	constexpr uint32_t TILE_VECS = CELLS_PER_BLK * CELL_VECS, TILE_BYTES = CELLS_PER_BLK * CELL_BYTES;
 	constexpr uint32_t W_VECS = K_STEPS * TILE_VECS, W_BYTES = K_STEPS * TILE_BYTES;
 	constexpr uint32_t W_PASSES = (W_VECS + THREADS - 1u) / THREADS;
 	constexpr uint32_t A_BYTES = TILE_M * TILE_K, STAGE_BYTES = A_BYTES + W_BYTES;
 	constexpr uint32_t S_WORDS = 2u * TILE_M;
 	constexpr uint64_t TILE_STRIDE = (uint64_t)TOTAL_CELLS * CELL_BYTES;
-	constexpr uint64_t GROUP_BYTES = (uint64_t)(INTER / 32u) * TILE_STRIDE;
+	constexpr uint64_t GROUP_BYTES = (uint64_t)(IN_DIM / 32u) * TILE_STRIDE;
 	constexpr uint32_t S_BLOCKS = SLICE / SPARK_DSV41_FLASH_FP8_BLOCK;
-	static_assert(OUT_DIM % 128u == 0u && INTER % 128u == 0u && SLICE % 64u == 0u && W_PASSES == 3u && TILE_M % 32u == 0u, "direct w2 recv geometry");
+	static_assert(OUT_DIM % (CELLS_PER_BLK * 16u) == 0u && IN_DIM % 128u == 0u && (MODE_RECV == 0u || SLICE % 64u == 0u) && W_PASSES == 3u && TILE_M % 16u == 0u,
+		"direct cell mx geometry");
 	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES + S_WORDS * 4u];
 	const uint32_t active_idx = blockIdx.x / N_BLOCKS, n_block = blockIdx.x - active_idx * N_BLOCKS;
 	LmDependentWait();
@@ -5602,8 +5642,8 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 	const uint32_t warp_m = warp >> 2u, warp_n = warp & 3u;
 	const uint32_t chunk = threadIdx.x & 7u, row_base = threadIdx.x >> 3u;
 	const uint32_t warp_row_base = warp_m * (WARP_CHUNKS * 16u);
-	const uint32_t block_cell0 = n_block * 8u, cell_first = block_cell0 + warp_n * 2u;
-	const uint8_t *group_cells = w2_cells + (uint64_t)group * GROUP_BYTES + (uint64_t)block_cell0 * CELL_BYTES;
+	const uint32_t block_cell0 = n_block * CELLS_PER_BLK, cell_first = block_cell0 + warp_n * CELLS_PER_WARP;
+	const uint8_t *group_cells = w_cells + (uint64_t)group * GROUP_BYTES + (uint64_t)block_cell0 * CELL_BYTES;
 	uint32_t w_off[W_PASSES];
 	#pragma unroll
 	for ( uint32_t p = 0u; p < W_PASSES; ++p )
@@ -5621,34 +5661,58 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 	const uint32_t perm_sel = (c & 1u) != 0u ? 0x7632u : 0x5410u;
 	const uint32_t ldm_row = warp_row_base + ((lane >> 3u) & 1u) * 8u + (lane & 7u), ldm_col = lane >> 4u;
 	const uint32_t s_row_idx = warp_row_base + g + ((lane & 1u) << 3u);
-	const uint32_t warp_w_off = warp_n * 2u * CELL_BYTES;
+	const uint32_t warp_w_off = warp_n * CELLS_PER_WARP * CELL_BYTES;
 	const uint32_t w_lane_off = warp_w_off + lane * 4u, ws_lane_off = warp_w_off + 256u + g;
-	const uint8_t *r0 = (const uint8_t *)(recv_base + 0ull * recv_stride);
-	const uint8_t *r1 = (const uint8_t *)(recv_base + 1ull * recv_stride);
-	const uint8_t *r2 = (const uint8_t *)(recv_base + 2ull * recv_stride);
-	const uint8_t *r3 = (const uint8_t *)(recv_base + 3ull * recv_stride);
+	const uint8_t *r0 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 0ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r1 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 1ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r2 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 2ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r3 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 3ull * recv_stride) : (const uint8_t *)0;
 	const uint64_t sc_off_base = (uint64_t)routes * SLICE;
 	for ( uint32_t first = start; first < end; first += TILE_M )
 	{
 		const uint32_t count = end - first < TILE_M ? end - first : TILE_M;
 		const uint32_t sc_route = first + threadIdx.x, sc_live = threadIdx.x < count ? 1u : 0u;
+		uint32_t a_tok[COPIES];
+		if constexpr ( MODE_RECV == 0u )
+		{
+			#pragma unroll
+			for ( uint32_t q = 0u; q < COPIES; ++q )
+			{
+				const uint32_t lr = row_base + q * ROW_STEP;
+				a_tok[q] = lr < count ? __ldg(route_source_token + first + lr) : 0u;
+			}
+		}
+		const uint32_t sc_tok = MODE_RECV == 0u && sc_live != 0u ? __ldg(route_source_token + sc_route) : 0u;
 		const uint8_t *w_base = group_cells;
-		float acc[WARP_CHUNKS][4][4];
+		float acc[WARP_CHUNKS][N_FRAGS][4];
 		#pragma unroll
 		for ( uint32_t m = 0u; m < WARP_CHUNKS; ++m )
 			#pragma unroll
-			for ( uint32_t f = 0u; f < 4u; ++f ) acc[m][f][0] = acc[m][f][1] = acc[m][f][2] = acc[m][f][3] = 0.0f;
+			for ( uint32_t f = 0u; f < N_FRAGS; ++f ) acc[m][f][0] = acc[m][f][1] = acc[m][f][2] = acc[m][f][3] = 0.0f;
 		auto produce = [&](uint32_t k_idx, uint32_t st_off)
 		{
 			const uint32_t stage_s = sbase + st_off, w_stage = stage_s + A_BYTES;
 			const uint32_t elem = k_idx * TILE_K + chunk * 16u;
-			const uint32_t src_r = elem / SLICE, within = elem - src_r * SLICE;
-			const uint8_t *rb = src_r == 0u ? r0 : src_r == 1u ? r1 : src_r == 2u ? r2 : r3;
-			#pragma unroll
-			for ( uint32_t q = 0u; q < COPIES; ++q )
+			if constexpr ( MODE_RECV == 0u )
 			{
-				const uint32_t lr = row_base + q * 32u, live = lr < count ? 1u : 0u;
-				LmCellMxCopy(stage_s + LmCellMxSwizzle(lr, chunk), live != 0u ? rb + (uint64_t)(first + lr) * SLICE + within : rb, live << 4u);
+				#pragma unroll
+				for ( uint32_t q = 0u; q < COPIES; ++q )
+				{
+					const uint32_t lr = row_base + q * ROW_STEP, live = lr < count ? 1u : 0u;
+					LmCellMxCopy(stage_s + LmCellMxSwizzle(lr, chunk),
+						live != 0u ? act_codes + (uint64_t)a_tok[q] * IN_DIM + elem : act_codes, live << 4u);
+				}
+			}
+			else
+			{
+				const uint32_t src_r = elem / SLICE, within = elem - src_r * SLICE;
+				const uint8_t *rb = src_r == 0u ? r0 : src_r == 1u ? r1 : src_r == 2u ? r2 : r3;
+				#pragma unroll
+				for ( uint32_t q = 0u; q < COPIES; ++q )
+				{
+					const uint32_t lr = row_base + q * ROW_STEP, live = lr < count ? 1u : 0u;
+					LmCellMxCopy(stage_s + LmCellMxSwizzle(lr, chunk), live != 0u ? rb + (uint64_t)(first + lr) * SLICE + within : rb, live << 4u);
+				}
 			}
 			#pragma unroll
 			for ( uint32_t p = 0u; p < W_PASSES; ++p )
@@ -5675,13 +5739,18 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 				uint32_t sw = 0u;
 				if ( sc_live != 0u )
 				{
-					const uint32_t b0 = k_step * 4u, sr0 = b0 / S_BLOCKS, sb0 = b0 - sr0 * S_BLOCKS;
-					const uint32_t b2 = b0 + 2u, sr2 = b2 / S_BLOCKS, sb2 = b2 - sr2 * S_BLOCKS;
-					const uint8_t *rb0 = sr0 == 0u ? r0 : sr0 == 1u ? r1 : sr0 == 2u ? r2 : r3;
-					const uint8_t *rb2 = sr2 == 0u ? r0 : sr2 == 1u ? r1 : sr2 == 2u ? r2 : r3;
-					const uint32_t lo = *(const uint16_t *)(rb0 + sc_off_base + (uint64_t)sc_route * S_BLOCKS + sb0);
-					const uint32_t hi = *(const uint16_t *)(rb2 + sc_off_base + (uint64_t)sc_route * S_BLOCKS + sb2);
-					sw = lo | (hi << 16u);
+					if constexpr ( MODE_RECV == 0u )
+						sw = *(const uint32_t *)(act_scales + (uint64_t)sc_tok * (IN_DIM / 32u) + k_step * 4u);
+					else
+					{
+						const uint32_t b0 = k_step * 4u, sr0 = b0 / S_BLOCKS, sb0 = b0 - sr0 * S_BLOCKS;
+						const uint32_t b2 = b0 + 2u, sr2 = b2 / S_BLOCKS, sb2 = b2 - sr2 * S_BLOCKS;
+						const uint8_t *rb0 = sr0 == 0u ? r0 : sr0 == 1u ? r1 : sr0 == 2u ? r2 : r3;
+						const uint8_t *rb2 = sr2 == 0u ? r0 : sr2 == 1u ? r1 : sr2 == 2u ? r2 : r3;
+						const uint32_t lo = *(const uint16_t *)(rb0 + sc_off_base + (uint64_t)sc_route * S_BLOCKS + sb0);
+						const uint32_t hi = *(const uint16_t *)(rb2 + sc_off_base + (uint64_t)sc_route * S_BLOCKS + sb2);
+						sw = lo | (hi << 16u);
+					}
 				}
 				s_scratch[s_buf + threadIdx.x] = sw;
 			}
@@ -5707,9 +5776,9 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 					const uint32_t w_tile = w_stage + step * TILE_BYTES + w_lane_off;
 					const uint32_t ws_tile = w_stage + step * TILE_BYTES + ws_lane_off;
 					const uint32_t a_col = step * 2u + ldm_col;
-					uint32_t b[4][2], scale_b[4], a[2][4];
+					uint32_t b[N_FRAGS][2], scale_b[N_FRAGS], a[2][4];
 					#pragma unroll
-					for ( uint32_t f = 0u; f < 4u; ++f )
+					for ( uint32_t f = 0u; f < N_FRAGS; ++f )
 					{
 						const uint32_t raw = LmCellMxShared32(w_tile + (f / 2u) * CELL_BYTES + (f % 2u) * 128u);
 						LmCellMxE2m1(__byte_perm(__shfl_sync(0xffffffffu, raw, shfl_lo), __shfl_sync(0xffffffffu, raw, shfl_hi), perm_sel), b[f][0], b[f][1]);
@@ -5723,7 +5792,7 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 						if ( m + 1u < WARP_CHUNKS )
 							LmCellMxMatrix4(stage_s + LmCellMxSwizzle(ldm_row + (m + 1u) * 16u, a_col), a[nxt]);
 						#pragma unroll
-						for ( uint32_t f = 0u; f < 4u; ++f )
+						for ( uint32_t f = 0u; f < N_FRAGS; ++f )
 						{
 							float blk[4];
 							LmMmaMxf8Mxf4Block<0u>(blk, a[cur], b[f], scale_word[m], scale_b[f]);
@@ -5747,13 +5816,33 @@ void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_
 					if ( lr >= count ) continue;
 					uint16_t *row_out = output_bf16 + (uint64_t)(first + lr) * OUT_DIM;
 					#pragma unroll
-					for ( uint32_t f = 0u; f < 4u; ++f )
+					for ( uint32_t f = 0u; f < N_FRAGS; ++f )
 						*(uint32_t *)(row_out + (cell_first + (f >> 1u)) * 16u + (f & 1u) * 8u + c * 2u) =
 							LmPackBf16Pair(acc[m][f][h * 2u], acc[m][f][h * 2u + 1u]);
 				}
 		}
 		if ( first + TILE_M < end ) __syncthreads();
 	}
+}
+
+template<uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t SLICE, uint32_t INTER, uint32_t OUT_DIM>
+static __global__ __launch_bounds__(256, 2)
+void D41CellMxW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint16_t *__restrict__ recv_base,
+	uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ active_experts,
+	uint32_t routes, uint64_t recv_stride)
+{
+	D41CellMxDirectBody<1u, 8u, WARP_CHUNKS, STAGES, EXPERTS, SLICE, INTER, OUT_DIM>(w2_cells, (const uint8_t *)0, (const uint8_t *)0,
+		recv_base, output_bf16, group_row_offset, (const uint32_t *)0, active_experts, routes, recv_stride);
+}
+
+template<uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t IN_DIM, uint32_t OUT_DIM>
+static __global__ __launch_bounds__(256, 2)
+void D41CellMxW13DirectKernel(const uint8_t *__restrict__ w13_cells, const uint8_t *__restrict__ act_codes,
+	const uint8_t *__restrict__ act_scales, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ group_row_offset,
+	const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ active_experts, uint32_t routes)
+{
+	D41CellMxDirectBody<0u, 8u, WARP_CHUNKS, STAGES, EXPERTS, 128u, IN_DIM, OUT_DIM>(w13_cells, act_codes, act_scales,
+		(const uint16_t *)0, output_bf16, group_row_offset, route_source_token, active_experts, routes, 0ull);
 }
 
 template<uint32_t MAX_R>
