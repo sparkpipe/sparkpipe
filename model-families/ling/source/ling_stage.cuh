@@ -1111,7 +1111,7 @@ static void LingMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, cons
 	if ( count == 0u )
 	{
 		for ( uint32_t c = blockIdx.x * LG_THREADS + threadIdx.x; c < chunks; c += gridDim.x * LG_THREADS )
-			out4[c] = __ldg(shared4 + c);
+			out4[c] = __ldcs(shared4 + c);
 	}
 	else
 	{
@@ -1120,13 +1120,13 @@ static void LingMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, cons
 			float acc[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 			for ( uint32_t k = 0u; k < count; ++k )
 			{
-				const uint4 v = __ldg(packed4 + (uint64_t)active_rows[k] * chunks + c);
+				const uint4 v = __ldcs(packed4 + (uint64_t)active_rows[k] * chunks + c);
 				if constexpr ( WEIGHTED )
 					LmFmaBf16x8(acc, v, active_weights[k]);
 				else
 					LmAddBf16x8(acc, v);
 			}
-			LmAddBf16x8(acc, __ldg(shared4 + c));
+			LmAddBf16x8(acc, __ldcs(shared4 + c));
 			out4[c] = LmPackUint4FloatToBf16(acc);
 		}
 	}
@@ -1404,15 +1404,8 @@ struct LingModel : CudaStage<LingModel<G>>
 		const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
-		const bool prefill_unified = PrefillUnified(step);
-		if ( !prefill_unified && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
+		if ( !PrefillUnified(step) && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
 			return LmSkinnyDenseMulti<LmBf16Format>(targets, count, source, rows, input_dimension, stream, exact);
-		if ( exact == 0u && count >= 1u && count <= 4u && (input_dimension % 64u) == 0u )
-		{
-			const int32_t status = LingMultiProjMmaLaunch(targets, count, source, rows, input_dimension, stream);
-			if ( status != LM_LAUNCH_ERR_SHAPE )
-				return status;
-		}
 		for ( uint32_t index = 0u; index < count; ++index )
 			if ( Linear((const uint16_t *)targets[index].weight, source, targets[index].output_bf16, targets[index].output_f32, rows, input_dimension,
 					targets[index].output_dimension, step, stream) != LM_LAUNCH_OK )
@@ -1532,12 +1525,12 @@ struct LingModel : CudaStage<LingModel<G>>
 			};
 			if ( LinearMulti(targets, 4u, state->normed, rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			if ( layer->kda_f.scale == 0 && layer->kda_g.scale == 0 )
+			if ( !prefill_unified && rows <= 4u && layer->kda_f.scale == 0 && layer->kda_g.scale == 0 )
 			{
 				if ( LingKdaLowRankPairLaunch<G::kKdaRank, S::kKdaWidth>(
 						(const uint16_t *)layer->kda_f.weight, state->kda_low_f, state->decay_logit,
 						(const uint16_t *)layer->kda_g.weight, state->kda_low_g, state->kda_gate,
-						rows, exact, prefill_unified, stream) != LM_LAUNCH_OK )
+						rows, stream) != LM_LAUNCH_OK )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else if ( Linear(layer->kda_f, state->kda_low_f, state->decay_logit, rows, G::kKdaRank, S::kKdaWidth, step, stream) != LM_LAUNCH_OK ||
@@ -1647,7 +1640,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if constexpr ( S::kKdaWidth <= 1024u )
 		{
-			if ( !prefill_unified && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
+			if ( !prefill_unified && rows <= 4u )
 			{
 				if ( layer->kda_out.scale != 0 )
 				{
@@ -1807,23 +1800,14 @@ struct LingModel : CudaStage<LingModel<G>>
 				state->mla_gathered);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			const uint32_t total_heads = S::kMlaRankHeads * degree;
-			const uint64_t recv_floats = (uint64_t)degree * state->partial_stride;
-			const uint32_t *fork_p = step->tree != 0u ? step->fork_positions : (const uint32_t *)0;
-			const uint32_t *slot_o = step->tree != 0u ? step->slot_offsets : (const uint32_t *)0;
-			SparkGpuError attn_err;
-			if ( rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS && step->commit != 0u && total_heads % LM_LATENT_SHARD_QUERIES == 0u )
-				attn_err = LmLatentShardPrefillLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride,
-					S::kMlaRankHeads, step->sequence_of_row, step->context_length, step->positions, scale, state->attn_send, partial_stride, rows, stream);
-			else if ( total_heads % LM_LATENT_SHARD_QUERIES == 0u && recv_floats >= (uint64_t)8u * total_heads * S::kRecord )
-				attn_err = LmLatentShardSplitLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride,
-					S::kMlaRankHeads, step->sequence_of_row, step->context_length, step->positions, scale, state->attn_received, recv_floats,
-					state->attn_send, partial_stride, rows, 8u, stream, fork_p, slot_o);
-			else
-				attn_err = LmLatentShardAttendLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride,
-					S::kMlaRankHeads, step->sequence_of_row, step->context_length, step->positions, (const uint32_t *)0, 0u, 0u, scale,
-					state->attn_send, partial_stride, rows, stream, fork_p, slot_o);
-			if ( attn_err != SPARK_GPU_SUCCESS )
+			if ( (rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS && step->commit != 0u &&
+					(S::kMlaRankHeads * degree) % LM_LATENT_SHARD_QUERIES == 0u ?
+					LmLatentShardPrefillLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride, S::kMlaRankHeads,
+						step->sequence_of_row, step->context_length, step->positions, scale, state->attn_send, partial_stride, rows, stream) :
+					LmLatentShardAttendLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride, S::kMlaRankHeads,
+						step->sequence_of_row, step->context_length, step->positions, (const uint32_t *)0, 0u, 0u, scale, state->attn_send, partial_stride,
+						rows, stream, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
+						step->tree != 0u ? step->slot_offsets : (const uint32_t *)0)) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
 				state->attn_received);
@@ -1838,7 +1822,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( S::kMlaRankHeads * G::kValueDim <= 1024u )
 		{
-			if ( !prefill_unified && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
+			if ( !prefill_unified && rows <= 4u )
 			{
 				if ( layer->mla_out.scale != 0 )
 				{
@@ -1867,7 +1851,7 @@ struct LingModel : CudaStage<LingModel<G>>
 
 	static SparkStatus Gqa(State *state, const LingLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
-		const uint32_t rows = step->rows, degree = state->tp_degree, exact = step->commit == 0u ? 1u : 0u;
+		const uint32_t rows = step->rows, degree = state->tp_degree;
 		const bool prefill_unified = PrefillUnified(step);
 		const uint64_t unit_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
 		const uint64_t record_unit = unit_bytes / sizeof(float);
@@ -1939,9 +1923,20 @@ struct LingModel : CudaStage<LingModel<G>>
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
-				(void)LM_LAUNCH_DEPENDENT((LingGqaLocalPrefillAttnGateKernel<G::kGqaHeadDim>), dim3(rank_heads, (rows + 15u) / 16u), 64u, 0, stream,
-					state->gqa_query, kv_prior, state->gqa_slot, step->positions, state->gqa_gate, rows, rank_heads, q_first, group, kv_first, old_ctx,
-					scale, state->gqa_merged);
+				const uint32_t num_chunks = (total_ctx + 511u) / 512u;
+				const uint64_t chunk_bytes = (uint64_t)num_chunks * rows * rank_heads * (G::kGqaHeadDim + 2u) * sizeof(float);
+				if ( num_chunks > 1u && chunk_bytes <= send_cap_bytes )
+				{
+					(void)LM_LAUNCH_DEPENDENT((LingGqaLocalPrefillAttnKernel<G::kGqaHeadDim, true>), dim3(rank_heads, (rows + 15u) / 16u, num_chunks), 64u, 0, stream,
+						state->gqa_query, kv_prior, state->gqa_slot, step->positions, state->gqa_gate, rows, rank_heads, q_first, group, kv_first, old_ctx,
+						scale, state->gqa_merged, state->attn_received);
+					(void)LM_LAUNCH_DEPENDENT((LingGqaLocalPrefillMergeGateKernel<G::kGqaHeadDim>), dim3(rank_heads, rows), G::kGqaHeadDim, 0, stream,
+						state->attn_received, step->positions, state->gqa_gate, rows, rank_heads, num_chunks, scale, state->gqa_merged);
+				}
+				else
+					(void)LM_LAUNCH_DEPENDENT((LingGqaLocalPrefillAttnKernel<G::kGqaHeadDim, false>), dim3(rank_heads, (rows + 15u) / 16u), 64u, 0, stream,
+						state->gqa_query, kv_prior, state->gqa_slot, step->positions, state->gqa_gate, rows, rank_heads, q_first, group, kv_first, old_ctx,
+						scale, state->gqa_merged, (float *)0);
 				if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 					Linear(layer->gqa_out, state->gqa_merged, state->partial, rows, S::kGqaRankWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1970,7 +1965,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( S::kGqaRankWidth <= 1024u )
 		{
-			if ( !prefill_unified && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
+			if ( !prefill_unified && rows <= 4u )
 				return LingLaunchGqaGateOutBf16<G>(state->gqa_merged, state->gqa_gate, layer->gqa_out, state->partial, rows, stream);
 		}
 		(void)LM_LAUNCH_DEPENDENT((LingOutputGateKernel), rows, LG_THREADS, 0, stream, state->gqa_merged, state->gqa_gate, S::kGqaRankWidth);
@@ -2282,7 +2277,7 @@ struct LingModel : CudaStage<LingModel<G>>
 				state->route_source_token, state->packed_weight, state->route_global, state->active_experts);
 		}
 		const bool prefill_unified = PrefillUnified(step);
-		constexpr uint32_t kFuseSharedRows = 8u;
+		constexpr uint32_t kFuseSharedRows = G::kLocalExperts < G::kExperts ? 8u : 4u;
 		if ( !prefill_unified && rows <= kFuseSharedRows && (layer->moe_w1.scale == 0) == (layer->moe_w3.scale == 0) &&
 			(layer->moe_w1.scale == 0) == (layer->moe_w2.scale == 0) )
 		{

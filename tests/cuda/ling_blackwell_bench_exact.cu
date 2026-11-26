@@ -160,6 +160,7 @@ struct BenchRig
 		hidden = input_save = 0;
 		bus.hidden = G::kHidden;
 		bus.tp_degree = G::kTpDegree;
+		memset(&services, 0, sizeof(services));
 		services.context = &bus;
 		services.round = BenchMockRound;
 		state = (State *)calloc(1u, sizeof(State));
@@ -381,7 +382,7 @@ struct BenchRig
 	void Check5cInvariance(void)
 	{
 		static const uint32_t cases[][2] = { { 4u, 1u }, { 8u, 1u }, { 16u, 1u }, { 12u, 0u }, { 64u, 0u } };
-		const char *sub_names[3] = { "KDA", S::kGqa ? "GQA" : "MLA-split8", "MoE" };
+		const char *sub_names[3] = { "KDA", S::kGqa ? "GQA" : "MLA", "MoE" };
 		const uint32_t ctx_pos = 512u;
 		for ( uint32_t kind = 0u; kind < 3u; ++kind )
 		{
@@ -412,7 +413,7 @@ struct BenchRig
 			}
 		}
 		printf("ok %s 0-ULP 5c batch invariance: B1 == B4 == B8 == B16 == ver12 == ver64 across KDA, %s, MoE\n",
-			G::Tag(), S::kGqa ? "GQA" : "MLA-split8");
+			G::Tag(), S::kGqa ? "GQA" : "MLA");
 	}
 
 	float TimeSubBlock(const SparkStageRunnerStep *step, uint32_t kind)
@@ -517,8 +518,100 @@ static void RunGeometry(void)
 	rig.Close();
 }
 
+struct SolarOpen2ChunkExact1 : SolarOpen2Geometry<16u>
+{
+	static constexpr uint32_t kTpDegree = 1u;
+	static constexpr uint32_t kHidden = 1536u;
+	static constexpr uint32_t kLayers = 4u;
+	static constexpr uint32_t kGqaHeads = 8u;
+	static constexpr uint32_t kGqaKvHeads = 1u;
+	static constexpr uint32_t kKdaHeads = 4u;
+	static constexpr uint32_t kExperts = 16u;
+	static constexpr uint32_t kLocalExperts = 16u;
+	static constexpr uint32_t kMoeInter = 80u;
+	static constexpr uint32_t kSharedRows = 128u;
+	static constexpr uint32_t kFullLayers = 4u;
+	static constexpr uint32_t kFullAttnLayers = 1u;
+	static constexpr uint32_t kFullKdaLayers = 3u;
+	static constexpr bool kFp8Weights = false;
+	static const char *Tag(void) { return "solar-open-2-chunk512-tp1"; }
+};
+
+static float BenchRelL2(const std::vector<uint16_t> &a, const std::vector<uint16_t> &b, uint32_t row, uint32_t width)
+{
+	double diff = 0.0, norm = 0.0;
+	for ( uint32_t c = 0u; c < width; ++c )
+	{
+		const uint32_t ua = (uint32_t)a[(uint64_t)row * width + c] << 16u;
+		const uint32_t ub = (uint32_t)b[(uint64_t)row * width + c] << 16u;
+		float fa = 0.0f, fb = 0.0f;
+		memcpy(&fa, &ua, sizeof(float));
+		memcpy(&fb, &ub, sizeof(float));
+		const double d = (double)fa - (double)fb;
+		diff += d * d;
+		norm += (double)fb * (double)fb;
+	}
+	return norm > 0.0 ? (float)sqrt(diff / norm) : (float)sqrt(diff);
+}
+
+static void CheckGqaChunk512Exact(void)
+{
+	using G = SolarOpen2ChunkExact1;
+	BenchRig<G> rig;
+	if ( rig.Open() == 0 )
+	{
+		Require(0, G::Tag(), "chunk512 rig opens", 0u, 0u, 0u);
+		return;
+	}
+	const uint64_t row_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
+	std::vector<uint8_t> kv_384(rig.kRankKv), kv_512(rig.kRankKv);
+	std::vector<uint16_t> out_a(256u * G::kHidden), out_b1(128u * G::kHidden), out_b2(128u * G::kHidden), out_ref(128u * G::kHidden);
+	SparkStageRunnerStep step;
+	cudaMemset(rig.kv, 0, rig.kRankKv);
+	cudaMemcpy(rig.hidden, rig.input_save, 384u * row_bytes, cudaMemcpyDeviceToDevice);
+	rig.BuildStep(&step, 384u, 0u, 1u, 1u, 384u);
+	Require(rig.RunSubBlock(&step, 1u) == SPARK_STATUS_OK && cudaStreamSynchronize(rig.stream) == cudaSuccess, G::Tag(), "prefix 0..383", 0u, 0u, 0u);
+	cudaMemcpy(kv_384.data(), rig.kv, rig.kRankKv, cudaMemcpyDeviceToHost);
+
+	cudaMemcpy(rig.hidden, rig.input_save + (uint64_t)128u * G::kHidden, 256u * row_bytes, cudaMemcpyDeviceToDevice);
+	rig.BuildStep(&step, 256u, 384u, 1u, 1u, 640u);
+	Require(rig.RunSubBlock(&step, 1u) == SPARK_STATUS_OK && cudaStreamSynchronize(rig.stream) == cudaSuccess, G::Tag(), "chunk2 384..639", 0u, 0u, 0u);
+	cudaMemcpy(out_a.data(), rig.hidden, 256u * row_bytes, cudaMemcpyDeviceToHost);
+
+	cudaMemcpy(rig.kv, kv_384.data(), rig.kRankKv, cudaMemcpyHostToDevice);
+	cudaMemcpy(rig.hidden, rig.input_save + (uint64_t)128u * G::kHidden, 128u * row_bytes, cudaMemcpyDeviceToDevice);
+	rig.BuildStep(&step, 128u, 384u, 1u, 1u, 512u);
+	Require(rig.RunSubBlock(&step, 1u) == SPARK_STATUS_OK && cudaStreamSynchronize(rig.stream) == cudaSuccess, G::Tag(), "chunk1 384..511", 0u, 0u, 0u);
+	cudaMemcpy(out_b1.data(), rig.hidden, 128u * row_bytes, cudaMemcpyDeviceToHost);
+	cudaMemcpy(kv_512.data(), rig.kv, rig.kRankKv, cudaMemcpyDeviceToHost);
+	Require(memcmp(out_b1.data(), out_a.data(), 128u * row_bytes) == 0, G::Tag(),
+		"1-chunk vs 2-chunk 0-ULP identical for pos<512", FirstDifference(out_b1, out_a, G::kHidden), 0u, 0u);
+
+	cudaMemcpy(rig.hidden, rig.input_save + (uint64_t)256u * G::kHidden, 128u * row_bytes, cudaMemcpyDeviceToDevice);
+	rig.BuildStep(&step, 128u, 512u, 1u, 1u, 640u);
+	Require(rig.RunSubBlock(&step, 1u) == SPARK_STATUS_OK && cudaStreamSynchronize(rig.stream) == cudaSuccess, G::Tag(), "warm 512..639", 0u, 0u, 0u);
+	cudaMemcpy(out_b2.data(), rig.hidden, 128u * row_bytes, cudaMemcpyDeviceToHost);
+	std::vector<uint16_t> out_a_tail(out_a.begin() + (ptrdiff_t)(128u * G::kHidden), out_a.end());
+	Require(memcmp(out_b2.data(), out_a_tail.data(), 128u * row_bytes) == 0, G::Tag(),
+		"warm 512..639 equals chunk2 tail 0-ULP", FirstDifference(out_b2, out_a_tail, G::kHidden), 0u, 0u);
+
+	cudaMemcpy(rig.kv, kv_512.data(), rig.kRankKv, cudaMemcpyHostToDevice);
+	cudaMemcpy(rig.hidden, rig.input_save + (uint64_t)256u * G::kHidden, 128u * row_bytes, cudaMemcpyDeviceToDevice);
+	rig.BuildStep(&step, 128u, 512u, 1u, 1u, 0u);
+	Require(rig.RunSubBlock(&step, 1u) == SPARK_STATUS_OK && cudaStreamSynchronize(rig.stream) == cudaSuccess, G::Tag(), "scatter ref 512..639", 0u, 0u, 0u);
+	cudaMemcpy(out_ref.data(), rig.hidden, 128u * row_bytes, cudaMemcpyDeviceToHost);
+	for ( uint32_t r = 0u; r < 128u; ++r )
+	{
+		const float d = BenchRelL2(out_b2, out_ref, r, G::kHidden);
+		Require(d < 0.01f, G::Tag(), "2-chunk GQA matches scatter ref (row, rel x 1e6)", r, (uint32_t)(d * 1.0e6f), 0u);
+	}
+	printf("ok %s 0-ULP Gate GX across KV_CHUNK=512 boundary (1-chunk==2-chunk, warm==cold, relL2<0.01 vs scatter)\n", G::Tag());
+	rig.Close();
+}
+
 int main(void)
 {
+	CheckGqaChunk512Exact();
 	RunGeometry<SolarOpen2Bench16>();
 	RunGeometry<Ling3Bench16>();
 	RunGeometry<Ling32AirBench16>();

@@ -847,309 +847,22 @@ static void LingKdaLowRankPairSkinnyKernel(const uint16_t *__restrict__ w_f, con
 	LmDependentRelease();
 }
 
-template<uint32_t TILE_M, uint32_t RANK, uint32_t OUT_DIM>
-__global__ __launch_bounds__(128u, TILE_M <= 32u ? 4 : 3)
-static void LingKdaLowRankPairMmaKernel(const uint16_t *__restrict__ w_f, const uint16_t *__restrict__ in_f, uint16_t *__restrict__ out_f,
-	const uint16_t *__restrict__ w_g, const uint16_t *__restrict__ in_g, uint16_t *__restrict__ out_g, uint32_t rows)
-{
-	using Weight = LmStreamWeight<LmBf16Format>;
-	constexpr uint32_t TILE_N = 32u, TILE_K = 64u, STAGES = 2u, THREADS = 128u;
-	constexpr uint32_t K_TILES = RANK / TILE_K;
-	constexpr uint32_t ROW_BYTES = TILE_K * 2u, ROW_CHUNKS = ROW_BYTES / 16u;
-	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
-	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
-	constexpr uint32_t WM = TILE_M / 16u, WN = 4u / WM, N_PER_WARP = TILE_N / (WN * 8u);
-	static_assert((RANK % TILE_K) == 0u && (OUT_DIM & 1u) == 0u, "valid KDA low-rank MMA geometry");
-	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
-	LmDependentWait();
-	const uint32_t row_base = blockIdx.x * TILE_M, neuron_base = blockIdx.y * TILE_N, which = blockIdx.z;
-	const uint8_t *w_ptr = (const uint8_t *)(which == 0u ? w_f : w_g);
-	const uint16_t *a_ptr = which == 0u ? in_f : in_g;
-	uint16_t *out_ptr = which == 0u ? out_f : out_g;
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t warp_m = warp / WN, warp_n = warp % WN, quad_row = lane >> 2u, quad = lane & 3u;
-	const uint32_t ldm_a_row = warp_m * 16u + (lane & 15u), ldm_a_col = (lane >> 4u) & 1u;
-	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS, row_step = THREADS / ROW_CHUNKS;
-	const uint64_t w_row_bytes = (uint64_t)RANK * 2u;
-	auto issue_k = [&](uint32_t st_off, uint32_t kt)
-	{
-		const uint32_t stage = shared_base + st_off;
-		const uint32_t k_elem = kt * TILE_K + col0 * 8u;
-		const uint64_t k_byte = (uint64_t)kt * ROW_BYTES + col0 * 16u;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < A_PER_T; ++q )
-		{
-			const uint32_t r = row0 + q * row_step;
-			const bool ok = row_base + r < rows;
-			LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u,
-				ok ? (a_ptr + (uint64_t)(row_base + r) * RANK + k_elem) : a_ptr, ok ? 16u : 0u);
-		}
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
-		{
-			const uint32_t nr = row0 + q * row_step;
-			const bool ok = neuron_base + nr < OUT_DIM;
-			LmStreamCopy(stage + A_BYTES + Weight::template Offset<ROW_BYTES>(nr, col0),
-				ok ? (w_ptr + (uint64_t)(neuron_base + nr) * w_row_bytes + k_byte) : w_ptr, ok ? 16u : 0u);
-		}
-	};
-	float acc[N_PER_WARP][4];
-	#pragma unroll
-	for ( uint32_t nf = 0u; nf < N_PER_WARP; ++nf )
-		acc[nf][0] = acc[nf][1] = acc[nf][2] = acc[nf][3] = 0.0f;
-	uint32_t sp_off = 0u, sc_off = 0u;
-	issue_k(sp_off, 0u);
-	LmStreamCommit();
-	sp_off ^= STAGE_BYTES;
-	for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
-	{
-		LmStreamWait<0u>();
-		__syncthreads();
-		if ( kt + 1u < K_TILES )
-		{
-			issue_k(sp_off, kt + 1u);
-			LmStreamCommit();
-			sp_off ^= STAGE_BYTES;
-		}
-		const uint32_t stage_a = shared_base + sc_off, stage_b = stage_a + A_BYTES;
-		#pragma unroll
-		for ( uint32_t step = 0u; step < 2u; ++step )
-		{
-			uint32_t a0[4], a1[4];
-			LmStreamLdMatrix4(a0, stage_a + ldm_a_row * ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
-			LmStreamLdMatrix4(a1, stage_a + ldm_a_row * ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + 2u + ldm_a_col) * 16u);
-			#pragma unroll
-			for ( uint32_t nf = 0u; nf < N_PER_WARP; ++nf )
-			{
-				uint32_t b[4];
-				Weight::template Fragment<ROW_BYTES>(stage_b, (warp_n * N_PER_WARP + nf) * 8u, step, lane, b);
-				const uint32_t b0[2] = { b[0], b[1] }, b1[2] = { b[2], b[3] };
-				LmMmaBf16(acc[nf], a0, b0);
-				LmMmaBf16(acc[nf], a1, b1);
-			}
-		}
-		sc_off ^= STAGE_BYTES;
-		if ( kt + 1u < K_TILES )
-			__syncthreads();
-	}
-	const uint32_t r0 = row_base + warp_m * 16u + quad_row, r1 = r0 + 8u;
-	#pragma unroll
-	for ( uint32_t nf = 0u; nf < N_PER_WARP; ++nf )
-	{
-		const uint32_t col = neuron_base + (warp_n * N_PER_WARP + nf) * 8u + quad * 2u;
-		if ( col < OUT_DIM )
-		{
-			if ( r0 < rows )
-				*(uint32_t *)(out_ptr + (uint64_t)r0 * OUT_DIM + col) = LmPackBf16Pair(acc[nf][0], acc[nf][1]);
-			if ( r1 < rows )
-				*(uint32_t *)(out_ptr + (uint64_t)r1 * OUT_DIM + col) = LmPackBf16Pair(acc[nf][2], acc[nf][3]);
-		}
-	}
-	LmDependentRelease();
-}
-
 template<uint32_t RANK, uint32_t OUT_DIM>
 static int32_t LingKdaLowRankPairLaunch(const uint16_t *w_f, const uint16_t *in_f, uint16_t *out_f,
-	const uint16_t *w_g, const uint16_t *in_g, uint16_t *out_g, uint32_t rows, uint32_t exact, bool prefill_unified, SparkGpuStream stream)
+	const uint16_t *w_g, const uint16_t *in_g, uint16_t *out_g, uint32_t rows, SparkGpuStream stream)
 {
 	LmWeightPrefetchNote(stream, w_f, (uint64_t)OUT_DIM * RANK * sizeof(uint16_t));
 	LmWeightPrefetchNote(stream, w_g, (uint64_t)OUT_DIM * RANK * sizeof(uint16_t));
-	if ( !prefill_unified && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
-	{
-		constexpr uint32_t CHUNKS = RANK >> 3u;
-		constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-		constexpr uint32_t COLS = (64u / LANES) * 2u;
-		const uint32_t gx = (OUT_DIM + COLS - 1u) / COLS;
-		if ( rows == 1u )
-			(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairSkinnyKernel<RANK, OUT_DIM, 1u>), dim3(gx, 1u, 2u), 64u, 0, stream,
-				w_f, in_f, out_f, w_g, in_g, out_g, rows);
-		else if ( rows <= 4u )
-			(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairSkinnyKernel<RANK, OUT_DIM, 4u>), dim3(gx, 1u, 2u), 64u, 0, stream,
-				w_f, in_f, out_f, w_g, in_g, out_g, rows);
-		else
-			(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairSkinnyKernel<RANK, OUT_DIM, 8u>), dim3(gx, (rows + 7u) / 8u, 2u), 64u, 0, stream,
-				w_f, in_f, out_f, w_g, in_g, out_g, rows);
-		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
-	}
-	const uint32_t n_tiles = (OUT_DIM + 31u) / 32u;
-	if ( rows <= 32u || (uint64_t)2u * n_tiles * ((rows + 63u) / 64u) < 48u )
-		(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairMmaKernel<32u, RANK, OUT_DIM>), dim3((rows + 31u) / 32u, n_tiles, 2u), 128u, 0, stream,
+	constexpr uint32_t CHUNKS = RANK >> 3u;
+	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+	constexpr uint32_t COLS = (64u / LANES) * 2u;
+	const uint32_t gx = (OUT_DIM + COLS - 1u) / COLS;
+	if ( rows == 1u )
+		(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairSkinnyKernel<RANK, OUT_DIM, 1u>), dim3(gx, 1u, 2u), 64u, 0, stream,
 			w_f, in_f, out_f, w_g, in_g, out_g, rows);
 	else
-		(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairMmaKernel<64u, RANK, OUT_DIM>), dim3((rows + 63u) / 64u, n_tiles, 2u), 128u, 0, stream,
+		(void)LM_LAUNCH_DEPENDENT((LingKdaLowRankPairSkinnyKernel<RANK, OUT_DIM, 4u>), dim3(gx, (rows + 3u) / 4u, 2u), 64u, 0, stream,
 			w_f, in_f, out_f, w_g, in_g, out_g, rows);
-	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
-}
-
-struct LingMultiMmaTarget
-{
-	const uint8_t *weight;
-	uint16_t *out_bf16;
-	float *out_f32;
-	uint32_t n;
-	uint32_t stride;
-	uint32_t col_offset;
-	uint32_t first_tile;
-};
-
-struct LingMultiMmaArgs
-{
-	LingMultiMmaTarget t[4];
-	uint32_t count;
-	uint32_t rows;
-	uint32_t input_dim;
-	const uint16_t *activation;
-};
-
-static __device__ __forceinline__ void LingMultiMmaStorePair(const LingMultiMmaTarget &tgt, uint32_t row, uint32_t col, float v0, float v1)
-{
-	const uint64_t oidx = (uint64_t)row * tgt.stride + tgt.col_offset + col;
-	if ( tgt.out_f32 != 0 )
-	{
-		if ( col + 1u < tgt.n )
-			*(float2 *)(tgt.out_f32 + oidx) = make_float2(v0, v1);
-		else if ( col < tgt.n )
-			tgt.out_f32[oidx] = v0;
-	}
-	else if ( col + 1u < tgt.n )
-		*(uint32_t *)(tgt.out_bf16 + oidx) = LmPackBf16Pair(v0, v1);
-	else if ( col < tgt.n )
-		tgt.out_bf16[oidx] = LmFloatToBf16(v0);
-}
-
-template<uint32_t TILE_M>
-__global__ __launch_bounds__(128u, TILE_M <= 32u ? 4 : 3)
-static void LingMultiProjMmaKernel(const __grid_constant__ LingMultiMmaArgs args)
-{
-	using Weight = LmStreamWeight<LmBf16Format>;
-	constexpr uint32_t TILE_N = 32u, TILE_K = 64u, STAGES = 2u, THREADS = 128u;
-	constexpr uint32_t ROW_BYTES = TILE_K * 2u, ROW_CHUNKS = ROW_BYTES / 16u;
-	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
-	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
-	constexpr uint32_t WM = TILE_M / 16u, WN = 4u / WM, N_PER_WARP = TILE_N / (WN * 8u);
-	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
-	LmDependentWait();
-	const uint32_t row_base = blockIdx.x * TILE_M, tile_idx = blockIdx.y;
-	uint32_t part = 0u;
-	#pragma unroll
-	for ( uint32_t p = 1u; p < 4u; ++p )
-		if ( p < args.count && tile_idx >= args.t[p].first_tile )
-			part = p;
-	const LingMultiMmaTarget &tgt = args.t[part];
-	const uint32_t neuron_base = (tile_idx - tgt.first_tile) * TILE_N;
-	const uint32_t k_tiles = args.input_dim / TILE_K;
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t warp_m = warp / WN, warp_n = warp % WN, quad_row = lane >> 2u, quad = lane & 3u;
-	const uint32_t ldm_a_row = warp_m * 16u + (lane & 15u), ldm_a_col = (lane >> 4u) & 1u;
-	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS, row_step = THREADS / ROW_CHUNKS;
-	const uint64_t w_row_bytes = (uint64_t)args.input_dim * 2u;
-	auto issue_k = [&](uint32_t st_off, uint32_t kt)
-	{
-		const uint32_t stage = shared_base + st_off;
-		const uint32_t k_elem = kt * TILE_K + col0 * 8u;
-		const uint64_t k_byte = (uint64_t)kt * ROW_BYTES + col0 * 16u;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < A_PER_T; ++q )
-		{
-			const uint32_t r = row0 + q * row_step;
-			const bool ok = row_base + r < args.rows;
-			LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u,
-				ok ? (args.activation + (uint64_t)(row_base + r) * args.input_dim + k_elem) : args.activation, ok ? 16u : 0u);
-		}
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
-		{
-			const uint32_t nr = row0 + q * row_step;
-			const bool ok = neuron_base + nr < tgt.n;
-			LmStreamCopy(stage + A_BYTES + Weight::template Offset<ROW_BYTES>(nr, col0),
-				ok ? (tgt.weight + (uint64_t)(neuron_base + nr) * w_row_bytes + k_byte) : tgt.weight, ok ? 16u : 0u);
-		}
-	};
-	float acc[N_PER_WARP][4];
-	#pragma unroll
-	for ( uint32_t nf = 0u; nf < N_PER_WARP; ++nf )
-		acc[nf][0] = acc[nf][1] = acc[nf][2] = acc[nf][3] = 0.0f;
-	uint32_t sp_off = 0u, sc_off = 0u;
-	issue_k(sp_off, 0u);
-	LmStreamCommit();
-	sp_off ^= STAGE_BYTES;
-	for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-	{
-		LmStreamWait<0u>();
-		__syncthreads();
-		if ( kt + 1u < k_tiles )
-		{
-			issue_k(sp_off, kt + 1u);
-			LmStreamCommit();
-			sp_off ^= STAGE_BYTES;
-		}
-		const uint32_t stage_a = shared_base + sc_off, stage_b = stage_a + A_BYTES;
-		#pragma unroll
-		for ( uint32_t step = 0u; step < 2u; ++step )
-		{
-			uint32_t a0[4], a1[4];
-			LmStreamLdMatrix4(a0, stage_a + ldm_a_row * ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
-			LmStreamLdMatrix4(a1, stage_a + ldm_a_row * ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + 2u + ldm_a_col) * 16u);
-			#pragma unroll
-			for ( uint32_t nf = 0u; nf < N_PER_WARP; ++nf )
-			{
-				uint32_t b[4];
-				Weight::template Fragment<ROW_BYTES>(stage_b, (warp_n * N_PER_WARP + nf) * 8u, step, lane, b);
-				const uint32_t b0[2] = { b[0], b[1] }, b1[2] = { b[2], b[3] };
-				LmMmaBf16(acc[nf], a0, b0);
-				LmMmaBf16(acc[nf], a1, b1);
-			}
-		}
-		sc_off ^= STAGE_BYTES;
-		if ( kt + 1u < k_tiles )
-			__syncthreads();
-	}
-	const uint32_t r0 = row_base + warp_m * 16u + quad_row, r1 = r0 + 8u;
-	#pragma unroll
-	for ( uint32_t nf = 0u; nf < N_PER_WARP; ++nf )
-	{
-		const uint32_t col = neuron_base + (warp_n * N_PER_WARP + nf) * 8u + quad * 2u;
-		if ( r0 < args.rows )
-			LingMultiMmaStorePair(tgt, r0, col, acc[nf][0], acc[nf][1]);
-		if ( r1 < args.rows )
-			LingMultiMmaStorePair(tgt, r1, col, acc[nf][2], acc[nf][3]);
-	}
-	LmDependentRelease();
-}
-
-static int32_t LingMultiProjMmaLaunch(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *source,
-	uint32_t rows, uint32_t input_dim, SparkGpuStream stream)
-{
-	if ( count == 0u || count > 4u || rows == 0u || input_dim == 0u || (input_dim % 64u) != 0u || source == 0 || !LmIsAligned16(source) )
-		return LM_LAUNCH_ERR_SHAPE;
-	LingMultiMmaArgs args = {};
-	args.count = count;
-	args.rows = rows;
-	args.input_dim = input_dim;
-	args.activation = source;
-	uint32_t tiles = 0u;
-	for ( uint32_t p = 0u; p < count; ++p )
-	{
-		const uint32_t n = targets[p].output_dimension;
-		const uint32_t stride = targets[p].output_row_stride != 0u ? targets[p].output_row_stride : n;
-		const uint32_t off = targets[p].output_column_offset;
-		if ( targets[p].weight == 0 || !LmIsAligned16(targets[p].weight) || n == 0u ||
-			(targets[p].output_bf16 != 0) == (targets[p].output_f32 != 0) || (stride & 1u) != 0u || (off & 1u) != 0u )
-			return LM_LAUNCH_ERR_SHAPE;
-		if ( targets[p].output_f32 != 0 && (((uintptr_t)targets[p].output_f32) & 7u) != 0u )
-			return LM_LAUNCH_ERR_SHAPE;
-		if ( targets[p].output_bf16 != 0 && (((uintptr_t)targets[p].output_bf16) & 3u) != 0u )
-			return LM_LAUNCH_ERR_SHAPE;
-		args.t[p] = { (const uint8_t *)targets[p].weight, targets[p].output_bf16, targets[p].output_f32, n, stride, off, tiles };
-		tiles += (n + 31u) / 32u;
-		LmWeightPrefetchNote(stream, targets[p].weight, (uint64_t)n * input_dim * sizeof(uint16_t));
-	}
-	if ( rows <= 32u || (uint64_t)tiles * ((rows + 63u) / 64u) < 48u )
-		(void)LM_LAUNCH_DEPENDENT((LingMultiProjMmaKernel<32u>), dim3((rows + 31u) / 32u, tiles), 128u, 0, stream, args);
-	else
-		(void)LM_LAUNCH_DEPENDENT((LingMultiProjMmaKernel<64u>), dim3((rows + 63u) / 64u, tiles), 128u, 0, stream, args);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
@@ -1352,11 +1065,8 @@ static SparkStatus LingLaunchKdaNormGateOut(const uint16_t *mixed, const uint16_
 	if ( rows == 1u )
 		(void)LM_LAUNCH_DEPENDENT((LingKdaNormGateOutKernel<G, Format, 1u>), dim3(gx, 1u), LG_THREADS, 0, stream,
 			mixed, gate, norm_w, out_w, out_s, output, rows);
-	else if ( rows <= 4u )
-		(void)LM_LAUNCH_DEPENDENT((LingKdaNormGateOutKernel<G, Format, 4u>), dim3(gx, 1u), LG_THREADS, 0, stream,
-			mixed, gate, norm_w, out_w, out_s, output, rows);
 	else
-		(void)LM_LAUNCH_DEPENDENT((LingKdaNormGateOutKernel<G, Format, 8u>), dim3(gx, (rows + 7u) / 8u), LG_THREADS, 0, stream,
+		(void)LM_LAUNCH_DEPENDENT((LingKdaNormGateOutKernel<G, Format, 4u>), dim3(gx, (rows + 3u) / 4u), LG_THREADS, 0, stream,
 			mixed, gate, norm_w, out_w, out_s, output, rows);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -1408,11 +1118,8 @@ static SparkStatus LingLaunchMlaGateOut(const uint16_t *value, const uint16_t *g
 	if ( rows == 1u )
 		(void)LM_LAUNCH_DEPENDENT((LingMlaGateOutKernel<G, Format, 1u>), dim3(gx, 1u), LG_THREADS, 0, stream,
 			value, gate, out_w, out_s, output, rows);
-	else if ( rows <= 4u )
-		(void)LM_LAUNCH_DEPENDENT((LingMlaGateOutKernel<G, Format, 4u>), dim3(gx, 1u), LG_THREADS, 0, stream,
-			value, gate, out_w, out_s, output, rows);
 	else
-		(void)LM_LAUNCH_DEPENDENT((LingMlaGateOutKernel<G, Format, 8u>), dim3(gx, (rows + 7u) / 8u), LG_THREADS, 0, stream,
+		(void)LM_LAUNCH_DEPENDENT((LingMlaGateOutKernel<G, Format, 4u>), dim3(gx, (rows + 3u) / 4u), LG_THREADS, 0, stream,
 			value, gate, out_w, out_s, output, rows);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -1462,11 +1169,8 @@ static SparkStatus LingLaunchGqaGateOutBf16(const uint16_t *merged, const uint16
 	if ( rows == 1u )
 		(void)LM_LAUNCH_DEPENDENT((LingGqaGateOutBf16Kernel<G, 1u>), dim3(gx, 1u), LG_THREADS, 0, stream,
 			merged, gate, out_w, output, rows);
-	else if ( rows <= 4u )
-		(void)LM_LAUNCH_DEPENDENT((LingGqaGateOutBf16Kernel<G, 4u>), dim3(gx, 1u), LG_THREADS, 0, stream,
-			merged, gate, out_w, output, rows);
 	else
-		(void)LM_LAUNCH_DEPENDENT((LingGqaGateOutBf16Kernel<G, 8u>), dim3(gx, (rows + 7u) / 8u), LG_THREADS, 0, stream,
+		(void)LM_LAUNCH_DEPENDENT((LingGqaGateOutBf16Kernel<G, 4u>), dim3(gx, (rows + 3u) / 4u), LG_THREADS, 0, stream,
 			merged, gate, out_w, output, rows);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -1615,14 +1319,14 @@ static void LingGqaPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__rest
 	LmDependentRelease();
 }
 
-template<uint32_t HD>
+template<uint32_t HD, bool CHUNKED>
 __global__ __launch_bounds__(64u, 2)
-static void LingGqaLocalPrefillAttnGateKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
+static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
 	const uint16_t *__restrict__ kv_cur, const uint32_t *__restrict__ positions, const uint16_t *__restrict__ gate_bf16,
 	uint32_t rows, uint32_t rank_heads, uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t prior_keys,
-	float qk_scale, uint16_t *__restrict__ merged_out)
+	float qk_scale, uint16_t *__restrict__ merged_out, float *__restrict__ partials)
 {
-	constexpr uint32_t Q_TILE = 16u, KV_TILE = 64u, THREADS = 64u;
+	constexpr uint32_t Q_TILE = 16u, KV_TILE = 64u, TILES_PER_CHUNK = 8u, THREADS = 64u;
 	constexpr uint32_t K_STEPS = HD / 16u, HALF_K_FRAGS = (KV_TILE / 2u) / 8u, HALF_V_FRAGS = (HD / 2u) / 8u, P_STEPS = KV_TILE / 16u;
 	constexpr uint32_t K_CHUNKS = HD / 8u, SLOT_ELEMS = 2u * HD, K_ROW_BYTES = HD * 2u, P_ROW_BYTES = KV_TILE * 2u;
 	static_assert(HD == 128u, "Ling local GQA prefill MMA requires head_dim 128");
@@ -1649,6 +1353,18 @@ static void LingGqaLocalPrefillAttnGateKernel(const uint16_t *__restrict__ query
 		LmDependentRelease();
 		return;
 	}
+	const uint32_t max_pos = __ldg(positions + row_end - 1u);
+	const uint32_t max_tile_end = (max_pos + KV_TILE) / KV_TILE;
+	const uint32_t tile_begin = CHUNKED ? blockIdx.z * TILES_PER_CHUNK : 0u;
+	const uint32_t tile_end = CHUNKED ? (tile_begin + TILES_PER_CHUNK < max_tile_end ? tile_begin + TILES_PER_CHUNK : max_tile_end) : max_tile_end;
+	if constexpr ( CHUNKED )
+	{
+		if ( tile_begin >= tile_end )
+		{
+			LmDependentRelease();
+			return;
+		}
+	}
 	for ( uint32_t idx = threadIdx.x; idx < Q_TILE * K_CHUNKS; idx += THREADS )
 	{
 		const uint32_t r = idx / K_CHUNKS, c = idx % K_CHUNKS;
@@ -1667,8 +1383,6 @@ static void LingGqaLocalPrefillAttnGateKernel(const uint16_t *__restrict__ query
 			LmPrefillLoadX4(k_base + a_row * K_ROW_BYTES + LmPrefillSwizzle(a_row, 2u * ks + (matrix >> 1u)) * 16u, q_frag[ks]);
 	}
 	__syncthreads();
-	const uint32_t max_pos = __ldg(positions + row_end - 1u);
-	const uint32_t tile_end = (max_pos + KV_TILE) / KV_TILE;
 	const uint32_t row_lo = row_first + q_row_lo, row_hi = row_first + q_row_hi;
 	const bool valid_row[2] = { row_lo < row_end, row_hi < row_end };
 	const uint32_t rpos[2] = { valid_row[0] ? __ldg(positions + row_lo) : 0u, valid_row[1] ? __ldg(positions + row_hi) : 0u };
@@ -1694,9 +1408,9 @@ static void LingGqaLocalPrefillAttnGateKernel(const uint16_t *__restrict__ query
 		output[f][0] = output[f][1] = output[f][2] = output[f][3] = 0.0f;
 	float running_max[2] = { -INFINITY, -INFINITY };
 	float running_sum[2] = { 0.0f, 0.0f };
-	if ( tile_end != 0u )
-		copy_kv(0u, k_base, 0u);
-	for ( uint32_t tile = 0u; tile < tile_end; ++tile )
+	if ( tile_begin < tile_end )
+		copy_kv(tile_begin, k_base, 0u);
+	for ( uint32_t tile = tile_begin; tile < tile_end; ++tile )
 	{
 		copy_kv(tile, v_base, HD);
 		asm volatile("cp.async.wait_group 1;\n" ::: "memory");
@@ -1840,44 +1554,136 @@ static void LingGqaLocalPrefillAttnGateKernel(const uint16_t *__restrict__ query
 		if ( tile + 1u < tile_end )
 			__syncthreads();
 	}
-	const float inv_scale[2] = {
-		valid_row[0] && running_sum[0] > 0.0f ? (1.0f / running_sum[0]) : 0.0f,
-		valid_row[1] && running_sum[1] > 0.0f ? (1.0f / running_sum[1]) : 0.0f
-	};
-	#pragma unroll
-	for ( uint32_t f = 0u; f < HALF_V_FRAGS; ++f )
+	if constexpr ( CHUNKED )
 	{
-		const uint32_t col = (warp * HALF_V_FRAGS + f) * 8u + quad * 2u;
+		const uint64_t chunk_off = (uint64_t)blockIdx.z * rows * rank_heads * (HD + 2u);
 		if ( valid_row[0] )
 		{
-			const uint64_t idx = ((uint64_t)row_lo * rank_heads + local_h) * HD + col;
-			const uint32_t gp = *(const uint32_t *)(gate_bf16 + idx);
-			const float o0 = SparkMathRoundBf16(output[f][0] * inv_scale[0]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp << 16u)));
-			const float o1 = SparkMathRoundBf16(output[f][1] * inv_scale[0]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp & 0xffff0000u)));
-			*(uint32_t *)(merged_out + idx) = LmPackBf16Pair(o0, o1);
+			float *dst = partials + chunk_off + ((uint64_t)row_lo * rank_heads + local_h) * (HD + 2u);
+			if ( warp == 0u && quad == 0u )
+			{
+				dst[0] = running_max[0];
+				dst[1] = running_sum[0];
+			}
+			#pragma unroll
+			for ( uint32_t f = 0u; f < HALF_V_FRAGS; ++f )
+			{
+				const uint32_t col = (warp * HALF_V_FRAGS + f) * 8u + quad * 2u;
+				*(float2 *)(dst + 2u + col) = make_float2(output[f][0], output[f][1]);
+			}
 		}
 		if ( valid_row[1] )
 		{
-			const uint64_t idx = ((uint64_t)row_hi * rank_heads + local_h) * HD + col;
-			const uint32_t gp = *(const uint32_t *)(gate_bf16 + idx);
-			const float o0 = SparkMathRoundBf16(output[f][2] * inv_scale[1]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp << 16u)));
-			const float o1 = SparkMathRoundBf16(output[f][3] * inv_scale[1]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp & 0xffff0000u)));
-			*(uint32_t *)(merged_out + idx) = LmPackBf16Pair(o0, o1);
+			float *dst = partials + chunk_off + ((uint64_t)row_hi * rank_heads + local_h) * (HD + 2u);
+			if ( warp == 0u && quad == 0u )
+			{
+				dst[0] = running_max[1];
+				dst[1] = running_sum[1];
+			}
+			#pragma unroll
+			for ( uint32_t f = 0u; f < HALF_V_FRAGS; ++f )
+			{
+				const uint32_t col = (warp * HALF_V_FRAGS + f) * 8u + quad * 2u;
+				*(float2 *)(dst + 2u + col) = make_float2(output[f][2], output[f][3]);
+			}
+		}
+	}
+	else
+	{
+		const float inv_scale[2] = {
+			valid_row[0] && running_sum[0] > 0.0f ? (1.0f / running_sum[0]) : 0.0f,
+			valid_row[1] && running_sum[1] > 0.0f ? (1.0f / running_sum[1]) : 0.0f
+		};
+		#pragma unroll
+		for ( uint32_t f = 0u; f < HALF_V_FRAGS; ++f )
+		{
+			const uint32_t col = (warp * HALF_V_FRAGS + f) * 8u + quad * 2u;
+			if ( valid_row[0] )
+			{
+				const uint64_t idx = ((uint64_t)row_lo * rank_heads + local_h) * HD + col;
+				const uint32_t gp = *(const uint32_t *)(gate_bf16 + idx);
+				const float o0 = SparkMathRoundBf16(output[f][0] * inv_scale[0]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp << 16u)));
+				const float o1 = SparkMathRoundBf16(output[f][1] * inv_scale[0]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp & 0xffff0000u)));
+				*(uint32_t *)(merged_out + idx) = LmPackBf16Pair(o0, o1);
+			}
+			if ( valid_row[1] )
+			{
+				const uint64_t idx = ((uint64_t)row_hi * rank_heads + local_h) * HD + col;
+				const uint32_t gp = *(const uint32_t *)(gate_bf16 + idx);
+				const float o0 = SparkMathRoundBf16(output[f][2] * inv_scale[1]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp << 16u)));
+				const float o1 = SparkMathRoundBf16(output[f][3] * inv_scale[1]) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp & 0xffff0000u)));
+				*(uint32_t *)(merged_out + idx) = LmPackBf16Pair(o0, o1);
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t HD>
+__global__ __launch_bounds__(HD, 4)
+static void LingGqaLocalPrefillMergeGateKernel(const float *__restrict__ partials, const uint32_t *__restrict__ positions,
+	const uint16_t *__restrict__ gate_bf16, uint32_t rows, uint32_t rank_heads, uint32_t num_chunks, float qk_scale,
+	uint16_t *__restrict__ merged_out)
+{
+	const uint32_t local_h = blockIdx.x, row = blockIdx.y, d = threadIdx.x;
+	const uint64_t rec = (uint64_t)(HD + 2u);
+	const uint64_t chunk_stride = (uint64_t)rows * rank_heads * rec;
+	const uint64_t out_idx = ((uint64_t)row * rank_heads + local_h) * HD + d;
+	LmDependentWait();
+	if ( row < rows && local_h < rank_heads )
+	{
+		const uint32_t rpos = __ldg(positions + row);
+		uint32_t c_end = (rpos / 512u) + 1u;
+		if ( c_end > num_chunks )
+			c_end = num_chunks;
+		const float *p0 = partials + ((uint64_t)row * rank_heads + local_h) * rec;
+		const float g = SparkMathRoundBf16(SparkMathSigmoid(LmBf16ToFloat(__ldg(gate_bf16 + out_idx))));
+		if ( c_end == 1u )
+		{
+			const float sum = __ldg(p0 + 1u);
+			const float inv = sum > 0.0f ? (1.0f / sum) : 0.0f;
+			merged_out[out_idx] = LmFloatToBf16(SparkMathRoundBf16(__ldg(p0 + 2u + d) * inv) * g);
+		}
+		else
+		{
+			const float scale_log2 = qk_scale * 1.4426950408889634f;
+			float gmax = -INFINITY;
+			for ( uint32_t c = 0u; c < c_end; ++c )
+				gmax = fmaxf(gmax, __ldg(p0 + (uint64_t)c * chunk_stride));
+			float acc_sum = 0.0f, acc_val = 0.0f;
+			if ( gmax > -INFINITY )
+			{
+				for ( uint32_t c = 0u; c < c_end; ++c )
+				{
+					const float *pc = p0 + (uint64_t)c * chunk_stride;
+					const float cm = __ldg(pc);
+					if ( cm > -INFINITY )
+					{
+						const float sc = SparkMathExp2Fast((cm - gmax) * scale_log2);
+						acc_sum = fmaf(__ldg(pc + 1u), sc, acc_sum);
+						acc_val = fmaf(__ldg(pc + 2u + d), sc, acc_val);
+					}
+				}
+			}
+			const float inv = acc_sum > 0.0f ? (1.0f / acc_sum) : 0.0f;
+			merged_out[out_idx] = LmFloatToBf16(SparkMathRoundBf16(acc_val * inv) * g);
 		}
 	}
 	LmDependentRelease();
 }
 
 template<class G, class Format, uint32_t THREADS, uint32_t LANES, uint32_t ACT_STEP_VECS, uint32_t R_CAP>
-static __device__ __forceinline__ void LingMoeExactW1W3GroupPass(const uint4 *w1_0, const uint4 *w3_0, const uint4 *w1_1, const uint4 *w3_1,
-	const float *s1_0, const float *s3_0, const float *s1_1, const float *s3_1, const uint16_t *activation, const float *packed_weight,
+static __device__ __forceinline__ void LingMoeExactW1W3GroupPass(const uint4 *w1_0, const uint4 *w3_0,
+	const float *s1_0, const float *s3_0, const uint16_t *activation, const float *packed_weight,
 	const uint32_t *s_src, uint4 (*s_act)[ACT_STEP_VECS], uint16_t *output, uint32_t r0, uint32_t count, uint32_t sub,
 	uint32_t col0, bool valid_col, bool has1, float limit)
 {
 	constexpr bool IS_FP8 = LmSkinnyFormat<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32;
 	constexpr uint32_t ELEMS = LmSkinnyFormat<Format>::kElements;
-	constexpr uint32_t K = G::kHidden, N = G::kMoeInter, CHUNKS = K / ELEMS;
+	constexpr uint32_t K = G::kHidden, N = G::kMoeInter, CHUNKS = K / ELEMS, SC_STRIDE = K / LG_FP8_BLOCK;
 	constexpr uint32_t VECS_PER_CHUNK = IS_FP8 ? 2u : 1u;
+	const uint32_t w_step = has1 ? CHUNKS : 0u;
+	const uint32_t s_step = has1 ? SC_STRIDE : 0u;
 	float g0[R_CAP], u0[R_CAP], g1[R_CAP], u1[R_CAP];
 	#pragma unroll
 	for ( uint32_t r = 0u; r < R_CAP; ++r )
@@ -1895,53 +1701,33 @@ static __device__ __forceinline__ void LingMoeExactW1W3GroupPass(const uint4 *w1
 		const uint32_t c = c_base + sub;
 		if ( c < CHUNKS )
 		{
-			const uint4 vw1_0 = __ldcs(w1_0 + c), vw3_0 = __ldcs(w3_0 + c);
-			const uint4 vw1_1 = __ldcs(w1_1 + c), vw3_1 = __ldcs(w3_1 + c);
 			if constexpr ( IS_FP8 )
 			{
 				const uint32_t sg = c >> 3u;
-				const float f1_0 = __ldg(s1_0 + sg), f3_0 = __ldg(s3_0 + sg);
-				const float f1_1 = __ldg(s1_1 + sg), f3_1 = __ldg(s3_1 + sg);
-				const typename LmSkinnyFormat<LmFp8>::Decoded d1_0 = LmSkinnyFormat<LmFp8>::Decode(vw1_0);
-				#pragma unroll
-				for ( uint32_t r = 0u; r < R_CAP; ++r )
-					if ( r < count )
-					{
-						LmSkinnyWide a{ s_act[r][2u * sub], s_act[r][2u * sub + 1u] };
-						g0[r] = fmaf(f1_0, LmSkinnyFormat<LmFp8>::ChunkDecoded(d1_0, a), g0[r]);
-					}
-				const typename LmSkinnyFormat<LmFp8>::Decoded d3_0 = LmSkinnyFormat<LmFp8>::Decode(vw3_0);
-				#pragma unroll
-				for ( uint32_t r = 0u; r < R_CAP; ++r )
-					if ( r < count )
-					{
-						LmSkinnyWide a{ s_act[r][2u * sub], s_act[r][2u * sub + 1u] };
-						u0[r] = fmaf(f3_0, LmSkinnyFormat<LmFp8>::ChunkDecoded(d3_0, a), u0[r]);
-					}
-				const typename LmSkinnyFormat<LmFp8>::Decoded d1_1 = LmSkinnyFormat<LmFp8>::Decode(vw1_1);
-				#pragma unroll
-				for ( uint32_t r = 0u; r < R_CAP; ++r )
-					if ( r < count )
-					{
-						LmSkinnyWide a{ s_act[r][2u * sub], s_act[r][2u * sub + 1u] };
-						g1[r] = fmaf(f1_1, LmSkinnyFormat<LmFp8>::ChunkDecoded(d1_1, a), g1[r]);
-					}
-				const typename LmSkinnyFormat<LmFp8>::Decoded d3_1 = LmSkinnyFormat<LmFp8>::Decode(vw3_1);
-				#pragma unroll
-				for ( uint32_t r = 0u; r < R_CAP; ++r )
-					if ( r < count )
-					{
-						LmSkinnyWide a{ s_act[r][2u * sub], s_act[r][2u * sub + 1u] };
-						u1[r] = fmaf(f3_1, LmSkinnyFormat<LmFp8>::ChunkDecoded(d3_1, a), u1[r]);
-					}
+				auto accum_fp8 = [&](const uint4 *wp, const float *sp, float *acc)
+				{
+					const float sc = __ldg(sp + sg);
+					const typename LmSkinnyFormat<LmFp8>::Decoded d = LmSkinnyFormat<LmFp8>::Decode(__ldcs(wp + c));
+					#pragma unroll
+					for ( uint32_t r = 0u; r < R_CAP; ++r )
+						if ( r < count )
+						{
+							LmSkinnyWide a{ s_act[r][2u * sub], s_act[r][2u * sub + 1u] };
+							acc[r] = fmaf(sc, LmSkinnyFormat<LmFp8>::ChunkDecoded(d, a), acc[r]);
+						}
+				};
+				accum_fp8(w1_0, s1_0, g0);
+				accum_fp8(w3_0, s3_0, u0);
+				accum_fp8(w1_0 + w_step, s1_0 + s_step, g1);
+				accum_fp8(w3_0 + w_step, s3_0 + s_step, u1);
 			}
 			else
 			{
 				float w1f0[8], w3f0[8], w1f1[8], w3f1[8];
-				LmSkinnyUnpackBf16x8(vw1_0, w1f0);
-				LmSkinnyUnpackBf16x8(vw3_0, w3f0);
-				LmSkinnyUnpackBf16x8(vw1_1, w1f1);
-				LmSkinnyUnpackBf16x8(vw3_1, w3f1);
+				LmSkinnyUnpackBf16x8(__ldcs(w1_0 + c), w1f0);
+				LmSkinnyUnpackBf16x8(__ldcs(w3_0 + c), w3f0);
+				LmSkinnyUnpackBf16x8(__ldcs(w1_0 + w_step + c), w1f1);
+				LmSkinnyUnpackBf16x8(__ldcs(w3_0 + w_step + c), w3f1);
 				#pragma unroll
 				for ( uint32_t r = 0u; r < R_CAP; ++r )
 					if ( r < count )
@@ -1998,7 +1784,7 @@ static void LingMoeExactW1W3SiluKernel(const void *__restrict__ w1, const float 
 	constexpr uint32_t ELEMS = LmSkinnyFormat<Format>::kElements;
 	constexpr uint32_t K = G::kHidden, N = G::kMoeInter, CHUNKS = K / ELEMS, SC_STRIDE = K / LG_FP8_BLOCK;
 	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = THREADS / LANES, MAX_R = 8u;
+	constexpr uint32_t GROUPS = THREADS / LANES, MAX_R = IS_FP8 ? 4u : 8u;
 	constexpr uint32_t VECS_PER_CHUNK = IS_FP8 ? 2u : 1u, ACT_STEP_VECS = LANES * VECS_PER_CHUNK;
 	__shared__ __align__(16) uint4 s_act[MAX_R][ACT_STEP_VECS];
 	__shared__ uint32_t s_src[MAX_R];
@@ -2013,11 +1799,9 @@ static void LingMoeExactW1W3SiluKernel(const void *__restrict__ w1, const float 
 		const bool valid_col = col0 < N, has1 = col0 + 1u < N;
 		const uint64_t row_base = (uint64_t)exp * N + (valid_col ? col0 : 0u);
 		const uint4 *w1_0 = (const uint4 *)w1 + row_base * CHUNKS, *w3_0 = (const uint4 *)w3 + row_base * CHUNKS;
-		const uint4 *w1_1 = has1 ? w1_0 + CHUNKS : w1_0, *w3_1 = has1 ? w3_0 + CHUNKS : w3_0;
 		const float *s1_0 = IS_FP8 ? s1 + row_base * SC_STRIDE : (const float *)0;
 		const float *s3_0 = IS_FP8 ? s3 + row_base * SC_STRIDE : (const float *)0;
-		const float *s1_1 = IS_FP8 ? (has1 ? s1_0 + SC_STRIDE : s1_0) : (const float *)0;
-		const float *s3_1 = IS_FP8 ? (has1 ? s3_0 + SC_STRIDE : s3_0) : (const float *)0;
+		const uint32_t w_step = has1 ? CHUNKS : 0u, s_step = has1 ? SC_STRIDE : 0u;
 		for ( uint32_t r0 = r_begin; r0 < r_end; r0 += MAX_R )
 		{
 			const uint32_t count = r_end - r0 < MAX_R ? r_end - r0 : MAX_R;
@@ -2031,15 +1815,11 @@ static void LingMoeExactW1W3SiluKernel(const void *__restrict__ w1, const float 
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const typename LmSkinnyFormat<Format>::Activation a = LmSkinnyFormat<Format>::Load(a_row + c * ELEMS);
-					const uint4 vw1_0 = __ldcs(w1_0 + c), vw3_0 = __ldcs(w3_0 + c);
-					const uint4 vw1_1 = __ldcs(w1_1 + c), vw3_1 = __ldcs(w3_1 + c);
 					const uint32_t sg = c >> 3u;
-					const float f1_0 = IS_FP8 ? __ldg(s1_0 + sg) : 1.0f, f3_0 = IS_FP8 ? __ldg(s3_0 + sg) : 1.0f;
-					const float f1_1 = IS_FP8 ? __ldg(s1_1 + sg) : 1.0f, f3_1 = IS_FP8 ? __ldg(s3_1 + sg) : 1.0f;
-					g0 = fmaf(f1_0, LmSkinnyFormat<Format>::Chunk(vw1_0, a), g0);
-					u0 = fmaf(f3_0, LmSkinnyFormat<Format>::Chunk(vw3_0, a), u0);
-					g1 = fmaf(f1_1, LmSkinnyFormat<Format>::Chunk(vw1_1, a), g1);
-					u1 = fmaf(f3_1, LmSkinnyFormat<Format>::Chunk(vw3_1, a), u1);
+					g0 = fmaf(IS_FP8 ? __ldg(s1_0 + sg) : 1.0f, LmSkinnyFormat<Format>::Chunk(__ldcs(w1_0 + c), a), g0);
+					u0 = fmaf(IS_FP8 ? __ldg(s3_0 + sg) : 1.0f, LmSkinnyFormat<Format>::Chunk(__ldcs(w3_0 + c), a), u0);
+					g1 = fmaf(IS_FP8 ? __ldg(s1_0 + s_step + sg) : 1.0f, LmSkinnyFormat<Format>::Chunk(__ldcs(w1_0 + w_step + c), a), g1);
+					u1 = fmaf(IS_FP8 ? __ldg(s3_0 + s_step + sg) : 1.0f, LmSkinnyFormat<Format>::Chunk(__ldcs(w3_0 + w_step + c), a), u1);
 				}
 				#pragma unroll
 				for ( uint32_t off = LANES >> 1u; off > 0u; off >>= 1u )
@@ -2063,11 +1843,14 @@ static void LingMoeExactW1W3SiluKernel(const void *__restrict__ w1, const float 
 						output[(uint64_t)r0 * N + col0] = LmFloatToBf16(v0);
 				}
 			}
+			else if constexpr ( IS_FP8 )
+				LingMoeExactW1W3GroupPass<G, Format, THREADS, LANES, ACT_STEP_VECS, 4u>(w1_0, w3_0, s1_0, s3_0,
+					activation, packed_weight, s_src, s_act, output, r0, count, sub, col0, valid_col, has1, limit);
 			else if ( count <= 4u )
-				LingMoeExactW1W3GroupPass<G, Format, THREADS, LANES, ACT_STEP_VECS, 4u>(w1_0, w3_0, w1_1, w3_1, s1_0, s3_0, s1_1, s3_1,
+				LingMoeExactW1W3GroupPass<G, Format, THREADS, LANES, ACT_STEP_VECS, 4u>(w1_0, w3_0, s1_0, s3_0,
 					activation, packed_weight, s_src, s_act, output, r0, count, sub, col0, valid_col, has1, limit);
 			else
-				LingMoeExactW1W3GroupPass<G, Format, THREADS, LANES, ACT_STEP_VECS, MAX_R>(w1_0, w3_0, w1_1, w3_1, s1_0, s3_0, s1_1, s3_1,
+				LingMoeExactW1W3GroupPass<G, Format, THREADS, LANES, ACT_STEP_VECS, MAX_R>(w1_0, w3_0, s1_0, s3_0,
 					activation, packed_weight, s_src, s_act, output, r0, count, sub, col0, valid_col, has1, limit);
 			if ( r0 + MAX_R < r_end )
 				__syncthreads();
@@ -2077,45 +1860,42 @@ static void LingMoeExactW1W3SiluKernel(const void *__restrict__ w1, const float 
 }
 
 template<class G, class Format, uint32_t LANES, uint32_t ACT_VECS, uint32_t R_CAP>
-static __device__ __forceinline__ void LingMoeExactW2GroupPass(const uint4 *w0, const uint4 *w1, const float *s0, const float *s1,
+static __device__ __forceinline__ void LingMoeExactW2GroupPass(const uint4 *w0, const float *s0,
 	const uint4 (*s_act)[ACT_VECS], uint16_t *output, uint32_t r0, uint32_t count, uint32_t sub, uint32_t col0, bool valid_col, bool has1)
 {
 	constexpr bool IS_FP8 = LmSkinnyFormat<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32;
 	constexpr uint32_t ELEMS = LmSkinnyFormat<Format>::kElements;
-	constexpr uint32_t K = G::kMoeInter, N = G::kHidden, CHUNKS = K / ELEMS;
+	constexpr uint32_t K = G::kMoeInter, N = G::kHidden, CHUNKS = K / ELEMS, SC_STRIDE = K / LG_FP8_BLOCK;
+	const uint32_t w_step = has1 ? CHUNKS : 0u, s_step = has1 ? SC_STRIDE : 0u;
 	float a0[R_CAP], a1[R_CAP];
 	#pragma unroll
 	for ( uint32_t r = 0u; r < R_CAP; ++r )
 		a0[r] = a1[r] = 0.0f;
 	for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 	{
-		const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1 + c);
 		if constexpr ( IS_FP8 )
 		{
 			const uint32_t sg = c >> 3u;
-			const float f0 = __ldg(s0 + sg), f1 = __ldg(s1 + sg);
-			const typename LmSkinnyFormat<LmFp8>::Decoded d0 = LmSkinnyFormat<LmFp8>::Decode(vw0);
-			#pragma unroll
-			for ( uint32_t r = 0u; r < R_CAP; ++r )
-				if ( r < count )
-				{
-					LmSkinnyWide a{ s_act[r][2u * c], s_act[r][2u * c + 1u] };
-					a0[r] = fmaf(f0, LmSkinnyFormat<LmFp8>::ChunkDecoded(d0, a), a0[r]);
-				}
-			const typename LmSkinnyFormat<LmFp8>::Decoded d1 = LmSkinnyFormat<LmFp8>::Decode(vw1);
-			#pragma unroll
-			for ( uint32_t r = 0u; r < R_CAP; ++r )
-				if ( r < count )
-				{
-					LmSkinnyWide a{ s_act[r][2u * c], s_act[r][2u * c + 1u] };
-					a1[r] = fmaf(f1, LmSkinnyFormat<LmFp8>::ChunkDecoded(d1, a), a1[r]);
-				}
+			auto accum_fp8 = [&](const uint4 *wp, const float *sp, float *acc)
+			{
+				const float sc = __ldg(sp + sg);
+				const typename LmSkinnyFormat<LmFp8>::Decoded d = LmSkinnyFormat<LmFp8>::Decode(__ldcs(wp + c));
+				#pragma unroll
+				for ( uint32_t r = 0u; r < R_CAP; ++r )
+					if ( r < count )
+					{
+						LmSkinnyWide a{ s_act[r][2u * c], s_act[r][2u * c + 1u] };
+						acc[r] = fmaf(sc, LmSkinnyFormat<LmFp8>::ChunkDecoded(d, a), acc[r]);
+					}
+			};
+			accum_fp8(w0, s0, a0);
+			accum_fp8(w0 + w_step, s0 + s_step, a1);
 		}
 		else
 		{
 			float w0f[8], w1f[8];
-			LmSkinnyUnpackBf16x8(vw0, w0f);
-			LmSkinnyUnpackBf16x8(vw1, w1f);
+			LmSkinnyUnpackBf16x8(__ldcs(w0 + c), w0f);
+			LmSkinnyUnpackBf16x8(__ldcs(w0 + w_step + c), w1f);
 			#pragma unroll
 			for ( uint32_t r = 0u; r < R_CAP; ++r )
 				if ( r < count )
@@ -2156,7 +1936,7 @@ static void LingMoeExactW2Kernel(const void *__restrict__ w2, const float *__res
 	constexpr uint32_t ELEMS = LmSkinnyFormat<Format>::kElements;
 	constexpr uint32_t K = G::kMoeInter, N = G::kHidden, CHUNKS = K / ELEMS, SC_STRIDE = K / LG_FP8_BLOCK;
 	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = LG_THREADS / LANES, MAX_R = 8u, ACT_VECS = K >> 3u;
+	constexpr uint32_t GROUPS = LG_THREADS / LANES, MAX_R = IS_FP8 ? 4u : 8u, ACT_VECS = K >> 3u;
 	constexpr bool HOIST_W = !IS_FP8 && CHUNKS <= 2u * LANES;
 	__shared__ __align__(16) uint4 s_act[MAX_R][ACT_VECS];
 	const uint32_t act_idx = blockIdx.y;
@@ -2169,15 +1949,15 @@ static void LingMoeExactW2Kernel(const void *__restrict__ w2, const float *__res
 		const uint32_t col0 = (blockIdx.x * GROUPS + group) * 2u;
 		const bool valid_col = col0 < N, has1 = col0 + 1u < N;
 		const uint64_t row_base = (uint64_t)exp * N + (valid_col ? col0 : 0u);
-		const uint4 *w0 = (const uint4 *)w2 + row_base * CHUNKS, *w1 = has1 ? w0 + CHUNKS : w0;
+		const uint4 *w0 = (const uint4 *)w2 + row_base * CHUNKS;
 		const float *s0 = IS_FP8 ? s2 + row_base * SC_STRIDE : (const float *)0;
-		const float *s1 = IS_FP8 ? (has1 ? s0 + SC_STRIDE : s0) : (const float *)0;
+		const uint32_t w_step = has1 ? CHUNKS : 0u, s_step = has1 ? SC_STRIDE : 0u;
 		if constexpr ( HOIST_W )
 		{
 			const uint4 hw0_0 = sub < CHUNKS ? __ldcs(w0 + sub) : make_uint4(0u, 0u, 0u, 0u);
 			const uint4 hw1_0 = sub + LANES < CHUNKS ? __ldcs(w0 + sub + LANES) : make_uint4(0u, 0u, 0u, 0u);
-			const uint4 hw0_1 = sub < CHUNKS ? __ldcs(w1 + sub) : make_uint4(0u, 0u, 0u, 0u);
-			const uint4 hw1_1 = sub + LANES < CHUNKS ? __ldcs(w1 + sub + LANES) : make_uint4(0u, 0u, 0u, 0u);
+			const uint4 hw0_1 = sub < CHUNKS ? __ldcs(w0 + w_step + sub) : make_uint4(0u, 0u, 0u, 0u);
+			const uint4 hw1_1 = sub + LANES < CHUNKS ? __ldcs(w0 + w_step + sub + LANES) : make_uint4(0u, 0u, 0u, 0u);
 			for ( uint32_t r0 = r_begin; r0 < r_end; r0 += MAX_R )
 			{
 				const uint32_t count = r_end - r0 < MAX_R ? r_end - r0 : MAX_R;
@@ -2234,19 +2014,18 @@ static void LingMoeExactW2Kernel(const void *__restrict__ w2, const float *__res
 					float acc0 = 0.0f, acc1 = 0.0f;
 					for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 					{
-						const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1 + c);
 						if constexpr ( IS_FP8 )
 						{
 							LmSkinnyWide a{ s_act[0][2u * c], s_act[0][2u * c + 1u] };
 							const uint32_t sg = c >> 3u;
-							acc0 = fmaf(__ldg(s0 + sg), LmSkinnyFormat<LmFp8>::Chunk(vw0, a), acc0);
-							acc1 = fmaf(__ldg(s1 + sg), LmSkinnyFormat<LmFp8>::Chunk(vw1, a), acc1);
+							acc0 = fmaf(__ldg(s0 + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + c), a), acc0);
+							acc1 = fmaf(__ldg(s0 + s_step + sg), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + w_step + c), a), acc1);
 						}
 						else
 						{
 							const uint4 va = s_act[0][c];
-							acc0 = fmaf(1.0f, LmSkinnyBf16Chunk(vw0, va, 0.0f), acc0);
-							acc1 = fmaf(1.0f, LmSkinnyBf16Chunk(vw1, va, 0.0f), acc1);
+							acc0 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w0 + c), va, 0.0f), acc0);
+							acc1 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w0 + w_step + c), va, 0.0f), acc1);
 						}
 					}
 					#pragma unroll
@@ -2263,10 +2042,12 @@ static void LingMoeExactW2Kernel(const void *__restrict__ w2, const float *__res
 							output[(uint64_t)r0 * N + col0] = LmFloatToBf16(acc0);
 					}
 				}
+				else if constexpr ( IS_FP8 )
+					LingMoeExactW2GroupPass<G, Format, LANES, ACT_VECS, 4u>(w0, s0, s_act, output, r0, count, sub, col0, valid_col, has1);
 				else if ( count <= 4u )
-					LingMoeExactW2GroupPass<G, Format, LANES, ACT_VECS, 4u>(w0, w1, s0, s1, s_act, output, r0, count, sub, col0, valid_col, has1);
+					LingMoeExactW2GroupPass<G, Format, LANES, ACT_VECS, 4u>(w0, s0, s_act, output, r0, count, sub, col0, valid_col, has1);
 				else
-					LingMoeExactW2GroupPass<G, Format, LANES, ACT_VECS, MAX_R>(w0, w1, s0, s1, s_act, output, r0, count, sub, col0, valid_col, has1);
+					LingMoeExactW2GroupPass<G, Format, LANES, ACT_VECS, MAX_R>(w0, s0, s_act, output, r0, count, sub, col0, valid_col, has1);
 				if ( r0 + MAX_R < r_end )
 					__syncthreads();
 			}
