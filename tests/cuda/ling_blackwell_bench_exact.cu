@@ -12,8 +12,8 @@
 static constexpr uint32_t kBenchMaxRows = 512u;
 static constexpr uint32_t kBenchSlots = 2u;
 static constexpr uint32_t kBenchPages = 128u;
-static constexpr uint32_t kBenchWarmup = 4u;
-static constexpr uint32_t kBenchIters = 16u;
+static constexpr uint32_t kBenchWarmup = 8u;
+static constexpr uint32_t kBenchIters = 32u;
 
 struct SolarOpen2Bench16 : SolarOpen2Geometry<16u>
 {
