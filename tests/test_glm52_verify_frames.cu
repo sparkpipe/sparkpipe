@@ -113,13 +113,13 @@ static const uint8_t *ExpertBlock(uint64_t groups, uint64_t rows, uint64_t colum
 	return (const uint8_t *)Matrix(groups * rows, columns);
 }
 
-template<class G, uint32_t MAX_ROWS = VF_MAX_FRAME, uint32_t PAGES = VF_PAGES>
+template<class G, uint32_t MAX_ROWS = VF_MAX_FRAME, uint32_t PAGES = VF_PAGES, uint32_t SLOTS = VF_SLOTS>
 struct VfRig
 {
 	using M = GlmModel<G>;
 	using S = GlmShape<G>;
 	using State = typename M::State;
-	static constexpr uint64_t kPool = (uint64_t)VF_SLOTS * PAGES;
+	static constexpr uint64_t kPool = (uint64_t)SLOTS * PAGES;
 	static constexpr uint64_t kLatentRegion = kPool * GlmKv<S>::kPageBytes;
 	static constexpr uint64_t kIndexRegion = (uint64_t)G::kIndexLayers * kPool * GlmIndexKv<S>::kPageBytes;
 	State *state;
@@ -131,7 +131,7 @@ struct VfRig
 	uint32_t *page_table, *positions, *context, *sequence_of_row;
 	uint32_t *tree_slots, *forks, *offsets, *row_indices, *kept;
 	uint16_t *hidden;
-	uint32_t host_context[VF_SLOTS];
+	uint32_t host_context[SLOTS];
 	SparkStageRunnerStep last;
 	const uint8_t *experts_up[S::kLayers], *experts_down[S::kLayers];
 
@@ -198,7 +198,7 @@ struct VfRig
 
 	int Open(void)
 	{
-		std::vector<uint32_t> table(VF_SLOTS * PAGES);
+		std::vector<uint32_t> table(SLOTS * PAGES);
 		SparkStageRunnerKv attach;
 		memset(this, 0, sizeof(*this));
 		bus.hidden = G::kHidden;
@@ -211,7 +211,7 @@ struct VfRig
 		state->heads = G::kHeads;
 		state->max_rows = MAX_ROWS;
 		state->scatter_rows = MAX_ROWS < GLM_SCATTER_ROWS ? MAX_ROWS : GLM_SCATTER_ROWS;
-		state->slots = VF_SLOTS;
+		state->slots = SLOTS;
 		state->max_positions = PAGES * GLM_PAGE_SLOTS;
 		state->shard.degree = 1u;
 		state->shard.grain = 1u;
@@ -230,8 +230,8 @@ struct VfRig
 			cudaMalloc((void **)&forks, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&offsets, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&row_indices, MAX_ROWS * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&kept, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess ||
-			cudaMalloc((void **)&context, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&kept, SLOTS * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&context, SLOTS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&hidden, (uint64_t)MAX_ROWS * G::kHidden * sizeof(uint16_t)) != cudaSuccess )
 			return 0;
 		for ( uint32_t index = 0u; index < table.size(); ++index )
@@ -246,7 +246,7 @@ struct VfRig
 		attach.page_table = page_table;
 		attach.page_table_stride = PAGES;
 		attach.pool_page_count = (uint32_t)kPool;
-		attach.sequence_count = VF_SLOTS;
+		attach.sequence_count = SLOTS;
 		attach.context_shard = state->shard;
 		attach.second_pool = kv + kLatentRegion;
 		attach.second_layer_stride_bytes = kPool * GlmIndexKv<S>::kPageBytes;
@@ -266,7 +266,7 @@ struct VfRig
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
 		std::vector<uint32_t> position(count), sequence(count);
-		uint32_t seen[VF_SLOTS] = { 0u, 0u }, sequences = 0u;
+		uint32_t seen[SLOTS] = {}, sequences = 0u;
 		SparkStageRunnerStep step;
 		for ( uint32_t row = 0u; row < count; ++row )
 		{
@@ -402,7 +402,7 @@ struct VfRig
 	{
 		if ( a.size() != b.size() )
 			return 0u;
-		for ( uint32_t sequence = 0u; sequence < VF_SLOTS; ++sequence )
+		for ( uint32_t sequence = 0u; sequence < SLOTS; ++sequence )
 			for ( uint32_t position = 0u; position < PAGES * GLM_PAGE_SLOTS; ++position )
 			{
 				const uint64_t page = (uint64_t)sequence * PAGES + position / GLM_PAGE_SLOTS, slot = position % GLM_PAGE_SLOTS;
@@ -655,10 +655,62 @@ static void CheckPrefixExact(void)
 	printf("%s %s prefix-exact: cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
 }
 
+template<class G>
+static void Check5cBatchInvariance(void)
+{
+	static constexpr uint32_t kSlots = 8u;
+	static const uint32_t ctx_list[] = { 32u, 96u };
+	static const uint32_t batches[] = { 2u, 4u, 8u };
+	VfRig<G, 128u, 4u, kSlots> rig;
+	const char *model = G::Tag();
+	if ( rig.Open() == 0 )
+	{
+		Require(0, model, "5c batch invariance rig opens", 0u, 0u, 0u);
+		return;
+	}
+	for ( uint32_t seq = 0u; seq < kSlots; ++seq )
+	{
+		const uint32_t fill = seq == 0u ? 96u : (20u + seq * 3u);
+		std::vector<VfRow> init_rows(fill);
+		for ( uint32_t p = 0u; p < fill; ++p )
+			init_rows[p] = { seq, p, 0u };
+		Require(rig.Run(init_rows.data(), fill, 0u, 0) != 0, model, "5c prefix fill runs", seq, fill, 0u);
+	}
+	const std::vector<uint8_t> saved = rig.Save();
+	for ( uint32_t ctx : ctx_list )
+	{
+		std::vector<uint16_t> b1_out;
+		Require(rig.Load(saved) != 0, model, "5c KV restore succeeds", ctx, 1u, 0u);
+		Require(rig.Decode(0u, ctx, 7u, &b1_out) != 0, model, "5c B1 decode runs", ctx, 1u, 0u);
+		Require(Finite(b1_out) != 0u, model, "5c B1 output is finite", ctx, 1u, 0u);
+		for ( uint32_t bs : batches )
+		{
+			std::vector<VfRow> batch(bs);
+			std::vector<uint16_t> out;
+			batch[0] = { 0u, ctx, 7u };
+			for ( uint32_t r = 1u; r < bs; ++r )
+				batch[r] = { r, 20u + r * 3u, 11u + r };
+			Require(rig.Load(saved) != 0, model, "5c KV restore succeeds for batch", ctx, bs, 0u);
+			Require(rig.Run(batch.data(), bs, 1u, &out, 0u) != 0, model, "5c batch decode runs", ctx, bs, 0u);
+			std::vector<uint16_t> row0(out.begin(), out.begin() + G::kHidden);
+			Require(FirstDifference(row0, b1_out, G::kHidden) == UINT32_MAX, model,
+				"5c batch decode row0 equals B1 bit for bit (ctx, batch, first diff)", ctx, bs, FirstDifference(row0, b1_out, G::kHidden));
+		}
+	}
+	Require(rig.KvClean() != 0u, model, "5c batch invariance reported no KV access error", 0u, 0u, 0u);
+	printf("%s %s 5c batch invariance: B1 == B2 == B4 == B8 (short & sparse ctx)\n", vf_failures == 0 ? "ok" : "checked", model);
+}
+
 int main(void)
 {
 	Check<SmallGlm53Full>();
 	Check<SmallAxk2>();
+	Check<SmallGlm53FullInter128>();
+	Check<SmallAxk2Inter128>();
+	Check5cBatchInvariance<SmallGlm53Full>();
+	Check5cBatchInvariance<SmallAxk2>();
+	Check5cBatchInvariance<SmallGlm53FullInter128>();
+	Check5cBatchInvariance<SmallAxk2Inter128>();
 	CheckPrefixExact<SmallGlm53FullInter128>();
 	CheckPrefixExact<SmallAxk2Inter128>();
 	CheckPrefixExact<SmallAxk2>();
