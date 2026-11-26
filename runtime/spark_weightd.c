@@ -2776,7 +2776,7 @@ static SparkStatus SparkWeightdRecordWorkingSet(SparkWeightdArena *arena,
 	const SparkWeightdExpertKey *keys,uint32_t count)
 {
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u],temporary[SPARK_WEIGHTD_PATH_BYTES + 16u] = {0};
-	uint32_t *pairs = 0;
+	uint32_t (*pairs)[2] = 0;
 	uint32_t i,index,original_count = arena->recorded_count;
 	SparkStatus status = SPARK_STATUS_IO_ERROR;
 	int fd = -1;
@@ -2792,7 +2792,7 @@ static SparkStatus SparkWeightdRecordWorkingSet(SparkWeightdArena *arena,
 	if ( snprintf(path,sizeof(path),"%s.wset",arena->pack_path) >= (int)sizeof(path) ||
 		snprintf(temporary,sizeof(temporary),"%s.XXXXXX",path) >= (int)sizeof(temporary) )
 		goto failed;
-	pairs = malloc((size_t)arena->recorded_count * 2u * sizeof(*pairs));
+	pairs = calloc((size_t)arena->recorded_count,sizeof(*pairs));
 	if ( pairs == 0 )
 	{
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -2800,13 +2800,13 @@ static SparkStatus SparkWeightdRecordWorkingSet(SparkWeightdArena *arena,
 	}
 	for (index=0u; index<arena->recorded_count; index++)
 	{
-		pairs[2u * index] = (uint32_t)(arena->recorded_keys[index] >> 32u);
-		pairs[2u * index + 1u] = (uint32_t)arena->recorded_keys[index];
+		pairs[index][0] = (uint32_t)(arena->recorded_keys[index] >> 32u);
+		pairs[index][1] = (uint32_t)arena->recorded_keys[index];
 	}
 	fd = mkstemp(temporary);
 	if ( fd < 0 )
 		goto failed;
-	status = SparkIoWriteAll(fd,pairs,(size_t)arena->recorded_count * 2u * sizeof(*pairs));
+	status = SparkIoWriteAll(fd,pairs,(size_t)arena->recorded_count * sizeof(*pairs));
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	fd = -1;
