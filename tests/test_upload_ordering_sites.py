@@ -41,6 +41,7 @@ SITES = {
     "runtime/spark_weightd_lazy_pack.c": 1,
 }
 HOST_VISIBLE = {
+    "inference/runner/mesh_fast_kernels.cuh": 2,
     "inference/runner/pass_prefill.cuh": 5,
     "inference/runner/stage_runner.cu": 13,
     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": 1,
