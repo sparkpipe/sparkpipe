@@ -4397,6 +4397,28 @@ static uint32_t SparkModelBatchPlanDraft(
 	}
 	else if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK )
 		found = 1u;
+	if ( found == 0u && engine->draft_bridge == 0 && plan.lanes == 1u && position >= 3u &&
+		SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) >= 50.0e6f )
+	{
+		const uint32_t floor_pos = position > 4096u ? position - 4096u : 1u;
+		const uint32_t t_last = tokens[position];
+		const uint32_t t_prev = tokens[position - 1u];
+		uint32_t scan;
+		for (scan = position - 1u; scan >= floor_pos; scan--)
+		{
+			if ( tokens[scan] == t_last && tokens[scan - 1u] == t_prev )
+			{
+				match.source_end = scan;
+				match.match_length = 2u;
+				found = 1u;
+				if ( limit > 4u )
+					limit = 4u;
+				break;
+			}
+			if ( scan == floor_pos )
+				break;
+		}
+	}
 	if ( found == 0u || (engine->draft_bridge != 0 && match.match_length < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
 	{
 		const uint32_t count = engine->draft_bridge != 0 && plan.allow_model_drafts != 0u && plan.lanes <= SPARK_MODEL_BATCH_MODEL_DRAFT_LANES ?

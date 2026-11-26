@@ -264,6 +264,131 @@ kernel[BLOCK, 32] head_certified_reduce_f32(
     }
 }
 
+kernel[BLOCK, 32] head_certified_reduce_batched_f32(
+    global u32* partial_scores, global u32* partial_candidates,
+    u64 row_stride, global u32* output_token_id, global u32* output_score,
+    u32 candidate_offset, u32 partial_count, u32 rows
+) {
+    shared f32 best_score[8];
+    shared u32 best_cand[8];
+    reg u32 row = ctaid_y();
+    if (row >= rows) { return; }
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 row_bytes = row_stride[0] << 2;
+    ureg u64 row_scores = ptr_add(partial_scores, row, row_bytes);
+    ureg u64 row_cands = ptr_add(partial_candidates, row, row_bytes);
+    reg f32 running_best = -3.0e38f;
+    reg u32 running_cand = 0xFFFFFFFF;
+    for (reg u32 partial = tid; partial < partial_count; partial += BLOCK) {
+        reg f32 score = u32_as_f32(ldg32_stream(ptr_add(row_scores, partial, 4)));
+        reg u32 cand = ldg32_stream(ptr_add(row_cands, partial, 4));
+        if (score > running_best) {
+            running_best = score;
+            running_cand = cand;
+        } else {
+            if (score == running_best) {
+                if (cand < running_cand) {
+                    running_best = score;
+                    running_cand = cand;
+                }
+            }
+        }
+    }
+    reg f32 os16 = shfl_down(running_best, 16);
+    reg u32 oc16 = shfl_down(running_cand, 16);
+    if (os16 > running_best) {
+        running_best = os16;
+        running_cand = oc16;
+    } else {
+        if (os16 == running_best) {
+            if (oc16 < running_cand) {
+                running_best = os16;
+                running_cand = oc16;
+            }
+        }
+    }
+    reg f32 os8 = shfl_down(running_best, 8);
+    reg u32 oc8 = shfl_down(running_cand, 8);
+    if (os8 > running_best) {
+        running_best = os8;
+        running_cand = oc8;
+    } else {
+        if (os8 == running_best) {
+            if (oc8 < running_cand) {
+                running_best = os8;
+                running_cand = oc8;
+            }
+        }
+    }
+    reg f32 os4 = shfl_down(running_best, 4);
+    reg u32 oc4 = shfl_down(running_cand, 4);
+    if (os4 > running_best) {
+        running_best = os4;
+        running_cand = oc4;
+    } else {
+        if (os4 == running_best) {
+            if (oc4 < running_cand) {
+                running_best = os4;
+                running_cand = oc4;
+            }
+        }
+    }
+    reg f32 os2 = shfl_down(running_best, 2);
+    reg u32 oc2 = shfl_down(running_cand, 2);
+    if (os2 > running_best) {
+        running_best = os2;
+        running_cand = oc2;
+    } else {
+        if (os2 == running_best) {
+            if (oc2 < running_cand) {
+                running_best = os2;
+                running_cand = oc2;
+            }
+        }
+    }
+    reg f32 os1 = shfl_down(running_best, 1);
+    reg u32 oc1 = shfl_down(running_cand, 1);
+    if (os1 > running_best) {
+        running_best = os1;
+        running_cand = oc1;
+    } else {
+        if (os1 == running_best) {
+            if (oc1 < running_cand) {
+                running_best = os1;
+                running_cand = oc1;
+            }
+        }
+    }
+    if (lane == 0) {
+        sts32(best_score, wid, running_best);
+        sts32(best_cand, wid, running_cand);
+    }
+    barrier();
+    if (tid == 0) {
+        reg f32 fb = lds32(best_score, 0);
+        reg u32 fc = lds32(best_cand, 0);
+        unroll (w = 1..8) {
+            reg f32 ws = lds32(best_score, w);
+            reg u32 wc = lds32(best_cand, w);
+            if (ws > fb) {
+                fb = ws;
+                fc = wc;
+            } else {
+                if (ws == fb) {
+                    if (wc < fc) {
+                        fb = ws;
+                        fc = wc;
+                    }
+                }
+            }
+        }
+        stg32(ptr_add(output_token_id, row, 4), fc + candidate_offset);
+        stg32(ptr_add(output_score, row, 4), f32_as_u32(fb));
+    }
+}
+
 kernel[BLOCK, 32] stage_embedding_lookup_pdl_bf16x8(
     global u32* embed_weight, global u32* token_ids, global u32* hidden_bf16,
     u32 hidden, u32 vocab_slice_offset, u32 vocab_slice_rows
@@ -945,6 +1070,185 @@ kernel[BLOCK, 32] head_certified_rescore_f32_bf16(
         }
         stg32(ptr_add(partial_scores, bx, 4), f32_as_u32(fb));
         stg32(ptr_add(partial_candidates, bx, 4), fc);
+    }
+}
+
+kernel[BLOCK, 32] head_certified_rescore_batched_f32_bf16(
+    global u32* hidden_bf16, global u32* head_weight_bf16,
+    global u32* candidate_ids, global u32* candidate_count,
+    global u32* partial_scores, global u32* partial_candidates,
+    u64 row_stride, u32 vocabulary_count, u32 hidden_dimension, u32 rows
+) {
+    shared f32 best_score[8];
+    shared u32 best_cand[8];
+    reg u32 row = ctaid_y();
+    if (row >= rows) { return; }
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 bx = ctaid_x();
+    reg u32 gx = grid_x();
+    reg u32 count = ldg32_persist(ptr_add(candidate_count, row, 4));
+    reg u32 row_bytes = hidden_dimension << 1;
+    ureg u64 hidden_row = ptr_add(hidden_bf16, row, row_bytes);
+    ureg u64 row_cands = ptr_add(candidate_ids, row, vocabulary_count << 2);
+    reg u32 pairs = hidden_dimension >> 1;
+    for (reg u32 e = tid; e < pairs; e += BLOCK) {
+        reg u32 raw = ldg32_persist(ptr_add(hidden_row, e, 4));
+        dyn_sts32(e << 1, bf16_lo(raw));
+        dyn_sts32((e << 1) + 1, bf16_hi(raw));
+    }
+    barrier();
+    reg f32 running_best = -3.0e38f;
+    reg u32 running_cand = 0xFFFFFFFF;
+    reg u32 pairs4 = pairs & 0xFFFFFF80;
+    reg u32 slot_step = gx * 8;
+    for (reg u32 slot = bx * 8 + wid; slot < count; slot += slot_step) {
+        reg u32 cand = ldg32_stream(ptr_add(row_cands, slot, 4));
+        reg u64 w_ptr = ptr_add(ptr_add(head_weight_bf16, cand, row_bytes), lane, 4);
+        reg f32 acc = 0.0f;
+        for (reg u32 p = lane; p < pairs4; p += 128) {
+            reg u32 r0 = ldg32_persist(w_ptr);
+            reg u32 r1 = ldg32_persist(ptr_add(w_ptr, 32, 4));
+            reg u32 r2 = ldg32_persist(ptr_add(w_ptr, 64, 4));
+            reg u32 r3 = ldg32_persist(ptr_add(w_ptr, 96, 4));
+            reg u32 i0 = p << 1;
+            acc = fma(dyn_lds32_f32(i0), bf16_lo(r0), acc);
+            acc = fma(dyn_lds32_f32(i0 + 1), bf16_hi(r0), acc);
+            reg u32 i1 = i0 + 64;
+            acc = fma(dyn_lds32_f32(i1), bf16_lo(r1), acc);
+            acc = fma(dyn_lds32_f32(i1 + 1), bf16_hi(r1), acc);
+            reg u32 i2 = i0 + 128;
+            acc = fma(dyn_lds32_f32(i2), bf16_lo(r2), acc);
+            acc = fma(dyn_lds32_f32(i2 + 1), bf16_hi(r2), acc);
+            reg u32 i3 = i0 + 192;
+            acc = fma(dyn_lds32_f32(i3), bf16_lo(r3), acc);
+            acc = fma(dyn_lds32_f32(i3 + 1), bf16_hi(r3), acc);
+            w_ptr = ptr_add(w_ptr, 128, 4);
+        }
+        for (reg u32 p = pairs4 + lane; p < pairs; p += 32) {
+            reg u32 raw = ldg32_persist(w_ptr);
+            acc = fma(dyn_lds32_f32(p << 1), bf16_lo(raw), acc);
+            acc = fma(dyn_lds32_f32((p << 1) + 1), bf16_hi(raw), acc);
+            w_ptr = ptr_add(w_ptr, 32, 4);
+        }
+        for (reg u32 el = (pairs << 1) + lane; el < hidden_dimension; el += 32) {
+            ureg u64 w_row = ptr_add(head_weight_bf16, cand, row_bytes);
+            acc = fma(dyn_lds32_f32(el), bf16_lo(ldg16_persist(ptr_add(w_row, el, 2))), acc);
+        }
+        acc = acc + shfl_down(acc, 16);
+        acc = acc + shfl_down(acc, 8);
+        acc = acc + shfl_down(acc, 4);
+        acc = acc + shfl_down(acc, 2);
+        acc = acc + shfl_down(acc, 1);
+        reg f32 score = shfl_idx(acc, 0);
+        if (lane == 0) {
+            if (score > running_best) {
+                running_best = score;
+                running_cand = cand;
+            } else {
+                if (score == running_best) {
+                    if (cand < running_cand) {
+                        running_best = score;
+                        running_cand = cand;
+                    }
+                }
+            }
+        }
+    }
+    reg f32 os16 = shfl_down(running_best, 16);
+    reg u32 oc16 = shfl_down(running_cand, 16);
+    if (os16 > running_best) {
+        running_best = os16;
+        running_cand = oc16;
+    } else {
+        if (os16 == running_best) {
+            if (oc16 < running_cand) {
+                running_best = os16;
+                running_cand = oc16;
+            }
+        }
+    }
+    reg f32 os8 = shfl_down(running_best, 8);
+    reg u32 oc8 = shfl_down(running_cand, 8);
+    if (os8 > running_best) {
+        running_best = os8;
+        running_cand = oc8;
+    } else {
+        if (os8 == running_best) {
+            if (oc8 < running_cand) {
+                running_best = os8;
+                running_cand = oc8;
+            }
+        }
+    }
+    reg f32 os4 = shfl_down(running_best, 4);
+    reg u32 oc4 = shfl_down(running_cand, 4);
+    if (os4 > running_best) {
+        running_best = os4;
+        running_cand = oc4;
+    } else {
+        if (os4 == running_best) {
+            if (oc4 < running_cand) {
+                running_best = os4;
+                running_cand = oc4;
+            }
+        }
+    }
+    reg f32 os2 = shfl_down(running_best, 2);
+    reg u32 oc2 = shfl_down(running_cand, 2);
+    if (os2 > running_best) {
+        running_best = os2;
+        running_cand = oc2;
+    } else {
+        if (os2 == running_best) {
+            if (oc2 < running_cand) {
+                running_best = os2;
+                running_cand = oc2;
+            }
+        }
+    }
+    reg f32 os1 = shfl_down(running_best, 1);
+    reg u32 oc1 = shfl_down(running_cand, 1);
+    if (os1 > running_best) {
+        running_best = os1;
+        running_cand = oc1;
+    } else {
+        if (os1 == running_best) {
+            if (oc1 < running_cand) {
+                running_best = os1;
+                running_cand = oc1;
+            }
+        }
+    }
+    if (lane == 0) {
+        sts32(best_score, wid, running_best);
+        sts32(best_cand, wid, running_cand);
+    }
+    barrier();
+    if (tid == 0) {
+        reg f32 fb = lds32(best_score, 0);
+        reg u32 fc = lds32(best_cand, 0);
+        unroll (w = 1..8) {
+            reg f32 ws = lds32(best_score, w);
+            reg u32 wc = lds32(best_cand, w);
+            if (ws > fb) {
+                fb = ws;
+                fc = wc;
+            } else {
+                if (ws == fb) {
+                    if (wc < fc) {
+                        fb = ws;
+                        fc = wc;
+                    }
+                }
+            }
+        }
+        reg u32 stride_bytes = row_stride[0] << 2;
+        ureg u64 dst_scores = ptr_add(partial_scores, row, stride_bytes);
+        ureg u64 dst_cands = ptr_add(partial_candidates, row, stride_bytes);
+        stg32(ptr_add(dst_scores, bx, 4), f32_as_u32(fb));
+        stg32(ptr_add(dst_cands, bx, 4), fc);
     }
 }
 

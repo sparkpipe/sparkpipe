@@ -7450,7 +7450,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const bool use_mma = (force_stream || (exact == 0u && rows > LM_SKINNY_ROWS_WIDE)) && (input_dimension % 64u) == 0u;
 		if ( use_mma )
 		{
-			if ( rows > 128u )
+			if ( rows > 512u )
 				return LM_LAUNCH_ERR_SHAPE;
 			if ( rows <= 16u )
 				(void)LM_LAUNCH_DEPENDENT((QwenBf16FusedGateUpSwigluMmaKernel<16u, 64u, 128u, 1u, 2u>),
