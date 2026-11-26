@@ -793,7 +793,7 @@
   var statusEl = el("rais-status");
   if (statusEl) statusEl.textContent = T.loading;
   wireControls();
-  fetch("rais-data.json?v=7")
+  fetch("rais-data.json?v=8")
     .then(function (r) {
       if (!r.ok) throw new Error(String(r.status));
       return r.json();
