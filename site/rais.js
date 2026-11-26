@@ -229,7 +229,7 @@
     var topRoi = prof.roi_top && prof.roi_top.length ? prof.roi_top[0] : null;
     var hasValid = validModels.length > 0 && prof.fleet.rais_covered != null;
     var covVal = hasValid ? (validModels.length + " / " + prof.models.length + " VALID") : (measuredModels.length + " / " + prof.models.length);
-    var covSub = hasValid ? ((prof.fleet.valid_weight_pct != null ? prof.fleet.valid_weight_pct.toFixed(1) : prof.fleet.coverage_pct.toFixed(1)) + (ko ? "% 플릿 비중 인증 · 19/19 실측" : "% fleet weight certified · 19/19 swept")) : (T.statusLabels[prof.fleet.status] || prof.fleet.status);
+    var covSub = hasValid ? ((prof.fleet.valid_weight_pct != null ? prof.fleet.valid_weight_pct.toFixed(1) : prof.fleet.coverage_pct.toFixed(1)) + (ko ? "% 플릿 비중 인증 · " + measuredModels.length + "/" + prof.models.length + " 실측" : "% fleet weight certified · " + measuredModels.length + "/" + prof.models.length + " swept")) : (T.statusLabels[prof.fleet.status] || prof.fleet.status);
     var raisLbl = hasValid ? T.kpiRais : T.kpiRaisPending;
     var raisNum = hasValid ? (prof.fleet.rais_covered.toFixed(1) + " / 100") : (prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) + " / 100" : T.pendingCell);
     var raisSub = hasValid ? ((ko ? "엄격 플릿 " : "Strict fleet ") + (prof.fleet.rais_strict != null ? prof.fleet.rais_strict.toFixed(1) : "–") + (ko ? " · 19종 원시 " : " · 19-model raw ") + (prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) : "–")) : (prof.fleet.coverage_pct > 0 ? (prof.fleet.coverage_pct.toFixed(1) + "% weight covered") : T.pendingShort);
@@ -658,9 +658,85 @@
     }
   }
 
+  function renderHwGraphic() {
+    var wrap = el("rais-hw-graphic");
+    var updatedEl = el("rais-updated-utc");
+    if (updatedEl && DATA && DATA.updated_utc) {
+      updatedEl.textContent = (ko ? "최근 갱신: " : "Last updated: ") + DATA.updated_utc;
+    }
+    if (!wrap || !DATA || !DATA.hw_scoreboard || !DATA.hw_scoreboard.length) return;
+    var items = DATA.hw_scoreboard;
+    var svgNS = "http://www.w3.org/2000/svg";
+    function sEl(tag, attrs) {
+      var n = document.createElementNS(svgNS, tag);
+      Object.keys(attrs || {}).forEach(function (k) { n.setAttribute(k, String(attrs[k])); });
+      return n;
+    }
+    var W = 820, rowH = 66, padL = 248, padR = 136, padT = 26, padB = 26;
+    var plotW = W - padL - padR;
+    var H = padT + items.length * rowH + padB;
+    var svg = sEl("svg", { viewBox: "0 0 " + W + " " + H, class: "rais-hist-svg", role: "img", "aria-label": ko ? "하드웨어 프로필별 인증 RAIS v1.1 진척 그래픽" : "Certified RAIS v1.1 Progress Across Hardware Profiles" });
+
+    for (var g = 0; g <= 100; g += 20) {
+      var gx = padL + (g / 100) * plotW;
+      svg.appendChild(sEl("line", { x1: gx, y1: padT - 6, x2: gx, y2: H - padB + 4, stroke: "rgba(148,163,184,0.16)", "stroke-width": 1 }));
+      var gl = sEl("text", { x: gx, y: H - 8, "text-anchor": "middle", fill: "#94a3b8", "font-size": 10.5, "font-family": "var(--mono)" });
+      gl.textContent = String(g);
+      svg.appendChild(gl);
+    }
+
+    var hdr = sEl("text", { x: padL, y: 14, fill: "#94a3b8", "font-size": 10.5, "font-family": "var(--mono)" });
+    hdr.textContent = ko ? "기준선(회색) → 최신 VALID 인증 RAIS v1.1(주황) · 비교선(점선)" : "Baseline (slate) -> Latest Certified VALID RAIS v1.1 (orange) · Ref marker (dashed)";
+    svg.appendChild(hdr);
+
+    items.forEach(function (it, idx) {
+      var y = padT + idx * rowH;
+      var barY = y + 18, barH = 18;
+      var baseW = Math.max(2, (Math.min(100, it.baseline) / 100) * plotW);
+      var curW = Math.max(2, (Math.min(100, it.current) / 100) * plotW);
+      var delta = it.current - it.baseline;
+
+      var t1 = sEl("text", { x: 8, y: y + 20, fill: "#f8fafc", "font-size": 12, "font-weight": "700", "font-family": "var(--mono)" });
+      t1.textContent = ko ? (it.title_ko || it.title) : it.title;
+      svg.appendChild(t1);
+
+      var t2 = sEl("text", { x: 8, y: y + 36, fill: "#5eead4", "font-size": 10.5, "font-family": "var(--mono)" });
+      t2.textContent = it.stack + " · Base R " + it.base_r.toFixed(1) + " · P5 " + it.p5.toFixed(1);
+      svg.appendChild(t2);
+
+      var t3 = sEl("text", { x: padL, y: y + 51, fill: "#94a3b8", "font-size": 10, "font-family": "var(--mono)" });
+      t3.textContent = ko ? (it.note_ko || it.note) : it.note;
+      svg.appendChild(t3);
+
+      svg.appendChild(sEl("rect", { x: padL, y: barY, width: plotW, height: barH, rx: 3, fill: "rgba(15,23,42,0.75)", stroke: "rgba(148,163,184,0.22)", "stroke-width": 1 }));
+      svg.appendChild(sEl("rect", { x: padL, y: barY, width: curW.toFixed(1), height: barH, rx: 3, fill: "#f97316", opacity: "0.9" }));
+      svg.appendChild(sEl("rect", { x: padL, y: barY, width: baseW.toFixed(1), height: barH, rx: 3, fill: "#64748b", opacity: "0.75" }));
+
+      if (it.ref_score != null) {
+        var rx = padL + (Math.min(100, it.ref_score) / 100) * plotW;
+        svg.appendChild(sEl("line", { x1: rx.toFixed(1), y1: barY - 3, x2: rx.toFixed(1), y2: barY + barH + 3, stroke: "#38bdf8", "stroke-width": 2, "stroke-dasharray": "3 2" }));
+        var rl = sEl("text", { x: rx.toFixed(1), y: barY - 6, "text-anchor": "middle", fill: "#38bdf8", "font-size": 9.5, "font-family": "var(--mono)" });
+        rl.textContent = it.ref_label + " " + it.ref_score.toFixed(1);
+        svg.appendChild(rl);
+      }
+
+      var sv = sEl("text", { x: W - padR + 10, y: barY + 13, fill: "#f8fafc", "font-size": 13, "font-weight": "700", "font-family": "var(--mono)" });
+      sv.textContent = it.current.toFixed(2);
+      svg.appendChild(sv);
+
+      var dv = sEl("text", { x: W - padR + 68, y: barY + 13, fill: "#86efac", "font-size": 11.5, "font-weight": "700", "font-family": "var(--mono)" });
+      dv.textContent = (delta >= 0 ? "+" : "") + delta.toFixed(2);
+      svg.appendChild(dv);
+    });
+
+    wrap.textContent = "";
+    wrap.appendChild(svg);
+  }
+
   function renderAll() {
     var prof = currentProfile();
     if (!prof) return;
+    renderHwGraphic();
     renderHistory();
     renderSummary(prof);
     renderTable(prof);
@@ -717,7 +793,7 @@
   var statusEl = el("rais-status");
   if (statusEl) statusEl.textContent = T.loading;
   wireControls();
-  fetch("rais-data.json?v=4")
+  fetch("rais-data.json?v=5")
     .then(function (r) {
       if (!r.ok) throw new Error(String(r.status));
       return r.json();

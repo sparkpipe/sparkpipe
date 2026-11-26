@@ -72,7 +72,7 @@ h1 { max-width: 14em; }
 <aside class="rais-banner" aria-label="RAIS v1.1 벤치마크 공개 안내">
   <div class="wrap rais-banner-inner">
     <span class="rais-badge">RAIS v1.1 공개</span>
-    <p class="rais-banner-copy">연산·메모리·네트워크 3대 루프라인과 Pillar 5 운영 물리(NVMe 부팅·KV 메모리·배치 비트 불변성) 기반 공개 벤치마크. DGX Spark 16대 실측: <b>19 / 19 모델 전원 VALID 인증</b>, <b class="num">42.9 / 100</b> 인증 플릿 RAIS v1.1(기본 R <b class="num">42.0</b>) — K-EXAONE 2.0 <b class="num">57.6</b>, Solar Open 2 <b class="num">48.4</b>, Qwen 3.8 Max <b class="num">48.3</b>, Kimi K3.1 Pro <b class="num">48.0</b>, DeepSeek V4.1 Flash <b class="num">42.2</b>(32K 프리필 <span class="num">15.7k</span> tok/s); 단일 GB10 Zero-NVIDIA NVRM + SKL <b class="num">57.0</b>(CUDA <span class="num">56.9</span> 상회).</p>
+    <p class="rais-banner-copy">5개 축 루프라인·운영 물리 공개 벤치마크. 최신 인증 RAIS v1.1: <b>단일 GB10</b> Zero-NVIDIA NVRM + SKL <b class="num">84.24</b>(CUDA 13.0 <span class="num">82.58</span> 상회), <b>4× DGX Spark TP4</b> <b class="num">68.45</b>(vLLM SOTA <span class="num">65.91</span> 상회), <b>16× DGX Spark</b> Wave-6 <b class="num">44.87</b> VALID(17/17 Pillar 5 활성 · Wave-4B 19/19 <span class="num">42.86</span> · Wave-7A DeepSeek V4.1 Flash <b class="num">47.10</b>), <b>Apple M5 Ultra</b> Metal 4.0 <b class="num">34.45</b>(+88.7%).</p>
     <a class="btn small solid rais-banner-cta" href="rais-ko.html">RAIS v1.1 보기</a>
   </div>
 </aside>
@@ -341,7 +341,7 @@ curl $OPENAI_BASE_URL/chat/completions \
       <div class="bar top"><span>K3, 추측</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, 단일 요청</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 5개 축 루프라인·운영 물리 표준인 <a href="rais-ko.html">RAIS v1.1 스코어카드</a> 기준 DGX Spark 16대 플릿에서 19개 모델 전원(플릿 비중 100%)이 VALID 인증을 통과해 <b>인증 플릿 RAIS v1.1 42.9 / 100</b>(기본 루프라인 R <b>42.0</b>, Pillar 5 운영 물리 여지 10점)을 기록했습니다(K-EXAONE 2.0 <b>57.6</b>, Kimi K3 <b>49.0</b>, Solar Open 2 <b>48.4</b>, Qwen 3.8 Max <b>48.3</b>, Kimi K3.1 Pro <b>48.0</b>, Qwen 3.8 27B <b>45.8</b>, DeepSeek V4.1 Flash <b>42.2</b>·32K 프리필 15.7k tok/s). 단일 GB10에서는 Zero-NVIDIA NVRM + SKL 스택이 Qwen 3.8 27B에서 <b>57.0</b> VALID로 CUDA 13.0(<b>56.9</b>)을 앞섰습니다. 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 전체 세부 지표와 릴리스 추이는 <a href="rais-ko.html">RAIS v1.1 스코어카드</a>에 공개되어 있습니다.</p>
+    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 5개 축 <a href="rais-ko.html">RAIS v1.1 스코어카드</a> 최신 실측 기준 단일 GB10 Zero-NVIDIA NVRM + SKL 스택이 Qwen 3.8 27B에서 <b>84.24 / 100</b> VALID(CUDA 13.0 <b>82.58</b> 상회), 4× DGX Spark TP4가 DeepSeek V4.1 Flash에서 <b>68.45</b> VALID(외부 vLLM SOTA <b>65.91</b> 상회), 16× DGX Spark 플릿이 Wave-6 <b>44.87</b> VALID(17/17 Pillar 5 활성 · Wave-4B 19/19 <b>42.86</b> · Wave-7A DeepSeek V4.1 Flash <b>47.10</b>, B64 775.7 tok/s), Apple M5 Ultra Metal 4.0이 <b>34.45</b> VALID를 기록했습니다. 전체 세부 지표와 진척 그래프는 <a href="rais-ko.html">RAIS v1.1 스코어카드</a>에 공개되어 있습니다.</p>
   </div>
 </section>
 

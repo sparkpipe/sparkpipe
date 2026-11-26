@@ -158,7 +158,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <a class="btn" href="#reproduce">Run on your engine</a>
         <a class="btn" href="#pillars">Read methodology</a>
       </div>
-      <p class="note">Open reference runner &amp; scorer for any OpenAI-compatible inference engine. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) Wave-4B sweep published below: <b>19 / 19 canonical models certified VALID</b> (100% fleet weight, <b>42.9</b> Certified Fleet RAIS v1.1 with Base Roofline R <b>42.0</b> and 10 pts of Pillar 5 systems physics headroom), plus live <span class="mono">4x-gb10-1x100g</span> TP4 (<b>54.7</b> VALID), <span class="mono">1x-gb10</span> <span class="rais-stack-badge compact">Zero-NVIDIA NVRM + SKL</span> (<b>57.0</b> VALID vs <span class="rais-stack-badge compact">CUDA 13.0</span> 56.9), and <span class="mono">1x-m5-ultra</span> <span class="rais-stack-badge compact">Apple Metal 4.0</span> (<b>18.3</b> VALID).</p>
+      <p class="note">Open reference runner &amp; scorer for any OpenAI-compatible inference engine. Live certified RAIS v1.1 scoreboard below: <b>1× GB10</b> <span class="rais-stack-badge compact">Zero-NVIDIA NVRM + SKL</span> <b>84.24 VALID</b> (beats apples-to-apples <span class="rais-stack-badge compact">CUDA 13.0</span> 82.58 by +1.66, +27.24 vs baseline), <b>4× DGX Spark TP4</b> <b>68.45 VALID</b> (beats external vLLM SOTA 65.91 by +2.54), <b>16× DGX Spark</b> Wave-6 <b>44.87 VALID</b> (17/17 swept with Pillar 5 operational physics; Wave-4B 19/19 <b>42.86</b>; Wave-7A DeepSeek V4.1 Flash <b>47.10</b>), and <b>1× Apple M5 Ultra</b> <span class="rais-stack-badge compact">Apple Metal 4.0</span> <b>34.45 VALID</b> (+88.7%).</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.1</b> · Physical Law</span><span>0–100 scale</span></div>
@@ -318,7 +318,15 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>RAIS hill-climb trajectory with full sub-metric detail.</h2>
-    <p class="prose">Every single-release 16× DGX Spark sweep is recorded in the time-series ledger with fleet-weighted pillars, all 15 sub-metrics, and per-model raw measurements. Switch views to inspect the fleet curve, all 15 sub-metrics, or any individual model over time; click any release point to inspect its exact deltas vs baseline.</p>
+    <p class="prose">Every certified RAIS v1.1 run across 1× GB10 (Zero-NVIDIA NVRM + SKL), 4× DGX Spark TP4, 16× DGX Spark fleet waves, and Apple M5 Ultra Metal 4.0 is recorded in the time-series ledger with all 5 pillars, 15 sub-metrics, and per-model raw measurements. Inspect the multi-hardware progress graphic below, switch chart views for the 16-Spark fleet curve, all 15 sub-metrics, or any individual model over time, and click any release point to inspect exact deltas vs baseline.</p>
+
+    <div class="rais-hist-box">
+      <div class="rais-meta-row">
+        <span class="label">Certified Multi-Hardware Progress (Baseline → Latest VALID)</span>
+        <span id="rais-updated-utc" class="mono"></span>
+      </div>
+      <div id="rais-hw-graphic" class="rais-hist-svg-wrap"></div>
+    </div>
 
     <div class="rais-hist-box">
       <div class="rais-hist-head">
@@ -374,7 +382,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>Fleet scorecard and hardware rooflines.</h2>
-    <p class="prose">Scored directly by the RAIS v1.1 reference scorer from verbatim single-release live measurements on 16× DGX Spark, 4× DGX Spark TP4, single-GB10 Zero-NVIDIA NVRM + SKL, and Apple M5 Ultra Metal 4.0. All 19 of 19 canonical models (100% fleet weight, across every Tier 1, Tier 2, and Tier 3 model) pass all four binary correctness gates (<span class="mono">VALID</span>, zero errors) at <b>42.9</b> Certified Fleet RAIS v1.1 (Base Roofline R <b>42.0</b>, with Pillar 5 operational physics unmeasured at 0.0 until swept — never interpolated).</p>
+    <p class="prose">Scored directly by the RAIS v1.1 reference scorer from verbatim single-release live measurements on 16× DGX Spark (Wave-6 <b>44.87</b> VALID 17/17 swept with Pillar 5; Wave-4B 19/19 <b>42.86</b> VALID; Wave-7A DeepSeek V4.1 Flash <b>47.10</b> VALID), 4× DGX Spark TP4 (<b>68.45</b> VALID, +2.54 over external vLLM SOTA 65.91), single-GB10 Zero-NVIDIA NVRM + SKL (<b>84.24</b> VALID vs CUDA 13.0 <b>82.58</b>), and Apple M5 Ultra Metal 4.0 (<b>34.45</b> VALID). Missing sub-metrics always score 0 until swept — never interpolated.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
@@ -558,6 +566,6 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="rais.html" aria-current="page">RAIS v1.1</a><a href="availability.html">Availability</a><a href="compare.html">Cost check</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="rais-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="rais.js?v=2"></script>
+<script src="rais.js?v=3"></script>
 </body>
 </html>
