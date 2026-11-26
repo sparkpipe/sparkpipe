@@ -905,7 +905,7 @@ void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint1
 
 #if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
 __global__ __launch_bounds__(128u, 4)
-void K3KdaPrepFinishVecKernel(uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16,
+static void K3KdaPrepFinishVecKernel(uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16,
 	const uint16_t *__restrict__ decay_logit_bf16, const float *__restrict__ channel_bias,
 	const float *__restrict__ head_log_scale, const uint16_t *__restrict__ beta_logit_bf16,
 	float *__restrict__ retention, float *__restrict__ write_gate,
@@ -953,7 +953,7 @@ void K3KdaPrepFinishVecKernel(uint16_t *__restrict__ query_bf16, uint16_t *__res
 }
 
 __global__ __launch_bounds__(128u, 4)
-void K3KdaNormGateVecKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16,
+static void K3KdaNormGateVecKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16,
 	const float *__restrict__ norm_weight, uint32_t heads, float epsilon, uint32_t rows)
 {
 	static_assert(K3_KDA_VALUE_DIM == 128u, "one warp handles four 32-strided elements across 128-wide KDA value");
@@ -2418,7 +2418,7 @@ static __host__ __device__ constexpr uint32_t K3Prefill6HeadSharedBytes(void)
 }
 
 __global__ __launch_bounds__(LM_PREFILL_ATTN_THREADS, 1)
-void K3MlaGatherPrefill6HeadKernel(
+static void K3MlaGatherPrefill6HeadKernel(
 	const uint16_t *__restrict__ query_bf16,
 	const uint16_t *__restrict__ kv_all,
 	const uint32_t *__restrict__ sequence_of_row,
