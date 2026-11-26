@@ -1,0 +1,2 @@
++28
+Keep CPU ownership of ConnectX-7 dbrec during Hybrid MODE 0, drain CQ inside SparkWeightdMeshHybridRevokeLocked so collided pending GPU triggers are never dropped or overwritten with backwards dbrec, and guard SparkTpMeshHybridAcquireWarp0 against any unshipped prior CPU doorbell (including spark_tp_mesh_kernels.cuh).
