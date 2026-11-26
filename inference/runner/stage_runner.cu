@@ -297,6 +297,7 @@ typedef struct SparkStageRunnerState
 	float *head_certified_fp8_norm_f32;
 	void *head_certified_scratch;
 	uint32_t head_capacity;
+	uint32_t head_scratch_capacity;
 	uint32_t *head_certified_candidates;
 	uint32_t *head_screened_count;
 	uint32_t vocab;
@@ -1128,16 +1129,18 @@ static SparkStatus StageRunnerSliceHead(SparkStageRunnerState *state, const Spar
 static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const SparkStageRunner *runner)
 {
 	const uint64_t shard_rows = state->vocab_slice_rows, dim = state->geometry.hidden;
+	const uint64_t scratch_rows = state->head_capacity < 64u ? state->head_capacity : 64u;
 	if ( StageRunnerSliceHead(state, runner) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( runner->owns_final_head == 0u )
 		return SPARK_STATUS_OK;
+	state->head_scratch_capacity = (uint32_t)scratch_rows;
 	if ( SparkGpuMalloc(&state->head_certified_fp8_payload, shard_rows * dim) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_certified_fp8_scale_f32, shard_rows * (dim / 32u) * sizeof(float)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_certified_fp8_norm_f32, shard_rows * (dim / 32u) * sizeof(float)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim) * state->head_capacity) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows) * state->head_capacity) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->head_screened_count, sizeof(uint32_t) * state->head_capacity) != SPARK_GPU_SUCCESS )
+		SparkGpuMalloc(&state->head_certified_scratch, SparkHeadCertifiedFp8ScratchBytes(shard_rows,dim) * scratch_rows) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(shard_rows) * scratch_rows) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->head_screened_count, sizeof(uint32_t) * scratch_rows) != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: certified head buffers for %llu rows do not fit\n", (unsigned long long)shard_rows);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1508,14 +1511,14 @@ static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	state->distribution_sub_rows = 1u;
-	state->distribution_chunk_rows = (uint32_t)rows;
+	state->distribution_chunk_rows = (uint32_t)(rows < 32u ? rows : 32u);
 	if ( runner->tp_degree > 1u && state->device_collective_created != 0 )
 	{
 		elements = 2u * (uint32_t)slice;
 		for ( sub_rows = 1u; sub_rows <= elements && (elements % sub_rows != 0u || elements / sub_rows > hidden); ++sub_rows )
 			;
 		state->distribution_sub_rows = sub_rows;
-		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)(gather_rows / sub_rows < rows ? gather_rows / sub_rows : rows) : 0u;
+		state->distribution_chunk_rows = sub_rows <= elements ? (uint32_t)(gather_rows / sub_rows < state->distribution_chunk_rows ? gather_rows / sub_rows : state->distribution_chunk_rows) : 0u;
 		if ( state->distribution_chunk_rows == 0u )
 		{
 			fprintf(stderr, "sparkpipe_stage_runner: distribution refused: a %llu-token logit row needs %u collective rows and %llu are configured\n",
@@ -1523,15 +1526,15 @@ static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 	}
-	full = (uint64_t)runner->tp_degree * state->distribution_chunk_rows * slice;
+	full = runner->tp_degree > 1u ? (uint64_t)runner->tp_degree * state->distribution_chunk_rows * slice : 0u;
 	if ( SparkGpuMalloc(&state->distribution_rows, rows * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->distribution_positions, rows * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->distribution_rules, rows * sizeof(SparkRowSampling)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->distribution_logprobs, rows * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->distribution_hidden, rows * hidden * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->distribution_normed, rows * hidden * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->distribution_logits, rows * slice * sizeof(float)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->distribution_gathered, full * sizeof(float)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->distribution_hidden, (uint64_t)state->distribution_chunk_rows * hidden * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->distribution_normed, (uint64_t)state->distribution_chunk_rows * hidden * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->distribution_logits, (uint64_t)state->distribution_chunk_rows * slice * sizeof(float)) != SPARK_GPU_SUCCESS ||
+		(full != 0u && SparkGpuMalloc(&state->distribution_gathered, full * sizeof(float)) != SPARK_GPU_SUCCESS) ||
 		SparkGpuHostAlloc((void **)&state->distribution_rows_host, rows * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
 		SparkGpuHostAlloc((void **)&state->distribution_positions_host, rows * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
 		SparkGpuHostAlloc((void **)&state->distribution_rules_host, rows * sizeof(SparkRowSampling), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS )
@@ -1621,35 +1624,36 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( count == 0u )
 		return SPARK_STATUS_OK;
-	LM_LAUNCH((LmStageRowsGatherKernel), count, LM_STAGE_HEAD_THREADS, 0, stream, state->distribution_rows, state->hidden, state->distribution_hidden, hidden);
-	if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u && state->geometry.head_norm_round_first != 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float,true>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
-			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
-	else if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
-			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
-	else if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_round_first != 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t,true>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
-			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
-	else if ( state->geometry.head_prenormed == 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
-			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
-	LM_LAUNCH((LmHeadLogitsRowsKernel<LM_STAGE_HEAD_THREADS,STAGE_RUNNER_DISTRIBUTION_HEAD_TILE,STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS>),
-		dim3((slice + STAGE_RUNNER_DISTRIBUTION_HEAD_TILE - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_TILE, (count + STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS),
-		LM_STAGE_HEAD_THREADS, 0, stream, state->geometry.head_prenormed != 0u ? state->distribution_hidden : state->distribution_normed,
-		state->head_weight, state->distribution_logits, count, hidden, slice, slice);
-	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ||
-		LmStageSoftcap(state->distribution_logits, (uint64_t)count * slice, state->geometry.logit_softcap, state->geometry.logit_scale, stream) != LM_LAUNCH_OK )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( tp == 1u )
-		status = StageRunnerSampleDistribution(state, state->distribution_logits, (uint64_t)count * slice, slice, slice, 0u, count, stream);
-	else if ( state->device_collective_created != 0 )
-		for ( first = 0u; status == SPARK_STATUS_OK && first < count; first += rows )
+	for ( first = 0u; status == SPARK_STATUS_OK && first < count; first += rows )
+	{
+		rows = count - first < state->distribution_chunk_rows ? count - first : state->distribution_chunk_rows;
+		LM_LAUNCH((LmStageRowsGatherKernel), rows, LM_STAGE_HEAD_THREADS, 0, stream, state->distribution_rows + first, state->hidden, state->distribution_hidden, hidden);
+		if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u && state->geometry.head_norm_round_first != 0u )
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float,true>), rows, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+				state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
+		else if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u )
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), rows, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+				state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
+		else if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_round_first != 0u )
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t,true>), rows, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+				state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
+		else if ( state->geometry.head_prenormed == 0u )
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), rows, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+				state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
+		LM_LAUNCH((LmHeadLogitsRowsKernel<LM_STAGE_HEAD_THREADS,STAGE_RUNNER_DISTRIBUTION_HEAD_TILE,STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS>),
+			dim3((slice + STAGE_RUNNER_DISTRIBUTION_HEAD_TILE - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_TILE, (rows + STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS - 1u) / STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS),
+			LM_STAGE_HEAD_THREADS, 0, stream, state->geometry.head_prenormed != 0u ? state->distribution_hidden : state->distribution_normed,
+			state->head_weight, state->distribution_logits, rows, hidden, slice, slice);
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ||
+			LmStageSoftcap(state->distribution_logits, (uint64_t)rows * slice, state->geometry.logit_softcap, state->geometry.logit_scale, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( tp == 1u )
+			status = StageRunnerSampleDistribution(state, state->distribution_logits, (uint64_t)rows * slice, slice, slice, first, rows, stream);
+		else if ( state->device_collective_created != 0 )
 		{
 			SparkTpDeviceCollectiveSubmission submission;
-			rows = count - first < state->distribution_chunk_rows ? count - first : state->distribution_chunk_rows;
 			StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
-				rows * state->distribution_sub_rows, state->distribution_logits + (uint64_t)first * slice,
+				rows * state->distribution_sub_rows, state->distribution_logits,
 				state->distribution_gathered, state->tp_next_ordinal++);
 			submission.row_elements = 2u * slice / state->distribution_sub_rows;
 			{
@@ -1662,8 +1666,9 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 			if ( status == SPARK_STATUS_OK )
 				status = StageRunnerSampleDistribution(state, state->distribution_gathered, (uint64_t)rows * slice, slice, slice, first, rows, stream);
 		}
-	else
-		status = SPARK_STATUS_INTERNAL_ERROR;
+		else
+			status = SPARK_STATUS_INTERNAL_ERROR;
+	}
 	return status;
 }
 
@@ -1870,9 +1875,21 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 	certified.scratch = state->head_certified_scratch;
 	certified.candidates = state->head_certified_candidates;
 	certified.screened = state->head_screened_count;
-	status = LmStageHeadCertifiedSlice(head, certified, rows, stream);
-	if ( status != LM_LAUNCH_OK )
-		{ fprintf(stderr, "sparkpipe_stage_runner: final head launch failed %d\n", status); SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR); }
+	{
+		const uint32_t chunk_cap = state->head_scratch_capacity != 0u ? state->head_scratch_capacity : rows;
+		for ( uint32_t first = 0u; first < rows; )
+		{
+			const uint32_t chunk = rows - first < chunk_cap ? rows - first : chunk_cap;
+			head.hidden_bf16 = hidden + (uint64_t)first * head.hidden;
+			head.normed_bf16 = state->geometry.head_prenormed != 0u ? (uint16_t *)head.hidden_bf16 : state->head_normed;
+			head.output_token = token + first;
+			head.output_score = score + first;
+			status = LmStageHeadCertifiedSlice(head, certified, chunk, stream);
+			if ( status != LM_LAUNCH_OK )
+				{ fprintf(stderr, "sparkpipe_stage_runner: final head launch failed %d\n", status); SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR); }
+			first += chunk;
+		}
+	}
 	if ( state->device_collective_created == 0 )
 		return LmStageSoftcap(score, rows, state->geometry.logit_softcap, state->geometry.logit_scale, stream) == LM_LAUNCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	if ( LmStageMaxlocPack(score, token, state->head_maxloc, rows, stream) != LM_LAUNCH_OK )

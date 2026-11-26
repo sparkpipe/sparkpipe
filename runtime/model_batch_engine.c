@@ -27,7 +27,7 @@
 #define SPARK_MODEL_BATCH_DRAFT_WAIT_WEIGHT 0.25f
 #define SPARK_MODEL_BATCH_DEFER_POLL_NS UINT64_C(20000000)
 #define SPARK_MODEL_BATCH_CHAIN_BUDGET_NS 1000000000.0f
-#define SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS 2u
+#define SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS 1u
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL 1u
 #define SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT 2u
@@ -4421,6 +4421,24 @@ static uint32_t SparkModelBatchPlanDraft(
 			if ( scan == floor_pos )
 				break;
 		}
+		if ( found == 0u && SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) >= 100.0e6f )
+		{
+			const uint32_t single_floor = position > 512u ? position - 512u : 0u;
+			for (scan = position - 1u; ; scan--)
+			{
+				if ( tokens[scan] == t_last )
+				{
+					match.source_end = scan;
+					match.match_length = 1u;
+					found = 1u;
+					if ( limit > 1u )
+						limit = 1u;
+					break;
+				}
+				if ( scan == single_floor )
+					break;
+			}
+		}
 	}
 	if ( found == 0u || (engine->draft_bridge != 0 && match.match_length < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
 	{
@@ -5075,6 +5093,8 @@ static void SparkModelBatchBuildDecodeRows(
 		if ( req->drafts_disabled == 0u && req->lookup.length >= 16u )
 			chain_tokens = 1u;
 	}
+	if ( chain_tokens > 1u && lane_count > 1u && engine->pipeline_depth == 1u && step_ns >= 100000000.0f )
+		chain_tokens = 1u;
 	if ( chain_tokens > SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS && SparkModelBatchPrefillWaiting(engine) != 0u )
 		chain_tokens = SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS;
 	row = 0u;
@@ -5473,6 +5493,16 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	{
 		if ( SparkModelBatchSchedulerPlanMixedLaneCount(queued_by_kind,maximum_by_kind,inflight_by_kind,kind,SparkModelBatchDispatchCapacity(engine)) == 0u )
 			available_by_kind[kind] = 0u;
+	}
+	if ( engine->pipeline_depth == 1u )
+	{
+		if ( inflight_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] != 0u )
+			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 0u;
+		if ( inflight_by_kind[SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH] != 0u )
+			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
+		if ( available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] != 0u &&
+			queued_by_kind[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] > 1u )
+			available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
 	}
 	if ( engine->decode_held != 0u || SparkModelBatchSchedulerDecodeWaveOpen(inflight_by_kind,engine->pipeline_depth) == 0u )
 		available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
