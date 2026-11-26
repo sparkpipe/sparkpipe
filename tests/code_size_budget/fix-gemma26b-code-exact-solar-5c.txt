@@ -1,0 +1,2 @@
++126
+Guard 2D 4x4 BF16-rounded all-reduce off during speculative verify (fixing gemma-4-26b-a4b code_exact) and add multi-sequence LingGqaPrefillSeqPlan plus PrefillWave dispatch across LingModel (restoring solar-open-2 5c batch invariance).

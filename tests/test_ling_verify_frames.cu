@@ -297,6 +297,8 @@ struct VfRig
 		step.commit = commit;
 		step.last_rows_only = last_rows_only;
 		step.gather_context = gather_context;
+		step.host_positions = position.data();
+		step.host_sequence_of_row = sequence.data();
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -795,6 +797,43 @@ static void CheckPrefixExact(void)
 		Require(moe_flips <= 2u, model, "KV-gather local prefill matches reference scatter prefill modulo synthetic router ties (flips)", moe_flips, 0u, 0u);
 	}
 	{
+		static const uint32_t b8_peer_lens[] = { 1u, 9u, 20u };
+		std::vector<uint16_t> b1_pf, bn_pf;
+		const uint32_t lane0_len = 50u;
+		rig.Load(zero_state);
+		Require(rig.Run(all_rows.data(), lane0_len, 1u, &b1_pf, 1u, lane0_len) != 0, model, "B1 prefill for 5c runs", lane0_len, 0u, 0u);
+		for ( uint32_t peer_len : b8_peer_lens )
+		{
+			std::vector<VfRow> multi;
+			for ( uint32_t p = 0u; p < lane0_len; ++p )
+				multi.push_back({ 0u, p, 0u });
+			for ( uint32_t s = 1u; s < VF_SLOTS; ++s )
+				for ( uint32_t p = 0u; p < peer_len; ++p )
+					multi.push_back({ s, p, 10u + s });
+			rig.Load(zero_state);
+			Require(rig.Run(multi.data(), (uint32_t)multi.size(), 1u, &bn_pf, 1u, 0u) != 0, model, "multi-seq prefill runs", peer_len, (uint32_t)multi.size(), 0u);
+			std::vector<uint16_t> lane0_out(bn_pf.begin(), bn_pf.begin() + (ptrdiff_t)((uint64_t)lane0_len * G::kHidden));
+			Require(FirstDifference(lane0_out, b1_pf, G::kHidden) == UINT32_MAX, model,
+				"multi-seq prefill lane0 equals B1 prefill bit for bit (peer_len, first differing row)", peer_len, FirstDifference(lane0_out, b1_pf, G::kHidden), 0u);
+		}
+		std::vector<uint16_t> b1_warm_delta, b8_warm_delta;
+		const uint32_t warm_delta = 5u;
+		rig.Load(cached_state);
+		Require(rig.Run(all_rows.data() + kCached, warm_delta, 1u, &b1_warm_delta, 1u, kCached + warm_delta) != 0, model,
+			"B1 warm delta prefill for 5c runs", warm_delta, 0u, 0u);
+		std::vector<VfRow> warm_multi;
+		for ( uint32_t p = 0u; p < warm_delta; ++p )
+			warm_multi.push_back({ 0u, kCached + p, 0u });
+		for ( uint32_t s = 1u; s < VF_SLOTS; ++s )
+			warm_multi.push_back({ s, 0u, 30u + s });
+		rig.Load(cached_state);
+		Require(rig.Run(warm_multi.data(), (uint32_t)warm_multi.size(), 1u, &b8_warm_delta, 1u, 0u) != 0, model,
+			"multi-seq warm delta prefill runs", (uint32_t)warm_multi.size(), 0u, 0u);
+		std::vector<uint16_t> warm_lane0(b8_warm_delta.begin(), b8_warm_delta.begin() + (ptrdiff_t)((uint64_t)warm_delta * G::kHidden));
+		Require(FirstDifference(warm_lane0, b1_warm_delta, G::kHidden) == UINT32_MAX, model,
+			"multi-seq warm prefill lane0 equals B1 warm prefill bit for bit (first differing row)", FirstDifference(warm_lane0, b1_warm_delta, G::kHidden), 0u, 0u);
+	}
+	{
 		static const uint32_t batches[] = { 4u, 8u, 16u };
 		std::vector<uint16_t> b1_out, bn_out;
 		rig.Load(cached_state);
@@ -1040,6 +1079,7 @@ struct LingTp4Rig
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden), res(input.size()), other(input.size());
 		std::vector<uint32_t> pos(count), seq(count, 0u);
+		uint32_t seq_count = 0u, prev_seq = UINT32_MAX;
 		pthread_t threads[kRanks];
 		for ( uint32_t i = 0u; i < count; ++i )
 		{
@@ -1048,6 +1088,11 @@ struct LingTp4Rig
 				input[(uint64_t)i * G::kHidden + c] = Bf16(Uniform(seed, c));
 			pos[i] = rows[i].position;
 			seq[i] = rows[i].sequence;
+			if ( rows[i].sequence != prev_seq )
+			{
+				prev_seq = rows[i].sequence;
+				seq_count++;
+			}
 			host_context[rows[i].sequence] = rows[i].position + 1u;
 		}
 		for ( uint32_t r = 0u; r < kRanks; ++r )
@@ -1059,10 +1104,12 @@ struct LingTp4Rig
 			rk->step.context_length = rk->context;
 			rk->step.sequence_of_row = rk->sequence_of_row;
 			rk->step.rows = count;
-			rk->step.sequences = 1u;
+			rk->step.sequences = seq_count;
 			rk->step.commit = 1u;
 			rk->step.last_rows_only = 1u;
 			rk->step.gather_context = gather_ctx;
+			rk->step.host_positions = pos.data();
+			rk->step.host_sequence_of_row = seq.data();
 			rk->step.context = VF_PAGES * G::kPageSlots;
 			rk->step.multiprocessors = multiprocessors;
 			rk->step.route_fault = VfRouteFault();
@@ -1345,6 +1392,7 @@ struct LingGqaTp4Rig
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden), res(input.size()), other(input.size());
 		std::vector<uint32_t> pos(count), seq(count, 0u);
+		uint32_t seq_count = 0u, prev_seq = UINT32_MAX;
 		pthread_t threads[kRanks];
 		for ( uint32_t i = 0u; i < count; ++i )
 		{
@@ -1353,6 +1401,11 @@ struct LingGqaTp4Rig
 				input[(uint64_t)i * G::kHidden + c] = Bf16(Uniform(seed, c));
 			pos[i] = rows[i].position;
 			seq[i] = rows[i].sequence;
+			if ( rows[i].sequence != prev_seq )
+			{
+				prev_seq = rows[i].sequence;
+				seq_count++;
+			}
 			host_context[rows[i].sequence] = rows[i].position + 1u;
 		}
 		for ( uint32_t r = 0u; r < kRanks; ++r )
@@ -1364,10 +1417,12 @@ struct LingGqaTp4Rig
 			rk->step.context_length = rk->context;
 			rk->step.sequence_of_row = rk->sequence_of_row;
 			rk->step.rows = count;
-			rk->step.sequences = 1u;
+			rk->step.sequences = seq_count;
 			rk->step.commit = 1u;
 			rk->step.last_rows_only = 1u;
 			rk->step.gather_context = gather_ctx;
+			rk->step.host_positions = pos.data();
+			rk->step.host_sequence_of_row = seq.data();
 			rk->step.context = VF_PAGES * G::kPageSlots;
 			rk->step.multiprocessors = multiprocessors;
 			rk->step.route_fault = VfRouteFault();
@@ -1472,7 +1527,23 @@ static void CheckGqaTp4(void)
 			Require(dist < 0.01f, model, "TP4 warm KV-gather GQA matches reference scatter GQA (pos, rel x 1e6)", p, (uint32_t)(dist * 1.0e6f), 0u);
 		}
 	}
-	printf("%s %s multi-rank GQA KV-gather prefix-exact + accuracy: 4 ranks, cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
+	{
+		std::vector<uint16_t> b1_warm, b2_warm;
+		const uint32_t delta = 16u, total = kCached + delta;
+		std::vector<VfRow> multi;
+		for ( uint32_t p = 0u; p < delta; ++p )
+			multi.push_back({ 0u, kCached + p, 0u });
+		for ( uint32_t p = 0u; p < 24u; ++p )
+			multi.push_back({ 1u, p, 7u });
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 multi-seq GQA restore 1", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, total, &b1_warm) != 0, model, "TP4 B1 warm GQA runs", delta, 0u, 0u);
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 multi-seq GQA restore 2", 0u, 0u, 0u);
+		Require(rig.Run(multi.data(), (uint32_t)multi.size(), 0u, &b2_warm) != 0, model, "TP4 multi-seq warm GQA runs", (uint32_t)multi.size(), 0u, 0u);
+		std::vector<uint16_t> lane0(b2_warm.begin(), b2_warm.begin() + (ptrdiff_t)((uint64_t)delta * SmallSolarTp4::kHidden));
+		Require(FirstDifference(lane0, b1_warm, SmallSolarTp4::kHidden) == UINT32_MAX, model,
+			"TP4 multi-seq warm GQA lane0 equals B1 warm GQA bit for bit (first differing row)", FirstDifference(lane0, b1_warm, SmallSolarTp4::kHidden), 0u, 0u);
+	}
+	printf("%s %s multi-rank GQA KV-gather prefix-exact + multi-seq 5c + accuracy: 4 ranks, cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
 	rig.Close();
 }
 

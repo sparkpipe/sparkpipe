@@ -1288,6 +1288,41 @@ static void Test2dHybridB64AndRevokeResume(LargeFixture *f)
     cudaFreeHost(ctrl_host);
 }
 
+static void Test2dDisabledMatches1dVerify(LargeFixture *f)
+{
+    const uint32_t degree = 16u;
+    const uint64_t sizes[2] = { 2ull * 24ull * 2816ull, 64ull * 4096ull };
+    for ( uint32_t s = 0u; s < 2u; ++s )
+    {
+        const uint64_t elements = sizes[s];
+        EnsurePeerBufs(f, elements, 9100u + s * 41u);
+        uint16_t *h_ref1d = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+        uint16_t *h_out = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+        for ( uint64_t i = 0u; i < elements; ++i )
+        {
+            float acc = 0.0f;
+            for ( uint32_t p = 0u; p < degree; ++p )
+                acc += Bf16ToFloat(f->responder.peer_buf[p][i]);
+            h_ref1d[i] = FloatToBf16Rn(acc);
+        }
+        FixtureResetEpoch(f, 0u, degree, 1u, elements, 1u, 0u, 0u);
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[0], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)elements * sizeof(uint16_t)));
+        const uint32_t prev_2d = SparkTpMeshFastSetTwoDAllowed(0u);
+        CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, 0u, degree, f->local_dev, f->out_dev, f->scratch,
+            elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        (void)SparkTpMeshFastSetTwoDAllowed(prev_2d);
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(h_out, f->out_dev, (size_t)elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+        CHECK(memcmp(h_ref1d, h_out, (size_t)elements * sizeof(uint16_t)) == 0,
+            "Verify gate (TwoDAllowed=0) keeps >=131072-element all-reduce 0-ULP bit-identical to 1D FP32 sum");
+        free(h_out);
+        free(h_ref1d);
+    }
+}
+
 int main(void)
 {
     LargeFixture fixture;
@@ -1316,6 +1351,7 @@ int main(void)
     Test2dCrossRankAndGateGx(&fixture);
     Test2dRows63DeadlockRegression(&fixture);
     Test2dHybridB64AndRevokeResume(&fixture);
+    Test2dDisabledMatches1dVerify(&fixture);
     TestLargeCancelAndTimeout(&fixture);
 
     RunLargeBenchmarks(&fixture);
