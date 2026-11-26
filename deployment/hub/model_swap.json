@@ -22,7 +22,17 @@
   "-o",
   "BatchMode=yes",
   "-o",
-  "ConnectTimeout=8"
+  "ConnectTimeout=8",
+  "-o",
+  "ControlMaster=auto",
+  "-o",
+  "ControlPath=/tmp/sparkpipe-swap-ssh-%C",
+  "-o",
+  "ControlPersist=300",
+  "-o",
+  "ServerAliveInterval=15",
+  "-o",
+  "ServerAliveCountMax=2"
  ],
  "drop_kv": "$HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --drop-kv {label}",
  "ready_seconds": 300,
@@ -44,7 +54,8 @@
    "api_start": "systemctl --user reset-failed kv-glm53-full-api 2>/dev/null; systemctl --user is-active -q kv-glm53-full-api || systemd-run --user --unit=kv-glm53-full-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/glm53_full-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_full-kv-api/runtime --port 8475 >> /srv/workspace/sparkpipe/logs/glm53_full-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-glm53-full-api 2>/dev/null; systemctl --user reset-failed kv-glm53-full-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8475/health",
-   "node_warm": "cd $HOME/stage-lanes/glm53_full/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 304b8051cfb2b260b61ce0cbe330e02a98e73639 16 --family glm52 --shared 78 256 1800 > warm.log 2>&1",
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/glm53_full/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 304b8051cfb2b260b61ce0cbe330e02a98e73639 16 --family glm52 --shared --wait-shared 78 256 1800 > warm.log 2>&1",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-glm53.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-dspark-redhatai DRAFTD_TARGET_SHARD='' DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7741 DRAFTD_DRAFT_PORT=7742 DRAFTD_WINDOW=2040 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-760a73b19",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53 DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh stop"
   },
@@ -59,7 +70,8 @@
    "api_start": "systemctl --user reset-failed kv-glm53-full-fp8-api 2>/dev/null; systemctl --user is-active -q kv-glm53-full-fp8-api || systemd-run --user --unit=kv-glm53-full-fp8-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/glm53_full_fp8-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_full_fp8-kv-api/runtime --port 8489 >> /srv/workspace/sparkpipe/logs/glm53_full_fp8-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-glm53-full-fp8-api 2>/dev/null; systemctl --user reset-failed kv-glm53-full-fp8-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8489/health",
-   "node_warm": "cd $HOME/stage-lanes/glm53_full_fp8/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 935644c05e76fc198714f4cca449fd8b970ff6d7 16 --family glm52 --shared 78 256 1800 > warm.log 2>&1",
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/glm53_full_fp8/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 935644c05e76fc198714f4cca449fd8b970ff6d7 16 --family glm52 --shared --wait-shared 78 256 1800 > warm.log 2>&1",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53-fp8 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-glm53-fp8.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-dspark-redhatai DRAFTD_TARGET_SHARD='' DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7791 DRAFTD_DRAFT_PORT=7792 DRAFTD_WINDOW=2040 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3-fp8 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-760a73b19",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53-fp8 DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3-fp8 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh stop"
   },
@@ -74,7 +86,8 @@
    "api_start": "systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; systemctl --user is-active -q kv-glm53-flash-api || systemd-run --user --unit=kv-glm53-flash-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/glm53_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_flash-kv-api/runtime --port 8476 >> /srv/workspace/sparkpipe/logs/glm53_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-glm53-flash-api 2>/dev/null; systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8476/health",
-   "node_warm": "cd $HOME/stage-lanes/glm53_flash/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared > warm.log 2>&1",
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/glm53_flash/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared --wait-shared > warm.log 2>&1",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53f DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-glm53f.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-flash-dflash2-incoai-6cc6c481eee9 DRAFTD_TARGET_SHARD='' DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7761 DRAFTD_DRAFT_PORT=7762 DRAFTD_WINDOW=2048 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3-flash DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-760a73b19",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53f DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3-flash DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh stop"
   },
@@ -89,7 +102,8 @@
    "api_start": "systemctl --user reset-failed kv-glm53-flash-fp8-api 2>/dev/null; systemctl --user is-active -q kv-glm53-flash-fp8-api || systemd-run --user --unit=kv-glm53-flash-fp8-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/glm53_flash_fp8-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_flash_fp8-kv-api/runtime --port 8490 >> /srv/workspace/sparkpipe/logs/glm53_flash_fp8-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-glm53-flash-fp8-api 2>/dev/null; systemctl --user reset-failed kv-glm53-flash-fp8-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8490/health",
-   "node_warm": "cd $HOME/stage-lanes/glm53_flash_fp8/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared > warm.log 2>&1",
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/glm53_flash_fp8/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared --wait-shared > warm.log 2>&1",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53f-fp8 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-glm53f-fp8.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-flash-dflash2-incoai-6cc6c481eee9 DRAFTD_TARGET_SHARD='' DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7801 DRAFTD_DRAFT_PORT=7802 DRAFTD_WINDOW=2048 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3-flash-fp8 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-760a73b19",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-glm53f-fp8 DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=glm-5.3-flash-fp8 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh stop"
   },
@@ -104,7 +118,8 @@
    "api_start": "systemctl --user reset-failed kv-sage21-flash-api 2>/dev/null; systemctl --user is-active -q kv-sage21-flash-api || systemd-run --user --unit=kv-sage21-flash-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/sage21_flash-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/sage21_flash-kv-api/runtime --port 8492 >> /srv/workspace/sparkpipe/logs/sage21_flash-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-sage21-flash-api 2>/dev/null; systemctl --user reset-failed kv-sage21-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8492/health",
-   "node_warm": "cd $HOME/stage-lanes/sage21_flash/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 716e6436905650b7be93e1b7dedfb0bb95afd3a3 16 --shared > warm.log 2>&1"
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/sage21_flash/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) 716e6436905650b7be93e1b7dedfb0bb95afd3a3 16 --shared --wait-shared > warm.log 2>&1"
   },
   {
    "id": "kimi-k3",
@@ -135,7 +150,8 @@
    "api_start": "systemctl --user reset-failed kv-k31-pro-api 2>/dev/null; systemctl --user is-active -q kv-k31-pro-api || systemd-run --user --unit=kv-k31-pro-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/k31_pro-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k31_pro-kv-api/runtime --port 8481 >> /srv/workspace/sparkpipe/logs/k31_pro-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-k31-pro-api 2>/dev/null; systemctl --user reset-failed kv-k31-pro-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8481/health",
-   "node_warm": "cd $HOME/stage-lanes/k31_pro/lane2/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) mxfp4 16 --model kimi-k3.1-pro --shared 93 896 3600 > warm.log 2>&1"
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/k31_pro/lane2/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) mxfp4 16 --model kimi-k3.1-pro --shared --wait-shared 93 896 3600 > warm.log 2>&1"
   },
   {
    "id": "qwen3.8-27b",
@@ -374,7 +390,8 @@
    "api_start": "systemctl --user reset-failed kv-axk2-api 2>/dev/null; systemctl --user is-active -q kv-axk2-api || systemd-run --user --unit=kv-axk2-api -p MemoryMax=4G -p MemorySwapMax=0 --working-directory=$HOME/axk2-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/axk2-kv-api/runtime --port 8478 >> /srv/workspace/sparkpipe/logs/axk2-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-axk2-api 2>/dev/null; systemctl --user reset-failed kv-axk2-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8478/health",
-   "node_warm": "cd $HOME/stage-lanes/axk2/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) d0805cfd1fc647b4078c0d9f232c80d34ee0c893 16 --model axk2_stage --shared 61 256 1800 > warm.log 2>&1",
+   "warm_with_engines": true,
+   "node_warm": "cd $HOME/stage-lanes/axk2/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) d0805cfd1fc647b4078c0d9f232c80d34ee0c893 16 --model axk2_stage --shared --wait-shared 61 256 1800 > warm.log 2>&1",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-axk2 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-axk2.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/ax-k2-dspark-official DRAFTD_TARGET_SHARD='' DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7781 DRAFTD_DRAFT_PORT=7782 DRAFTD_WINDOW=123 DRAFTD_CONTEXT_BYTES=4294967296 DRAFTD_RESTART=on-failure DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=a.x-k2 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-760a73b19",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd-axk2 DRAFTD_SERVER=engine DRAFTD_ENGINE_ROOT=/srv/workspace/sparkpipe/draftd-engine DRAFTD_ENGINE_LANE=a.x-k2 DRAFTD_ENGINE_UNIT=sparkpipe-draftd-engine DRAFTD_WEIGHTD_UNIT=sparkpipe-weightd-hub bash hub_draftd.sh stop"
   },

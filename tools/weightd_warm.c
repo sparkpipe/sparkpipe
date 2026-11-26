@@ -110,6 +110,36 @@ static SparkWeightdExpertKey *read_wset(const char *path,
     return keys;
 }
 
+static SparkStatus attach_arena(SparkWeightdClient *client,
+    const SparkWeightdLazyAttachRequest *request,
+    SparkWeightdLazyAttachResult *attached,
+    int shared,int wait_shared,uint64_t timeout_seconds)
+{
+    uint64_t timeout_ns = timeout_seconds * UINT64_C(1000000000);
+    if ( shared == 0 )
+        return SparkWeightdClientAttachLazy(client,request,attached,timeout_ns);
+    if ( wait_shared == 0 )
+        return SparkWeightdClientAttachLazyShared(client,request,attached,timeout_ns);
+    {
+        struct timespec began,now,pause = {0, 250000000L};
+        uint64_t wait_limit = timeout_seconds < 120u ? timeout_seconds : 120u;
+        SparkStatus status;
+        (void)clock_gettime(CLOCK_MONOTONIC,&began);
+        for (;;)
+        {
+            memset(attached,0,sizeof(*attached));
+            status = SparkWeightdClientAttachLazyShared(client,request,attached,timeout_ns);
+            if ( status != SPARK_STATUS_NOT_FOUND &&
+                 !(status == SPARK_STATUS_OK && attached->status == SPARK_STATUS_NOT_FOUND) )
+                return status;
+            (void)clock_gettime(CLOCK_MONOTONIC,&now);
+            if ( (uint64_t)(now.tv_sec - began.tv_sec) >= wait_limit )
+                return status;
+            (void)nanosleep(&pause,0);
+        }
+    }
+}
+
 static int warm_keys(SparkWeightdClient *client,uint64_t generation,
     const SparkWeightdExpertKey *keys,uint32_t count,uint64_t timeout)
 {
@@ -238,6 +268,7 @@ int main(int argument_count,char **arguments)
     const char *model_tag = 0;
     int identity_print = 0;
     int shared = 0;
+    int wait_shared = 0;
     char *filtered[24];
     int filtered_count = 0, index_argument;
     uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology,cap = 0u;
@@ -265,6 +296,12 @@ int main(int argument_count,char **arguments)
         if ( strcmp(arguments[index_argument],"--shared") == 0 )
         {
             shared = 1;
+            continue;
+        }
+        if ( strcmp(arguments[index_argument],"--wait-shared") == 0 )
+        {
+            shared = 1;
+            wait_shared = 1;
             continue;
         }
         if ( strcmp(arguments[index_argument],"--expert-pool-cap") == 0 && index_argument + 1 < argument_count )
@@ -426,8 +463,7 @@ int main(int argument_count,char **arguments)
     }
     status = SparkWeightdClientConnect(arguments[1],&client,0);
     if ( status == SPARK_STATUS_OK )
-        status = shared != 0 ? SparkWeightdClientAttachLazyShared(client,&request,&attached,seconds * UINT64_C(1000000000)) :
-            SparkWeightdClientAttachLazy(client,&request,&attached,seconds * UINT64_C(1000000000));
+        status = attach_arena(client,&request,&attached,shared,wait_shared,seconds);
     if ( status != SPARK_STATUS_OK || attached.status != SPARK_STATUS_OK )
     {
         fprintf(stderr,"weightd_warm: attach failed status=%d daemon=%u\n",(int)status,attached.status);
@@ -494,6 +530,7 @@ usage:
         "                              size-mismatch contract)\n"
         "                           --shared (warm only an arena a lane already attached with this identity;\n"
         "                              the daemon refuses instead of loading another copy of the pack)\n"
+        "                           --wait-shared (implies --shared; wait while the lane attaches its arena)\n"
         "                           --identity-print (print the derived identity and exit)\n"
         "                           --expert-pool-cap BYTES (the lane's explicit expert pool cap, its stage config's\n"
         "                              expert_pool_cap_bytes; without it the pool is sized from PACK.experts as every engine sizes it)\n");

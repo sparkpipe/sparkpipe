@@ -144,7 +144,7 @@ class Swapper:
             before = await self.available()
         deadline = time.time() + self.release_seconds
         while any(value < need for value in before) and time.time() < deadline:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
             before = await self.available()
         short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
         if short:
@@ -227,16 +227,24 @@ class Swapper:
         for model, probe in zip(models, probes):
             if probe[0] != 0:
                 await self.drain(model, initial=probe)
-        for model, (code, text) in zip(models, await asyncio.gather(*(self.local(model["api_stop"], 60) for model in models))):
-            if code != 0:
-                raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
+        stopping = [model for model in models if model.get("hub_stop")]
         if len(models) == 1:
-            self.check(await self.fan(models[0]["node_stop"], self.node_seconds, {}), f"{models[0]['id']} engine stop")
+            node_job = self.fan(models[0]["node_stop"], self.node_seconds, {})
+            node_what = f"{models[0]['id']} engine stop"
         else:
             joined = " && ".join(f"( {model['node_stop']} )" for model in models)
-            self.check(await self.fan(joined, self.node_seconds, {}), f"{len(models)} models' engine stop")
-        stopping = [model for model in models if model.get("hub_stop")]
-        for model, (code, text) in zip(stopping, await asyncio.gather(*(self.local(model["hub_stop"], self.hub_seconds) for model in stopping))):
+            node_job = self.fan(joined, self.node_seconds, {})
+            node_what = f"{len(models)} models' engine stop"
+        api_results, node_results, hub_results = await asyncio.gather(
+            asyncio.gather(*(self.local(model["api_stop"], 60) for model in models)),
+            node_job,
+            asyncio.gather(*(self.local(model["hub_stop"], self.hub_seconds) for model in stopping)),
+        )
+        for model, (code, text) in zip(models, api_results):
+            if code != 0:
+                raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
+        self.check(node_results, node_what)
+        for model, (code, text) in zip(stopping, hub_results):
             if code != 0:
                 raise SwapError(f"{model['id']} hub service stop exit {code}: {text[-300:]}")
 
@@ -283,7 +291,7 @@ class Swapper:
         while not await self.ready(model):
             if time.time() > deadline:
                 raise SwapError(f"{model['id']} api did not connect all {len(self.nodes)} ranks within {self.api_seconds:g} s")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
 
     async def wait_for_ranks(self, model, run_id):
         self.enter("waiting for ranks")
@@ -299,7 +307,7 @@ class Swapper:
             if time.time() > deadline:
                 waiting = [self.nodes[rank] for rank, state in enumerate(states) if state != "READY"]
                 raise SwapError(f"{model['id']} ranks not ready after {self.ready_seconds:g} s: {', '.join(waiting)}")
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.1)
 
     async def swap(self, target):
         model = self.models[target]

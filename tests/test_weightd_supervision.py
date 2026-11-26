@@ -24,7 +24,8 @@ class WeightdSupervision(unittest.TestCase):
 static int mode(const char *name) { const char *m=getenv("WARM_FAILURE"); return m && strcmp(m,name)==0; }
 SparkStatus SparkWeightdClientConnect(const char *p,SparkWeightdClient **c,SparkWeightdHelloResult *h) { (void)p;(void)h;if(mode("connect_rpc"))return SPARK_STATUS_IO_ERROR;*c=(SparkWeightdClient *)1;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->arena_generation=9;if(mode("attach_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("attach_status"))r->status=SPARK_STATUS_IO_ERROR;return q->expert_pool_bytes==UINT64_C(2097216) || q->expert_pool_bytes==UINT64_C(2097152) ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT; }
-SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { return SparkWeightdClientAttachLazy(c,q,r,t); }
+static int shared_attempts = 0;
+SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { if(mode("shared_delayed") && ++shared_attempts <= 2) { memset(r,0,sizeof(*r)); r->status=SPARK_STATUS_NOT_FOUND; return SPARK_STATUS_NOT_FOUND; } return SparkWeightdClientAttachLazy(c,q,r,t); }
 SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *c,const char *label,SparkWeightdKvPoolDropResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));printf("KV_POOL_DROP %s\n",label);return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,const SparkWeightdExpertKey *k,uint32_t n,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->lease_identifier=17;printf("ACQUIRE %u %u\n",k[0].layer,n);if(g!=9 || k[0].layer<3)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("acquire_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("acquire_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientRelease(SparkWeightdClient *c,uint64_t g,uint64_t l,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;printf("RELEASE %llu\n",(unsigned long long)l);if(g!=9 || l!=17)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("release_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("release_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
@@ -107,6 +108,17 @@ int main(void) {
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["ACQUIRE 3 2", "RELEASE 17", "ACQUIRE 4 1", "RELEASE 17", "CLOSED"])
         self.assertEqual(result.stderr.count(" WARM "), 2)
+
+    def test_wait_shared_retries_not_found_while_plain_shared_fails_fast(self):
+        fast_fail = self.warm(mode="shared_delayed", extra=("--shared",))
+        self.assertEqual(fast_fail.returncode, 1)
+        self.assertNotIn("ACQUIRE", fast_fail.stdout)
+        waited = self.warm(mode="shared_delayed", extra=("--shared", "--wait-shared"))
+        self.assertEqual(waited.returncode, 0, waited.stderr)
+        self.assertEqual(waited.stdout.splitlines(), ["ACQUIRE 3 2", "RELEASE 17", "ACQUIRE 4 1", "RELEASE 17", "CLOSED"])
+        rpc_fail = self.warm(mode="attach_rpc", extra=("--wait-shared",))
+        self.assertEqual(rpc_fail.returncode, 1)
+        self.assertNotIn("ACQUIRE", rpc_fail.stdout)
 
     def test_acquire_and_release_failures_are_terminal(self):
         for mode in ("acquire_rpc", "acquire_status", "release_rpc", "release_status"):

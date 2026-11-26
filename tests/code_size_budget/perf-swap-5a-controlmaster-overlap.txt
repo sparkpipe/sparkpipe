@@ -1,0 +1,2 @@
++46
+Pillar 5a cold-boot / model-swap optimization: weightd_warm --wait-shared retry helper for overlapping shared expert warming with residentd startup, concurrent stop_all in model_swap.py, and SSH ControlMaster multiplexing across all 16 Sparks.
