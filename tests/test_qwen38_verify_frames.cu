@@ -364,6 +364,8 @@ struct VfRig
 		step.commit = commit;
 		step.last_rows_only = last_rows_only;
 		step.gather_context = gather_context;
+		step.host_positions = position.data();
+		step.host_sequence_of_row = sequence.data();
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -1184,6 +1186,50 @@ static void CheckPrefixExact(uint32_t linear_bytes, const char *model, uint32_t 
 			Need(memcmp(solo_out.data(), batch_out.data(), (uint64_t)per_seq * G::kHidden * sizeof(uint16_t)) == 0, model,
 				"batched mixed-prefill lane0 equals solo prefill bit for bit (per_seq, seqs, first diff row)", per_seq, seqs,
 				FirstDifference(solo_out, std::vector<uint16_t>(batch_out.begin(), batch_out.begin() + (ptrdiff_t)solo_out.size()), G::kHidden));
+		}
+		{
+			static const uint32_t rais_lens[8] = { 24u, 36u, 18u, 40u, 28u, 20u, 44u, 32u };
+			std::vector<VfRow> solo_pf(rais_lens[0]), b8_pf, b8_dec(8u);
+			std::vector<uint16_t> solo_pf_out, solo_dec_out, b8_pf_out, b8_dec_out;
+			for ( uint32_t r = 0u; r < rais_lens[0]; ++r )
+			{
+				solo_pf[r] = { 0u, r, 61u };
+				b8_pf.push_back(solo_pf[r]);
+			}
+			for ( uint32_t s = 1u; s < 8u; ++s )
+			{
+				const uint32_t base_pos = (s == 2u || s == 5u) ? cached : 0u;
+				for ( uint32_t r = 0u; r < rais_lens[s]; ++r )
+					b8_pf.push_back({ s, base_pos + r, 71u + s });
+			}
+			VfRow solo_dec = { 0u, rais_lens[0], 91u };
+			b8_dec[0] = solo_dec;
+			for ( uint32_t s = 1u; s < 8u; ++s )
+			{
+				const uint32_t base_pos = (s == 2u || s == 5u) ? cached : 0u;
+				b8_dec[s] = { s, base_pos + rais_lens[s], 101u + s };
+			}
+			memset(rig.host_context, 0, sizeof(rig.host_context));
+			Need(rig.Load(cached_state) != 0 && rig.Run(solo_pf.data(), (uint32_t)solo_pf.size(), 1u, &solo_pf_out, 1u, rais_lens[0]) != 0, model,
+				"RAIS solo prefill wave runs", rais_lens[0], 0u, 0u);
+			Need(rig.Run(&solo_dec, 1u, 1u, &solo_dec_out, 0u, 0u) != 0, model, "RAIS solo post-prefill B1 decode runs", rais_lens[0], 0u, 0u);
+			memset(rig.host_context, 0, sizeof(rig.host_context));
+			Need(rig.Load(cached_state) != 0, model, "RAIS B8 state restores", rais_lens[0], 0u, 0u);
+			for ( uint32_t warm_s : { 2u, 5u } )
+			{
+				std::vector<VfRow> wp(cached);
+				for ( uint32_t r = 0u; r < cached; ++r )
+					wp[r] = { warm_s, r, 55u + warm_s };
+				Need(rig.Run(wp.data(), cached, 1u, 0, 1u, cached) != 0, model, "RAIS B8 warm prefix seed runs", warm_s, cached, 0u);
+			}
+			Need(rig.Run(b8_pf.data(), (uint32_t)b8_pf.size(), 1u, &b8_pf_out, 1u, 0u) != 0, model,
+				"RAIS B8 mixed cold+warm prefill wave runs", (uint32_t)b8_pf.size(), 8u, 0u);
+			Need(rig.Run(b8_dec.data(), 8u, 1u, &b8_dec_out, 0u, 0u) != 0, model, "RAIS B8 post-prefill decode runs", 8u, 0u, 0u);
+			Need(memcmp(solo_pf_out.data(), b8_pf_out.data(), (uint64_t)rais_lens[0] * G::kHidden * sizeof(uint16_t)) == 0, model,
+				"RAIS B8 mixed prefill wave lane0 equals solo prefill wave bit for bit (first diff row)",
+				FirstDifference(solo_pf_out, std::vector<uint16_t>(b8_pf_out.begin(), b8_pf_out.begin() + (ptrdiff_t)solo_pf_out.size()), G::kHidden), 0u, 0u);
+			Need(memcmp(solo_dec_out.data(), b8_dec_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+				"RAIS B8 post-prefill decode lane0 equals B1 decode bit for bit", 0u, 0u, 0u);
 		}
 	}
 	Need(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", cached, 0u, 0u);

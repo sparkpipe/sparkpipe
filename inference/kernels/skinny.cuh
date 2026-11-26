@@ -2363,7 +2363,8 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 			LmWeightPrefetchNote(stream,multi.part[part].weight,(uint64_t)multi.part[part].output_dimension * chunks * LM_SKINNY_CHUNK_BYTES);
 		if constexpr ( !LmSkinnySplitScale<Format>::kSplit )
 		{
-			if ( allow_split != 0u && total_outputs <= LM_SKINNY_SPLIT_MAX_OUTPUTS && chunks >= LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES )
+			if ( ((allow_split == 1u && total_outputs <= LM_SKINNY_SPLIT_MAX_OUTPUTS) || allow_split > 1u) &&
+				chunks >= LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES )
 				return(LmSkinnySplitMultiRows<Format>(&multi,stream));
 		}
 		if ( chunks >= 32u )

@@ -248,6 +248,8 @@ struct VfRig
 		step.commit = commit;
 		step.last_rows_only = last_rows_only;
 		step.gather_context = gather_context;
+		step.host_positions = position.data();
+		step.host_sequence_of_row = sequence.data();
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -706,13 +708,101 @@ static void CheckPrefixExact(void)
 		Require(memcmp(b1_out.data(), b8_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
 			"B8 lane0 equals B1 decode bit for bit", 0u, 0u, 0u);
 	}
+	{
+		const uint32_t len0 = 42u, len1 = 36u;
+		std::vector<VfRow> solo_pf(len0), mix_pf, warm_seed(kCached);
+		std::vector<uint16_t> solo_pf_out, solo_dec_out, mix_pf_out, mix_dec_out;
+		for ( uint32_t r = 0u; r < len0; ++r )
+		{
+			solo_pf[r] = { 0u, r, 61u };
+			mix_pf.push_back(solo_pf[r]);
+		}
+		for ( uint32_t r = 0u; r < kCached; ++r )
+			warm_seed[r] = { 1u, r, 55u };
+		for ( uint32_t r = 0u; r < len1; ++r )
+			mix_pf.push_back({ 1u, kCached + r, 73u });
+		VfRow solo_dec = { 0u, len0, 91u };
+		VfRow mix_dec[2] = { solo_dec, { 1u, kCached + len1, 103u } };
+		Require(cudaMemset(rig.kv, 0, rig.kSlidingRegion + rig.kFullRegion) == cudaSuccess, model, "RAIS solo KV reset succeeds", 0u, 0u, 0u);
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		Require(rig.Run(solo_pf.data(), len0, 1u, &solo_pf_out, 1u, len0) != 0, model, "RAIS solo prefill wave runs", len0, 0u, 0u);
+		Require(rig.Run(&solo_dec, 1u, 1u, &solo_dec_out, 0u, 0u) != 0, model, "RAIS solo post-prefill decode runs", len0, 0u, 0u);
+		Require(cudaMemset(rig.kv, 0, rig.kSlidingRegion + rig.kFullRegion) == cudaSuccess, model, "RAIS mix KV reset succeeds", 0u, 0u, 0u);
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		Require(rig.Run(warm_seed.data(), kCached, 1u, 0, 1u, kCached) != 0, model, "RAIS warm lane1 seed runs", kCached, 0u, 0u);
+		Require(rig.Run(mix_pf.data(), (uint32_t)mix_pf.size(), 1u, &mix_pf_out, 1u, 0u) != 0, model, "RAIS mixed cold+warm prefill wave runs", (uint32_t)mix_pf.size(), 0u, 0u);
+		Require(rig.Run(mix_dec, 2u, 1u, &mix_dec_out, 0u, 0u) != 0, model, "RAIS mixed post-prefill decode runs", 2u, 0u, 0u);
+		Require(FirstDifference(solo_pf_out, std::vector<uint16_t>(mix_pf_out.begin(), mix_pf_out.begin() + (ptrdiff_t)solo_pf_out.size()), G::kHidden) == UINT32_MAX,
+			model, "RAIS mixed prefill wave lane0 equals solo prefill wave bit for bit (first diff row)",
+			FirstDifference(solo_pf_out, std::vector<uint16_t>(mix_pf_out.begin(), mix_pf_out.begin() + (ptrdiff_t)solo_pf_out.size()), G::kHidden), 0u, 0u);
+		Require(memcmp(solo_dec_out.data(), mix_dec_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+			"RAIS mixed post-prefill decode lane0 equals B1 decode bit for bit", 0u, 0u, 0u);
+	}
 	Require(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", 0u, 0u, 0u);
 	printf("%s %s prefix-exact + B1==B8: cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
 	rig.Close();
 }
 
+static void CheckMuseTp16SplitMultiInvariance(void)
+{
+	constexpr uint32_t K = 6656u, N0 = 288u, N1 = 256u, B8 = 8u;
+	cudaStream_t stream = 0;
+	uint16_t *w0 = 0, *w1 = 0, *act = 0, *out0_b1 = 0, *out1_b1 = 0, *out0_b8 = 0, *out1_b8 = 0, *ref0 = 0, *ref1 = 0;
+	std::vector<uint16_t> h_w0((size_t)N0 * K), h_w1((size_t)N1 * K), h_act((size_t)B8 * K);
+	std::vector<uint16_t> h_o0_b1(N0), h_o1_b1(N1), h_o0_b8(N0), h_o1_b8(N1), h_r0(N0), h_r1(N1);
+	for ( size_t i = 0; i < h_w0.size(); ++i ) h_w0[i] = Bf16(Uniform(11u, (uint32_t)i) * 0.05f);
+	for ( size_t i = 0; i < h_w1.size(); ++i ) h_w1[i] = Bf16(Uniform(23u, (uint32_t)i) * 0.05f);
+	for ( size_t i = 0; i < h_act.size(); ++i ) h_act[i] = Bf16(Uniform(37u, (uint32_t)i) * 0.5f);
+	Require(cudaStreamCreate(&stream) == cudaSuccess &&
+		cudaMalloc(&w0, h_w0.size() * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&w1, h_w1.size() * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&act, h_act.size() * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&out0_b1, N0 * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&out1_b1, N1 * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&out0_b8, (size_t)B8 * N0 * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&out1_b8, (size_t)B8 * N1 * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&ref0, N0 * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMalloc(&ref1, N1 * sizeof(uint16_t)) == cudaSuccess &&
+		cudaMemcpy(w0, h_w0.data(), h_w0.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) == cudaSuccess &&
+		cudaMemcpy(w1, h_w1.data(), h_w1.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) == cudaSuccess &&
+		cudaMemcpy(act, h_act.data(), h_act.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) == cudaSuccess,
+		"muse-tp16-split-multi", "buffers allocate", 0u, 0u, 0u);
+	const LmSkinnyDenseTarget t_b1[2] =
+	{
+		{ w0, out0_b1, (float *)0, N0, N0, 0u, LmScaleTensorNone() },
+		{ w1, out1_b1, (float *)0, N1, N1, 0u, LmScaleTensorNone() }
+	};
+	const LmSkinnyDenseTarget t_b8[2] =
+	{
+		{ w0, out0_b8, (float *)0, N0, N0, 0u, LmScaleTensorNone() },
+		{ w1, out1_b8, (float *)0, N1, N1, 0u, LmScaleTensorNone() }
+	};
+	Require(LmSkinnyDenseMulti<LmBf16Format>(t_b1, 2u, act, 1u, K, stream, 0u, 2u) == LM_LAUNCH_OK &&
+		LmSkinnyDenseMulti<LmBf16Format>(t_b8, 2u, act, B8, K, stream, 0u, 2u) == LM_LAUNCH_OK &&
+		LmDenseRows<LmBf16Format>(w0, LmScaleTensorNone(), act, ref0, (float *)0, 1u, K, N0, 0u, 48u, stream) == LM_LAUNCH_OK &&
+		LmDenseRows<LmBf16Format>(w1, LmScaleTensorNone(), act, ref1, (float *)0, 1u, K, N1, 0u, 48u, stream) == LM_LAUNCH_OK &&
+		cudaStreamSynchronize(stream) == cudaSuccess &&
+		cudaMemcpy(h_o0_b1.data(), out0_b1, N0 * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess &&
+		cudaMemcpy(h_o1_b1.data(), out1_b1, N1 * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess &&
+		cudaMemcpy(h_o0_b8.data(), out0_b8, N0 * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess &&
+		cudaMemcpy(h_o1_b8.data(), out1_b8, N1 * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess &&
+		cudaMemcpy(h_r0.data(), ref0, N0 * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess &&
+		cudaMemcpy(h_r1.data(), ref1, N1 * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess,
+		"muse-tp16-split-multi", "Split-K multi projections run", 0u, 0u, 0u);
+	Require(memcmp(h_o0_b1.data(), h_o0_b8.data(), N0 * sizeof(uint16_t)) == 0 &&
+		memcmp(h_o1_b1.data(), h_o1_b8.data(), N1 * sizeof(uint16_t)) == 0 &&
+		memcmp(h_o0_b1.data(), h_r0.data(), N0 * sizeof(uint16_t)) == 0 &&
+		memcmp(h_o1_b1.data(), h_r1.data(), N1 * sizeof(uint16_t)) == 0,
+		"muse-tp16-split-multi", "Muse TP16 qkv(288)+gate(256) Split-K B1 == B8_lane0 == single-target bit-exact", 0u, 0u, 0u);
+	printf("ok muse-tp16-split-multi: K=%u qkv=%u+gate=%u Split-K B1==B8 bit-exact\n", K, N0, N1);
+	cudaFree(w0); cudaFree(w1); cudaFree(act); cudaFree(out0_b1); cudaFree(out1_b1);
+	cudaFree(out0_b8); cudaFree(out1_b8); cudaFree(ref0); cudaFree(ref1);
+	cudaStreamDestroy(stream);
+}
+
 int main(void)
 {
+	CheckMuseTp16SplitMultiInvariance();
 	Check<Small31b>();
 	Check<Small26b>();
 	Check<SmallMuse>();
