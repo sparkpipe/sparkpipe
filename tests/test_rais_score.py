@@ -935,7 +935,11 @@ class TestRaisPillar5AndStackBadges(unittest.TestCase):
             scored_nondet = rais_score.score_model(rec_nondet, "1x-gb10")
             self.assertEqual(scored_nondet["status"], "VALID")
             self.assertEqual(scored_nondet["submetrics"]["p5c_batch_invariance"]["score"], 0.0)
-            self.assertAlmostEqual(scored_det["raw_rais"] - scored_nondet["raw_rais"], 2.0, delta=0.5)
+            self.assertAlmostEqual(scored_det["pillars"]["P5"] - scored_nondet["pillars"]["P5"], 20.0, places=2)
+            rec_det_toggled = json.loads(json.dumps(rec_det))
+            rec_det_toggled["metrics"]["batch_invariant_exact"] = False
+            scored_det_toggled = rais_score.score_model(rec_det_toggled, "1x-gb10")
+            self.assertAlmostEqual(scored_det["raw_rais"] - scored_det_toggled["raw_rais"], 2.0, places=2)
         finally:
             server.shutdown()
             server.server_close()
