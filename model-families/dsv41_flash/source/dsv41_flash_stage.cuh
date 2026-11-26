@@ -141,7 +141,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_SKINNY_EXPERT_ROWS 0u
 #define D41_MX_MIN_ROWS 1u
 #define D41_VERIFY_INVARIANT_SEQS 8u
-#define D41_SHARED_SPLIT_ROWS 64u
+#define D41_SHARED_SPLIT_ROWS (D41_TP >= 16u ? D41_VERIFY_INVARIANT_SEQS : 64u)
 #define D41_ATTEND_TILES 2u
 #define D41_OWN_ROWS_MIN ((!D41_ROWS && D41_WHOLE) ? 512u : (D41_WHOLE ? 2048u : UINT32_MAX))
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
@@ -2462,8 +2462,8 @@ static void D41SharedSlice(uint32_t rank, uint32_t *first, uint32_t *width)
 static uint32_t D41SharedSplitStep(const D41ModelState *state, uint32_t rows)
 {
 	const uint32_t room = state->max_rows < D41_OWN_ROWS_MIN ? state->max_rows : D41_OWN_ROWS_MIN;
-	const uint32_t fit = rows <= LM_SKINNY_ROWS_WIDE || state->row_invariant != 0u ||
-		(rows <= D41_SHARED_SPLIT_ROWS && state->dump == 0 && D41MxReady(&state->mx, rows, D41_HIDDEN, state->row_invariant) != 0u) ? 1u : 0u;
+	const uint32_t fit = state->row_invariant != 0u || (rows <= D41_SHARED_SPLIT_ROWS &&
+		(rows <= LM_SKINNY_ROWS_WIDE || (state->dump == 0 && D41MxReady(&state->mx, rows, D41_HIDDEN, state->row_invariant) != 0u))) ? 1u : 0u;
 	return D41_ROWS && state->own_rows == 0u && fit != 0u && 2u * rows <= room ? 1u : 0u;
 }
 
@@ -2920,7 +2920,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		return CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, state->own_rows * D41_TP, 0u,
 			state->moe_final, state->own_out);
 	}
-	if ( rows > D41_OWN_ROWS_MIN )
+	if ( rows > D41_OWN_ROWS_MIN || (D41_TP >= 8u && rows > D41_VERIFY_INVARIANT_SEQS) )
 		return CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->moe_final, state->partial);
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_HIDDEN, state->moe_final, state->moe_gathered);
 	if ( status != SPARK_STATUS_OK )
