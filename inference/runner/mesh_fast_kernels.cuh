@@ -4738,7 +4738,7 @@ extern "C" SparkGpuError SparkTpLaunchMeshHardwareFast(SparkGpuStream stream,
         SparkWeightdMeshHybridCtrl *hyb_ctrl = 0;
         uint8_t *hyb_shm = 0;
         uint32_t hyb_band = 0u;
-        SparkTpMeshFastHybridResolve(stream,entry,gate,slot_bytes,&hyb_ctrl,&hyb_shm,&hyb_band);
+        SparkTpMeshFastHybridResolve(stream,(const void *)entry,gate,slot_bytes,&hyb_ctrl,&hyb_shm,&hyb_band);
         if ( hyb_ctrl != 0 && hyb_shm != 0 )
             return SparkTpMeshFastPeerRsagChunk(stream,(uint8_t *)band,slot_bytes,slots_per_rank,(volatile uint64_t *)entry,
                 request,control,rank,degree,(const uint8_t *)local,output,mbox,(uint8_t *)staging,elements,0u,elements,timeout_ns,stage);
