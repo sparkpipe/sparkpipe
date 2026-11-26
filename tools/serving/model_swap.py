@@ -133,10 +133,10 @@ class Swapper:
         joined = " && ".join(f"( {model['node_reclaim']} )" for model in models)
         self.check(await self.fan(joined, 120, {}), f"{len(models)} models' cold arena release")
 
-    async def admit(self, model):
+    async def admit(self, model, reclaimed_others=False):
         before = await self.available()
         need = int(model["node_memory_bytes"]) + self.memory_margin
-        if any(value < need for value in before):
+        if not reclaimed_others and any(value < need for value in before):
             await self.reclaim_all([other for other in self.models.values() if other["id"] != model["id"]])
             before = await self.available()
         if any(value < need for value in before):
@@ -319,8 +319,11 @@ class Swapper:
                 await self.stop_all(others + [model])
                 self.enter("releasing KV pools")
                 await self.release(list(dict.fromkeys(other["kv_label"] for other in others)))
+                if others:
+                    self.enter("reclaiming cold arenas")
+                    await self.reclaim_all(others)
                 self.enter("checking memory")
-                before = await self.admit(model)
+                before = await self.admit(model, reclaimed_others=bool(others))
                 await self.start(model)
                 self.measure(model, before, await self.available())
                 measured = self.memory

@@ -679,7 +679,8 @@ void D41AttendSplitDecodeKernel(
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
 	const uint32_t *__restrict__ recurrent_slot, const float *__restrict__ sink, float qk_scale,
 	const float2 *__restrict__ rope_sc, uint32_t group_heads, uint16_t *__restrict__ group_input, uint8_t *__restrict__ codes,
-	float *__restrict__ partials, uint32_t *__restrict__ counters, uint32_t rows, uint32_t splits, uint32_t commit)
+	float *__restrict__ partials, uint32_t *__restrict__ counters, uint32_t rows, uint32_t splits, uint32_t commit, uint32_t row_base = 0u,
+	const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, const uint32_t *__restrict__ parent_rows = 0)
 {
 	constexpr uint32_t ROW_BYTES = DIM * 2u, PITCH = ROW_BYTES + LM_LATENT_SHARD_ROW_PAD, CHUNKS = DIM / 8u;
 	constexpr uint32_t QUERIES = D41A_QUERIES, TILE = 16u, HALF_STEPS = DIM / 32u, WARPS = 4u, WARP_COLUMNS = DIM / WARPS;
@@ -694,7 +695,7 @@ void D41AttendSplitDecodeKernel(
 	float *running_sum = running_max + QUERIES;
 	float *rescale = running_sum + QUERIES;
 	const uint8_t **s_ptrs = (const uint8_t **)(rescale + 2u * QUERIES);
-	const uint32_t row = blockIdx.x / splits, split = blockIdx.x - row * splits;
+	const uint32_t row = blockIdx.x / splits, split = blockIdx.x - row * splits, g_row = row_base + row;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t qk_half = warp & 1u, key_half = warp >> 1u;
@@ -702,19 +703,19 @@ void D41AttendSplitDecodeKernel(
 	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query_s);
 	const uint32_t weight_base = (uint32_t)__cvta_generic_to_shared(weight_bf16);
 	LmDependentWait();
-	const uint4 *qsrc = (const uint4 *)(query + (uint64_t)row * QUERIES * DIM);
+	const uint4 *qsrc = (const uint4 *)(query + (uint64_t)g_row * QUERIES * DIM);
 	for ( uint32_t idx = threadIdx.x; idx < QUERIES * CHUNKS; idx += 128u )
 		*(uint4 *)(query_s + (idx / CHUNKS) * PITCH + (idx % CHUNKS) * 16u) = __ldg(qsrc + idx);
 	if ( threadIdx.x < QUERIES ) { running_max[threadIdx.x] = -INFINITY; running_sum[threadIdx.x] = 0.0f; }
-	const uint32_t position = positions[row], step_lane = row_lane[row], begin = sequence_row_begin[step_lane];
+	const uint32_t position = positions[g_row], step_lane = row_lane[g_row], begin = sequence_row_begin[step_lane];
 	const uint32_t wave_first = positions[sequence_row_indices[begin]], slot = recurrent_slot[step_lane];
 	const uint32_t window_from = position >= D41A_WINDOW - 1u ? 0u : D41A_WINDOW - 1u - position;
-	const uint32_t sequence = compressed != 0u ? sequence_of_row[row] : 0u;
+	const uint32_t sequence = compressed != 0u ? sequence_of_row[g_row] : 0u;
 	const uint32_t valid = compressed == 0u || (LmKvViewIsConfigured(cache.pages) && sequence < cache.pages.sequence_count) ? 1u : 0u;
 	uint32_t listed = 0u, row_bound = 0u, limit = 0u, window_begin = 0u, tile_first = 0u, tile_end = 0u;
 	if ( compressed != 0u && valid != 0u )
 	{
-		row_bound = bound[row];
+		row_bound = bound[g_row];
 		uint32_t dense = length[sequence];
 		if ( row_bound == 0xffffffffu ) dense = 0u;
 		else if ( row_bound < dense ) dense = row_bound + 1u;
@@ -732,7 +733,8 @@ void D41AttendSplitDecodeKernel(
 	}
 	else if ( valid == 0u && threadIdx.x == 0u && split == 0u )
 		LmKvReportRequiredAccessFailure(cache.pages, !LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW :
-			LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
+			LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, g_row, sequence, 0xffffffffu, 0xffffffffu);
+	const uint32_t fork = fork_positions != 0 ? fork_positions[g_row] : 0xffffffffu, slot_offset = slot_offsets != 0 ? slot_offsets[g_row] : 0u;
 	const uint32_t total_tiles = WINDOW_TILES + (compressed != 0u ? tile_end - tile_first : 0u);
 	float accumulator[COLUMN_FRAGS][4];
 	#pragma unroll
@@ -754,7 +756,13 @@ void D41AttendSplitDecodeKernel(
 				{
 					const uint32_t at = position + key - (D41A_WINDOW - 1u);
 					if ( at >= wave_first )
-						src = (const uint8_t *)(wave_kv + (uint64_t)sequence_row_indices[begin + at - wave_first] * DIM);
+					{
+						uint32_t wave_row = parent_rows != 0 ? g_row : sequence_row_indices[begin + at - wave_first];
+						if ( parent_rows != 0 )
+							for ( uint32_t back = position - at; back != 0u && wave_row != D41K_NO_ROW; --back )
+								wave_row = parent_rows[wave_row];
+						src = (const uint8_t *)(wave_kv + (uint64_t)wave_row * DIM);
+					}
 					else
 						src = (const uint8_t *)(ring + (uint64_t)slot * ring_slot_stride + (uint64_t)(at % ring_rows) * DIM);
 				}
@@ -766,13 +774,16 @@ void D41AttendSplitDecodeKernel(
 				{
 					if ( local < topk )
 					{
-						const uint32_t sem = __ldg(selected + (uint64_t)row * topk + local);
+						const uint32_t sem = __ldg(selected + (uint64_t)g_row * topk + local);
 						if ( sem != 0xffffffffu && sem <= row_bound && SparkKvShardOwns(cache.shard, sem) != 0u )
-							src = LmKvShardSlotRequired<Geometry>(cache, sequence, sem, row, LM_KV_ACCESS_READ);
+							src = LmKvShardSlotRequired<Geometry>(cache, sequence, sem >= fork ? sem + slot_offset : sem, g_row, LM_KV_ACCESS_READ);
 					}
 				}
 				else if ( local < limit && local >= window_begin )
-					src = LmKvShardSlotRequired<Geometry>(cache, sequence, SparkKvShardLocalPosition(cache.shard, local), row, LM_KV_ACCESS_READ);
+				{
+					const uint32_t sem = SparkKvShardLocalPosition(cache.shard, local);
+					src = LmKvShardSlotRequired<Geometry>(cache, sequence, sem >= fork ? sem + slot_offset : sem, g_row, LM_KV_ACCESS_READ);
+				}
 			}
 			s_ptrs[threadIdx.x] = src;
 		}
@@ -875,7 +886,7 @@ void D41AttendSplitDecodeKernel(
 	{
 		uint16_t *s_head = ((uint16_t *)d41s_shared) + warp * DIM;
 		float *s_sc = (float *)(d41s_shared + WARPS * DIM * 2u) + warp * 32u;
-		const float2 rsc = rope_sc[(uint64_t)row * D41K_ROPE_PAIRS + lane];
+		const float2 rsc = rope_sc[(uint64_t)g_row * D41K_ROPE_PAIRS + lane];
 		const float rsine = -rsc.x, rcos = rsc.y;
 		const uint32_t active_splits = total_tiles < splits ? total_tiles : splits;
 		const float2 *row_meta = meta + (uint64_t)row * splits * QUERIES;
@@ -944,8 +955,9 @@ void D41AttendSplitDecodeKernel(
 				}
 			}
 		}
-		D41WindowRingStoreRow(wave_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_slot, ring_slot_stride, ring_rows,
-			D41A_WINDOW, 1u, 0u, rows, commit, (const uint32_t *)0, row);
+		if ( commit != 0u )
+			D41WindowRingStoreRow(wave_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_slot, ring_slot_stride, ring_rows,
+				D41A_WINDOW, 1u, 0u, row_base + rows, commit, (const uint32_t *)0, g_row);
 	}
 	LmDependentRelease();
 }
@@ -959,7 +971,8 @@ static inline SparkGpuError D41AttendSplitDecodeLaunch(
 	const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
 	const uint32_t *recurrent_slot, const float *sink, float qk_scale,
 	const float2 *rope_sc, uint32_t group_heads, uint16_t *group_input, uint8_t *codes,
-	float *partials, uint32_t *counters, uint32_t rows, uint32_t splits, uint32_t commit, SparkGpuStream stream)
+	float *partials, uint32_t *counters, uint32_t rows, uint32_t splits, uint32_t commit, SparkGpuStream stream,
+	uint32_t row_base = 0u, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, const uint32_t *parent_rows = 0)
 {
 	constexpr uint32_t shared = D41AttendSplitSharedBytes<DIM>();
 	static bool granted = false;
@@ -973,6 +986,6 @@ static inline SparkGpuError D41AttendSplitDecodeLaunch(
 	LM_LAUNCH_DEPENDENT((D41AttendSplitDecodeKernel<Geometry, DIM, MODE>), rows * splits, 128u, shared, stream,
 		cache, compressed, query, sequence_of_row, length, bound, selected, topk, wave_kv, ring, ring_slot_stride, ring_rows,
 		positions, row_lane, row_ordinal, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, rope_sc,
-		group_heads, group_input, codes, partials, counters, rows, splits, commit);
+		group_heads, group_input, codes, partials, counters, rows, splits, commit, row_base, fork_positions, slot_offsets, parent_rows);
 	return SparkGpuPeekAtLastError();
 }

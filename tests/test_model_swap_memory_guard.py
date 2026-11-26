@@ -126,7 +126,7 @@ def main():
     roomy = {"n0": {"before": 115 * GIB, "after": 13 * GIB}, "n1": {"before": 112 * GIB, "after": 9 * GIB}, "n2": {"before": 114 * GIB, "after": 12 * GIB}}
     swapper, started, reclaims = asyncio.run(scenario(roomy, True))
     check("a model whose projection plus margin fits every node starts", swapper.state == "idle" and swapper.active == "big" and sorted(started) == ["n0", "n1", "n2"])
-    check("cold arenas stay warm when every node already has room", reclaims == [])
+    check("inactive models' cold arenas are reclaimed on swap while target's own cold arena stays warm", reclaims == ["RECLAIM small"])
     check("requesting the active model after its engines died starts it again", getattr(swapper, "restarted", False))
     record = swapper.history[-1]
     check("the swap records the memory each node actually used", record["memory"]["used_gib_max"] == 103.0 and record["memory"]["used_gib_min"] == 102.0)

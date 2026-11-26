@@ -1256,13 +1256,15 @@ static uint32_t D41IndexScoreFast(D41ModelState *state, uint32_t cache, const Sp
 	const uint16_t *weights, const uint32_t *sequences, const uint32_t *length, const uint32_t *bounds, const uint8_t *mask,
 	uint32_t count, uint32_t stride, uint32_t pack_keys, SparkGpuStream stream, uint32_t dense_limit = 0u)
 {
-	const uint64_t act_bytes = (uint64_t)state->max_rows * D41_TOPK * D41_MOE_INTER * 2u;
+	const uint64_t act_bytes = D41_WHOLE ?
+		(uint64_t)D41_TP * state->max_rows * D41_MOE_ROW_ELEMENTS * 2u :
+		(uint64_t)state->max_rows * D41_TOPK * D41_MOE_INTER * 2u;
 	const uint64_t k_codes_bytes = (uint64_t)stride * 64u, k_bytes = (k_codes_bytes + (uint64_t)stride * 4u + 127u) & ~127ull;
 	const uint64_t q_codes_bytes = (uint64_t)count * D41_INDEX_HEADS * 64u, q_bytes = (q_codes_bytes + (uint64_t)count * D41_INDEX_HEADS * 4u + 127u) & ~127ull;
 	if ( step->sequences != 1u || step->tree != 0u || count < 8u || (stride & 7u) != 0u || !LmKvViewIsConfigured(state->index_views[cache].pages) ||
 		k_bytes + q_bytes > act_bytes )
 		return 0u;
-	uint8_t *scratch = (uint8_t *)state->expert_act;
+	uint8_t *scratch = (uint8_t *)(D41_WHOLE ? state->moe_send : state->expert_act);
 	uint32_t *k_codes = (uint32_t *)scratch, *k_scales = (uint32_t *)(scratch + k_codes_bytes);
 	uint32_t *q_codes = (uint32_t *)(scratch + k_bytes);
 	uint8_t *q_scales = scratch + k_bytes + q_codes_bytes;
@@ -1891,46 +1893,57 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	uint8_t *const merged_codes = coded != 0u ? (uint8_t *)state->attn_merged : (uint8_t *)0;
 	const uint32_t *forks = D41ForkPositions(state, step, ratio), *offsets = D41SlotOffsets(state, step, ratio);
 	const uint32_t *parents = step->tree != 0u ? step->parent_rows : (const uint32_t *)0;
-	const uint32_t split_s = rows <= 8u ? 8u : 4u;
-	const uint32_t split_decode_ok = D41_LOCAL_HEADS == D41A_QUERIES && state->own_rows == 0u && state->dump == 0 && step->tree == 0u &&
-		rows >= 1u && rows <= 16u && (coded != 0u || rows <= D41FusedOutputRows) &&
-		rows * split_s <= D41_RECORDED_ROWS(state) && state->mix_counters != 0 ? 1u : 0u;
+	const uint32_t split_max = D41_RECORDED_ROWS(state) / 8u < D41FusedOutputRows ? D41_RECORDED_ROWS(state) / 8u : (uint32_t)D41FusedOutputRows;
+	const uint32_t split_s = state->row_invariant != 0u || rows <= 8u ? 8u : 4u;
+	const uint32_t split_decode_ok = D41_LOCAL_HEADS == D41A_QUERIES && state->own_rows == 0u && state->dump == 0 && state->mix_counters != 0 &&
+		((state->row_invariant != 0u && split_max >= 1u && coded == 0u) ||
+		(step->tree == 0u && rows >= 1u && rows <= 16u && (coded != 0u || rows <= D41FusedOutputRows) &&
+		rows * split_s <= D41_RECORDED_ROWS(state))) ? 1u : 0u;
 	if ( split_decode_ok != 0u )
 	{
 		const uint32_t attended = ratio > 0u ? 1u : 0u;
 		const uint64_t ring_stride = state->recurrent_bytes / sizeof(uint16_t);
-		const SparkGpuError err = coded != 0u ?
-			(cache < 3u ?
-				D41AttendSplitDecodeLaunch<D41Ratio2Kv, D41_HEAD_DIM, 1u>(state->latent_views[cache], attended, state->q_local, step->sequence_of_row,
-					length, bound, state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
-					state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, rope_sc,
-					D41_GROUP_WIDTH / D41_HEAD_DIM, (uint16_t *)0, merged_codes, state->records_received, state->mix_counters, rows, split_s, step->commit, stream) :
-				D41AttendSplitDecodeLaunch<D41Ratio1Kv, D41_HEAD_DIM, 1u>(state->latent_views[cache], attended, state->q_local, step->sequence_of_row,
-					length, bound, state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
-					state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, rope_sc,
-					D41_GROUP_WIDTH / D41_HEAD_DIM, (uint16_t *)0, merged_codes, state->records_received, state->mix_counters, rows, split_s, step->commit, stream)) :
-			(cache < 3u ?
-				D41AttendSplitDecodeLaunch<D41Ratio2Kv, D41_HEAD_DIM, 0u>(state->latent_views[cache], attended, state->q_local, step->sequence_of_row,
-					length, bound, state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
-					state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, rope_sc,
-					D41_GROUP_WIDTH / D41_HEAD_DIM, state->group_input, (uint8_t *)0, state->records_received, state->mix_counters, rows, split_s, step->commit, stream) :
-				D41AttendSplitDecodeLaunch<D41Ratio1Kv, D41_HEAD_DIM, 0u>(state->latent_views[cache], attended, state->q_local, step->sequence_of_row,
-					length, bound, state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
-					state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, rope_sc,
-					D41_GROUP_WIDTH / D41_HEAD_DIM, state->group_input, (uint8_t *)0, state->records_received, state->mix_counters, rows, split_s, step->commit, stream));
-		if ( err != SPARK_GPU_SUCCESS )
+		auto run_split = [&](auto kv_tag, auto mode_tag, uint32_t r0, uint32_t chunk, uint16_t *out_bf16, uint8_t *out_codes, uint32_t ring_commit) {
+			return D41AttendSplitDecodeLaunch<decltype(kv_tag), D41_HEAD_DIM, decltype(mode_tag)::value>(state->latent_views[cache], attended,
+				state->q_local, step->sequence_of_row, length, bound, state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS,
+				step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
+				layer->sink, qk_scale, rope_sc, D41_GROUP_WIDTH / D41_HEAD_DIM, out_bf16, out_codes, state->records_received, state->mix_counters, chunk,
+				split_s, ring_commit, stream, r0, forks, offsets, parents);
+		};
+		struct Mode0 { enum : uint32_t { value = 0u }; }; struct Mode1 { enum : uint32_t { value = 1u }; };
+		auto launch_split = [&](uint32_t r0, uint32_t chunk, uint16_t *out_bf16, uint8_t *out_codes, uint32_t ring_commit) {
+			return out_codes != 0 ?
+				(cache < 3u ? run_split(D41Ratio2Kv{}, Mode1{}, r0, chunk, (uint16_t *)0, out_codes, ring_commit) :
+					run_split(D41Ratio1Kv{}, Mode1{}, r0, chunk, (uint16_t *)0, out_codes, ring_commit)) :
+				(cache < 3u ? run_split(D41Ratio2Kv{}, Mode0{}, r0, chunk, out_bf16, (uint8_t *)0, ring_commit) :
+					run_split(D41Ratio1Kv{}, Mode0{}, r0, chunk, out_bf16, (uint8_t *)0, ring_commit));
+		};
+		if ( coded == 0u )
+		{
+			const uint32_t step_rows = state->row_invariant != 0u ? split_max : rows;
+			for ( uint32_t r0 = 0u; r0 < rows; r0 += step_rows )
+			{
+				const uint32_t chunk = rows - r0 < step_rows ? rows - r0 : step_rows;
+				if ( launch_split(r0, chunk, state->group_input, (uint8_t *)0, rows == 1u ? step->commit : 0u) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
+					if ( D41SkinnyLinear(&layer->o_a[group], state->group_input + (uint64_t)group * chunk * D41_GROUP_WIDTH,
+						state->wo_a_out + (uint64_t)r0 * D41_WO_A_ROWS, chunk, D41_GROUP_WIDTH, D41_GROUP_ROWS, D41_WO_A_ROWS,
+						group * D41_GROUP_ROWS, state->row_invariant, stream) != LM_LAUNCH_OK )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			}
+		}
+		else if ( launch_split(0u, rows, (uint16_t *)0, merged_codes, 0u) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( (coded != 0u || rows > 1u) && step->commit != 0u )
+			LM_LAUNCH_DEPENDENT((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane,
+				state->row_ordinal, step->sequence_row_begin, step->recurrent_index, ring_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
+				step->commit, (const uint32_t *)0, (const uint32_t *)0);
 		status = D41VerifyWindow(state, index, step, stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( coded == 0u )
-		{
-			for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
-				if ( D41SkinnyLinear(&layer->o_a[group], state->group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, state->wo_a_out, rows, D41_GROUP_WIDTH,
-					D41_GROUP_ROWS, D41_WO_A_ROWS, group * D41_GROUP_ROWS, state->row_invariant, stream) != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			return D41OutputProject(state, layer, index, rows, sms, stream);
-		}
 		if ( D41_LOCAL_GROUPS == 2u )
 		{
 			const uint64_t codes_bytes = (uint64_t)rows * D41_GROUP_WIDTH;
@@ -2428,7 +2441,7 @@ static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer
 		if ( D41MxReady(&state->mx, rows, width, state->row_invariant) == 0u )
 			any_dequant = 1u;
 	}
-	if ( any_dequant != 0u && state->dump == 0 && count == 4u && rows <= 8u && D41_HIDDEN_SLICE % 16u == 0u )
+	if ( any_dequant != 0u && state->dump == 0 && count == 4u && D41_HIDDEN_SLICE % 16u == 0u )
 	{
 		D41SharedPartialsDesc desc;
 		memset(&desc, 0, sizeof(desc));
@@ -2452,7 +2465,7 @@ static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer
 			if ( rows == 1u )
 				LM_LAUNCH_DEPENDENT((D41SharedPartialsFusedKernel<1u, D41_HIDDEN_SLICE, D41_SHARED_SLICE_MAX>), blocks, 256u, 0, stream, desc, state->moe_received, stride, rows);
 			else
-				LM_LAUNCH_DEPENDENT((D41SharedPartialsFusedKernel<8u, D41_HIDDEN_SLICE, D41_SHARED_SLICE_MAX>), blocks, 256u, 0, stream, desc, state->moe_received, stride, rows);
+				LM_LAUNCH_DEPENDENT((D41SharedPartialsFusedKernel<8u, D41_HIDDEN_SLICE, D41_SHARED_SLICE_MAX>), dim3(blocks, (rows + 7u) / 8u), 256u, 0, stream, desc, state->moe_received, stride, rows);
 			return D41Launched();
 		}
 	}
@@ -2894,7 +2907,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	const uint32_t fast_tp4_w2 = state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS &&
 		(routes <= 32u || routes > 512u) ? 1u : 0u;
 	const uint32_t fast_tp4_skinny = state->dump == 0 && (rows <= D41_SKINNY_EXPERT_ROWS || state->row_invariant != 0u) &&
-		rows <= 8u && (2u * D41_EXPERT_SLICE) % 64u == 0u && D41_HIDDEN_SLICE % 64u == 0u &&
+		(2u * D41_EXPERT_SLICE) % 64u == 0u && D41_HIDDEN_SLICE % 64u == 0u &&
 		D41_HIDDEN % 128u == 0u && D41_MOE_INTER % 128u == 0u ? 1u : 0u;
 #else
 	const uint32_t fast_tp4_w2 = 0u;
