@@ -551,6 +551,11 @@ static void MimoPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restric
 	LmDependentRelease();
 }
 
+static __device__ __forceinline__ void MimoPrefillCopyL2(uint32_t destination, const void *source, uint32_t bytes)
+{
+	asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
+}
+
 template<uint32_t HD, uint32_t VD, bool HAS_SINKS>
 __global__ __launch_bounds__(128u, 2)
 static void MimoLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
@@ -597,7 +602,7 @@ static void MimoLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 		const uint32_t r = idx / K_CHUNKS, c = idx % K_CHUNKS;
 		const bool vr = row_first + r < row_end;
 		const uint16_t *src = vr ? query_bf16 + ((uint64_t)(row_first + r) * rank_heads + local_h) * HD + c * 8u : query_bf16;
-		LmPrefillCopy(k_base + r * K_ROW_BYTES + LmPrefillSwizzle(r, c) * 16u, src, vr ? 16u : 0u);
+		MimoPrefillCopyL2(k_base + r * K_ROW_BYTES + LmPrefillSwizzle(r, c) * 16u, src, vr ? 16u : 0u);
 	}
 	asm volatile("cp.async.commit_group;\n" ::: "memory");
 	asm volatile("cp.async.wait_group 0;\n" ::: "memory");
@@ -639,7 +644,7 @@ static void MimoLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 					kv_prior + ((uint64_t)lkvh * prior_keys + k_idx) * SLOT_ELEMS + c * 8u :
 					kv_cur + ((uint64_t)lkvh * rows + (k_idx - prior_keys)) * SLOT_ELEMS + c * 8u) :
 				query_bf16;
-			LmPrefillCopy(k_base + s * K_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
+			MimoPrefillCopyL2(k_base + s * K_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
 		}
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 	};
@@ -655,7 +660,7 @@ static void MimoLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 					kv_prior + ((uint64_t)lkvh * prior_keys + k_idx) * SLOT_ELEMS + HD + c * 8u :
 					kv_cur + ((uint64_t)lkvh * rows + (k_idx - prior_keys)) * SLOT_ELEMS + HD + c * 8u) :
 				query_bf16;
-			LmPrefillCopy(v_base + s * V_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
+			MimoPrefillCopyL2(v_base + s * V_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
 		}
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 	};
@@ -2256,7 +2261,16 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			{
 				const uint32_t mean_rows = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
 				int32_t st_up, st_dn;
-				if ( mean_rows > 32u )
+				if ( mean_rows > 48u )
+				{
+					st_up = Mxfp4Launch<6u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
+						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
+					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<6u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
+						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
+				}
+				else if ( mean_rows > 32u )
 				{
 					st_up = Mxfp4Launch<4u, 3u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
 						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
