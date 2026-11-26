@@ -953,9 +953,18 @@ SparkGpuError SparkGpuEventElapsedTime(float *milliseconds, SparkGpuEvent start,
 static void GpuParseComputeCapability(const char *target, int *major, int *minor)
 {
 	unsigned int code = 0u;
+	const char *sm;
 	*major = 0;
 	*minor = 0;
-	if ( target != 0 && sscanf(target,"sm_%u",&code) == 1 && code >= 10u )
+	if ( target == 0 )
+		return;
+	if ( (sm = strstr(target,".sm")) != 0 && sscanf(sm,".sm%x",&code) == 1 && code >= 0x100u )
+	{
+		*major = (int)((code >> 8u) & 0xffu);
+		*minor = (int)(code & 0xfu);
+		return;
+	}
+	if ( sscanf(target,"sm_%u",&code) == 1 && code >= 10u )
 	{
 		*major = (int)(code / 10u);
 		*minor = (int)(code % 10u);
