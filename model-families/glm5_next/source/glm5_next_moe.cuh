@@ -219,6 +219,37 @@ static void Glm5NextMoeExactW1ActKernel(const uint8_t *__restrict__ exp_w1, cons
 }
 
 template<uint32_t ExpertCodec, uint32_t RG>
+static __device__ __forceinline__ void Glm5NextMoeW2Apply(const uint16_t (*s_act)[128u], uint16_t *__restrict__ out_bf16,
+	uint32_t col, uint32_t r0, uint32_t count, uint32_t lane, float sc,
+	const typename LmSkinnyFormat<LmFp8>::Decoded &dec, uint4 w_bf16)
+{
+	constexpr uint32_t N = G5N_HIDDEN;
+	#pragma unroll
+	for ( uint32_t r = 0u; r < RG; ++r )
+		if ( r < count )
+		{
+			float dot;
+			if constexpr ( ExpertCodec == SPARK_WEIGHT_CODEC_FP8_E4M3 )
+			{
+				LmSkinnyFormat<LmFp8>::Activation a;
+				a.low = ((const uint4 *)s_act[r])[2u * lane];
+				a.high = ((const uint4 *)s_act[r])[2u * lane + 1u];
+				dot = fmaf(sc, LmSkinnyFormat<LmFp8>::ChunkDecoded(dec, a), 0.0f);
+			}
+			else
+			{
+				dot = fmaf(1.0f, LmSkinnyBf16Chunk(w_bf16, ((const uint4 *)s_act[r])[lane], 0.0f), 0.0f);
+				dot += __shfl_xor_sync(0xffffffffu, dot, 8u);
+			}
+			dot += __shfl_xor_sync(0xffffffffu, dot, 4u);
+			dot += __shfl_xor_sync(0xffffffffu, dot, 2u);
+			dot += __shfl_xor_sync(0xffffffffu, dot, 1u);
+			if ( lane == 0u )
+				out_bf16[(uint64_t)(r0 + r) * N + col] = LmFloatToBf16(dot);
+		}
+}
+
+template<uint32_t ExpertCodec, uint32_t RG, uint32_t C_ITERS>
 __global__ __launch_bounds__(256u, 4)
 static void Glm5NextMoeExactW2Kernel(const uint8_t *__restrict__ exp_w2, const float *__restrict__ exp_s2,
 	const uint16_t *__restrict__ inter_in, const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ out_bf16)
@@ -232,62 +263,41 @@ static void Glm5NextMoeExactW2Kernel(const uint8_t *__restrict__ exp_w2, const f
 	const uint32_t r_begin = __ldg(group_row_offset + grp), r_end = __ldg(group_row_offset + grp + 1u);
 	if ( r_begin < r_end )
 	{
-		const uint32_t col = blockIdx.x * COLS_PER_BLK + group;
-		const uint64_t w_row = (uint64_t)grp * N + col;
-		if constexpr ( IS_FP8 )
+		const uint32_t col_base = blockIdx.x * (COLS_PER_BLK * C_ITERS) + group, n_rows = r_end - r_begin;
+		if ( n_rows <= RG )
 		{
-			const float sc = __ldg(exp_s2 + w_row);
-			const LmSkinnyFormat<LmFp8>::Decoded dec = LmSkinnyFormat<LmFp8>::Decode(__ldcs((const uint4 *)(exp_w2 + w_row * INTER) + lane));
-			for ( uint32_t r0 = r_begin; r0 < r_end; r0 += RG )
-			{
-				const uint32_t count = r_end - r0 < RG ? r_end - r0 : RG;
-				const uint32_t total_v = count * (INTER / 8u);
-				if ( threadIdx.x < total_v )
-					((uint4 *)s_act)[threadIdx.x] = __ldg((const uint4 *)(inter_in + (uint64_t)r0 * INTER) + threadIdx.x);
-				__syncthreads();
-				#pragma unroll
-				for ( uint32_t r = 0u; r < RG; ++r )
-					if ( r < count )
-					{
-						LmSkinnyFormat<LmFp8>::Activation a;
-						a.low = ((const uint4 *)s_act[r])[2u * lane];
-						a.high = ((const uint4 *)s_act[r])[2u * lane + 1u];
-						float dot = fmaf(sc, LmSkinnyFormat<LmFp8>::ChunkDecoded(dec, a), 0.0f);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 4u);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 2u);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 1u);
-						if ( lane == 0u )
-							out_bf16[(uint64_t)(r0 + r) * N + col] = LmFloatToBf16(dot);
-					}
-				if ( r0 + RG < r_end )
-					__syncthreads();
-			}
+			if ( threadIdx.x < n_rows * (INTER / 8u) )
+				((uint4 *)s_act)[threadIdx.x] = __ldg((const uint4 *)(inter_in + (uint64_t)r_begin * INTER) + threadIdx.x);
+			__syncthreads();
 		}
-		else
+		#pragma unroll
+		for ( uint32_t ci = 0u; ci < C_ITERS; ++ci )
 		{
-			const uint4 w = __ldcs((const uint4 *)((const uint16_t *)exp_w2 + w_row * INTER) + lane);
-			for ( uint32_t r0 = r_begin; r0 < r_end; r0 += RG )
+			const uint32_t col = col_base + ci * COLS_PER_BLK;
+			const uint64_t w_row = (uint64_t)grp * N + col;
+			float sc = 1.0f;
+			LmSkinnyFormat<LmFp8>::Decoded dec{};
+			uint4 w_bf16{};
+			if constexpr ( IS_FP8 )
 			{
-				const uint32_t count = r_end - r0 < RG ? r_end - r0 : RG;
-				const uint32_t total_v = count * (INTER / 8u);
-				if ( threadIdx.x < total_v )
-					((uint4 *)s_act)[threadIdx.x] = __ldg((const uint4 *)(inter_in + (uint64_t)r0 * INTER) + threadIdx.x);
-				__syncthreads();
-				#pragma unroll
-				for ( uint32_t r = 0u; r < RG; ++r )
-					if ( r < count )
-					{
-						float dot = fmaf(1.0f, LmSkinnyBf16Chunk(w, ((const uint4 *)s_act[r])[lane], 0.0f), 0.0f);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 8u);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 4u);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 2u);
-						dot += __shfl_xor_sync(0xffffffffu, dot, 1u);
-						if ( lane == 0u )
-							out_bf16[(uint64_t)(r0 + r) * N + col] = LmFloatToBf16(dot);
-					}
-				if ( r0 + RG < r_end )
-					__syncthreads();
+				sc = __ldg(exp_s2 + w_row);
+				dec = LmSkinnyFormat<LmFp8>::Decode(__ldcs((const uint4 *)(exp_w2 + w_row * INTER) + lane));
 			}
+			else
+				w_bf16 = __ldcs((const uint4 *)((const uint16_t *)exp_w2 + w_row * INTER) + lane);
+			if ( n_rows <= RG )
+				Glm5NextMoeW2Apply<ExpertCodec, RG>(s_act, out_bf16, col, r_begin, n_rows, lane, sc, dec, w_bf16);
+			else
+				for ( uint32_t r0 = r_begin; r0 < r_end; r0 += RG )
+				{
+					const uint32_t count = r_end - r0 < RG ? r_end - r0 : RG;
+					if ( threadIdx.x < count * (INTER / 8u) )
+						((uint4 *)s_act)[threadIdx.x] = __ldg((const uint4 *)(inter_in + (uint64_t)r0 * INTER) + threadIdx.x);
+					__syncthreads();
+					Glm5NextMoeW2Apply<ExpertCodec, RG>(s_act, out_bf16, col, r0, count, lane, sc, dec, w_bf16);
+					if ( r0 + RG < r_end || ci + 1u < C_ITERS )
+						__syncthreads();
+				}
 		}
 	}
 	LmDependentRelease();
@@ -295,13 +305,14 @@ static void Glm5NextMoeExactW2Kernel(const uint8_t *__restrict__ exp_w2, const f
 
 template<uint32_t MAX_R>
 __global__ __launch_bounds__(LM_SKINNY_THREADS)
-static void Glm5NextSharedW1ActSmallKernel(const uint16_t *__restrict__ shared_w1, const uint16_t *__restrict__ act,
+static void Glm5NextSharedW1ActTileKernel(const uint16_t *__restrict__ shared_w1, const uint16_t *__restrict__ act,
 	uint16_t *__restrict__ shared_inter_out, uint32_t rows)
 {
 	constexpr uint32_t K = G5N_HIDDEN, INTER = 128u, CHUNKS = K / 8u, WARPS = LM_SKINNY_SPLIT_WARPS;
 	__shared__ float partial[4][MAX_R][WARPS];
 	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
-	const uint32_t ch0 = blockIdx.x * 2u;
+	const uint32_t ch0 = blockIdx.x * 2u, row_base = blockIdx.y * MAX_R;
+	const uint32_t cnt = row_base < rows ? (rows - row_base < MAX_R ? rows - row_base : MAX_R) : 0u;
 	const uint32_t first = CHUNKS * warp / WARPS, last = CHUNKS * (warp + 1u) / WARPS;
 	const uint4 *wu0 = (const uint4 *)(shared_w1 + (uint64_t)ch0 * K);
 	const uint4 *wg0 = (const uint4 *)(shared_w1 + (uint64_t)(INTER + ch0) * K);
@@ -312,54 +323,60 @@ static void Glm5NextSharedW1ActSmallKernel(const uint16_t *__restrict__ shared_w
 	for ( uint32_t r = 0u; r < MAX_R; ++r )
 		u0[r] = g0[r] = u1[r] = g1[r] = 0.0f;
 	LmDependentWait();
-	for ( uint32_t c = first + lane; c < last; c += LM_WARP_LANES )
+	if ( cnt != 0u )
 	{
-		const uint4 w_u0 = __ldcs(wu0 + c), w_g0 = __ldcs(wg0 + c);
-		const uint4 w_u1 = __ldcs(wu1 + c), w_g1 = __ldcs(wg1 + c);
+		const bool reuse = rows > MAX_R;
+		for ( uint32_t c = first + lane; c < last; c += LM_WARP_LANES )
+		{
+			const uint4 w_u0 = reuse ? __ldg(wu0 + c) : __ldcs(wu0 + c);
+			const uint4 w_g0 = reuse ? __ldg(wg0 + c) : __ldcs(wg0 + c);
+			const uint4 w_u1 = reuse ? __ldg(wu1 + c) : __ldcs(wu1 + c);
+			const uint4 w_g1 = reuse ? __ldg(wg1 + c) : __ldcs(wg1 + c);
+			#pragma unroll
+			for ( uint32_t r = 0u; r < MAX_R; ++r )
+				if ( r < cnt )
+				{
+					const uint4 a = __ldg((const uint4 *)(act + (uint64_t)(row_base + r) * K) + c);
+					u0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_u0, a, 0.0f), u0[r]);
+					g0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_g0, a, 0.0f), g0[r]);
+					u1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_u1, a, 0.0f), u1[r]);
+					g1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_g1, a, 0.0f), g1[r]);
+				}
+		}
 		#pragma unroll
 		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			if ( r < rows )
+			if ( r < cnt )
 			{
-				const uint4 a = __ldg((const uint4 *)(act + (uint64_t)r * K) + c);
-				u0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_u0, a, 0.0f), u0[r]);
-				g0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_g0, a, 0.0f), g0[r]);
-				u1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_u1, a, 0.0f), u1[r]);
-				g1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(w_g1, a, 0.0f), g1[r]);
+				#pragma unroll
+				for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
+				{
+					u0[r] += __shfl_xor_sync(0xffffffffu, u0[r], step);
+					g0[r] += __shfl_xor_sync(0xffffffffu, g0[r], step);
+					u1[r] += __shfl_xor_sync(0xffffffffu, u1[r], step);
+					g1[r] += __shfl_xor_sync(0xffffffffu, g1[r], step);
+				}
+				if ( lane == 0u )
+				{
+					partial[0][r][warp] = u0[r];
+					partial[1][r][warp] = g0[r];
+					partial[2][r][warp] = u1[r];
+					partial[3][r][warp] = g1[r];
+				}
 			}
-	}
-	#pragma unroll
-	for ( uint32_t r = 0u; r < MAX_R; ++r )
-		if ( r < rows )
+		__syncthreads();
+		if ( threadIdx.x < cnt * 2u )
 		{
+			const uint32_t r = threadIdx.x >> 1u, k = threadIdx.x & 1u;
+			float tu = 0.0f, tg = 0.0f;
 			#pragma unroll
-			for ( uint32_t step = LM_WARP_LANES / 2u; step > 0u; step >>= 1u )
+			for ( uint32_t w = 0u; w < WARPS; ++w )
 			{
-				u0[r] += __shfl_xor_sync(0xffffffffu, u0[r], step);
-				g0[r] += __shfl_xor_sync(0xffffffffu, g0[r], step);
-				u1[r] += __shfl_xor_sync(0xffffffffu, u1[r], step);
-				g1[r] += __shfl_xor_sync(0xffffffffu, g1[r], step);
+				tu += partial[k * 2u][r][w];
+				tg += partial[k * 2u + 1u][r][w];
 			}
-			if ( lane == 0u )
-			{
-				partial[0][r][warp] = u0[r];
-				partial[1][r][warp] = g0[r];
-				partial[2][r][warp] = u1[r];
-				partial[3][r][warp] = g1[r];
-			}
+			shared_inter_out[(uint64_t)(row_base + r) * INTER + ch0 + k] = LmFloatToBf16(LmClampedUpGateOp{G5N_SWIGLU_LIMIT}(
+				LmBf16ToFloat(LmFloatToBf16(tg)), LmBf16ToFloat(LmFloatToBf16(tu))));
 		}
-	__syncthreads();
-	if ( threadIdx.x < rows * 2u )
-	{
-		const uint32_t r = threadIdx.x >> 1u, k = threadIdx.x & 1u;
-		float tu = 0.0f, tg = 0.0f;
-		#pragma unroll
-		for ( uint32_t w = 0u; w < WARPS; ++w )
-		{
-			tu += partial[k * 2u][r][w];
-			tg += partial[k * 2u + 1u][r][w];
-		}
-		shared_inter_out[(uint64_t)r * INTER + ch0 + k] = LmFloatToBf16(LmClampedUpGateOp{G5N_SWIGLU_LIMIT}(
-			LmBf16ToFloat(LmFloatToBf16(tg)), LmBf16ToFloat(LmFloatToBf16(tu))));
 	}
 	LmDependentRelease();
 }
@@ -985,7 +1002,7 @@ static void Glm5NextMoeMmaW2K128Fp8Kernel(const uint8_t *__restrict__ exp_w2, co
 					{
 						const uint16_t lo = LmFloatToBf16(fmaf(acc[i][j][e], sc[j][0], 0.0f));
 						const uint16_t hi = LmFloatToBf16(fmaf(acc[i][j][e + 1u], sc[j][1], 0.0f));
-						*(uint32_t *)(out_bf16 + (uint64_t)r * N + c) = (uint32_t)lo | ((uint32_t)hi << 16u);
+						__stcs((uint32_t *)(out_bf16 + (uint64_t)r * N + c), (uint32_t)lo | ((uint32_t)hi << 16u));
 					}
 				}
 		cur_grp = nxt_grp;

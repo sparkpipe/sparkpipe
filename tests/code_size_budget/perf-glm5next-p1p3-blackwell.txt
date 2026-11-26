@@ -1,0 +1,2 @@
++415
+glm5_next Blackwell (sm_121a) P1 decode, P3 batch and 5c optimizer: adds CUDA-graph-safe GPU dense-skip indexer projections (Glm5NextIndexHeadSkipKernel, Glm5NextIndexQExactSkipKernel, Glm5NextIndexQMmaSkipKernel) and grid-stride pool scoring, multi-row tiled KDA up/decay/beta and norm-gate-out kernels for verify waves, multi-column exact MoE W2 with hot-expert register reuse and tiled shared-expert SwiGLU, and BF16 B1==B4 0-ULP parity across glm53_flash, glm53_flash_bf16 and sage21_flash.
