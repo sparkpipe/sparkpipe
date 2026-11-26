@@ -12,7 +12,7 @@
 #include "tests/cuda/verify_frames_common.cuh"
 
 #define VF_MAX_FRAME SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE
-#define VF_SLOTS 2u
+#define VF_SLOTS 8u
 #define VF_PAGES 8u
 #define VF_PREFIX 160u
 #define VF_OTHER_PREFIX 100u
@@ -330,7 +330,7 @@ struct VfRig
 		*token = row.position % 37u == 5u ? G::kPleEos : Mix(seed) % 4093u + 1u;
 	}
 
-	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output)
+	int Run(const VfRow *rows, uint32_t count, uint32_t commit, std::vector<uint16_t> *output, uint32_t last_rows_only = 0u, uint32_t gather_context = 0u)
 	{
 		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
 		std::vector<uint32_t> position(count), sequence(count), order(count), token(count), begin(1u, 0u), slots;
@@ -362,6 +362,8 @@ struct VfRig
 		step.rows = count;
 		step.sequences = (uint32_t)slots.size();
 		step.commit = commit;
+		step.last_rows_only = last_rows_only;
+		step.gather_context = gather_context;
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
 		step.route_fault = VfRouteFault();
@@ -587,6 +589,19 @@ struct VfRig
 		return 1;
 	}
 
+	int Reset(void)
+	{
+		memset(host_context, 0, sizeof(host_context));
+		if ( cudaMemset(kv, 0, kKvRegion) != cudaSuccess ||
+			(S::kIndexer && cudaMemset(index_kv, 0, kIndexRegion) != cudaSuccess) ||
+			cudaMemset(recurrent_buffer, 0, VF_SLOTS * recurrent_bytes) != cudaSuccess )
+			return 0;
+		for ( uint32_t slot = 0u; slot < VF_SLOTS; ++slot )
+			if ( M::RecurrentCopy(state, 0u, slot, recurrent_buffer + slot * recurrent_bytes, recurrent_bytes, 0) != SPARK_STATUS_OK )
+				return 0;
+		return 1;
+	}
+
 	uint32_t RecurrentMatches(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b) const
 	{
 		const uint64_t offset = kKvRegion + kIndexRegion;
@@ -653,6 +668,20 @@ static float RowDistance(const std::vector<uint16_t> &a, uint32_t a_row, const s
 		worst = difference > worst ? difference : worst;
 	}
 	return worst;
+}
+
+static float RelativeRowDistance(const std::vector<uint16_t> &a, uint32_t a_row, const std::vector<uint16_t> &b, uint32_t b_row, uint32_t width)
+{
+	double diff_sq = 0.0, ref_sq = 0.0;
+	for ( uint32_t index = 0u; index < width; ++index )
+	{
+		const double av = (double)VfFloat(a[(uint64_t)a_row * width + index]);
+		const double bv = (double)VfFloat(b[(uint64_t)b_row * width + index]);
+		const double d = av - bv;
+		diff_sq += d * d;
+		ref_sq += bv * bv;
+	}
+	return (float)sqrt(diff_sq / (ref_sq > 1.0e-12 ? ref_sq : 1.0e-12));
 }
 
 template<class G>
@@ -920,7 +949,7 @@ static void Check(uint32_t linear_bytes, const char *model)
 	uint32_t checked = 0u;
 	Need(rig.Open(linear_bytes) != 0, model, "the synthetic stage sizes, allocates and attaches its KV pools", 0u, 0u, 0u);
 	Need(QwenHybridModel<G>::Interface()->keep_rows != 0, model, "the stage interface carries keep_rows", 0u, 0u, 0u);
-	for ( uint32_t sequence = 0u; sequence < VF_SLOTS; ++sequence )
+	for ( uint32_t sequence = 0u; sequence < 2u; ++sequence )
 		for ( uint32_t first = 0u; first < (sequence == 0u ? VF_PREFIX : VF_OTHER_PREFIX); first += VF_FILL_ROWS )
 		{
 			rows.clear();
@@ -1056,6 +1085,111 @@ static void CheckOverlayAndBatchInvariance(void)
 	printf("ok qwen3.8-27b overlay & exactness contract: lane_bytes=%llu MiB\n", (unsigned long long)(lane_bytes >> 20u));
 }
 
+template<class G>
+static void CheckPrefixExact(uint32_t linear_bytes, const char *model, uint32_t cached)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 12u, 16u, 23u, 64u, 128u };
+	const uint32_t max_total = cached + 128u;
+	VfRig<G> rig;
+	std::vector<VfRow> all_rows(max_total);
+	std::vector<uint8_t> cached_state;
+	Need(rig.Open(linear_bytes) != 0 && rig.Reset() != 0, model, "prefix-exact synthetic stage opens", cached, 0u, 0u);
+	for ( uint32_t position = 0u; position < max_total; ++position )
+		all_rows[position] = { 0u, position, 0u };
+	Need(rig.Run(all_rows.data(), cached, 1u, 0, 1u, cached) != 0, model, "cached prefix prefill runs", cached, 0u, 0u);
+	cached_state = rig.Save();
+	Need(!cached_state.empty(), model, "cached prefix state saves", cached, 0u, 0u);
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = cached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		std::vector<uint8_t> cold_state, warm_state;
+		Need(rig.Reset() != 0 && rig.Run(all_rows.data(), total, 1u, &cold_out, 1u, total) != 0, model, "cold prefill runs", total, delta, 0u);
+		cold_state = rig.Save();
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)cached * G::kHidden), cold_out.end());
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0 && rig.Run(all_rows.data() + cached, delta, 1u, &warm_out, 1u, total) != 0,
+			model, "warm delta prefill runs", cached, delta, 0u);
+		warm_state = rig.Save();
+		Need(FirstDifference(warm_out, cold_tail, G::kHidden) == UINT32_MAX, model,
+			"warm delta prefill equals cold prefill bit for bit (delta, first differing row)", delta, FirstDifference(warm_out, cold_tail, G::kHidden), 0u);
+		Need(rig.KvMatches(warm_state, cold_state, total) != 0u, model,
+			"warm delta prefill leaves the same KV as cold prefill bit for bit (delta)", delta, 0u, 0u);
+		Need(rig.RecurrentMatches(warm_state, cold_state) != 0u, model,
+			"warm delta prefill leaves the same recurrent state as cold prefill bit for bit (delta, first byte)", delta,
+			rig.RecurrentDifference(warm_state, cold_state), 0u);
+	}
+	{
+		std::vector<uint16_t> ref_out, pref_out;
+		const uint32_t check_len = cached + 24u;
+		Need(rig.Reset() != 0 && rig.Run(all_rows.data(), check_len, 1u, &ref_out, 1u, 0u) != 0, model, "reference GQA prefill runs", check_len, 0u, 0u);
+		Need(rig.Reset() != 0 && rig.Run(all_rows.data(), check_len, 1u, &pref_out, 1u, check_len) != 0, model, "local-head prefill runs", check_len, 0u, 0u);
+		uint32_t moe_flips = 0u;
+		for ( uint32_t p = 0u; p < check_len; ++p )
+		{
+			const float dist = RelativeRowDistance(pref_out, p, ref_out, p, G::kHidden);
+			if constexpr ( G::kMoe )
+			{
+				if ( dist >= 0.02f )
+					moe_flips++;
+			}
+			else
+				Need(dist < 0.02f, model, "local-head prefill matches reference GQA prefill (pos, rel x 1e6)", p, (uint32_t)(dist * 1.0e6f), 0u);
+		}
+		if constexpr ( G::kMoe )
+			Need(moe_flips <= 2u, model, "local-head prefill matches reference GQA prefill modulo synthetic router ties (flips)", moe_flips, 0u, 0u);
+	}
+	{
+		std::vector<uint16_t> b1_out, b8_out;
+		VfRow b8_rows[8];
+		VfRow b1_row = { 0u, cached, 5u };
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0 && rig.Run(&b1_row, 1u, 1u, &b1_out, 0u, 0u) != 0, model, "B1 decode runs", cached, 0u, 0u);
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0, model, "B8 decode state loads", cached, 0u, 0u);
+		b8_rows[0] = b1_row;
+		for ( uint32_t s = 1u; s < 8u; ++s )
+			b8_rows[s] = { s, 0u, 20u + s };
+		Need(rig.Run(b8_rows, 8u, 1u, &b8_out, 0u, 0u) != 0, model, "B8 decode runs", cached, 0u, 0u);
+		Need(memcmp(b1_out.data(), b8_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+			"B8 lane0 equals B1 decode bit for bit", cached, 0u, 0u);
+	}
+	{
+		static const uint32_t mix_rows[2] = { 20u, 60u };
+		static const uint32_t mix_seqs[2] = { 8u, 4u };
+		for ( uint32_t c = 0u; c < 2u; ++c )
+		{
+			const uint32_t per_seq = mix_rows[c], seqs = mix_seqs[c];
+			std::vector<VfRow> solo(per_seq), batch((uint64_t)per_seq * seqs);
+			std::vector<uint16_t> solo_out, batch_out;
+			for ( uint32_t r = 0u; r < per_seq; ++r )
+			{
+				solo[r] = { 0u, cached + r, 31u + c };
+				batch[r] = solo[r];
+			}
+			for ( uint32_t s = 1u; s < seqs; ++s )
+				for ( uint32_t r = 0u; r < per_seq; ++r )
+					batch[(uint64_t)s * per_seq + r] = { s, r, 41u + s };
+			memset(rig.host_context, 0, sizeof(rig.host_context));
+			rig.host_context[0] = cached;
+			Need(rig.Load(cached_state) != 0 && rig.Run(solo.data(), per_seq, 1u, &solo_out, 0u, 0u) != 0, model,
+				"solo mixed-prefill reference runs", per_seq, seqs, 0u);
+			memset(rig.host_context, 0, sizeof(rig.host_context));
+			rig.host_context[0] = cached;
+			Need(rig.Load(cached_state) != 0 && rig.Run(batch.data(), (uint32_t)batch.size(), 1u, &batch_out, 0u, 0u) != 0, model,
+				"batched mixed-prefill runs", per_seq, seqs, 0u);
+			Need(memcmp(solo_out.data(), batch_out.data(), (uint64_t)per_seq * G::kHidden * sizeof(uint16_t)) == 0, model,
+				"batched mixed-prefill lane0 equals solo prefill bit for bit (per_seq, seqs, first diff row)", per_seq, seqs,
+				FirstDifference(solo_out, std::vector<uint16_t>(batch_out.begin(), batch_out.begin() + (ptrdiff_t)solo_out.size()), G::kHidden));
+		}
+	}
+	Need(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", cached, 0u, 0u);
+	printf("ok %s prefix-exact + 5c B1==B8: cached=%u warm deltas 1..128 + mixed prefill bit-exact\n", model, cached);
+}
+
 int main(void)
 {
 	CheckOverlayAndBatchInvariance();
@@ -1063,6 +1197,11 @@ int main(void)
 	Check<Small27b>(2u, "qwen3.8-27b (bf16 linear)");
 	Check<SmallMax>(2u, "qwen3.8-max");
 	Check<SmallFlash>(2u, "qwen3.8-flash");
+	CheckPrefixExact<Small27b>(1u, "qwen3.8-27b (fp8 linear)", 64u);
+	CheckPrefixExact<Small27b>(2u, "qwen3.8-27b (bf16 linear)", 64u);
+	CheckPrefixExact<SmallMax>(2u, "qwen3.8-max", 64u);
+	CheckPrefixExact<SmallFlash>(2u, "qwen3.8-flash (dense skip)", 32u);
+	CheckPrefixExact<SmallFlash>(2u, "qwen3.8-flash (compact indexer)", 128u);
 	printf("PASS qwen38 verify frames: every row of every verify frame equals one-row decode bit for bit, keep_rows restores the gated delta-net, "
 		"n-gram and index-tail state of the kept rows, and a rejected tail leaves no trace\n");
 	return 0;
