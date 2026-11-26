@@ -601,7 +601,7 @@ static SparkStatus SparkModelResidentIpcEncodeSubmissionKind(
 		SPARK_RETURN(status);
 	if ( message_capacity < message_bytes )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	memset(message_buffer,0,message_bytes);
+	memset(message_buffer,0,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
 	wire = (SparkModelResidentIpcSubmit *)message_buffer;
 	bytes = (uint8_t *)message_buffer;
 	SparkModelResidentIpcInitializeHeader(&wire->header,message_kind,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES,message_bytes,message_id);
@@ -717,7 +717,7 @@ SparkStatus SparkModelResidentIpcEncodeTokenContinuation(
 		SPARK_RETURN(status);
 	if ( message_capacity < message_bytes )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	memset(message_buffer,0,message_bytes);
+	memset(message_buffer,0,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
 	wire = (SparkModelResidentIpcSubmit *)message_buffer;
 	SparkModelResidentIpcInitializeHeader(&wire->header,SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES,message_bytes,message_id);
 	SparkModelResidentIpcCopySubmissionScalars(wire,submission);
@@ -1246,7 +1246,7 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 		SPARK_RETURN(status);
 	if ( message_capacity < message_bytes )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	memset(message_buffer,0,message_bytes);
+	memset(message_buffer,0,SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES);
 	wire = (SparkModelResidentIpcCompletion *)message_buffer;
 	bytes = (uint8_t *)message_buffer;
 	SparkModelResidentIpcInitializeHeader(&wire->header,SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION,SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES,message_bytes,message_id);
@@ -1279,6 +1279,8 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	memcpy(bytes + wire->token_ids_offset,completion->token_ids,completion->token_count * sizeof(uint32_t));
 	if ( completion->model_extension_bytes != 0u )
 		memcpy(bytes + wire->model_extension_offset,completion->model_extension,completion->model_extension_bytes);
+	if ( wire->logprobs_offset > wire->model_extension_offset + completion->model_extension_bytes )
+		memset(bytes + wire->model_extension_offset + completion->model_extension_bytes,0,wire->logprobs_offset - (wire->model_extension_offset + completion->model_extension_bytes));
 	if ( completion->logprob_entry_count != 0u )
 		memcpy(bytes + wire->logprobs_offset,completion->logprobs,(size_t)completion->logprob_entry_count * sizeof(SparkSamplingLogprob));
 	*message_bytes_out = message_bytes;

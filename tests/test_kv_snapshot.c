@@ -1855,6 +1855,30 @@ static void SnapTestNodeRoot(const char *directory)
 		"of an existing folder is refused and never falls back to the home, and a lane that fills its own root's quota finds nothing of another root to cut\n");
 }
 
+static void SnapTestBinaryDigestAndShardGuard(const char *directory)
+{
+	SparkKvSnapshotStore store;
+	uint8_t first[SPARK_SHA256_DIGEST_BYTES],second[SPARK_SHA256_DIGEST_BYTES];
+	char first_path[SPARK_KV_SNAPSHOT_PATH_BYTES],second_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	char blocked_file[1200],blocked_link[1200],target_dir[1200],shard_path[1200];
+	int descriptor;
+	CHECK(SparkKvSnapshotBinaryDigest((const void *)&SnapTestBinaryDigestAndShardGuard,first,first_path,sizeof(first_path)) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotBinaryDigest((const void *)&SnapTestBinaryDigestAndShardGuard,second,second_path,sizeof(second_path)) == SPARK_STATUS_OK);
+	CHECK(memcmp(first,second,sizeof(first)) == 0 && strcmp(first_path,second_path) == 0 && first_path[0] != '\0');
+	(void)snprintf(blocked_file,sizeof(blocked_file),"%s/blocked-file",directory);
+	(void)snprintf(blocked_link,sizeof(blocked_link),"%s/blocked-link",directory);
+	(void)snprintf(target_dir,sizeof(target_dir),"%s/target",directory);
+	CHECK(mkdir(blocked_file,0700) == 0 && mkdir(blocked_link,0700) == 0 && mkdir(target_dir,0700) == 0);
+	(void)snprintf(shard_path,sizeof(shard_path),"%s/00",blocked_file);
+	descriptor = open(shard_path,O_WRONLY | O_CREAT | O_EXCL,0600);
+	CHECK(descriptor >= 0 && close(descriptor) == 0);
+	CHECK(SparkKvSnapshotStoreOpen(&store,blocked_file,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_IO_ERROR);
+	(void)snprintf(shard_path,sizeof(shard_path),"%s/00",blocked_link);
+	CHECK(symlink(target_dir,shard_path) == 0);
+	CHECK(SparkKvSnapshotStoreOpen(&store,blocked_link,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_IO_ERROR);
+	printf("kv snapshot: cached binary digest matches on repeat calls and shard open refuses non-directory and symlink shards\n");
+}
+
 int main(void)
 {
 	char directory[] = "/tmp/sparkpipe-kv-snapshot-XXXXXX",ledger[128];
@@ -1965,6 +1989,10 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestNodeRoot(directory);
+	SnapRemoveAll(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestBinaryDigestAndShardGuard(directory);
 	SnapRemoveAll(directory);
 	SparkKvLedgerClose(&snap_ledger);
 	(void)unlink(ledger);

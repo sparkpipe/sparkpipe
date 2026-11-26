@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef struct State
@@ -75,6 +76,18 @@ int main(void)
 		pthread_cond_wait(&state.changed,&state.mutex);
 	pthread_mutex_unlock(&state.mutex);
 	assert(SparkWeightdWorkerWaitIdle(state.worker,1000000000u) == SPARK_STATUS_OK);
+	{
+		struct timespec before,after;
+		uint64_t elapsed_ns;
+		state.completed = 0u;
+		jobs[1] = (Job){&state,0u};
+		assert(clock_gettime(CLOCK_MONOTONIC,&before) == 0);
+		assert(SparkWeightdWorkerSubmit(state.worker,execute,&jobs[1]) == SPARK_STATUS_OK);
+		assert(SparkWeightdWorkerWaitIdle(state.worker,1000000000u) == SPARK_STATUS_OK);
+		assert(clock_gettime(CLOCK_MONOTONIC,&after) == 0);
+		elapsed_ns = ((uint64_t)(after.tv_sec - before.tv_sec) * UINT64_C(1000000000)) + (uint64_t)after.tv_nsec - (uint64_t)before.tv_nsec;
+		assert(state.completed == 1u && elapsed_ns < UINT64_C(50000000));
+	}
 	assert(SparkWeightdWorkerDestroy(state.worker) == SPARK_STATUS_OK);
 	pthread_cond_destroy(&state.changed);
 	pthread_mutex_destroy(&state.mutex);

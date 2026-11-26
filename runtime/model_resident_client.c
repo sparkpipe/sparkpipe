@@ -4,6 +4,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "model_resident_socket.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -266,20 +267,53 @@ static SparkStatus SparkModelResidentClientOpenUnix(
 	SPARK_RETURN(status);
 }
 
+static SparkStatus SparkModelResidentClientConnectTcpAddress(
+	SparkModelResidentClient *client,
+	int family,
+	int socktype,
+	int protocol,
+	const struct sockaddr *address,
+	socklen_t address_length,
+	uint32_t timeout_ms)
+{
+	SparkStatus status;
+	client->fd = socket(family,socktype,protocol);
+	if ( client->fd < 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	status = SparkModelResidentConfigureTcp(client->fd);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentClientPrepareSocket(client->fd);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentClientFinishConnect(client->fd,address,address_length,timeout_ms);
+	if ( status != SPARK_STATUS_OK )
+	{
+		close(client->fd);
+		client->fd = -1;
+	}
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkModelResidentClientOpenTcp(
 	SparkModelResidentClient *client,
 	const SparkModelResidentEndpoint *endpoint,
 	uint32_t timeout_ms)
 {
+	struct sockaddr_in numeric;
 	struct addrinfo hints,*addresses,*address;
 	char service[16];
 	SparkStatus status;
+	memset(&numeric,0,sizeof(numeric));
+	numeric.sin_family = AF_INET;
+	numeric.sin_port = htons(endpoint->tcp_port);
+	if ( inet_pton(AF_INET,endpoint->tcp_host,&numeric.sin_addr) == 1 )
+		return(SparkModelResidentClientConnectTcpAddress(client,AF_INET,SOCK_STREAM,IPPROTO_TCP,(const struct sockaddr *)&numeric,(socklen_t)sizeof(numeric),timeout_ms));
 	if ( snprintf(service,sizeof(service),"%u",endpoint->tcp_port) < 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&hints,0,sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_protocol = IPPROTO_TCP;
+	hints.ai_flags = AI_NUMERICSERV;
 	addresses = 0;
 	{
 		uint32_t resolve_attempt;
@@ -295,21 +329,7 @@ static SparkStatus SparkModelResidentClientOpenTcp(
 		SPARK_FAIL(SPARK_STATUS_ROUTE_NOT_FOUND);
 	status = SPARK_STATUS_IO_ERROR;
 	for (address=addresses; address!=0 && status!=SPARK_STATUS_OK; address=address->ai_next)
-	{
-		client->fd = socket(address->ai_family,address->ai_socktype,address->ai_protocol);
-		if ( client->fd < 0 )
-			continue;
-		status = SparkModelResidentConfigureTcp(client->fd);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkModelResidentClientPrepareSocket(client->fd);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkModelResidentClientFinishConnect(client->fd,address->ai_addr,(socklen_t)address->ai_addrlen,timeout_ms);
-		if ( status != SPARK_STATUS_OK )
-		{
-			close(client->fd);
-			client->fd = -1;
-		}
-	}
+		status = SparkModelResidentClientConnectTcpAddress(client,address->ai_family,address->ai_socktype,address->ai_protocol,address->ai_addr,(socklen_t)address->ai_addrlen,timeout_ms);
 	freeaddrinfo(addresses);
 	SPARK_RETURN(status);
 }

@@ -426,7 +426,7 @@ void SparkKvLedgerForgetMissing(SparkKvLedger *ledger)
 SparkStatus SparkKvLedgerMakeRoom(SparkKvLedger *ledger,uint32_t slot,uint64_t incoming_bytes,uint64_t wait_ns,SparkKvLedgerEvictOwn evict_own,void *context,
 	uint64_t (*own_bytes)(void *context),uint64_t (*own_oldest)(void *context))
 {
-	const struct timespec pause = {0,20000000L};
+	const struct timespec pause = {0,5000000L};
 	SparkKvLedgerVictim victim;
 	uint64_t deadline = SparkMonotonicNs() + wait_ns,freed;
 	SparkStatus status;
