@@ -1,0 +1,6 @@
++462
+Wave-8 1x-gb10 Zero-NVIDIA NVRM + SKL optimizations for Qwen3.8-27B BF16:
+- Batched MMA Certified FP8 LM Head (SparkLmHeadCertifiedFp8ScoreMmaKernel + batched HiddenNorm/Screen/Rescore/Reduce) cutting B64 LM head 101.8 -> 11.6 ms with 0 spills and 0-ULP exactness
+- Extended fused GateUp SwiGLU MMA path to rows<=512 for prefill
+- Bounded 2-gram lookup fallback for slow memory-bound single-stream models
+- Expanded SKL overlay kernels for batched certified FP8 reduce and rescore (67-kernel bundle, 46 live bound)
