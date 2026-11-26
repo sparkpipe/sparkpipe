@@ -4213,8 +4213,9 @@ static void D41SharedPart(uint32_t part, uint32_t parts, uint32_t granules, uint
 	*width = (base + (part < extra ? 1u : 0u)) * granule;
 }
 
-static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, float *__restrict__ output, uint32_t top_k, uint32_t local_experts,
+template<bool OUT_BF16>
+static __device__ __forceinline__ void D41MoeFinalizeF32Body(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, void *__restrict__ output, uint32_t top_k, uint32_t local_experts,
 	uint32_t width)
 {
 	__shared__ uint32_t active_rows[16];
@@ -4250,7 +4251,10 @@ static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ pack
 			LmLoadFloat8(shared + (uint64_t)row * width + offset, sh);
 			#pragma unroll
 			for ( uint32_t j = 0u; j < 8u; ++j ) total[j] += sh[j];
-			LmStoreFloat8(output + (uint64_t)row * width + offset, total);
+			if constexpr ( OUT_BF16 )
+				((uint4 *)((uint16_t *)output + (uint64_t)row * width))[q] = LmPackUint4FloatToBf16(total);
+			else
+				LmStoreFloat8((float *)output + (uint64_t)row * width + offset, total);
 		}
 		LmDependentRelease();
 		return;
@@ -4264,9 +4268,27 @@ static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ pack
 			if ( route_expert[route] < local_experts )
 				total += LmBf16ToFloat(packed[(uint64_t)route_packed_row[route] * width + element]);
 		}
-		output[(uint64_t)row * width + element] = total + shared[(uint64_t)row * width + element];
+		const float sum = total + shared[(uint64_t)row * width + element];
+		if constexpr ( OUT_BF16 )
+			((uint16_t *)output)[(uint64_t)row * width + element] = LmFloatToBf16(sum);
+		else
+			((float *)output)[(uint64_t)row * width + element] = sum;
 	}
 	LmDependentRelease();
+}
+
+static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, float *__restrict__ output, uint32_t top_k, uint32_t local_experts,
+	uint32_t width)
+{
+	D41MoeFinalizeF32Body<false>(packed, route_packed_row, route_expert, shared, output, top_k, local_experts, width);
+}
+
+static __global__ void D41MoeFinalizeF32ToBf16Kernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, uint16_t *__restrict__ output, uint32_t top_k, uint32_t local_experts,
+	uint32_t width)
+{
+	D41MoeFinalizeF32Body<true>(packed, route_packed_row, route_expert, shared, output, top_k, local_experts, width);
 }
 
 static __global__ void D41SumSourcesF32Kernel(const float *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
@@ -5308,13 +5330,13 @@ void D41FusedRouterPackedKernel(const uint16_t *__restrict__ router_w, const uin
 
 template<uint32_t EXPERTS>
 static __global__ __launch_bounds__(256)
-void D41CompactActiveExpertsKernel(const uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ active_out)
+void D41CompactActiveExpertsKernel(const uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ active_out, uint32_t count = EXPERTS)
 {
 	__shared__ uint32_t s_warp[8];
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	LmDependentWait();
-	const uint32_t a0 = threadIdx.x < EXPERTS && group_row_offset[threadIdx.x + 1u] > group_row_offset[threadIdx.x] ? 1u : 0u;
-	const uint32_t a1 = threadIdx.x + 256u < EXPERTS && group_row_offset[threadIdx.x + 257u] > group_row_offset[threadIdx.x + 256u] ? 1u : 0u;
+	const uint32_t a0 = threadIdx.x < count && group_row_offset[threadIdx.x + 1u] > group_row_offset[threadIdx.x] ? 1u : 0u;
+	const uint32_t a1 = threadIdx.x + 256u < count && group_row_offset[threadIdx.x + 257u] > group_row_offset[threadIdx.x + 256u] ? 1u : 0u;
 	const uint32_t m0 = __ballot_sync(0xffffffffu, a0 != 0u);
 	if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m0);
 	__syncthreads();
@@ -5607,7 +5629,7 @@ template<uint32_t MODE_RECV, uint32_t CELLS_PER_BLK, uint32_t WARP_CHUNKS, uint3
 static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__restrict__ w_cells, const uint8_t *__restrict__ act_codes,
 	const uint8_t *__restrict__ act_scales, const uint16_t *__restrict__ recv_base, uint16_t *__restrict__ output_bf16,
 	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ active_experts,
-	uint32_t routes, uint64_t recv_stride)
+	uint32_t routes, uint64_t recv_stride, const uint8_t *__restrict__ backup_cells = 0, uint32_t split_at = 0u)
 {
 	constexpr uint32_t WARPS_M = CELLS_PER_BLK == 8u ? 2u : 1u, WARPS_N = 4u, THREADS = WARPS_M * WARPS_N * 32u;
 	constexpr uint32_t CELLS_PER_WARP = CELLS_PER_BLK / WARPS_N, N_FRAGS = CELLS_PER_WARP * 2u;
@@ -5623,7 +5645,7 @@ static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__rest
 	constexpr uint64_t TILE_STRIDE = (uint64_t)TOTAL_CELLS * CELL_BYTES;
 	constexpr uint64_t GROUP_BYTES = (uint64_t)(IN_DIM / 32u) * TILE_STRIDE;
 	constexpr uint32_t S_BLOCKS = SLICE / SPARK_DSV41_FLASH_FP8_BLOCK;
-	static_assert(OUT_DIM % (CELLS_PER_BLK * 16u) == 0u && IN_DIM % 128u == 0u && (MODE_RECV == 0u || SLICE % 64u == 0u) && W_PASSES == 3u && TILE_M % 16u == 0u,
+	static_assert(OUT_DIM % (CELLS_PER_BLK * 16u) == 0u && IN_DIM % 128u == 0u && (MODE_RECV != 1u || SLICE % 64u == 0u) && W_PASSES == 3u && TILE_M % 16u == 0u,
 		"direct cell mx geometry");
 	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES + S_WORDS * 4u];
 	const uint32_t active_idx = blockIdx.x / N_BLOCKS, n_block = blockIdx.x - active_idx * N_BLOCKS;
@@ -5643,7 +5665,9 @@ static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__rest
 	const uint32_t chunk = threadIdx.x & 7u, row_base = threadIdx.x >> 3u;
 	const uint32_t warp_row_base = warp_m * (WARP_CHUNKS * 16u);
 	const uint32_t block_cell0 = n_block * CELLS_PER_BLK, cell_first = block_cell0 + warp_n * CELLS_PER_WARP;
-	const uint8_t *group_cells = w_cells + (uint64_t)group * GROUP_BYTES + (uint64_t)block_cell0 * CELL_BYTES;
+	const uint8_t *group_cells = (backup_cells != 0 && group >= split_at ?
+		backup_cells + (uint64_t)(group - split_at) * GROUP_BYTES :
+		w_cells + (uint64_t)group * GROUP_BYTES) + (uint64_t)block_cell0 * CELL_BYTES;
 	uint32_t w_off[W_PASSES];
 	#pragma unroll
 	for ( uint32_t p = 0u; p < W_PASSES; ++p )
@@ -5663,26 +5687,26 @@ static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__rest
 	const uint32_t s_row_idx = warp_row_base + g + ((lane & 1u) << 3u);
 	const uint32_t warp_w_off = warp_n * CELLS_PER_WARP * CELL_BYTES;
 	const uint32_t w_lane_off = warp_w_off + lane * 4u, ws_lane_off = warp_w_off + 256u + g;
-	const uint8_t *r0 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 0ull * recv_stride) : (const uint8_t *)0;
-	const uint8_t *r1 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 1ull * recv_stride) : (const uint8_t *)0;
-	const uint8_t *r2 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 2ull * recv_stride) : (const uint8_t *)0;
-	const uint8_t *r3 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 3ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r0 = MODE_RECV == 1u ? (const uint8_t *)(recv_base + 0ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r1 = MODE_RECV == 1u ? (const uint8_t *)(recv_base + 1ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r2 = MODE_RECV == 1u ? (const uint8_t *)(recv_base + 2ull * recv_stride) : (const uint8_t *)0;
+	const uint8_t *r3 = MODE_RECV == 1u ? (const uint8_t *)(recv_base + 3ull * recv_stride) : (const uint8_t *)0;
 	const uint64_t sc_off_base = (uint64_t)routes * SLICE;
 	for ( uint32_t first = start; first < end; first += TILE_M )
 	{
 		const uint32_t count = end - first < TILE_M ? end - first : TILE_M;
 		const uint32_t sc_route = first + threadIdx.x, sc_live = threadIdx.x < count ? 1u : 0u;
 		uint32_t a_tok[COPIES];
-		if constexpr ( MODE_RECV == 0u )
+		if constexpr ( MODE_RECV != 1u )
 		{
 			#pragma unroll
 			for ( uint32_t q = 0u; q < COPIES; ++q )
 			{
 				const uint32_t lr = row_base + q * ROW_STEP;
-				a_tok[q] = lr < count ? __ldg(route_source_token + first + lr) : 0u;
+				a_tok[q] = lr < count ? (MODE_RECV == 0u ? __ldg(route_source_token + first + lr) : first + lr) : 0u;
 			}
 		}
-		const uint32_t sc_tok = MODE_RECV == 0u && sc_live != 0u ? __ldg(route_source_token + sc_route) : 0u;
+		const uint32_t sc_tok = MODE_RECV != 1u && sc_live != 0u ? (MODE_RECV == 0u ? __ldg(route_source_token + sc_route) : sc_route) : 0u;
 		const uint8_t *w_base = group_cells;
 		float acc[WARP_CHUNKS][N_FRAGS][4];
 		#pragma unroll
@@ -5693,7 +5717,7 @@ static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__rest
 		{
 			const uint32_t stage_s = sbase + st_off, w_stage = stage_s + A_BYTES;
 			const uint32_t elem = k_idx * TILE_K + chunk * 16u;
-			if constexpr ( MODE_RECV == 0u )
+			if constexpr ( MODE_RECV != 1u )
 			{
 				#pragma unroll
 				for ( uint32_t q = 0u; q < COPIES; ++q )
@@ -5739,7 +5763,7 @@ static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__rest
 				uint32_t sw = 0u;
 				if ( sc_live != 0u )
 				{
-					if constexpr ( MODE_RECV == 0u )
+					if constexpr ( MODE_RECV != 1u )
 						sw = *(const uint32_t *)(act_scales + (uint64_t)sc_tok * (IN_DIM / 32u) + k_step * 4u);
 					else
 					{
@@ -5843,6 +5867,27 @@ void D41CellMxW13DirectKernel(const uint8_t *__restrict__ w13_cells, const uint8
 {
 	D41CellMxDirectBody<0u, 8u, WARP_CHUNKS, STAGES, EXPERTS, 128u, IN_DIM, OUT_DIM>(w13_cells, act_codes, act_scales,
 		(const uint16_t *)0, output_bf16, group_row_offset, route_source_token, active_experts, routes, 0ull);
+}
+
+template<uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t IN_DIM, uint32_t OUT_DIM>
+static __global__ __launch_bounds__(256, 2)
+void D41CellMxSplitW13DirectKernel(const uint8_t *__restrict__ w13_cells, const uint8_t *__restrict__ backup_cells, uint32_t split_at,
+	const uint8_t *__restrict__ act_codes, const uint8_t *__restrict__ act_scales, uint16_t *__restrict__ output_bf16,
+	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ active_experts,
+	uint32_t routes)
+{
+	D41CellMxDirectBody<0u, 8u, WARP_CHUNKS, STAGES, EXPERTS, 128u, IN_DIM, OUT_DIM>(w13_cells, act_codes, act_scales,
+		(const uint16_t *)0, output_bf16, group_row_offset, route_source_token, active_experts, routes, 0ull, backup_cells, split_at);
+}
+
+template<uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t IN_DIM, uint32_t OUT_DIM>
+static __global__ __launch_bounds__(256, 2)
+void D41CellMxSplitW2DirectKernel(const uint8_t *__restrict__ w2_cells, const uint8_t *__restrict__ backup_cells, uint32_t split_at,
+	const uint8_t *__restrict__ act_codes, const uint8_t *__restrict__ act_scales, uint16_t *__restrict__ output_bf16,
+	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ active_experts, uint32_t routes)
+{
+	D41CellMxDirectBody<2u, 8u, WARP_CHUNKS, STAGES, EXPERTS, 128u, IN_DIM, OUT_DIM>(w2_cells, act_codes, act_scales,
+		(const uint16_t *)0, output_bf16, group_row_offset, (const uint32_t *)0, active_experts, routes, 0ull, backup_cells, split_at);
 }
 
 template<uint32_t MAX_R>
