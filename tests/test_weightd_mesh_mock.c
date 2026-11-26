@@ -3721,6 +3721,314 @@ static void test_tp16_20us_weightd_upgrades(uint32_t local_rank)
     }
 }
 
+static uint32_t test_hybrid_write_wqe(SparkWeightdMeshHybridCtrl *ctrl,uint32_t band,uint64_t slot,
+    uint64_t seq,uint64_t tag,uint32_t peer_mask,uint64_t bytes,uint32_t is_inline,uint32_t is_peer,uint64_t half_off,uint64_t pattern_base)
+{
+    uint32_t xfer_len = (uint32_t)(bytes + 8u);
+    uint32_t ds = is_inline != 0u ? ((36u + xfer_len + 15u) >> 4u) : 3u;
+    uint32_t num_bb = (ds + 3u) >> 2u;
+    uint64_t slot_base = ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    uint32_t i,gen;
+    SparkWeightdMeshHybridTrigger *trig;
+    __atomic_store_n(&ctrl->gpu_busy,1u,__ATOMIC_SEQ_CST);
+    if ( __atomic_load_n(&ctrl->cpu_mode,__ATOMIC_ACQUIRE) != 1u || ctrl->owner_band != band )
+    {
+        __atomic_store_n(&ctrl->gpu_busy,0u,__ATOMIC_RELEASE);
+        return 0u;
+    }
+    gen = (uint32_t)__atomic_load_n(&ctrl->grant_gen,__ATOMIC_ACQUIRE);
+    for (i = 0u; i < ctrl->peer_count; i++)
+    {
+        const SparkWeightdMeshHybridPeer *hp = &ctrl->peers[i];
+        uint32_t sq_lim,wr_lim;
+        if ( (peer_mask & (1u << hp->target)) == 0u )
+            continue;
+        sq_lim = __atomic_load_n(&ctrl->cpu_sq_limit[i],__ATOMIC_ACQUIRE);
+        wr_lim = __atomic_load_n(&ctrl->cpu_wr_limit[i],__ATOMIC_ACQUIRE);
+        if ( (uint32_t)(sq_lim - ctrl->gpu_pi[i]) < num_bb || (uint32_t)(wr_lim - ctrl->gpu_wrs[i]) < 1u )
+        {
+            __atomic_store_n(&ctrl->gpu_busy,0u,__ATOMIC_RELEASE);
+            return 0u;
+        }
+    }
+    for (i = 0u; i < ctrl->peer_count; i++)
+    {
+        const SparkWeightdMeshHybridPeer *hp = &ctrl->peers[i];
+        SparkWeightdMeshSendQueue *q = &weightd_mesh.send_queues[hp->peer];
+        uint32_t pi = ctrl->gpu_pi[i],sq_idx = pi & hp->sq_mask,sq_bytes = hp->sq_depth * 64u;
+        uint8_t *sq = weightd_mesh.hybrid_shm.base + hp->sq_shm_off;
+        struct mlx5_wqe_ctrl_seg *c = (struct mlx5_wqe_ctrl_seg *)(sq + (size_t)sq_idx * 64u);
+        struct mlx5_wqe_raddr_seg *r = (struct mlx5_wqe_raddr_seg *)(c + 1);
+        uint32_t w0,w1,next_pi;
+        if ( (peer_mask & (1u << hp->target)) == 0u )
+            continue;
+        w0 = htobe32(((pi & 0xffffu) << 8u) | MLX5_OPCODE_RDMA_WRITE);
+        w1 = htobe32(hp->qpn_shifted | ds);
+        c->opmod_idx_opcode = w0;
+        c->qpn_ds = w1;
+        c->signature = 0u;
+        c->dci_stream_channel_id = 0u;
+        c->fm_ce_se = MLX5_WQE_CTRL_CQ_UPDATE;
+        c->imm = 0u;
+        r->raddr = htobe64(hp->remote_base + slot_base);
+        r->rkey = hp->rkey_be;
+        r->reserved = 0u;
+        if ( is_inline != 0u )
+        {
+            struct mlx5_wqe_inl_data_seg *seg = (struct mlx5_wqe_inl_data_seg *)(r + 1);
+            uint32_t dst_off = sq_idx * 64u + 36u,b;
+            uint64_t payload_word = pattern_base | (uint64_t)hp->target;
+            seg->byte_count = htobe32(xfer_len | MLX5_INLINE_SEG);
+            for (b = 0u; b < bytes; b += 4u)
+            {
+                uint32_t val = b == 0u ? (uint32_t)payload_word : b == 4u ? (uint32_t)(payload_word >> 32u) : (uint32_t)(0x33000000u + b);
+                memcpy(sq + ((dst_off + b) & (sq_bytes - 1u)),&val,4u);
+            }
+            {
+                uint32_t tlo = (uint32_t)tag,thi = (uint32_t)(tag >> 32u);
+                memcpy(sq + ((dst_off + (uint32_t)bytes) & (sq_bytes - 1u)),&tlo,4u);
+                memcpy(sq + ((dst_off + (uint32_t)bytes + 4u) & (sq_bytes - 1u)),&thi,4u);
+            }
+        }
+        else
+        {
+            struct mlx5_wqe_data_seg *d = (struct mlx5_wqe_data_seg *)(r + 1);
+            uint64_t local_iova = is_peer != 0u ?
+                (ctrl->staging_iova_base + (uint64_t)band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + hp->staging_peer_off + half_off) :
+                (ctrl->recv_iova_base + slot_base);
+            d->byte_count = htobe32(xfer_len);
+            d->lkey = is_peer != 0u ? hp->staging_lkey_be : hp->recv_lkey_be;
+            d->addr = htobe64(local_iova);
+        }
+        {
+            uint32_t copy_bytes = num_bb * 64u,start_off = sq_idx * 64u;
+            if ( start_off + copy_bytes <= sq_bytes )
+                memcpy(q->buffer + start_off,sq + start_off,copy_bytes);
+            else
+            {
+                uint32_t first = sq_bytes - start_off;
+                memcpy(q->buffer + start_off,sq + start_off,first);
+                memcpy(q->buffer,sq,copy_bytes - first);
+            }
+        }
+        next_pi = pi + num_bb;
+        ctrl->gpu_pi[i] = next_pi;
+        ctrl->gpu_wrs[i]++;
+        if ( ctrl->dbrec_in_shm != 0u )
+        {
+            uint32_t dbr_be = htobe32(next_pi & 0xffffu);
+            memcpy(weightd_mesh.hybrid_shm.base + hp->dbrec_shm_off + 4u,&dbr_be,4u);
+            q->record[MLX5_SND_DBR] = dbr_be;
+        }
+    }
+    trig = &ctrl->trigger[seq & 1u];
+    trig->meta = SparkWeightdMeshHybridMetaPack(peer_mask,ds,num_bb,gen);
+    trig->slot = slot;
+    trig->bytes = bytes;
+    __atomic_store_n(&trig->seq,tag,__ATOMIC_RELEASE);
+    __atomic_store_n(&ctrl->gpu_busy,0u,__ATOMIC_RELEASE);
+    return 1u;
+}
+
+static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
+{
+    SparkWeightdMeshHybridCtrl *ctrl = SparkWeightdMeshHybridCtrlPtr();
+    SparkWeightdMeshWaitRequest *req;
+    void *dbr_ptrs[SPARK_WEIGHTD_MESH_PEERS],*sq_ptrs[SPARK_WEIGHTD_MESH_PEERS],*reused,*bad;
+    uint32_t peer,i,first,count,ok,band = 0u,index = band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank;
+    uint32_t peer_mask = 0xffffu & ~(1u << local_rank);
+    uint64_t seq,slot,tag,rings_before,revokes_before;
+    SparkStubIbvPostedWork work;
+
+    CHECK(weightd_mesh.hybrid_shm.base != 0 && weightd_mesh.hybrid_shm.bytes == SPARK_WEIGHTD_MESH_HYBRID_SHM_BYTES &&
+          ctrl != 0 && ctrl->magic == SPARK_WEIGHTD_MESH_HYBRID_MAGIC && ctrl->version == SPARK_WEIGHTD_MESH_HYBRID_VERSION &&
+          ctrl->shm_path[0] != '\0' && ctrl->recv_iova_base == (uint64_t)(uintptr_t)weightd_mesh.recv_buffer &&
+          ctrl->staging_iova_base == (uint64_t)(uintptr_t)weightd_mesh.staging_buffer,
+        "tp16-20us phase3: SHM slab and hybrid control header initialized cleanly inside doorbell tail");
+
+    ok = 1u;
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        dbr_ptrs[peer] = SparkWeightdMeshShmSlabAlloc(&weightd_mesh.hybrid_shm,8u,8u);
+        sq_ptrs[peer] = SparkWeightdMeshShmSlabAlloc(&weightd_mesh.hybrid_shm,65536u,4096u);
+        if ( dbr_ptrs[peer] == 0 || sq_ptrs[peer] == 0 )
+            ok = 0u;
+        else
+        {
+            uint32_t doff = SparkWeightdMeshShmOffset(dbr_ptrs[peer],8u);
+            uint32_t soff = SparkWeightdMeshShmOffset(sq_ptrs[peer],65536u);
+            if ( doff >= SPARK_WEIGHTD_MESH_HYBRID_DBR_ARENA_BYTES || (doff & 63u) != 0u ||
+                 soff < SPARK_WEIGHTD_MESH_HYBRID_DBR_ARENA_BYTES || (soff & 4095u) != 0u )
+                ok = 0u;
+            if ( peer > 0u && doff == SparkWeightdMeshShmOffset(dbr_ptrs[peer - 1u],8u) )
+                ok = 0u;
+            weightd_mesh.send_queues[peer].dbrec_shm_off = doff;
+            weightd_mesh.send_queues[peer].sq_shm_off = soff;
+        }
+    }
+    CHECK(ok == 1u,"tp16-20us phase3: SHM slab allocates 15 cache-line-isolated DBRs and 15 page-aligned SQ buffers");
+    SparkWeightdMeshShmSlabFree(&weightd_mesh.hybrid_shm,dbr_ptrs[0]);
+    reused = SparkWeightdMeshShmSlabAlloc(&weightd_mesh.hybrid_shm,8u,8u);
+    bad = SparkWeightdMeshShmSlabAlloc(&weightd_mesh.hybrid_shm,2u * 1024u * 1024u,4096u);
+    CHECK(reused == dbr_ptrs[0] && bad == 0 && SparkWeightdMeshShmSlabAlloc(&weightd_mesh.hybrid_shm,64u,48u) == 0,
+        "tp16-20us phase3: SHM slab reuses freed slots and rejects oversize or non-pow2 requests");
+
+    CHECK(SparkWeightdMeshSetActivity(0u,1u) == SPARK_STATUS_OK,
+        "tp16-20us phase3: activating sole lane 0 enables hybrid mode");
+    req = (SparkWeightdMeshWaitRequest *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_OFFSET +
+        index * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES);
+    CHECK(weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u && ctrl->owner_lane == 0u &&
+          ctrl->owner_band == 0u && ctrl->owner_rank == local_rank && ctrl->peer_count == SPARK_WEIGHTD_MESH_PEERS &&
+          ctrl->dbrec_in_shm == 1u && ctrl->grant_gen >= 1u &&
+          (req->capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ) != 0u,
+        "tp16-20us phase3: hybrid grant activates cpu_mode=1, advertises CAPABILITY_HYBRID_SQ, and populates 15 peers");
+
+    seq = weightd_mesh.issued[index] + 1u;
+    slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    tag = (UINT64_C(0x41) << 32u) | seq;
+    rings_before = weightd_mesh.stat_hybrid_rings;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_hybrid_write_wqe(ctrl,band,slot,seq,tag,peer_mask,640u,1u,1u,0u,UINT64_C(0xdeadbeef00000000)) == 1u,
+        "tp16-20us phase3: mock GPU writes 15x 648B inline WQEs and dbrec directly into SHM");
+    SparkWeightdMeshDoorbellPoll();
+    count = spark_stub_ibv_posted_count() - first;
+    ok = count == SPARK_WEIGHTD_MESH_PEERS && weightd_mesh.stat_hybrid_rings == rings_before + 1u ? 1u : 0u;
+    for (i = 0u; i < count; i++)
+    {
+        if ( spark_stub_ibv_posted(first + i,&work) != 0 || work.source != 0u ||
+             work.length != 648u || (work.flags & (IBV_SEND_INLINE | IBV_SEND_SIGNALED)) != (IBV_SEND_INLINE | IBV_SEND_SIGNALED) ||
+             work.inline_tail != tag || (work.inline_word >> 32u) != UINT64_C(0xdeadbeef) )
+            ok = 0u;
+    }
+    CHECK(ok == 1u,"tp16-20us phase3: 150ns CPU BlueFlame-only poll ships all 15 GPU-written 648B inline WQEs");
+    test_complete_range(first,spark_stub_ibv_posted_count());
+    CHECK(test_shipped(band,local_rank) == tag &&
+          ctrl->cpu_sq_limit[0] == weightd_mesh.send_queues[ctrl->peers[0].peer].retired + weightd_mesh.send_queues[ctrl->peers[0].peer].depth &&
+          ctrl->cpu_wr_limit[0] == weightd_mesh.send_queues[ctrl->peers[0].peer].wr_retired + SPARK_WEIGHTD_MESH_SEND_CAPACITY,
+        "tp16-20us phase3: CQE drain advances shipped cell and replenishes GPU SQ and WR credits");
+
+    seq++;
+    slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    tag = (UINT64_C(0x42) << 32u) | seq;
+    {
+        uint64_t half_off = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot);
+        for (i = 0u; i < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; i++)
+        {
+            uint8_t *dst = (uint8_t *)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,i) + half_off;
+            *(uint64_t *)(dst + 4096u) = tag;
+        }
+        first = spark_stub_ibv_posted_count();
+        CHECK(test_hybrid_write_wqe(ctrl,band,slot,seq,tag,peer_mask,4096u,0u,1u,half_off,0u) == 1u,
+            "tp16-20us phase3: mock GPU writes 15x 48B DMA WQEs for 4104B B4 payload");
+        SparkWeightdMeshDoorbellPoll();
+        count = spark_stub_ibv_posted_count() - first;
+        ok = count == SPARK_WEIGHTD_MESH_PEERS ? 1u : 0u;
+        for (i = 0u; i < count; i++)
+        {
+            if ( spark_stub_ibv_posted(first + i,&work) != 0 || work.source == 0u ||
+                 work.length != 4104u || (work.flags & IBV_SEND_SIGNALED) == 0u ||
+                 work.lkey != weightd_mesh.staging_mr->lkey ||
+                 *(uint64_t *)(uintptr_t)(work.source + 4096u) != tag )
+                ok = 0u;
+        }
+        CHECK(ok == 1u,"tp16-20us phase3: CPU BlueFlame-only poll ships all 15 GPU-written 48B DMA WQEs with exact IOVA");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
+    {
+        uint32_t row_mask = (0xfu << (local_rank & ~3u)) & ~(1u << local_rank);
+        seq++;
+        slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        tag = (UINT64_C(0x43) << 32u) | seq;
+        first = spark_stub_ibv_posted_count();
+        CHECK(test_hybrid_write_wqe(ctrl,band,slot,seq,tag,row_mask,640u,1u,1u,0u,UINT64_C(0x2d44000000000000)) == 1u,
+            "tp16-20us phase3: mock GPU writes 2D 4x4 3-peer subset hybrid WQEs");
+        SparkWeightdMeshDoorbellPoll();
+        count = spark_stub_ibv_posted_count() - first;
+        CHECK(count == 3u,"tp16-20us phase3: 2D 4x4 3-peer subset rings exactly 3 peers");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
+    ok = 1u;
+    for (i = 0u; i < 120u; i++)
+    {
+        uint32_t w;
+        seq++;
+        slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        tag = (UINT64_C(0x50) << 32u) | seq;
+        first = spark_stub_ibv_posted_count();
+        if ( test_hybrid_write_wqe(ctrl,band,slot,seq,tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7700000000000000) | ((uint64_t)i << 16u)) == 0u )
+        { ok = 0u; break; }
+        SparkWeightdMeshDoorbellPoll();
+        count = spark_stub_ibv_posted_count() - first;
+        if ( count != SPARK_WEIGHTD_MESH_PEERS ) { ok = 0u; break; }
+        for (w = 0u; w < count; w++)
+            if ( spark_stub_ibv_posted(first + w,&work) != 0 || work.length != 648u || work.inline_tail != tag )
+                ok = 0u;
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+    CHECK(ok == 1u && test_shipped(band,local_rank) == tag,
+        "tp16-20us phase3: 120 consecutive 648B inline hybrid rounds (1320 WQEBBs > 1024) wrap SQ ring cleanly");
+
+    {
+        uint64_t gen_before = ctrl->grant_gen;
+        uint32_t other_rank = local_rank == 0u ? 1u : 0u;
+        revokes_before = weightd_mesh.stat_hybrid_revokes;
+        seq++;
+        slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        tag = (UINT64_C(0x60) << 32u) | seq;
+        first = spark_stub_ibv_posted_count();
+        CHECK(test_hybrid_write_wqe(ctrl,band,slot,seq,tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x6060000000000000)) == 1u,
+            "tp16-20us phase3: queue pending hybrid trigger right before CPU Broadcast revoke");
+        CHECK(SparkWeightdMeshBroadcast(1u << other_rank,0u,64u,0u,0u,0u) == 1u,
+            "tp16-20us phase3: CPU Broadcast revokes hybrid, drains pending GPU trigger first, then posts CPU WQE");
+        count = spark_stub_ibv_posted_count() - first;
+        CHECK(count == SPARK_WEIGHTD_MESH_PEERS + 1u && weightd_mesh.stat_hybrid_revokes > revokes_before &&
+              weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u && ctrl->grant_gen > gen_before &&
+              ctrl->gpu_pi[0] == weightd_mesh.send_queues[ctrl->peers[0].peer].produced,
+            "tp16-20us phase3: revoke preserved pending 15 GPU WQEs + 1 Broadcast WQE and re-granted synced gpu_pi");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
+    CHECK(SparkWeightdMeshSetActivity(1u,1u) == SPARK_STATUS_OK && weightd_mesh.hybrid_active == 0u && ctrl->cpu_mode == 0u,
+        "tp16-20us phase3: activating second concurrent lane revokes hybrid mode cleanly");
+    CHECK(SparkWeightdMeshSetActivity(1u,0u) == SPARK_STATUS_OK && weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u,
+        "tp16-20us phase3: returning to single active lane automatically re-grants hybrid mode");
+
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+        weightd_mesh.send_queues[peer].dbrec_shm_off = SPARK_WEIGHTD_MESH_HYBRID_OFFSET_NONE;
+    SparkWeightdMeshHybridRevokeLocked();
+    SparkWeightdMeshHybridRefreshLocked(band);
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    CHECK(weightd_mesh.hybrid_active == 1u && ctrl->dbrec_in_shm == 0u,
+        "tp16-20us phase3: dbrec_in_shm=0 mode stays active when SQ is in SHM but dbrec is outside SHM");
+    seq++;
+    slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+    tag = (UINT64_C(0x70) << 32u) | seq;
+    first = spark_stub_ibv_posted_count();
+    CHECK(test_hybrid_write_wqe(ctrl,band,slot,seq,tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7070000000000000)) == 1u,
+        "tp16-20us phase3: mock GPU writes 648B inline WQEs without touching dbrec when dbrec_in_shm=0");
+    SparkWeightdMeshDoorbellPoll();
+    CHECK(spark_stub_ibv_posted_count() - first == SPARK_WEIGHTD_MESH_PEERS,
+        "tp16-20us phase3: CPU writes dbrec[1] and rings BlueFlame cleanly in dbrec_in_shm=0 mode");
+    test_complete_range(first,spark_stub_ibv_posted_count());
+
+    pthread_mutex_lock(&SparkWeightdMeshWireLock);
+    SparkWeightdMeshHybridRevokeLocked();
+    for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
+    {
+        weightd_mesh.send_queues[peer].sq_shm_off = SPARK_WEIGHTD_MESH_HYBRID_OFFSET_NONE;
+        weightd_mesh.send_queues[peer].dbrec_shm_off = SPARK_WEIGHTD_MESH_HYBRID_OFFSET_NONE;
+        SparkWeightdMeshShmSlabFree(&weightd_mesh.hybrid_shm,dbr_ptrs[peer]);
+        SparkWeightdMeshShmSlabFree(&weightd_mesh.hybrid_shm,sq_ptrs[peer]);
+    }
+    SparkWeightdMeshHybridRefreshLocked(0u);
+    pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+    CHECK(SparkWeightdMeshSetActivity(0u,0u) == SPARK_STATUS_OK && weightd_mesh.hybrid_active == 0u,
+        "tp16-20us phase3: teardown cleanly revokes hybrid mode and restores lane state");
+}
+
 static void test_tp16_20us_fallback(uint32_t local_rank)
 {
     uint32_t peer,ok;
@@ -3739,6 +4047,11 @@ static void test_tp16_20us_fallback(uint32_t local_rank)
     CHECK(ok == 1u,"tp16-20us fallback: falls back cleanly to shared PD and 256 B negotiated inline limit");
     spark_stub_ibv_set_td_fail(0u);
     spark_stub_ibv_set_max_inline(828u);
+    (void)setenv("SPARK_WEIGHTD_MESH_HYBRID","0",1);
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u) == SPARK_STATUS_BUSY &&
+          weightd_mesh.hybrid_shm.base == 0 && weightd_mesh.hybrid_active == 0u,
+        "tp16-20us phase3 fallback: SPARK_WEIGHTD_MESH_HYBRID=0 cleanly disables SHM slab and hybrid mode");
+    (void)unsetenv("SPARK_WEIGHTD_MESH_HYBRID");
     test_clean_dir();
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
 }
@@ -3948,6 +4261,7 @@ int main(void)
     test_e14_r2_poll_fastpath(local_rank);
     test_sq_occupancy_guard(local_rank);
     test_tp16_20us_weightd_upgrades(local_rank);
+    test_tp16_20us_phase3_hybrid(local_rank);
     test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not
