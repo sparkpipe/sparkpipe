@@ -2860,6 +2860,47 @@ static void TestScenarioDeclaredCachePoint(const SparkModelResidentDeployment *d
 		CHECK(state.error_events[5] == 0u && state.completed_events[5] == 1u && state.cached_tokens[5] == 12u && split_at_16 == 0u,
 			"declared cache point: soft chat checkpoint within min_advance of resumed prefix does not force an extra prefill split");
 	}
+	{
+		SparkModelBatchSubmitRequest soft = {0};
+		SparkModelBatchRequestHandle handle = {0};
+		uint32_t cold[16],ext[18],soft_ends[8],soft_stateful[8],soft_count,kept_at_13 = 0u;
+		for (index=0u; index<16u; index++)
+			cold[index] = 1100u + index;
+		for (index=0u; index<18u; index++)
+			ext[index] = index < 14u ? cold[index] : 1400u + index;
+		soft.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+		soft.descriptor_bytes = sizeof(soft);
+		soft.priority = SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE;
+		soft.top_p = 1.0f;
+		soft.request_id = 6u;
+		soft.sequence_id = 795u;
+		soft.prompt_token_ids = cold;
+		soft.prompt_token_count = 16u;
+		soft.output_token_budget = 1u;
+		soft.drafts_disabled = TestDraftsDisabled;
+		soft.cache_point_count = 1u;
+		soft.cache_points[0] = 13u;
+		soft.cache_point_min_advance = 8u;
+		CHECK(SparkModelBatchEngineSubmit(engine,&soft,&handle) == SPARK_STATUS_OK,
+			"declared cache point: cold prompt with sub-block soft chat checkpoint submits");
+		TestDriveUntilTerminal(engine,&state,6u,800u);
+		soft_count = TestPrefillPublishes(6u,16u,soft_ends,soft_stateful,8u);
+		for (index=0u; index<soft_count; index++)
+			kept_at_13 |= soft_ends[index] == 13u && soft_stateful[index] != 0u ? 1u : 0u;
+		CHECK(state.error_events[6] == 0u && state.completed_events[6] == 1u && kept_at_13 != 0u,
+			"declared cache point: sub-block soft chat checkpoint publishes stateful resume point without rounding down to block boundary");
+		TestSubmitPrompt(engine,7u,796u,1u,cold,16u);
+		CHECK(TestWaitFirstRequestLane(engine,7u,&lane) != 0u && lane.cache_prefix_token_count == 15u,
+			"declared cache point: exact replay still resumes at prompt checkpoint when sub-block soft chat point sits in same block");
+		TestDriveUntilTerminal(engine,&state,7u,800u);
+		TestSubmitPrompt(engine,8u,797u,1u,ext,18u);
+		CHECK(TestWaitFirstRequestLane(engine,8u,&lane) != 0u && lane.cache_prefix_token_count == 13u,
+			"declared cache point: extended follow-up resumes at exact sub-block soft chat checkpoint instead of block floor");
+		TestDriveUntilTerminal(engine,&state,8u,800u);
+		CHECK(state.error_events[7] == 0u && state.completed_events[7] == 1u &&
+			state.error_events[8] == 0u && state.completed_events[8] == 1u,
+			"declared cache point: exact and extended follow-ups after sub-block soft chat checkpoint both complete");
+	}
 	SparkModelBatchEngineDestroy(engine);
 }
 

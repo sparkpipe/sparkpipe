@@ -12,7 +12,7 @@
 #include "tests/cuda/verify_frames_common.cuh"
 
 #define VF_MAX_FRAME SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE
-#define VF_SLOTS 8u
+#define VF_SLOTS 16u
 #define VF_PAGES 8u
 #define VF_PREFIX 160u
 #define VF_OTHER_PREFIX 100u
@@ -1158,6 +1158,17 @@ static void CheckPrefixExact(uint32_t linear_bytes, const char *model, uint32_t 
 		Need(rig.Run(b8_rows, 8u, 1u, &b8_out, 0u, 0u) != 0, model, "B8 decode runs", cached, 0u, 0u);
 		Need(memcmp(b1_out.data(), b8_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
 			"B8 lane0 equals B1 decode bit for bit", cached, 0u, 0u);
+		std::vector<uint16_t> b16_out;
+		VfRow b16_rows[16];
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0, model, "B16 decode state loads", cached, 0u, 0u);
+		b16_rows[0] = b1_row;
+		for ( uint32_t s = 1u; s < 16u; ++s )
+			b16_rows[s] = { s, 0u, 20u + s };
+		Need(rig.Run(b16_rows, 16u, 1u, &b16_out, 0u, 0u) != 0, model, "B16 decode runs", cached, 0u, 0u);
+		Need(memcmp(b1_out.data(), b16_out.data(), G::kHidden * sizeof(uint16_t)) == 0, model,
+			"B16 lane0 equals B1 decode bit for bit", cached, 0u, 0u);
 	}
 	{
 		static const uint32_t mix_rows[2] = { 20u, 60u };
@@ -1233,7 +1244,64 @@ static void CheckPrefixExact(uint32_t linear_bytes, const char *model, uint32_t 
 		}
 	}
 	Need(rig.KvClean() != 0u, model, "prefix-exact steps reported no KV access error", cached, 0u, 0u);
-	printf("ok %s prefix-exact + 5c B1==B8: cached=%u warm deltas 1..128 + mixed prefill bit-exact\n", model, cached);
+	printf("ok %s prefix-exact + 5c B1==B8==B16: cached=%u warm deltas 1..128 + mixed prefill bit-exact\n", model, cached);
+}
+
+template<class G>
+static void CheckSubBlockResume(uint32_t linear_bytes, const char *model, uint32_t cached)
+{
+	static const uint32_t deltas[] = { 1u, 4u, 8u, 16u, 23u };
+	const uint32_t max_total = cached + 32u;
+	VfRig<G> rig;
+	std::vector<VfRow> all_rows(max_total);
+	std::vector<uint8_t> cached_state;
+	Need(rig.Open(linear_bytes) != 0 && rig.Reset() != 0, model, "sub-block synthetic stage opens", cached, 0u, 0u);
+	for ( uint32_t position = 0u; position < max_total; ++position )
+		all_rows[position] = { 0u, position, 0u };
+	Need(rig.Run(all_rows.data(), cached, 1u, 0, 1u, cached) != 0, model, "sub-block cached prefix prefill runs", cached, 0u, 0u);
+	cached_state = rig.Save();
+	Need(!cached_state.empty(), model, "sub-block cached prefix state saves", cached, 0u, 0u);
+	for ( uint32_t delta : deltas )
+	{
+		const uint32_t total = cached + delta;
+		std::vector<uint16_t> cold_out, warm_out;
+		std::vector<uint8_t> cold_state, warm_state;
+		Need(rig.Reset() != 0 && rig.Run(all_rows.data(), total, 1u, &cold_out, 1u, total) != 0, model, "sub-block cold prefill runs", total, delta, 0u);
+		cold_state = rig.Save();
+		std::vector<uint16_t> cold_tail(cold_out.begin() + (ptrdiff_t)((uint64_t)cached * G::kHidden), cold_out.end());
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0 && rig.Run(all_rows.data() + cached, delta, 1u, &warm_out, 1u, total) != 0,
+			model, "sub-block warm delta prefill runs", cached, delta, 0u);
+		warm_state = rig.Save();
+		Need(FirstDifference(warm_out, cold_tail, G::kHidden) == UINT32_MAX, model,
+			"sub-block warm delta equals cold bit for bit (delta, first diff row)", delta, FirstDifference(warm_out, cold_tail, G::kHidden), 0u);
+		Need(rig.KvMatches(warm_state, cold_state, total) != 0u && rig.RecurrentMatches(warm_state, cold_state) != 0u, model,
+			"sub-block warm delta matches cold KV and recurrent state bit for bit", delta, 0u, 0u);
+	}
+	{
+		std::vector<uint16_t> cold_out, b8_lro1_out, b8_lro0_out;
+		Need(rig.Reset() != 0 && rig.Run(all_rows.data(), cached + 1u, 1u, &cold_out, 1u, cached + 1u) != 0, model, "sub-block B1 cold runs", cached, 0u, 0u);
+		std::vector<VfRow> b8_rows;
+		b8_rows.push_back(all_rows[cached]);
+		for ( uint32_t s = 1u; s < 8u; ++s )
+			for ( uint32_t r = 0u; r < 30u; ++r )
+				b8_rows.push_back({ s, r, 41u + s });
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0 && rig.Run(b8_rows.data(), (uint32_t)b8_rows.size(), 1u, &b8_lro1_out, 1u, 0u) != 0,
+			model, "sub-block B8 lro=1 runs", cached, 0u, 0u);
+		Need(memcmp(cold_out.data() + (uint64_t)cached * G::kHidden, b8_lro1_out.data(), G::kHidden * sizeof(uint16_t)) == 0,
+			model, "sub-block B8 lro=1 warm(+1) lane0 equals cold bit for bit", cached, 0u, 0u);
+		memset(rig.host_context, 0, sizeof(rig.host_context));
+		rig.host_context[0] = cached;
+		Need(rig.Load(cached_state) != 0 && rig.Run(b8_rows.data(), (uint32_t)b8_rows.size(), 1u, &b8_lro0_out, 0u, 0u) != 0,
+			model, "sub-block B8 lro=0 runs", cached, 0u, 0u);
+		Need(memcmp(cold_out.data() + (uint64_t)cached * G::kHidden, b8_lro0_out.data(), G::kHidden * sizeof(uint16_t)) == 0,
+			model, "sub-block B8 lro=0 warm(+1) lane0 equals cold bit for bit", cached, 0u, 0u);
+	}
+	Need(rig.KvClean() != 0u, model, "sub-block resume reported no KV access error", cached, 0u, 0u);
+	printf("ok %s sub-block 5c: cached=%u warm(+1..23) + B8 warm(+1) lro=0/1 == cold bit-exact\n", model, cached);
 }
 
 int main(void)
@@ -1247,7 +1315,9 @@ int main(void)
 	CheckPrefixExact<Small27b>(2u, "qwen3.8-27b (bf16 linear)", 64u);
 	CheckPrefixExact<SmallMax>(2u, "qwen3.8-max", 64u);
 	CheckPrefixExact<SmallFlash>(2u, "qwen3.8-flash (dense skip)", 32u);
+	CheckPrefixExact<SmallFlash>(2u, "qwen3.8-flash (32-aligned sub-block)", 96u);
 	CheckPrefixExact<SmallFlash>(2u, "qwen3.8-flash (compact indexer)", 128u);
+	CheckSubBlockResume<SmallFlash>(2u, "qwen3.8-flash (unaligned prompt ckpt)", 69u);
 	printf("PASS qwen38 verify frames: every row of every verify frame equals one-row decode bit for bit, keep_rows restores the gated delta-net, "
 		"n-gram and index-tail state of the kept rows, and a rejected tail leaves no trace\n");
 	return 0;

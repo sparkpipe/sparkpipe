@@ -1,0 +1,2 @@
++145
+dsv41_flash 4c warm-8K sub-block checkpoints & shared split (1.69x MoE) plus qwen3.8-flash 5c exact-edge 0-ULP batch invariance
