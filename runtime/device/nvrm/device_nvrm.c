@@ -27,7 +27,7 @@
 #define NVRM_SLOT_RING_BYTES (8ull << 20)
 #define NVRM_SLOT_RECORDS 4096u
 #define NVRM_IMAGE_RINGS_MAX 2u
-#define NVRM_IMAGE_DOUBLE_LIMIT (4ull << 20)
+#define NVRM_IMAGE_DOUBLE_LIMIT (16ull << 20)
 #define NVRM_DEFAULT_THREADS 1024u
 #define NVRM_BOUNCE_BYTES (8ull << 20)
 #define NVRM_EVENT_CHUNK_BYTES (64u << 10)
@@ -69,6 +69,12 @@ typedef struct NvrmPatchedNode
 	uint32_t has_grid;
 } NvrmPatchedNode;
 
+typedef struct NvrmOverlayCount
+{
+	uint32_t index;
+	uint32_t count;
+} NvrmOverlayCount;
+
 typedef struct NvrmImage
 {
 	SparkNvrmMemory memory;
@@ -91,6 +97,8 @@ typedef struct NvrmImage
 	uint64_t last_sequence[NVRM_IMAGE_RINGS_MAX];
 	SparkDeviceKernel *ops[2];
 	const SparkDeviceKernel **kernels;
+	NvrmOverlayCount *overlay_counts;
+	uint32_t overlay_count;
 	uint32_t latch;
 	uint32_t latch_count;
 	const char *name;
@@ -132,6 +140,7 @@ typedef struct NvrmKernel
 	const NvrmLibrary *library;
 	const SparkNvrmCubinKernel *kernel;
 	SparkDeviceParameter *parameters;
+	int32_t overlay_index;
 } NvrmKernel;
 
 typedef struct NvrmEvent
@@ -1000,6 +1009,7 @@ SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,ENOMEM,"out of host memory"));
 	nvrm->library = library;
 	nvrm->kernel = found;
+	nvrm->overlay_index = -1;
 	status = NvrmKernelLayout(nvrm,kernel,reported);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1022,6 +1032,19 @@ SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *
 	*stack_bytes = nvrm->kernel->stack_bytes;
 	*shared_bytes = nvrm->kernel->shared_bytes;
 	return(SPARK_STATUS_OK);
+}
+
+void SparkNvrmKernelSetOverlayIndex(SparkDeviceKernel *kernel, int32_t overlay_index)
+{
+	NvrmKernel *nvrm = kernel != 0 ? (NvrmKernel *)kernel->backend : 0;
+	if ( nvrm != 0 )
+		nvrm->overlay_index = overlay_index;
+}
+
+int32_t SparkNvrmKernelOverlayIndex(const SparkDeviceKernel *kernel)
+{
+	const NvrmKernel *nvrm = kernel != 0 ? (const NvrmKernel *)kernel->backend : 0;
+	return(nvrm != 0 ? nvrm->overlay_index : -1);
 }
 
 int SparkNvrmOccupancyLimitsOf(SparkNvrmOccupancyLimits *limits)
@@ -1145,6 +1168,8 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	request.slot_bytes = bytes;
 	NvrmLaunchRequestFill(kernel,launch,&request);
 	NVRM_TRY(SparkNvrmLaunch(&nvrm_gpu,NvrmOn(nvrm,&nvrm->channel),&compiled->library->program,&request,&value,queue->owner));
+	if ( SparkNvrmOverlayStatsEnabled() != 0u && compiled->overlay_index >= 0 )
+		SparkNvrmOverlayRecord((uint32_t)compiled->overlay_index,1u,0u);
 	NvrmSlotTaken(nvrm,start,bytes,value);
 	memcpy(nvrm->kernel,kernel->name,sizeof(nvrm->kernel));
 	nvrm->kernel_sequence = queue->submitted;
@@ -1581,6 +1606,7 @@ static void NvrmImageFree(NvrmImage *image)
 	SparkDeviceProgramOpRelease(image->ops[0]);
 	SparkDeviceProgramOpRelease(image->ops[1]);
 	free(image->kernels);
+	free(image->overlay_counts);
 	SparkNvrmLatchRangeGive(image->latch,image->latch_count);
 	if ( image->memory.bytes != 0u )
 		SparkNvrmMemoryRelease(&nvrm_gpu,&image->memory);
@@ -1668,6 +1694,25 @@ static SparkStatus NvrmOpLaunch(const SparkDeviceNode *node, const SparkDeviceKe
 	return(SPARK_STATUS_OK);
 }
 
+static void NvrmImageOverlayAdd(NvrmImage *image, uint32_t overlay_index)
+{
+	uint32_t i;
+	NvrmOverlayCount *grown;
+	for ( i = 0u; i < image->overlay_count; i++ )
+		if ( image->overlay_counts[i].index == overlay_index )
+		{
+			image->overlay_counts[i].count++;
+			return;
+		}
+	grown = (NvrmOverlayCount *)realloc(image->overlay_counts,(size_t)(image->overlay_count + 1u) * sizeof(*grown));
+	if ( grown == 0 )
+		return;
+	image->overlay_counts = grown;
+	image->overlay_counts[image->overlay_count].index = overlay_index;
+	image->overlay_counts[image->overlay_count].count = 1u;
+	image->overlay_count++;
+}
+
 static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *program)
 {
 	uint64_t slots = 0u;
@@ -1703,6 +1748,8 @@ static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *p
 			if ( node->launch.binding_count != 0u )
 				return(NvrmBindingsRefused(node->kernel,"program_finish"));
 			image->kernels[index] = node->kernel;
+			if ( SparkNvrmOverlayStatsEnabled() != 0u && compiled->overlay_index >= 0 )
+				NvrmImageOverlayAdd(image,(uint32_t)compiled->overlay_index);
 			step->kind = SPARK_NVRM_STEP_LAUNCH;
 			step->dependent = node->launch.dependent != 0u ? 1u : 0u;
 			step->slot = slots;
@@ -1818,11 +1865,18 @@ SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDevic
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus NvrmImageSettle(const NvrmImage *image, uint32_t ring)
+static SparkStatus NvrmImageSettle(const NvrmImage *image, uint32_t ring, SparkDeviceQueue *current)
 {
 	NvrmQueue *last;
 	if ( image->last_queue[ring] == 0u )
 		return(SPARK_STATUS_OK);
+	if ( current != 0 && image->last_queue[ring] == current->id )
+	{
+		last = (NvrmQueue *)current->backend;
+		if ( NvrmCompletedSequence(last) >= image->last_sequence[ring] )
+			return(SPARK_STATUS_OK);
+		return(SparkDeviceBackendQueueWait(current,image->last_sequence[ring],SPARK_DEVICE_WAIT_FOREVER));
+	}
 	pthread_mutex_lock(&nvrm_queues_lock);
 	last = NvrmListedLocked(image->last_queue[ring]);
 	pthread_mutex_unlock(&nvrm_queues_lock);
@@ -1898,7 +1952,7 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 	uint32_t index;
 	NVRM_TRY(NvrmRoom(queue,"program_run"));
 	if ( image->per_run != 0u || image->last_queue[ring] != queue->id )
-		NVRM_TRY(NvrmImageSettle(image,ring));
+		NVRM_TRY(NvrmImageSettle(image,ring,queue));
 	for ( index = 0u; status == SPARK_STATUS_OK && index < image->patched_count; index++ )
 	{
 		const NvrmPatchedNode *patched = &image->patched[index];
@@ -1948,6 +2002,9 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 			else if ( image->steps[index].kind == SPARK_NVRM_STEP_RECORD )
 				((NvrmEvent *)program->nodes[index].event->backend)->queue_id = queue->id;
 	}
+	if ( image->overlay_count != 0u )
+		for ( index = 0u; index < image->overlay_count; index++ )
+			SparkNvrmOverlayRecord(image->overlay_counts[index].index,image->overlay_counts[index].count,1u);
 	image->last_queue[ring] = queue->id;
 	image->last_sequence[ring] = queue->submitted;
 	image->ring_next = (ring + 1u) % image->ring_count;

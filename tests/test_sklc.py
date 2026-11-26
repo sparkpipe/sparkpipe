@@ -26,6 +26,11 @@ EXPECTED_KERNELS = [
     "fused_residual_rmsnorm_bf16x8",
     "swiglu_packed_bf16x8",
     "swiglu_pdl_exact_bf16x8",
+    "rmsnorm_pdl_exact_5120_bf16x8",
+    "fused_residual_rmsnorm_pdl_exact_5120_bf16x8",
+    "head_rmsnorm_silu_gate_pdl_exact_128_bf16",
+    "attn_tp1_merge_sigmoid_gate_pdl_exact_bf16",
+    "add_elements_pdl_exact_bf16x8",
     "latent_attn_decode_512_64",
     "router_softmax_256",
     "router_softmax_bf16_256",
@@ -124,10 +129,52 @@ def verify_codegen_invariants():
                     assert idx + 1 < len(k.insns) and (k.insns[idx + 1][0] & 0xFFFF) == 0x7918, f"BAR.SYNC must be followed by NOP in {k.name}"
 
 
+def verify_rename_and_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        cubin_path = pathlib.Path(tmp) / "overlay.cubin"
+        manifest_path = pathlib.Path(tmp) / "overlay.manifest"
+        cmd = [
+            sys.executable,
+            str(SKLC),
+            "--arch",
+            "sm121a",
+            "--only",
+            "swiglu_pdl_exact_bf16x8",
+            "--only",
+            "fused_residual_rmsnorm_pdl_exact_5120_bf16x8",
+            "--only",
+            "head_rmsnorm_silu_gate_pdl_exact_128_bf16",
+            "--rename",
+            "swiglu_pdl_exact_bf16x8=_Z17TestSiluMulKernelILj256EEvPKtPtj",
+            "--rename",
+            "fused_residual_rmsnorm_pdl_exact_5120_bf16x8=_Z17TestRmsNormKernelILj5120ELb1EEvPtPKtPKfS0_f",
+            "--rename",
+            "head_rmsnorm_silu_gate_pdl_exact_128_bf16=_Z28TestHeadRmsNormGateKernelILb0EEvPKtS1_S1_Ptjjjj",
+            str(SKL_DIR / "norm_act.skl"),
+            "-o",
+            str(cubin_path),
+            "--manifest",
+            str(manifest_path),
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"sklc --only/--rename failed: {res.stderr}"
+        mtxt = manifest_path.read_text()
+        kernel_lines = [line for line in mtxt.splitlines() if line.startswith("kernel ")]
+        assert len(kernel_lines) == 3, f"expected exactly 3 selected kernels, got {len(kernel_lines)}:\n{mtxt}"
+        for target in (
+            "_Z17TestSiluMulKernelILj256EEvPKtPtj",
+            "_Z17TestRmsNormKernelILj5120ELb1EEvPtPKtPKfS0_f",
+            "_Z28TestHeadRmsNormGateKernelILb0EEvPKtS1_S1_Ptjjjj",
+        ):
+            assert f"kernel {target} " in mtxt, f"missing renamed kernel {target} in manifest:\n{mtxt}"
+        assert "rmsnorm_bf16_vec16" not in mtxt, f"unselected kernel leaked into manifest:\n{mtxt}"
+
+
 def main():
     verify_arch("sm121", 121)
     verify_arch("sm120", 120)
     verify_long_name_manifest()
+    verify_rename_and_only()
     verify_codegen_invariants()
     print(f"PASS sklc compiled {len(EXPECTED_KERNELS)} kernels cleanly for sm121 and sm120")
 

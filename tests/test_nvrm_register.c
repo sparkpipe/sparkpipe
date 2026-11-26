@@ -407,7 +407,12 @@ static void TestOverlay(const char *root)
 		"overlay kernel with mismatched parameter count fails closed on module scan");
 	setenv("SPARKPIPE_KERNEL_PROVIDER","skl-overlay",1);
 	setenv("SPARKPIPE_SKL_CUBIN_DIR",overlay_dir,1);
+	unsetenv("SPARKPIPE_SKL_OVERLAY_STATS");
 	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"valid skl-overlay directory loads cleanly");
+	CHECK(SparkNvrmOverlayStatsEnabled() == 0u,"overlay stats are disabled when SPARKPIPE_SKL_OVERLAY_STATS is unset");
+	setenv("SPARKPIPE_SKL_OVERLAY_STATS","1",1);
+	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK && SparkNvrmOverlayStatsEnabled() == 1u,
+		"overlay stats activate when SPARKPIPE_SKL_OVERLAY_STATS=1");
 	ModulePaths(root,"overlay_ok.so",module_path,directory);
 	PutPair(directory,"a");
 	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_OK,"module registers cleanly with matching skl-overlay");
@@ -415,8 +420,18 @@ static void TestOverlay(const char *root)
 		SparkNvrmRegisterFunction(module,&hosts[9],"SparkNvrmStreamFill") == SPARK_STATUS_OK,"register overlaid and base functions");
 	CHECK(SparkNvrmRegisteredOverlay(&hosts[8],&overlaid) == SPARK_STATUS_OK && overlaid == 1u,"matching kernel resolves to skl-overlay");
 	CHECK(SparkNvrmRegisteredOverlay(&hosts[9],&overlaid) == SPARK_STATUS_OK && overlaid == 0u,"non-matching kernel stays on base cubin");
+	{
+		uint64_t direct = 99u,program = 99u;
+		SparkNvrmOverlayRecord(0u,3u,0u);
+		SparkNvrmOverlayRecord(0u,64u,1u);
+		CHECK(SparkNvrmOverlayStats("SparkNvrmFirstLight",&direct,&program) == SPARK_STATUS_OK && direct == 3u && program == 64u,
+			"overlay stats record direct and program launch counts");
+		CHECK(SparkNvrmOverlayStats("SparkNvrmStreamFill",&direct,&program) == SPARK_STATUS_NOT_FOUND,
+			"non-overlaid kernel is absent from overlay stats");
+	}
 	unsetenv("SPARKPIPE_KERNEL_PROVIDER");
 	unsetenv("SPARKPIPE_SKL_CUBIN_DIR");
+	unsetenv("SPARKPIPE_SKL_OVERLAY_STATS");
 	CHECK(SparkNvrmOverlayReload() == SPARK_STATUS_OK,"reset overlay to default after overlay tests");
 }
 

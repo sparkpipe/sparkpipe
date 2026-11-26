@@ -7,9 +7,18 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKLC = ROOT / "tools" / "sklc" / "sklc.py"
+NORM_ACT_SKL = ROOT / "inference" / "kernels" / "skl" / "norm_act.skl"
 HOSTED_BIN = ROOT / "build" / "test_nvrm_hosted_launch"
 NVRM_LIB = ROOT / "build" / "runtime_libs" / "libsparkpipe_device_nvrm.so"
 FORBIDDEN_LIBS = ("libcuda", "libcudart", "libnvidia")
+PROD_OVERLAY_KERNELS = (
+    ("swiglu_pdl_exact_bf16x8", "_Z17QwenSiluMulKernelILj256EEvPKtPtj"),
+    ("rmsnorm_pdl_exact_5120_bf16x8", "_Z17QwenRmsNormKernelILj5120ELb0EEvPtPKtPKfS0_f"),
+    ("fused_residual_rmsnorm_pdl_exact_5120_bf16x8", "_Z17QwenRmsNormKernelILj5120ELb1EEvPtPKtPKfS0_f"),
+    ("head_rmsnorm_silu_gate_pdl_exact_128_bf16", "_Z28QwenGdnHeadRmsNormGateKernelILb0EEvPKtS1_S1_Ptjjjj"),
+    ("attn_tp1_merge_sigmoid_gate_pdl_exact_bf16", "_Z28QwenHybridTp1MergeGateKernelILj24ELj256ELj14336EEvPKfPKtPtj"),
+    ("add_elements_pdl_exact_bf16x8", "_Z19LmAddElementsKernelPtPKtm"),
+)
 
 SKL_EXACT = """kernel[128, 32] _Z10HostedStepILj7EEvPjj(global u32* output, u32 base) {
     reg u32 index = ctaid_x() * 128 + tid_x();
@@ -60,8 +69,23 @@ def run_hosted(env_extra):
     env = dict(os.environ)
     env.pop("SPARKPIPE_KERNEL_PROVIDER", None)
     env.pop("SPARKPIPE_SKL_CUBIN_DIR", None)
+    env.pop("SPARKPIPE_SKL_OVERLAY_STATS", None)
     env.update(env_extra)
     return subprocess.run([str(HOSTED_BIN)], env=env, capture_output=True, text=True, check=False)
+
+
+def verify_multi_kernel_overlay_bundle(directory):
+    cubin_path = directory / "multi_hot6.cubin"
+    manifest_path = directory / "multi_hot6.manifest"
+    cmd = [sys.executable, str(SKLC), "--arch", "sm121a"]
+    for src_name, dst_name in PROD_OVERLAY_KERNELS:
+        cmd.extend(["--only", src_name, "--rename", f"{src_name}={dst_name}"])
+    cmd.extend([str(NORM_ACT_SKL), "-o", str(cubin_path), "--manifest", str(manifest_path)])
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    assert res.returncode == 0, f"sklc multi-kernel overlay bundle failed: {res.stderr}"
+    mtxt = manifest_path.read_text(encoding="utf-8")
+    for _, dst_name in PROD_OVERLAY_KERNELS:
+        assert f"kernel {dst_name} " in mtxt, f"missing {dst_name} in multi-kernel overlay manifest"
 
 
 def main():
@@ -87,6 +111,7 @@ def main():
         compile_overlay(exact_dir, "hosted_step", SKL_EXACT)
         compile_overlay(sentinel_dir, "hosted_step", SKL_SENTINEL)
         compile_overlay(bad_abi_dir, "hosted_step", SKL_BAD_ABI)
+        verify_multi_kernel_overlay_bundle(exact_dir)
 
         res_exact = run_hosted({
             "SPARKPIPE_KERNEL_PROVIDER": "skl-overlay",
@@ -96,9 +121,25 @@ def main():
         assert res_exact.returncode == 0 and "PASS LM_LAUNCH" in res_exact.stdout, (
             f"exact skl-overlay run failed:\nstdout={res_exact.stdout}\nstderr={res_exact.stderr}"
         )
+        assert "skl-overlay stats:" not in res_exact.stderr, f"stats printed while unset:\n{res_exact.stderr}"
         lower_dbg = res_exact.stderr.lower()
         for bad in FORBIDDEN_LIBS:
             assert bad not in lower_dbg, f"forbidden library {bad} mapped at runtime:\n{res_exact.stderr}"
+
+        res_stats = run_hosted({
+            "SPARKPIPE_KERNEL_PROVIDER": "skl-overlay",
+            "SPARKPIPE_SKL_CUBIN_DIR": str(exact_dir),
+            "SPARKPIPE_SKL_OVERLAY_STATS": "1",
+        })
+        assert res_stats.returncode == 0 and "PASS LM_LAUNCH" in res_stats.stdout, (
+            f"stats skl-overlay run failed:\nstdout={res_stats.stdout}\nstderr={res_stats.stderr}"
+        )
+        assert "nvrm: skl-overlay: bound _Z10HostedStepILj7EEvPjj ->" in res_stats.stderr, (
+            f"missing overlay bind line:\n{res_stats.stderr}"
+        )
+        assert "nvrm: skl-overlay stats: kernel=_Z10HostedStepILj7EEvPjj direct=3 program=0 total=3" in res_stats.stderr, (
+            f"missing overlay stats launch count:\n{res_stats.stderr}"
+        )
 
         res_sentinel = run_hosted({
             "SPARKPIPE_KERNEL_PROVIDER": "skl-overlay",
