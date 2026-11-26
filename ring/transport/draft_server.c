@@ -22,8 +22,8 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the DFT3 wire format 
 #define DRAFT_SERVER_MAGIC_BYTES 4u
 #define DRAFT_SERVER_NS_PER_MS UINT64_C(1000000)
 #define DRAFT_SERVER_CLOSED (-1)
-#define DRAFT_SERVER_RX_BUFFER_BYTES 262144u
-#define DRAFT_SERVER_SOCKBUF_BYTES (512 * 1024)
+#define DRAFT_SERVER_RX_BUFFER_BYTES (512u * 1024u)
+#define DRAFT_SERVER_SOCKBUF_BYTES (2 * 1024 * 1024)
 
 #define DRAFT_SERVER_PHASE_IDLE 0u
 #define DRAFT_SERVER_PHASE_HEADER 1u
@@ -48,6 +48,7 @@ struct SparkDraftServer
 	uint8_t header[SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES];
 	uint64_t header_got;
 	uint8_t *body;
+	const uint8_t *body_view;
 	uint64_t body_capacity;
 	uint64_t body_expected;
 	uint64_t body_got;
@@ -126,6 +127,7 @@ static void DraftServerDrop(SparkDraftServer *server)
 	server->phase = DRAFT_SERVER_PHASE_IDLE;
 	server->header_got = 0u;
 	server->body_got = 0u;
+	server->body_view = 0;
 	server->rx_head = 0u;
 	server->rx_tail = 0u;
 	server->reply_bytes = 0u;
@@ -300,8 +302,11 @@ static uint32_t DraftServerBodyDone(SparkDraftServer *server, SparkDraftServerRe
 	parsed.sampling.inverse_temperature = DraftServerF32(header + 104u);
 	parsed.sampling.nucleus = DraftServerF32(header + 108u);
 	parsed.sampling.top_k = DraftServerU32(header + 112u);
-	parsed.committed_token_ids = (const uint32_t *)(const void *)server->body;
-	parsed.tap_rows = parsed.tap_row_count != 0u ? server->body + (uint64_t)parsed.committed_token_count * sizeof(uint32_t) : 0;
+	{
+		const uint8_t *body = server->body_view != 0 ? server->body_view : server->body;
+		parsed.committed_token_ids = (const uint32_t *)(const void *)body;
+		parsed.tap_rows = parsed.tap_row_count != 0u ? body + (uint64_t)parsed.committed_token_count * sizeof(uint32_t) : 0;
+	}
 	parsed.received_ns = SparkMonotonicNs();
 	if ( DraftServerU32(header + 4u) != SPARK_DRAFT_BRIDGE_PROTOCOL_VERSION )
 		DraftServerRefuse(server, 0u, "its protocol version is not 2");
@@ -330,6 +335,7 @@ static uint32_t DraftServerBodyDone(SparkDraftServer *server, SparkDraftServerRe
 
 static uint32_t DraftServerReceive(SparkDraftServer *server, uint8_t *destination, uint64_t want, uint64_t *got)
 {
+	uint32_t received_any = 0u;
 	while ( *got < want )
 	{
 		const uint64_t need = want - *got;
@@ -358,7 +364,7 @@ static uint32_t DraftServerReceive(SparkDraftServer *server, uint8_t *destinatio
 			part = recv(server->socket_fd, server->rx_buffer, DRAFT_SERVER_RX_BUFFER_BYTES, 0);
 		if ( part > 0 )
 		{
-			DraftServerQuickAck(server->socket_fd);
+			received_any = 1u;
 			if ( server->deadline_ns == 0u )
 				server->deadline_ns = DraftServerDeadline(server);
 			if ( need >= DRAFT_SERVER_RX_BUFFER_BYTES || server->rx_buffer == 0 )
@@ -370,10 +376,16 @@ static uint32_t DraftServerReceive(SparkDraftServer *server, uint8_t *destinatio
 		if ( part < 0 && errno == EINTR )
 			continue;
 		if ( part < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
+		{
+			if ( received_any != 0u )
+				DraftServerQuickAck(server->socket_fd);
 			return 0u;
+		}
 		DraftServerDrop(server);
 		return 0u;
 	}
+	if ( received_any != 0u )
+		DraftServerQuickAck(server->socket_fd);
 	return 1u;
 }
 
@@ -545,11 +557,23 @@ SparkStatus SparkDraftServerAdvance(SparkDraftServer *server, SparkDraftServerRe
 		}
 		else if ( phase == DRAFT_SERVER_PHASE_BODY )
 		{
-			if ( DraftServerReceive(server, server->body, server->body_expected, &server->body_got) == 0u )
+			if ( server->body_got == 0u && server->rx_buffer != 0 &&
+				server->rx_tail - server->rx_head >= server->body_expected &&
+				(((uintptr_t)(server->rx_buffer + server->rx_head)) & (sizeof(uint32_t) - 1u)) == 0u )
 			{
-				if ( server->socket_fd != DRAFT_SERVER_CLOSED && server->reply_sent < server->reply_bytes )
-					DraftServerSend(server);
-				return SPARK_STATUS_PENDING;
+				server->body_view = server->rx_buffer + server->rx_head;
+				server->rx_head += server->body_expected;
+				server->body_got = server->body_expected;
+			}
+			else
+			{
+				if ( DraftServerReceive(server, server->body, server->body_expected, &server->body_got) == 0u )
+				{
+					if ( server->socket_fd != DRAFT_SERVER_CLOSED && server->reply_sent < server->reply_bytes )
+						DraftServerSend(server);
+					return SPARK_STATUS_PENDING;
+				}
+				server->body_view = server->body;
 			}
 			if ( DraftServerBodyDone(server, request_out) != 0u )
 				return SPARK_STATUS_OK;

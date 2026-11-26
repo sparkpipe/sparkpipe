@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #define SPARK_DRAFT_BRIDGE_HOST_BYTES 256u
@@ -23,7 +24,7 @@
 #define SPARK_DRAFT_BRIDGE_NS_PER_MS UINT64_C(1000000)
 #define SPARK_DRAFT_BRIDGE_DISCONNECTED_FD (-1)
 #define SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES 65536u
-#define SPARK_DRAFT_BRIDGE_SOCKBUF_BYTES (512 * 1024)
+#define SPARK_DRAFT_BRIDGE_SOCKBUF_BYTES (2 * 1024 * 1024)
 
 #define SPARK_DRAFT_BRIDGE_PHASE_IDLE 0u
 #define SPARK_DRAFT_BRIDGE_PHASE_CONNECT 1u
@@ -441,6 +442,7 @@ static SparkStatus SparkDraftBridgeReceive(
     uint64_t need;
     uint64_t avail;
     uint64_t take;
+    uint32_t received_any = 0u;
 
     while (bridge->response_bytes < bridge->response_expected)
     {
@@ -486,13 +488,17 @@ static SparkStatus SparkDraftBridgeReceive(
         }
         if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
         {
+            if (received_any != 0u)
+            {
+                SparkDraftBridgeQuickAck(bridge->socket_fd);
+            }
             return SparkDraftBridgeBlocked(bridge);
         }
         if (got <= 0)
         {
             return SparkDraftBridgeFailTransport(bridge);
         }
-        SparkDraftBridgeQuickAck(bridge->socket_fd);
+        received_any = 1u;
         if (need >= SPARK_DRAFT_BRIDGE_RX_BUFFER_BYTES || bridge->rx_buffer == 0)
         {
             bridge->response_bytes += (uint64_t)got;
@@ -501,6 +507,10 @@ static SparkStatus SparkDraftBridgeReceive(
         {
             bridge->rx_tail = (uint64_t)got;
         }
+    }
+    if (received_any != 0u)
+    {
+        SparkDraftBridgeQuickAck(bridge->socket_fd);
     }
     return SPARK_STATUS_OK;
 }
@@ -759,6 +769,157 @@ static SparkStatus SparkDraftBridgeReserveRequest(
     return SPARK_STATUS_OK;
 }
 
+static void SparkDraftBridgeEncodeHeader(
+    uint8_t *cursor,
+    const SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
+    uint64_t sequence_id,
+    uint64_t generation,
+    uint64_t position,
+    uint32_t anchor_token_id,
+    uint32_t committed_token_count,
+    uint32_t tap_row_count,
+    uint32_t depth,
+    uint32_t time_budget_ms,
+    uint32_t max_depth,
+    const SparkRowSampling *sampling,
+    uint32_t node_capacity)
+{
+    const uint64_t seed = sampling != 0 ? sampling->seed : 0u;
+    const float inverse_temperature = sampling != 0 ? sampling->inverse_temperature : 0.0f;
+    const float nucleus = sampling != 0 ? sampling->nucleus : 0.0f;
+    uint32_t bits;
+
+    memcpy(cursor, SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC, SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES);
+    cursor += SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES;
+    SparkDraftBridgePutU32Le(cursor, SPARK_DRAFT_BRIDGE_PROTOCOL_VERSION);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, speculator_mask);
+    cursor += sizeof(uint32_t);
+    memcpy(cursor, bridge->target_model, SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES);
+    cursor += SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES;
+    SparkDraftBridgePutU64Le(cursor, sequence_id);
+    cursor += sizeof(uint64_t);
+    SparkDraftBridgePutU64Le(cursor, generation);
+    cursor += sizeof(uint64_t);
+    SparkDraftBridgePutU64Le(cursor, position);
+    cursor += sizeof(uint64_t);
+    SparkDraftBridgePutU32Le(cursor, anchor_token_id);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, committed_token_count);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, tap_row_count);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, depth);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, time_budget_ms);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, max_depth);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, node_capacity);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU64Le(cursor, seed);
+    cursor += sizeof(uint64_t);
+    memcpy(&bits, &inverse_temperature, sizeof(bits));
+    SparkDraftBridgePutU32Le(cursor, bits);
+    cursor += sizeof(uint32_t);
+    memcpy(&bits, &nucleus, sizeof(bits));
+    SparkDraftBridgePutU32Le(cursor, bits);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, sampling != 0 ? sampling->top_k : 0u);
+    cursor += sizeof(uint32_t);
+    SparkDraftBridgePutU32Le(cursor, 0u);
+}
+
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+static SparkStatus SparkDraftBridgeSendDirect(
+    SparkDraftBridge *bridge,
+    const uint8_t *header,
+    const uint32_t *committed_token_ids,
+    uint64_t token_bytes,
+    const void *tap_rows,
+    uint64_t tap_bytes,
+    uint64_t message_bytes)
+{
+    struct iovec iov[3];
+    struct msghdr msg;
+    ssize_t put;
+    uint64_t written = 0u;
+    uint64_t remaining;
+    uint8_t *dst;
+    uint32_t seg;
+#ifdef MSG_NOSIGNAL
+    const int send_flags = MSG_NOSIGNAL;
+#else
+    const int send_flags = 0;
+#endif
+    SparkStatus status;
+
+    iov[0].iov_base = (void *)header;
+    iov[0].iov_len = SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES;
+    iov[1].iov_base = (void *)committed_token_ids;
+    iov[1].iov_len = (size_t)token_bytes;
+    iov[2].iov_base = (void *)tap_rows;
+    iov[2].iov_len = (size_t)tap_bytes;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = iov;
+    msg.msg_iovlen = tap_bytes != 0u ? 3 : 2;
+    do
+    {
+        put = sendmsg(bridge->socket_fd, &msg, send_flags);
+    } while (put < 0 && errno == EINTR);
+    if (put == (ssize_t)message_bytes)
+    {
+        bridge->request_bytes = 0u;
+        bridge->request_sent = 0u;
+        bridge->sent_any = 1u;
+        if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+        {
+            bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_HEADER;
+            bridge->response_bytes = 0u;
+            bridge->response_expected = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES;
+        }
+        return SPARK_STATUS_OK;
+    }
+    if (put < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+        return SparkDraftBridgeFailTransport(bridge);
+    }
+    if (put == 0)
+    {
+        return SparkDraftBridgeFailTransport(bridge);
+    }
+    if (put > 0)
+    {
+        written = (uint64_t)put;
+        bridge->sent_any = 1u;
+    }
+    remaining = message_bytes - written;
+    bridge->request_bytes = 0u;
+    bridge->request_sent = 0u;
+    status = SparkDraftBridgeReserveRequest(bridge, remaining);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkDraftBridgeFailTransport(bridge);
+    }
+    dst = bridge->request_buffer;
+    for (seg = 0u; seg < (tap_bytes != 0u ? 3u : 2u); ++seg)
+    {
+        const uint64_t seg_len = (uint64_t)iov[seg].iov_len;
+        if (written >= seg_len)
+        {
+            written -= seg_len;
+            continue;
+        }
+        memcpy(dst, (const uint8_t *)iov[seg].iov_base + written, (size_t)(seg_len - written));
+        dst += seg_len - written;
+        written = 0u;
+    }
+    bridge->request_bytes = remaining;
+    return SparkDraftBridgeBlocked(bridge);
+}
+#endif
+
 static SparkStatus SparkDraftBridgeSubmitTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
@@ -783,10 +944,6 @@ static SparkStatus SparkDraftBridgeSubmitTree(
     uint64_t tap_bytes;
     uint64_t message_bytes;
     uint32_t tail;
-    const uint64_t seed = sampling != 0 ? sampling->seed : 0u;
-    const float inverse_temperature = sampling != 0 ? sampling->inverse_temperature : 0.0f;
-    const float nucleus = sampling != 0 ? sampling->nucleus : 0.0f;
-    uint32_t bits;
 
     if (bridge == 0 || committed_token_ids == 0)
     {
@@ -844,58 +1001,55 @@ static SparkStatus SparkDraftBridgeSubmitTree(
         (uint64_t)SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES +
         token_bytes +
         tap_bytes;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    if (bridge->batch_cork == 0u &&
+        bridge->request_sent == bridge->request_bytes &&
+        bridge->socket_fd != SPARK_DRAFT_BRIDGE_DISCONNECTED_FD &&
+        bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_CONNECT)
+    {
+        uint8_t header[SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES];
+        SparkDraftBridgeEncodeHeader(
+            header, bridge, speculator_mask, sequence_id, generation, position,
+            anchor_token_id, committed_token_count, tap_row_count, depth,
+            time_budget_ms, max_depth, sampling, node_capacity);
+        tail = (bridge->inflight_head + bridge->inflight_count) %
+            SPARK_DRAFT_BRIDGE_MAX_PIPELINE;
+        bridge->inflight[tail].sequence_id = sequence_id;
+        bridge->inflight[tail].generation = generation;
+        bridge->inflight[tail].node_capacity = node_capacity;
+        bridge->inflight_count++;
+        if (bridge->inflight_count == 1u)
+        {
+            bridge->response_bytes = 0u;
+            bridge->response_expected = 0u;
+            bridge->node_count = 0u;
+            bridge->server_status = 0u;
+            bridge->stale = 0u;
+            bridge->sent_any = 0u;
+            bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_SEND;
+            bridge->deadline_ns = SparkDraftBridgeDeadline(bridge->io_timeout_ms);
+        }
+        status = SparkDraftBridgeSendDirect(
+            bridge, header, committed_token_ids, token_bytes, tap_rows, tap_bytes, message_bytes);
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
+        {
+            bridge->inflight_count = 1u;
+            bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_FAILED;
+        }
+        return SPARK_STATUS_OK;
+    }
+#endif
     status = SparkDraftBridgeReserveRequest(bridge, message_bytes);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
     cursor = bridge->request_buffer + bridge->request_bytes;
-    memcpy(
-        cursor,
-        SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC,
-        SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES);
-    cursor += SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES;
-    SparkDraftBridgePutU32Le(cursor, SPARK_DRAFT_BRIDGE_PROTOCOL_VERSION);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, speculator_mask);
-    cursor += sizeof(uint32_t);
-    memcpy(
-        cursor,
-        bridge->target_model,
-        SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES);
-    cursor += SPARK_DRAFT_BRIDGE_TARGET_MODEL_BYTES;
-    SparkDraftBridgePutU64Le(cursor, sequence_id);
-    cursor += sizeof(uint64_t);
-    SparkDraftBridgePutU64Le(cursor, generation);
-    cursor += sizeof(uint64_t);
-    SparkDraftBridgePutU64Le(cursor, position);
-    cursor += sizeof(uint64_t);
-    SparkDraftBridgePutU32Le(cursor, anchor_token_id);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, committed_token_count);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, tap_row_count);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, depth);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, time_budget_ms);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, max_depth);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, node_capacity);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU64Le(cursor, seed);
-    cursor += sizeof(uint64_t);
-    memcpy(&bits, &inverse_temperature, sizeof(bits));
-    SparkDraftBridgePutU32Le(cursor, bits);
-    cursor += sizeof(uint32_t);
-    memcpy(&bits, &nucleus, sizeof(bits));
-    SparkDraftBridgePutU32Le(cursor, bits);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, sampling != 0 ? sampling->top_k : 0u);
-    cursor += sizeof(uint32_t);
-    SparkDraftBridgePutU32Le(cursor, 0u);
-    cursor += sizeof(uint32_t);
+    SparkDraftBridgeEncodeHeader(
+        cursor, bridge, speculator_mask, sequence_id, generation, position,
+        anchor_token_id, committed_token_count, tap_row_count, depth,
+        time_budget_ms, max_depth, sampling, node_capacity);
+    cursor += SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES;
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     memcpy(cursor, committed_token_ids, (size_t)token_bytes);
     cursor += token_bytes;
