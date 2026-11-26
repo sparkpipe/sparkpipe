@@ -4,8 +4,8 @@
 
 static const uint16_t SparkSpeculationFrameCandidates[] =
 {
-	1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u, 16u, 20u, 24u, 28u, 32u, 40u, 48u, 56u, 64u,
-	80u, 96u, 112u, 128u, 160u, 192u, 224u, 255u
+	1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u, 19u, 23u, 27u, 31u, 39u, 47u, 55u, 63u,
+	79u, 95u, 111u, 127u, 159u, 191u, 223u, 255u
 };
 
 static uint32_t SparkSpeculationFrameLog2Ceil(uint32_t value)

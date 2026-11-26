@@ -4155,7 +4155,10 @@ static uint32_t SparkModelBatchPlanBranches(
 	const uint32_t *tokens,
 	uint32_t position,
 	uint32_t depth_cap,
-	uint32_t node_budget)
+	uint32_t node_budget,
+	const SparkSpeculationLookupMatch *ranked_matches,
+	uint32_t ranked_count,
+	uint32_t ranked_valid)
 {
 	SparkSpeculationLookupMatch matches[SPARK_MODEL_BATCH_TREE_LOOKUP_ALTERNATES + 1u];
 	float trunk_survival[SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE + 1u];
@@ -4169,6 +4172,7 @@ static uint32_t SparkModelBatchPlanBranches(
 	const uint32_t context = position + 1u > plan->context ? position + 1u : plan->context;
 	const float branch_min = engine->draft_min_confidence < SPARK_MODEL_BATCH_TREE_BRANCH_MIN_CONFIDENCE ?
 		engine->draft_min_confidence : SPARK_MODEL_BATCH_TREE_BRANCH_MIN_CONFIDENCE;
+	const SparkSpeculationLookupMatch *active_matches = matches;
 	uint32_t row,match_count = 0u,candidate,branches = 0u,branch_cap,node;
 	float token_ns,wait_ns;
 	request->draft_tree = 0u;
@@ -4203,12 +4207,17 @@ static uint32_t SparkModelBatchPlanBranches(
 			trunk_survival[row] = trunk_survival[row - 1u] * (factor < 1.0f ? factor : 1.0f);
 		}
 	}
-	if ( SparkSpeculationLookupIndexFindRanked(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,matches,
+	if ( ranked_valid != 0u )
+	{
+		active_matches = ranked_matches;
+		match_count = ranked_count;
+	}
+	else if ( SparkSpeculationLookupIndexFindRanked(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,matches,
 			SPARK_MODEL_BATCH_TREE_LOOKUP_ALTERNATES + 1u,&match_count) != SPARK_STATUS_OK )
 		match_count = 0u;
 	for (candidate=0u; candidate<match_count && branches<SPARK_MODEL_BATCH_TREE_BRANCHES; candidate++)
 	{
-		const SparkSpeculationLookupMatch *match = &matches[candidate];
+		const SparkSpeculationLookupMatch *match = &active_matches[candidate];
 		const uint32_t frame_class = SparkSpeculationFrameClass(match->match_length,sampled);
 		const uint32_t distance = position - match->source_end;
 		uint32_t fork,usable,index;
@@ -4331,11 +4340,11 @@ static uint32_t SparkModelBatchPlanDraft(
 	uint32_t slot,
 	uint32_t draft_limit)
 {
-	SparkSpeculationLookupMatch match;
+	SparkSpeculationLookupMatch match,ranked[SPARK_MODEL_BATCH_TREE_LOOKUP_ALTERNATES + 1u];
 	SparkSpeculationFrameRequest frame;
 	SparkSpeculationFrameChoice choice;
 	SparkModelBatchPlan plan = *shared;
-	uint32_t position = 0u,limit,distance,index,depth_cap;
+	uint32_t position = 0u,limit,distance,index,depth_cap,ranked_count = 0u,ranked_valid = 0u,found = 0u;
 	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
 	request->draft_count = 0u;
 	request->draft_tree = 0u;
@@ -4350,12 +4359,23 @@ static uint32_t SparkModelBatchPlanDraft(
 		if ( chain != 0.0f && (plan.cost_cap_ns == 0.0f || chain < plan.cost_cap_ns) )
 			plan.cost_cap_ns = chain;
 	}
-	if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) != SPARK_STATUS_OK ||
-		(engine->draft_bridge != 0 && match.match_length < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
+	if ( engine->tree_capable != 0u && plan.lanes == 1u && request->sampling.logprobs == 0u )
+	{
+		ranked_valid = 1u;
+		if ( SparkSpeculationLookupIndexFindRanked(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,
+				ranked,SPARK_MODEL_BATCH_TREE_LOOKUP_ALTERNATES + 1u,&ranked_count) == SPARK_STATUS_OK && ranked_count != 0u )
+		{
+			match = ranked[0];
+			found = 1u;
+		}
+	}
+	else if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK )
+		found = 1u;
+	if ( found == 0u || (engine->draft_bridge != 0 && match.match_length < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
 	{
 		const uint32_t count = engine->draft_bridge != 0 && plan.allow_model_drafts != 0u && plan.lanes <= SPARK_MODEL_BATCH_MODEL_DRAFT_LANES ?
 			SparkModelBatchPlanModelDraft(engine,&plan,request,slot,tokens,position,limit) : 0u;
-		return(count != 0u ? count + SparkModelBatchPlanBranches(engine,&plan,request,tokens,position,depth_cap,draft_limit) : 0u);
+		return(count != 0u ? count + SparkModelBatchPlanBranches(engine,&plan,request,tokens,position,depth_cap,draft_limit,ranked,ranked_count,ranked_valid) : 0u);
 	}
 	distance = position - match.source_end;
 	if ( distance == 0u )
@@ -4391,7 +4411,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	request->draft_match = match.match_length;
 	request->draft_expected = choice.expected_tokens;
 	request->draft_frame_ns = choice.frame_ns;
-	return(choice.drafts + SparkModelBatchPlanBranches(engine,&plan,request,tokens,position,depth_cap,draft_limit));
+	return(choice.drafts + SparkModelBatchPlanBranches(engine,&plan,request,tokens,position,depth_cap,draft_limit,ranked,ranked_count,ranked_valid));
 }
 
 static uint32_t SparkModelBatchVerifyRowBucketAligned(uint32_t total_rows)
@@ -4434,8 +4454,28 @@ static void SparkModelBatchObserveBatchDraftWait(SparkModelBatchEngine *engine, 
 	engine->batch_draft_wait_lanes += SPARK_MODEL_BATCH_DRAFT_WAIT_WEIGHT * ((float)fetched - engine->batch_draft_wait_lanes);
 }
 
+typedef struct SparkModelBatchDraftPlanState
+{
+	uint8_t lane_kind[SPARK_MODEL_BATCH_VERIFY_LANES], lane_model[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint8_t lane_lookup_checked[SPARK_MODEL_BATCH_VERIFY_LANES], lane_lookup_found[SPARK_MODEL_BATCH_VERIFY_LANES];
+	SparkSpeculationLookupMatch lane_lookup[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_cap[SPARK_MODEL_BATCH_VERIFY_LANES], lane_model_rows[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_position[SPARK_MODEL_BATCH_VERIFY_LANES], lane_source_end[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_distance[SPARK_MODEL_BATCH_VERIFY_LANES], lane_match[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t lane_class[SPARK_MODEL_BATCH_VERIFY_LANES], alloc[SPARK_MODEL_BATCH_VERIFY_LANES];
+	uint32_t best_alloc[SPARK_MODEL_BATCH_VERIFY_LANES], fetched_model;
+	uint32_t model_tokens[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
+	float model_path[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
+	float model_survival[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
+	float lane_hazard[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_SPECULATION_FRAME_DEPTH_BUCKETS];
+	float lane_cost_cap[SPARK_MODEL_BATCH_VERIFY_LANES], next_survival[SPARK_MODEL_BATCH_VERIFY_LANES];
+	float lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES], best_lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES];
+	float wave_wait_ns;
+} SparkModelBatchDraftPlanState;
+
 static uint32_t SparkModelBatchPrefetchBatchDrafts(
 	SparkModelBatchEngine *engine,
+	SparkModelBatchDraftPlanState *st,
 	uint32_t lane_count,
 	uint32_t context,
 	uint32_t draft_limit,
@@ -4456,7 +4496,6 @@ static uint32_t SparkModelBatchPrefetchBatchDrafts(
 		const uint32_t slot = engine->scratch_request_slots[lane];
 		const SparkModelBatchRequestState *request = &engine->requests[slot];
 		const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
-		SparkSpeculationLookupMatch match;
 		uint32_t position = 0u,limit,depth;
 		limit = SparkModelBatchLaneDraftLimit(engine,request,draft_limit < rows_left ? draft_limit : rows_left,&position);
 		if ( limit == 0u || request->generated_token_count < request->model_backoff_until ||
@@ -4466,8 +4505,10 @@ static uint32_t SparkModelBatchPrefetchBatchDrafts(
 			open_asks = 1u;
 		if ( !(SparkModelBatchBaselineStepCost(engine,lane_count,position + 1u > context ? position + 1u : context) > 0.0f) )
 			continue;
-		if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK &&
-			match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH )
+		st->lane_lookup_checked[lane] = 1u;
+		st->lane_lookup_found[lane] = SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,
+			SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&st->lane_lookup[lane]) == SPARK_STATUS_OK ? 1u : 0u;
+		if ( st->lane_lookup_found[lane] != 0u && st->lane_lookup[lane].match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH )
 			continue;
 		depth = engine->draft_depth < limit ? engine->draft_depth : limit;
 		if ( depth == 0u )
@@ -4532,23 +4573,6 @@ static uint32_t SparkModelBatchPrefetchBatchDrafts(
 	}
 	return(1u);
 }
-
-typedef struct SparkModelBatchDraftPlanState
-{
-	uint8_t lane_kind[SPARK_MODEL_BATCH_VERIFY_LANES], lane_model[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_cap[SPARK_MODEL_BATCH_VERIFY_LANES], lane_model_rows[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_position[SPARK_MODEL_BATCH_VERIFY_LANES], lane_source_end[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_distance[SPARK_MODEL_BATCH_VERIFY_LANES], lane_match[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t lane_class[SPARK_MODEL_BATCH_VERIFY_LANES], alloc[SPARK_MODEL_BATCH_VERIFY_LANES];
-	uint32_t best_alloc[SPARK_MODEL_BATCH_VERIFY_LANES], fetched_model;
-	uint32_t model_tokens[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
-	float model_path[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
-	float model_survival[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
-	float lane_hazard[SPARK_MODEL_BATCH_VERIFY_LANES][SPARK_SPECULATION_FRAME_DEPTH_BUCKETS];
-	float lane_cost_cap[SPARK_MODEL_BATCH_VERIFY_LANES], next_survival[SPARK_MODEL_BATCH_VERIFY_LANES];
-	float lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES], best_lane_expected[SPARK_MODEL_BATCH_VERIFY_LANES];
-	float wave_wait_ns;
-} SparkModelBatchDraftPlanState;
 
 static void SparkModelBatchPrepLookupLane(SparkModelBatchEngine *engine, SparkModelBatchDraftPlanState *st,
 	uint32_t lane, SparkModelBatchRequestState *request, const uint32_t *tokens_ptr,
@@ -4729,7 +4753,7 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 		if ( request->prompt_token_count + request->generated_token_count > context )
 			context = request->prompt_token_count + request->generated_token_count;
 	}
-	if ( SparkModelBatchPrefetchBatchDrafts(engine,lane_count,context,draft_limit,rows_left,&allow_model_drafts) == 0u )
+	if ( SparkModelBatchPrefetchBatchDrafts(engine,&st,lane_count,context,draft_limit,rows_left,&allow_model_drafts) == 0u )
 		return(1u);
 	step_ns = SparkModelBatchBaselineStepCost(engine,lane_count,context);
 	if ( step_ns == 0.0f )
@@ -4745,7 +4769,7 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 		const uint32_t *tokens_ptr = SparkModelBatchRequestTokens(engine,slot);
 		const uint32_t sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
 		SparkSpeculationLookupMatch match;
-		uint32_t position = 0u,limit;
+		uint32_t position = 0u,limit,has_match;
 		request->draft_count = 0u;
 		request->draft_tree = 0u;
 		request->model_draft_rows = 0u;
@@ -4762,8 +4786,14 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 			if ( chain != 0.0f && (cost_cap_ns == 0.0f || chain < cost_cap_ns) )
 				st.lane_cost_cap[lane] = chain;
 		}
-		if ( SparkSpeculationLookupIndexFind(&request->lookup,tokens_ptr,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK &&
-			(engine->draft_bridge == 0 || match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
+		if ( st.lane_lookup_checked[lane] != 0u )
+		{
+			has_match = st.lane_lookup_found[lane];
+			match = st.lane_lookup[lane];
+		}
+		else
+			has_match = SparkSpeculationLookupIndexFind(&request->lookup,tokens_ptr,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK ? 1u : 0u;
+		if ( has_match != 0u && (engine->draft_bridge == 0 || match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
 			SparkModelBatchPrepLookupLane(engine,&st,lane,request,tokens_ptr,&match,position,sampled,limit);
 		else if ( engine->draft_bridge != 0 && allow_model_drafts != 0u && lane_count <= SPARK_MODEL_BATCH_MODEL_DRAFT_LANES )
 			SparkModelBatchPrepModelLane(engine,&st,lane,slot,request,tokens_ptr,position,sampled,limit);

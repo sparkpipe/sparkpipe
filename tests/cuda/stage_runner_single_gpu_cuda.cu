@@ -266,6 +266,7 @@ static SparkStageRunnerState *LoneStateRows(SparkStageRunnerModelInterface *mode
 	state->geometry.vocab = LONE_VOCAB;
 	state->geometry.rms_epsilon = 1e-6f;
 	state->geometry.input_width = input_width;
+	state->graph_max_active = StageRunnerGraphMaxActive();
 	runner->private_state = state;
 	runner->tp_degree = 1u;
 	if ( SparkGpuStreamCreateWithFlags(&state->stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
@@ -452,12 +453,154 @@ static void LoneHighConcurrencyGraphs(uint32_t rows)
 	SparkGpuFree(output_device);
 }
 
+static uint32_t lone_keep_calls = 0u;
+static uint32_t *lone_keep_out_device = 0;
+
+__global__ static void LoneKeepKernel(const uint32_t *kept, uint32_t lanes, uint32_t *out)
+{
+	uint32_t lane = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( lane < lanes )
+		out[lane] = kept[lane] * 17u + lane + 3u;
+}
+
+static SparkStatus LoneKeepRowsKernel(void *model_state, const SparkStageRunnerStep *step, const uint32_t *kept_rows, void *stream)
+{
+	(void)model_state;
+	lone_keep_calls++;
+	LoneKeepKernel<<<1, 32, 0, (SparkGpuStream)stream>>>(kept_rows, step->sequences, lone_keep_out_device);
+	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
+static SparkStatus LoneKeepRowsNoop(void *model_state, const SparkStageRunnerStep *step, const uint32_t *kept_rows, void *stream)
+{
+	(void)model_state;
+	(void)step;
+	(void)kept_rows;
+	(void)stream;
+	lone_keep_calls++;
+	return SPARK_STATUS_OK;
+}
+
+static void LoneVerifyKeepGraphs(void)
+{
+	SparkStageRunnerModelInterface model_interface;
+	SparkStageRunner runner;
+	SparkStageRunnerState *state;
+	SparkStageRunnerDispatch dispatch;
+	uint32_t tokens[64], positions[64], contexts[16], sequences[64], runs[17], order[64], seqslot[16];
+	uint32_t *pos_d = 0, *ctx_d = 0, *seq_d = 0, *runs_d = 0, *ord_d = 0, *slot_d = 0, *out_d = 0;
+	uint32_t kept_a[8] = { 2u, 4u, 1u, 6u, 3u, 5u, 2u, 4u };
+	uint32_t kept_b[8] = { 6u, 1u, 5u, 2u, 4u, 3u, 6u, 1u };
+	uint32_t got[8] = { 0u };
+	uint32_t ok_a = 1u, ok_b = 1u, lane, row;
+	memset(&model_interface, 0, sizeof(model_interface));
+	memset(&runner, 0, sizeof(runner));
+	model_interface.step = LoneIdentityStep;
+	model_interface.keep_rows = LoneKeepRowsKernel;
+	runner.owns_embedding = 1u;
+	runner.owns_final_head = 1u;
+	state = LoneStateRows(&model_interface, &runner, LONE_HIDDEN, 64u);
+	Expect(state != 0, "verify keep-graph runner initializes");
+	if ( state == 0 )
+		return;
+	{
+		SparkStageRunnerStep s9, s16;
+		memset(&s9, 0, sizeof(s9));
+		memset(&s16, 0, sizeof(s16));
+		s9.graph_key = 1u; s9.rows = 48u; s9.sequences = 9u; s9.commit = 0u;
+		s16.graph_key = 1u; s16.rows = 48u; s16.sequences = 16u; s16.commit = 0u;
+		Expect(StageRunnerGraphSlotKey(&s9) != StageRunnerGraphSlotKey(&s16), "verify graph slots separate 9..16 lanes");
+	}
+	for ( lane = 0u; lane < 8u; ++lane )
+	{
+		contexts[lane] = 16u;
+		seqslot[lane] = lane;
+		runs[lane] = lane * 6u;
+		for ( row = 0u; row < 6u; ++row )
+		{
+			const uint32_t idx = lane * 6u + row;
+			tokens[idx] = (idx * 7u + 3u) % LONE_VOCAB;
+			positions[idx] = 10u + row;
+			sequences[idx] = lane;
+			order[idx] = idx;
+		}
+	}
+	runs[8] = 48u;
+	if ( SparkGpuMalloc((void **)&pos_d, 48u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&ctx_d, 8u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&seq_d, 48u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&runs_d, 9u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&ord_d, 48u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&slot_d, 8u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&out_d, 48u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&lone_keep_out_device, 8u * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(pos_d, positions, 48u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(ctx_d, contexts, 8u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(seq_d, sequences, 48u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(runs_d, runs, 9u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(ord_d, order, 48u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(slot_d, seqslot, 8u * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
+	{
+		Expect(0, "verify keep-graph buffers allocated");
+		return;
+	}
+	memset(&dispatch, 0, sizeof(dispatch));
+	dispatch.flags = SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY;
+	dispatch.row_count = 48u;
+	dispatch.active_sequence_count = 8u;
+	dispatch.token_ids = tokens;
+	dispatch.positions = pos_d;
+	dispatch.context_length = ctx_d;
+	dispatch.sequence_of_row = seq_d;
+	dispatch.sequence_row_begin = runs_d;
+	dispatch.sequence_row_indices = ord_d;
+	dispatch.recurrent_index = slot_d;
+	dispatch.output_token_ids = out_d;
+	lone_keep_calls = 0u;
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "verify wave 1 succeeds");
+	Expect(SparkStageRunnerKeepRows(&runner, kept_a, 8u) == SPARK_STATUS_OK, "verify keep wave 1 captures graph");
+	Expect(SparkGpuStreamSynchronize(state->stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(got, lone_keep_out_device, 8u * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,
+		"verify keep wave 1 readback succeeds");
+	for ( lane = 0u; lane < 8u; ++lane )
+		if ( got[lane] != kept_a[lane] * 17u + lane + 3u )
+			ok_a = 0u;
+	Expect(ok_a != 0u && lone_keep_calls == 1u && state->keep_graph_active_count == 1u, "verify keep wave 1 captured graph with exact outputs");
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "verify wave 2 succeeds");
+	Expect(SparkStageRunnerKeepRows(&runner, kept_b, 8u) == SPARK_STATUS_OK, "verify keep wave 2 replays graph");
+	Expect(SparkGpuStreamSynchronize(state->stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(got, lone_keep_out_device, 8u * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,
+		"verify keep wave 2 readback succeeds");
+	for ( lane = 0u; lane < 8u; ++lane )
+		if ( got[lane] != kept_b[lane] * 17u + lane + 3u )
+			ok_b = 0u;
+	Expect(ok_b != 0u && lone_keep_calls == 1u, "verify keep wave 2 replayed graph with updated kept values");
+	StageRunnerGraphDrop(state);
+	model_interface.keep_rows = LoneKeepRowsNoop;
+	lone_keep_calls = 0u;
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "noop keep wave 1 succeeds");
+	Expect(SparkStageRunnerKeepRows(&runner, kept_a, 8u) == SPARK_STATUS_OK, "noop keep wave 1 detects 0-node keep");
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "noop keep wave 2 succeeds");
+	Expect(SparkStageRunnerKeepRows(&runner, kept_b, 8u) == SPARK_STATUS_OK, "noop keep wave 2 hits noop fast path");
+	Expect(lone_keep_calls == 1u && state->keep_graph_active_count == 0u, "noop keep skips redundant host invocations and holds 0 graphs");
+	SparkGpuFree(pos_d);
+	SparkGpuFree(ctx_d);
+	SparkGpuFree(seq_d);
+	SparkGpuFree(runs_d);
+	SparkGpuFree(ord_d);
+	SparkGpuFree(slot_d);
+	SparkGpuFree(out_d);
+	SparkGpuFree(lone_keep_out_device);
+	lone_keep_out_device = 0;
+}
+
 int main(void)
 {
 	LoneGraphs();
 	LoneWideInput();
 	LoneHighConcurrencyGraphs(32u);
 	LoneHighConcurrencyGraphs(64u);
+	LoneVerifyKeepGraphs();
 	if ( failures != 0 )
 	{
 		printf("FAIL stage_runner_single_gpu_cuda: %d failures\n", failures);

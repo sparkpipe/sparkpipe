@@ -98,10 +98,27 @@ SparkStatus SparkSpeculationLookupDraftFind(const SparkSpeculationLookupDraft *d
 	return(SPARK_STATUS_OK);
 }
 
+static inline uint32_t SparkSpeculationLookupHash3(uint32_t t0,uint32_t t1,uint32_t t2,uint32_t mask)
+{
+	uint64_t hash = UINT64_C(0xcbf29ce484222325);
+	hash ^= t0;
+	hash *= UINT64_C(0x100000001b3);
+	hash ^= hash >> 29;
+	hash ^= t1;
+	hash *= UINT64_C(0x100000001b3);
+	hash ^= hash >> 29;
+	hash ^= t2;
+	hash *= UINT64_C(0x100000001b3);
+	hash ^= hash >> 29;
+	return((uint32_t)hash & mask);
+}
+
 static uint32_t SparkSpeculationLookupIndexBucket(const SparkSpeculationLookupIndex *index,const uint32_t *gram_tokens)
 {
 	uint64_t hash = UINT64_C(0xcbf29ce484222325);
 	uint32_t token;
+	if ( index->gram == 3u )
+		return(SparkSpeculationLookupHash3(gram_tokens[0],gram_tokens[1],gram_tokens[2],index->bucket_mask));
 	for (token=0u; token<index->gram; token++)
 	{
 		hash ^= gram_tokens[token];
@@ -109,6 +126,15 @@ static uint32_t SparkSpeculationLookupIndexBucket(const SparkSpeculationLookupIn
 		hash ^= hash >> 29;
 	}
 	return((uint32_t)hash & index->bucket_mask);
+}
+
+static inline uint32_t SparkSpeculationLookupGramEqual(const uint32_t *a,const uint32_t *b,uint32_t gram)
+{
+	uint32_t i;
+	for (i=gram; i-- > 0u;)
+		if ( a[i] != b[i] )
+			return(0u);
+	return(1u);
 }
 
 SparkStatus SparkSpeculationLookupIndexBind(SparkSpeculationLookupIndex *index,uint32_t *heads,uint32_t bucket_count,uint32_t *chain,uint32_t capacity,uint32_t gram)
@@ -138,23 +164,49 @@ void SparkSpeculationLookupIndexReset(SparkSpeculationLookupIndex *index)
 SparkStatus SparkSpeculationLookupIndexAppend(SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t length)
 {
 	uint32_t end,bucket;
+	uint32_t *heads,*chain;
+	uint32_t mask,gram;
 	if ( index == 0 || index->heads == 0 || history == 0 || length < index->length )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( length > index->capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	heads = index->heads;
+	chain = index->chain;
+	mask = index->bucket_mask;
+	gram = index->gram;
+	if ( gram == 3u )
+	{
+		uint32_t start = index->length > 2u ? index->length : 2u;
+		if ( start < length )
+		{
+			uint32_t t0 = history[start - 2u];
+			uint32_t t1 = history[start - 1u];
+			for (end=start; end<length; end++)
+			{
+				const uint32_t t2 = history[end];
+				bucket = SparkSpeculationLookupHash3(t0,t1,t2,mask);
+				chain[end] = heads[bucket];
+				heads[bucket] = end;
+				t0 = t1;
+				t1 = t2;
+			}
+		}
+		index->length = length;
+		return(SPARK_STATUS_OK);
+	}
 	for (end=index->length; end<length; end++)
 	{
-		if ( end + 1u < index->gram )
+		if ( end + 1u < gram )
 			continue;
-		bucket = SparkSpeculationLookupIndexBucket(index,history + end + 1u - index->gram);
-		index->chain[end] = index->heads[bucket];
-		index->heads[bucket] = end;
+		bucket = SparkSpeculationLookupIndexBucket(index,history + end + 1u - gram);
+		chain[end] = heads[bucket];
+		heads[bucket] = end;
 	}
 	index->length = length;
 	return(SPARK_STATUS_OK);
 }
 
-static uint32_t SparkSpeculationLookupTailToken(const uint32_t *history,uint32_t history_length,const uint32_t *tail,uint32_t tail_length,uint32_t back)
+static inline uint32_t SparkSpeculationLookupTailToken(const uint32_t *history,uint32_t history_length,const uint32_t *tail,uint32_t tail_length,uint32_t back)
 {
 	return(back < tail_length ? tail[tail_length - 1u - back] : history[history_length - 1u - (back - tail_length)]);
 }
@@ -163,25 +215,35 @@ SparkStatus SparkSpeculationLookupIndexFindTail(const SparkSpeculationLookupInde
 	uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out)
 {
 	uint32_t last[SPARK_SPECULATION_LOOKUP_MATCH_LIMIT];
-	uint32_t end,length,best_length,best_end,steps,token,combined;
+	uint32_t end,length,best_length,best_end,steps,token,combined,gram,probe_token = 0u,g0 = 0u,g1 = 0u,g2 = 0u;
+	const uint32_t *chain;
 	if ( index == 0 || index->heads == 0 || history == 0 || (tail == 0 && tail_length != 0u) || match_out == 0 || max_match < index->gram ||
 		max_match > SPARK_SPECULATION_LOOKUP_MATCH_LIMIT || candidate_limit == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	match_out->match_length = 0u;
 	match_out->source_end = 0u;
+	gram = index->gram;
 	combined = index->length + tail_length;
-	if ( index->length <= index->gram || combined < index->gram )
+	if ( index->length <= gram || combined < gram )
 		return(SPARK_STATUS_NOT_FOUND);
-	for (token=0u; token<index->gram; token++)
-		last[token] = SparkSpeculationLookupTailToken(history,index->length,tail,tail_length,index->gram - 1u - token);
+	for (token=0u; token<gram; token++)
+		last[token] = SparkSpeculationLookupTailToken(history,index->length,tail,tail_length,gram - 1u - token);
+	if ( gram == 3u )
+		{ g0 = last[0]; g1 = last[1]; g2 = last[2]; }
 	best_length = 0u;
 	best_end = 0u;
+	chain = index->chain;
 	end = index->heads[SparkSpeculationLookupIndexBucket(index,last)];
-	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit && best_length < max_match; steps++, end=index->chain[end])
+	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit && best_length < max_match; steps++, end=chain[end])
 	{
-		if ( end + 1u >= index->length || memcmp(history + end + 1u - index->gram,last,(size_t)index->gram * sizeof(uint32_t)) != 0 )
+		if ( end + 1u >= index->length )
 			continue;
-		length = index->gram;
+		if ( best_length >= gram && (best_length > end || best_length >= combined || history[end - best_length] != probe_token) )
+			continue;
+		if ( gram == 3u ? (history[end] != g2 || history[end - 1u] != g1 || history[end - 2u] != g0) :
+			SparkSpeculationLookupGramEqual(history + end + 1u - gram,last,gram) == 0u )
+			continue;
+		length = gram;
 		while ( length < max_match && length <= end && length < combined &&
 			history[end - length] == SparkSpeculationLookupTailToken(history,index->length,tail,tail_length,length) )
 			length++;
@@ -189,6 +251,8 @@ SparkStatus SparkSpeculationLookupIndexFindTail(const SparkSpeculationLookupInde
 		{
 			best_length = length;
 			best_end = end;
+			if ( best_length < max_match && best_length < combined )
+				probe_token = SparkSpeculationLookupTailToken(history,index->length,tail,tail_length,best_length);
 		}
 	}
 	if ( best_length == 0u )
@@ -201,20 +265,36 @@ SparkStatus SparkSpeculationLookupIndexFindTail(const SparkSpeculationLookupInde
 SparkStatus SparkSpeculationLookupIndexFindRanked(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,
 	SparkSpeculationLookupMatch *matches_out,uint32_t match_capacity,uint32_t *match_count_out)
 {
-	uint32_t anchor,end,length,steps,count = 0u,slot,place;
+	uint32_t anchor,end,length,steps,count = 0u,slot,place,gram,min_len = 0u,probe_token = 0u,g0 = 0u,g1 = 0u,g2 = 0u;
+	const uint32_t *chain,*anchor_gram;
 	if ( index == 0 || index->heads == 0 || history == 0 || matches_out == 0 || match_count_out == 0 || match_capacity == 0u || max_match < index->gram ||
 		max_match > SPARK_SPECULATION_LOOKUP_MATCH_LIMIT || candidate_limit == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*match_count_out = 0u;
-	if ( index->length <= index->gram )
+	gram = index->gram;
+	if ( index->length <= gram )
 		return(SPARK_STATUS_NOT_FOUND);
 	anchor = index->length - 1u;
-	end = index->heads[SparkSpeculationLookupIndexBucket(index,history + anchor + 1u - index->gram)];
-	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit; steps++, end=index->chain[end])
+	anchor_gram = history + anchor + 1u - gram;
+	if ( gram == 3u )
+		{ g0 = anchor_gram[0]; g1 = anchor_gram[1]; g2 = anchor_gram[2]; }
+	chain = index->chain;
+	end = index->heads[SparkSpeculationLookupIndexBucket(index,anchor_gram)];
+	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit; steps++, end=chain[end])
 	{
-		if ( end >= anchor || memcmp(history + end + 1u - index->gram,history + anchor + 1u - index->gram,(size_t)index->gram * sizeof(uint32_t)) != 0 )
+		if ( end >= anchor )
 			continue;
-		length = index->gram;
+		if ( count == match_capacity )
+		{
+			if ( min_len >= max_match )
+				break;
+			if ( min_len > end || history[end - min_len] != probe_token )
+				continue;
+		}
+		if ( gram == 3u ? (history[end] != g2 || history[end - 1u] != g1 || history[end - 2u] != g0) :
+			SparkSpeculationLookupGramEqual(history + end + 1u - gram,anchor_gram,gram) == 0u )
+			continue;
+		length = gram;
 		while ( length < max_match && length <= end && history[end - length] == history[anchor - length] )
 			length++;
 		for (place=0u; place<count && matches_out[place].match_length >= length; place++)
@@ -227,6 +307,12 @@ SparkStatus SparkSpeculationLookupIndexFindRanked(const SparkSpeculationLookupIn
 		matches_out[place].source_end = end;
 		if ( count < match_capacity )
 			count++;
+		if ( count == match_capacity )
+		{
+			min_len = matches_out[match_capacity - 1u].match_length;
+			if ( min_len < max_match )
+				probe_token = history[anchor - min_len];
+		}
 	}
 	*match_count_out = count;
 	return(count != 0u ? SPARK_STATUS_OK : SPARK_STATUS_NOT_FOUND);
@@ -234,28 +320,41 @@ SparkStatus SparkSpeculationLookupIndexFindRanked(const SparkSpeculationLookupIn
 
 SparkStatus SparkSpeculationLookupIndexFind(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out)
 {
-	uint32_t anchor,end,length,best_length,best_end,steps;
+	uint32_t anchor,end,length,best_length,best_end,steps,gram,probe_token = 0u,g0 = 0u,g1 = 0u,g2 = 0u;
+	const uint32_t *chain,*anchor_gram;
 	if ( index == 0 || index->heads == 0 || history == 0 || match_out == 0 || max_match < index->gram || max_match > SPARK_SPECULATION_LOOKUP_MATCH_LIMIT || candidate_limit == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	match_out->match_length = 0u;
 	match_out->source_end = 0u;
-	if ( index->length <= index->gram )
+	gram = index->gram;
+	if ( index->length <= gram )
 		return(SPARK_STATUS_NOT_FOUND);
 	anchor = index->length - 1u;
-	end = index->heads[SparkSpeculationLookupIndexBucket(index,history + anchor + 1u - index->gram)];
+	anchor_gram = history + anchor + 1u - gram;
+	if ( gram == 3u )
+		{ g0 = anchor_gram[0]; g1 = anchor_gram[1]; g2 = anchor_gram[2]; }
+	chain = index->chain;
+	end = index->heads[SparkSpeculationLookupIndexBucket(index,anchor_gram)];
 	best_length = 0u;
 	best_end = 0u;
-	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit && best_length < max_match; steps++, end=index->chain[end])
+	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit && best_length < max_match; steps++, end=chain[end])
 	{
-		if ( end >= anchor || memcmp(history + end + 1u - index->gram,history + anchor + 1u - index->gram,(size_t)index->gram * sizeof(uint32_t)) != 0 )
+		if ( end >= anchor )
 			continue;
-		length = index->gram;
+		if ( best_length >= gram && (best_length > end || history[end - best_length] != probe_token) )
+			continue;
+		if ( gram == 3u ? (history[end] != g2 || history[end - 1u] != g1 || history[end - 2u] != g0) :
+			SparkSpeculationLookupGramEqual(history + end + 1u - gram,anchor_gram,gram) == 0u )
+			continue;
+		length = gram;
 		while ( length < max_match && length <= end && history[end - length] == history[anchor - length] )
 			length++;
 		if ( length > best_length )
 		{
 			best_length = length;
 			best_end = end;
+			if ( best_length < max_match )
+				probe_token = history[anchor - best_length];
 		}
 	}
 	if ( best_length == 0u )

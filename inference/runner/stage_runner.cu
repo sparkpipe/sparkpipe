@@ -32,10 +32,12 @@
 #define STAGE_RUNNER_GRAPH_ROWS SPARK_STAGE_RUNNER_GRAPH_ROWS
 #define STAGE_RUNNER_SPLIT_SUM_ROWS 256u
 #define STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE 4u
-#define STAGE_RUNNER_GRAPH_VERIFY_LANES 8u
+#define STAGE_RUNNER_GRAPH_VERIFY_LANES 16u
 #define STAGE_RUNNER_GRAPH_KEYS (2u + STAGE_RUNNER_GRAPH_VERIFY_LANES)
 #define STAGE_RUNNER_GRAPH_SLOTS (4u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
-#define STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT 24u
+#define STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT 48u
+#define STAGE_RUNNER_KEEP_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
+#define STAGE_RUNNER_KEEP_GRAPH_MAX_ACTIVE 64u
 #define STAGE_RUNNER_WIDE_ROWS STAGE_RUNNER_GRAPH_ROWS
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
 #define STAGE_RUNNER_LEASE_SETS 2u
@@ -306,6 +308,9 @@ typedef struct SparkStageRunnerState
 	uint32_t *verify_kept;
 	uint32_t *verify_path_rows;
 	uint32_t *verify_path_begin;
+	uint32_t *verify_kept_host;
+	uint32_t *verify_path_rows_host;
+	uint32_t *verify_path_begin_host;
 	uint32_t verify_path_capacity;
 	uint32_t *route_fault_host;
 	uint32_t *route_fault;
@@ -382,6 +387,13 @@ typedef struct SparkStageRunnerState
 	uint32_t programs;
 	SparkStageRunnerStep graph_input[STAGE_RUNNER_GRAPH_SLOTS];
 	LmWeightPrefetchPlan graph_prefetch[STAGE_RUNNER_GRAPH_SLOTS];
+	SparkDeviceProgram *keep_graph_program[STAGE_RUNNER_KEEP_GRAPH_SLOTS];
+	uint64_t keep_graph_last_use[STAGE_RUNNER_KEEP_GRAPH_SLOTS];
+	uint8_t keep_graph_disabled[STAGE_RUNNER_KEEP_GRAPH_SLOTS];
+	uint8_t keep_graph_noop[STAGE_RUNNER_KEEP_GRAPH_SLOTS];
+	uint64_t keep_graph_use_tick;
+	uint32_t keep_graph_active_count;
+	SparkStageRunnerStep keep_graph_input[STAGE_RUNNER_KEEP_GRAPH_SLOTS];
 	uint64_t capture_ns;
 	SparkStageRunnerTapPlan tap_plan;
 	uint32_t tap_final_entry;
@@ -1160,12 +1172,17 @@ static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const 
 	status = StageRunnerPrepareOutputs(state, runner, configuration);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	const uint64_t seqs = configuration->max_active_sequence_count;
+	const uint64_t token_host_words = rows + seqs + (seqs + 1u) + rows;
 	if ( SparkGpuHostAlloc((void **)&state->output_token_host, rows * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
 		SparkGpuHostAlloc((void **)&state->output_score_host, rows * sizeof(float), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
-		SparkGpuHostAlloc((void **)&state->token_ids_host, rows * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
+		SparkGpuHostAlloc((void **)&state->token_ids_host, token_host_words * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->chain_step_device, sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMemset(state->chain_step_device, 0, sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	state->verify_kept_host = state->token_ids_host + rows;
+	state->verify_path_begin_host = state->verify_kept_host + seqs;
+	state->verify_path_rows_host = state->verify_path_begin_host + seqs + 1u;
 	state->chain_step_dirty = 0u;
 	state->mark_count = state->geometry.total_layers + 1u;
 	state->layer_event = (SparkGpuEvent *)calloc(state->mark_count, sizeof(SparkGpuEvent));
@@ -2426,12 +2443,34 @@ static void StageRunnerProgramDrop(SparkStageRunnerState *state, uint32_t slot)
 	state->graph_last_use[slot] = 0u;
 }
 
+static void StageRunnerKeepProgramDrop(SparkStageRunnerState *state, uint32_t slot)
+{
+	if ( state->keep_graph_program[slot] == 0 )
+		return;
+	if ( (state->queue != 0 && SparkDeviceQueueWait(state->queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK) ||
+		SparkDeviceProgramDestroy(state->keep_graph_program[slot]) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "STAGE-KEEP-PROGRAM-DESTROY-FAILED slot=%u %s: fatal, a keep program is still in use\n", slot, SparkDeviceLastError()->text);
+		abort();
+	}
+	state->keep_graph_program[slot] = 0;
+	if ( state->keep_graph_active_count != 0u )
+		state->keep_graph_active_count--;
+	state->keep_graph_last_use[slot] = 0u;
+}
+
 static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 {
 	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_SLOTS; ++index )
 	{
 		StageRunnerProgramDrop(state, index);
 		state->graph_disabled[index] = 0u;
+	}
+	for ( uint32_t index = 0u; index < STAGE_RUNNER_KEEP_GRAPH_SLOTS; ++index )
+	{
+		StageRunnerKeepProgramDrop(state, index);
+		state->keep_graph_disabled[index] = 0u;
+		state->keep_graph_noop[index] = 0u;
 	}
 }
 
@@ -3622,6 +3661,116 @@ uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
 		state->geometry.kv_shard.grain * state->geometry.kv_shard.degree;
 }
 
+static void StageRunnerKeepGraphEvictLru(SparkStageRunnerState *state, uint32_t keep_slot)
+{
+	while ( state->keep_graph_active_count >= STAGE_RUNNER_KEEP_GRAPH_MAX_ACTIVE )
+	{
+		uint32_t victim = STAGE_RUNNER_KEEP_GRAPH_SLOTS;
+		uint64_t oldest = UINT64_MAX;
+		for ( uint32_t index = 0u; index < STAGE_RUNNER_KEEP_GRAPH_SLOTS; ++index )
+			if ( index != keep_slot && state->keep_graph_program[index] != 0 && state->keep_graph_last_use[index] < oldest )
+			{
+				oldest = state->keep_graph_last_use[index];
+				victim = index;
+			}
+		if ( victim >= STAGE_RUNNER_KEEP_GRAPH_SLOTS )
+			break;
+		StageRunnerKeepProgramDrop(state, victim);
+	}
+}
+
+static SparkStatus StageRunnerKeepRun(SparkStageRunnerState *state, const SparkStageRunnerStep *keep_step,
+	const uint32_t *kept, const uint32_t *path_rows, const uint32_t *path_begin, uint32_t sequences)
+{
+	const uint32_t slot_key = StageRunnerGraphSlotKey(keep_step);
+	const uint32_t eligible = state->programs != 0u && state->graph_max_active != 0u && state->queue != 0 &&
+		slot_key != 0u && slot_key <= STAGE_RUNNER_GRAPH_KEYS && keep_step->rows != 0u && keep_step->rows <= STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
+	const uint32_t slot = eligible != 0u ? (slot_key - 1u) * STAGE_RUNNER_GRAPH_ROWS + keep_step->rows - 1u : 0u;
+	SparkStageRunnerStep identity;
+	const uint32_t *kept_src = kept;
+	const uint32_t *path_rows_src = path_rows;
+	const uint32_t *path_begin_src = path_begin;
+	if ( eligible != 0u )
+	{
+		StageRunnerGraphIdentity(keep_step, 1u, &identity);
+		if ( state->keep_graph_noop[slot] != 0u && memcmp(&state->keep_graph_input[slot], &identity, sizeof(identity)) == 0 )
+			return SPARK_STATUS_OK;
+	}
+	if ( state->verify_kept_host != 0 )
+	{
+		memcpy(state->verify_kept_host, kept, (size_t)sequences * sizeof(uint32_t));
+		kept_src = state->verify_kept_host;
+	}
+	if ( SparkGpuMemcpyAsync(state->verify_kept, kept_src, (uint64_t)sequences * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( path_rows != 0 )
+	{
+		const uint32_t path_count = path_begin[sequences];
+		if ( state->verify_path_rows_host != 0 && state->verify_path_begin_host != 0 )
+		{
+			memcpy(state->verify_path_rows_host, path_rows, (size_t)path_count * sizeof(uint32_t));
+			memcpy(state->verify_path_begin_host, path_begin, ((size_t)sequences + 1u) * sizeof(uint32_t));
+			path_rows_src = state->verify_path_rows_host;
+			path_begin_src = state->verify_path_begin_host;
+		}
+		if ( SparkGpuMemcpyAsync(state->verify_path_rows, path_rows_src, (uint64_t)path_count * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpyAsync(state->verify_path_begin, path_begin_src, ((uint64_t)sequences + 1u) * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	if ( eligible != 0u && state->keep_graph_disabled[slot] == 0u )
+	{
+		if ( state->keep_graph_program[slot] != 0 && memcmp(&state->keep_graph_input[slot], &identity, sizeof(identity)) != 0 )
+			StageRunnerKeepProgramDrop(state, slot);
+		if ( state->keep_graph_program[slot] == 0 )
+		{
+			SparkDeviceProgram *program = 0;
+			SparkDeviceProgramInfo info;
+			SparkStatus status, finished;
+			StageRunnerKeepGraphEvictLru(state, slot);
+			memset(&info, 0, sizeof(info));
+			status = SparkDeviceProgramRecord(state->queue, "stage runner keep rows");
+			if ( status == SPARK_STATUS_OK )
+			{
+				status = state->model_interface->keep_rows(state->model, keep_step, state->verify_kept, state->stream);
+				finished = SparkDeviceProgramFinish(state->queue, &program);
+				if ( status != SPARK_STATUS_OK )
+				{
+					if ( program != 0 )
+						(void)SparkDeviceProgramDestroy(program);
+					return status;
+				}
+				status = finished;
+			}
+			if ( status == SPARK_STATUS_OK && program != 0 )
+				status = SparkDeviceProgramGetInfo(program, &info);
+			if ( status == SPARK_STATUS_OK && program != 0 )
+			{
+				if ( info.nodes == 0u )
+				{
+					(void)SparkDeviceProgramDestroy(program);
+					state->keep_graph_noop[slot] = 1u;
+					state->keep_graph_input[slot] = identity;
+					return SPARK_STATUS_OK;
+				}
+				state->keep_graph_program[slot] = program;
+				state->keep_graph_active_count++;
+				state->keep_graph_input[slot] = identity;
+				state->keep_graph_last_use[slot] = ++state->keep_graph_use_tick;
+				return SparkDeviceProgramRun(program, state->queue, 0, 0u);
+			}
+			if ( program != 0 )
+				(void)SparkDeviceProgramDestroy(program);
+			state->keep_graph_disabled[slot] = 1u;
+		}
+		else
+		{
+			state->keep_graph_last_use[slot] = ++state->keep_graph_use_tick;
+			return SparkDeviceProgramRun(state->keep_graph_program[slot], state->queue, 0, 0u);
+		}
+	}
+	return state->model_interface->keep_rows(state->model, keep_step, state->verify_kept, state->stream);
+}
+
 SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)
 {
 	SparkStageRunnerState *state;
@@ -3643,14 +3792,10 @@ SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *p
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	state->verify_pending = 0u;
-	if ( SparkGpuMemcpyAsync(state->verify_kept, kept, (uint64_t)sequences * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
-		SparkGpuMemcpyAsync(state->verify_path_rows, path_rows, (uint64_t)path_begin[sequences] * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
-		SparkGpuMemcpyAsync(state->verify_path_begin, path_begin, ((uint64_t)sequences + 1u) * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	keep_step = state->verify_step;
 	keep_step.sequence_row_indices = state->verify_path_rows;
 	keep_step.sequence_row_begin = state->verify_path_begin;
-	return state->model_interface->keep_rows(state->model, &keep_step, state->verify_kept, state->stream);
+	return StageRunnerKeepRun(state, &keep_step, kept, path_rows, path_begin, sequences);
 }
 
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
@@ -3664,10 +3809,9 @@ SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *k
 	state->verify_pending = 0u;
 	if ( state->model_interface->keep_rows == 0 )
 		return state->geometry.recurrent_bytes == 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED;
-	if ( sequences > state->verify_kept_capacity ||
-		SparkGpuMemcpyAsync(state->verify_kept, kept, (uint64_t)sequences * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
+	if ( sequences > state->verify_kept_capacity )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return state->model_interface->keep_rows(state->model, &state->verify_step, state->verify_kept, state->stream);
+	return StageRunnerKeepRun(state, &state->verify_step, kept, 0, 0, sequences);
 }
 
 SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
