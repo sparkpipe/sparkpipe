@@ -3985,6 +3985,7 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         count = spark_stub_ibv_posted_count() - first;
         CHECK(count == SPARK_WEIGHTD_MESH_PEERS + 1u && weightd_mesh.stat_hybrid_revokes > revokes_before &&
               weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u && ctrl->grant_gen > gen_before &&
+              ctrl->cpu_issued_seq == tag &&
               ctrl->gpu_pi[0] == weightd_mesh.send_queues[ctrl->peers[0].peer].produced,
             "tp16-20us phase3: revoke preserved pending 15 GPU WQEs + 1 Broadcast WQE and re-granted synced gpu_pi");
         test_complete_range(first,spark_stub_ibv_posted_count());
@@ -4040,8 +4041,126 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         first = spark_stub_ibv_posted_count();
         SparkWeightdMeshDoorbellPoll();
         CHECK(weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == cpu_tag &&
+              ctrl->cpu_issued_seq == cpu_tag &&
+              weightd_mesh.hybrid_deferred_count == 1u && weightd_mesh.hybrid_active == 0u &&
               spark_stub_ibv_posted_count() - first == 2u * SPARK_WEIGHTD_MESH_PEERS,
-            "tp16-20us phase3: hybrid poll yields to lower-seq CPU doorbell instead of skipping it");
+            "tp16-20us phase3: hybrid poll yields to lower-seq CPU doorbell and defers higher-seq hybrid trigger");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        count = spark_stub_ibv_posted_count() - first;
+        ok = count == SPARK_WEIGHTD_MESH_PEERS ? 1u : 0u;
+        for (i = 0u; i < count; i++)
+        {
+            if ( spark_stub_ibv_posted(first + i,&work) != 0 || work.length != 648u ||
+                 work.inline_tail != hyb_tag || (work.inline_word >> 32u) != UINT64_C(0x71710000) )
+                ok = 0u;
+        }
+        CHECK(ok == 1u && weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == hyb_tag &&
+              ctrl->cpu_issued_seq == hyb_tag && weightd_mesh.hybrid_deferred_count == 0u &&
+              weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u,
+            "tp16-20us phase3: deferred inline hybrid trigger drains in order after CPU doorbell and re-grants hybrid");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
+    {
+        uint32_t row_mask = (0xfu << (local_rank & ~3u)) & ~(1u << local_rank);
+        uint32_t col_mask = (0x1111u << (local_rank & 3u)) & ~(1u << local_rank);
+        uint64_t cpu_seq = ++seq;
+        uint64_t cpu_tag = (UINT64_C(0x71) << 32u) | cpu_seq;
+        uint64_t cpu_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((cpu_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint64_t hyb_seq = ++seq;
+        uint64_t hyb_tag = (UINT64_C(0x71) << 32u) | hyb_seq;
+        uint64_t hyb_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((hyb_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint64_t cpu_half_off = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(cpu_slot);
+        SparkWeightdMeshRoute cpu_route = {0};
+        volatile uint64_t *cpu_cell = SparkWeightdMeshDoorbellAt(
+            band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank,(uint32_t)(cpu_seq & 1u));
+        cpu_route.fields.peer_mask = col_mask;
+        cpu_route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+        cpu_route.fields.compact_tail = 1u;
+        cpu_route.fields.slice_bytes = 32256u;
+        for (i = 0u; i < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; i++)
+            *(uint64_t *)((uint8_t *)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,i) + cpu_half_off + 32256u) = cpu_tag;
+        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+            ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + hyb_slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES + 129024u) = hyb_tag;
+        cpu_cell[1] = 32256u;
+        cpu_cell[2] = cpu_slot;
+        cpu_cell[3] = cpu_route.word;
+        __atomic_store_n(&cpu_cell[0],cpu_tag,__ATOMIC_RELEASE);
+        CHECK(test_hybrid_write_wqe(ctrl,band,hyb_slot,hyb_seq,hyb_tag,row_mask,129024u,0u,0u,0u,0u) == 1u,
+            "tp16-20us phase3: queue 2D 4x4 Hop4 129KB FULL DMA hybrid trigger behind lower-seq col CPU doorbell");
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == cpu_tag &&
+              spark_stub_ibv_posted_count() - first == 3u && weightd_mesh.hybrid_deferred_count == 1u,
+            "tp16-20us phase3: 2D col CPU doorbell posts 3 WQEs and defers 2D Hop4 row DMA trigger");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        count = spark_stub_ibv_posted_count() - first;
+        ok = count == 3u ? 1u : 0u;
+        for (i = 0u; i < count; i++)
+        {
+            if ( spark_stub_ibv_posted(first + i,&work) != 0 || work.length != 129032u ||
+                 work.lkey != weightd_mesh.recv_mr->lkey ||
+                 *(uint64_t *)(uintptr_t)(work.source + 129024u) != hyb_tag )
+                ok = 0u;
+        }
+        CHECK(ok == 1u && weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == hyb_tag &&
+              ctrl->cpu_issued_seq == hyb_tag && weightd_mesh.hybrid_deferred_count == 0u &&
+              weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u,
+            "tp16-20us phase3: deferred 2D Hop4 129KB FULL DMA trigger drains all 3 row peers and re-grants hybrid");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+
+        cpu_seq = ++seq;
+        cpu_tag = (UINT64_C(0x71) << 32u) | cpu_seq;
+        cpu_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((cpu_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        hyb_seq = ++seq;
+        hyb_tag = (UINT64_C(0x71) << 32u) | hyb_seq;
+        hyb_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((hyb_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint64_t hyb_half_off = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(hyb_slot);
+        memset(&cpu_route,0,sizeof(cpu_route));
+        cpu_route.fields.peer_mask = row_mask;
+        cpu_route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+        cpu_route.fields.compact_tail = 1u;
+        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+            ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + cpu_slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES + 129024u) = cpu_tag;
+        for (i = 0u; i < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; i++)
+            *(uint64_t *)((uint8_t *)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,i) + hyb_half_off + 32256u) = hyb_tag;
+        cpu_cell = SparkWeightdMeshDoorbellAt(
+            band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank,(uint32_t)(cpu_seq & 1u));
+        cpu_cell[1] = 129024u;
+        cpu_cell[2] = cpu_slot;
+        cpu_cell[3] = cpu_route.word;
+        __atomic_store_n(&cpu_cell[0],cpu_tag,__ATOMIC_RELEASE);
+        CHECK(test_hybrid_write_wqe(ctrl,band,hyb_slot,hyb_seq,hyb_tag,col_mask,32256u,0u,1u,hyb_half_off,0u) == 1u,
+            "tp16-20us phase3: queue 2D 4x4 PEER DMA hybrid trigger behind lower-seq row CPU doorbell");
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == cpu_tag &&
+              spark_stub_ibv_posted_count() - first == 3u && weightd_mesh.hybrid_deferred_count == 1u,
+            "tp16-20us phase3: 2D row CPU doorbell posts 3 WQEs and defers 2D PEER DMA trigger");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        count = spark_stub_ibv_posted_count() - first;
+        ok = count == 3u ? 1u : 0u;
+        for (i = 0u; i < count; i++)
+        {
+            if ( spark_stub_ibv_posted(first + i,&work) != 0 || work.length != 32264u ||
+                 work.lkey != weightd_mesh.staging_mr->lkey ||
+                 *(uint64_t *)(uintptr_t)(work.source + 32256u) != hyb_tag )
+                ok = 0u;
+        }
+        CHECK(ok == 1u && weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == hyb_tag &&
+              ctrl->cpu_issued_seq == hyb_tag && weightd_mesh.hybrid_deferred_count == 0u &&
+              weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u,
+            "tp16-20us phase3: deferred 2D PEER DMA trigger preserves staging lkey/half_off and re-grants hybrid");
         test_complete_range(first,spark_stub_ibv_posted_count());
     }
 
@@ -4131,10 +4250,31 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
               SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) != 0u,
             "tp16-20us phase3: hybrid ring rejects corrupted WQE header without ringing QP doorbells");
         pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        SparkWeightdMeshHybridRevokeLocked();
         SparkWeightdMeshLaneResetLocked(0u);
+        SparkWeightdMeshHybridRefreshLocked(band);
         pthread_mutex_unlock(&SparkWeightdMeshWireLock);
-        CHECK(SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) == 0u,
-            "tp16-20us phase3: lane reset clears failed cell after hybrid header mismatch");
+        CHECK(SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) == 0u &&
+              ctrl->cpu_issued_seq == 0u && weightd_mesh.hybrid_active == 1u,
+            "tp16-20us phase3: lane reset clears failed cell and cpu_issued_seq after hybrid header mismatch");
+
+        bad_seq = 1u;
+        bad_tag = (UINT64_C(0x74) << 32u) | bad_seq;
+        bad_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
+        bad_idx = q0->produced & q0->mask;
+        CHECK(test_hybrid_write_wqe(ctrl,band,bad_slot,bad_seq,bad_tag,peer_mask,4096u,0u,0u,0u,0u) == 1u,
+            "tp16-20us phase3: stage hybrid DMA WQE before corrupting remote address");
+        memset(q0->buffer + (size_t)bad_idx * 64u + 16u,0xaa,8u);
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(spark_stub_ibv_posted_count() == first &&
+              SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) != 0u,
+            "tp16-20us phase3: hybrid ring rejects corrupted DMA WQE raddr without ringing QP doorbells");
+        pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        SparkWeightdMeshHybridRevokeLocked();
+        SparkWeightdMeshLaneResetLocked(0u);
+        SparkWeightdMeshHybridRefreshLocked(band);
+        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     }
 
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
