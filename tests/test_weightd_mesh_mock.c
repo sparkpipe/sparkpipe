@@ -4090,8 +4090,33 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
     }
 
     {
-        uint64_t bad_seq = ++seq;
-        uint64_t bad_tag = (UINT64_C(0x73) << 32u) | bad_seq;
+        uint64_t base_seq = (uint32_t)seq;
+        uint64_t e_seq = (base_seq & 1u) == 0u ? (base_seq + 2u) : (base_seq + 1u);
+        uint64_t o_seq = e_seq + 1u;
+        uint64_t next_epoch = (weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] >> 32u) + 1u;
+        uint64_t e_tag = (next_epoch << 32u) | e_seq;
+        uint64_t o_tag = (next_epoch << 32u) | o_seq;
+        uint64_t e_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((e_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint64_t o_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((o_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        CHECK(test_hybrid_write_wqe(ctrl,band,e_slot,e_seq,e_tag,peer_mask,768u,1u,1u,0u,UINT64_C(0x7301000000000000)) == 1u &&
+              test_hybrid_write_wqe(ctrl,band,o_slot,o_seq,o_tag,peer_mask,336u,1u,1u,0u,UINT64_C(0x7302000000000000)) == 1u,
+            "tp16-20us phase3: stage back-to-back even (ds=51) and odd (ds=24) hybrid triggers");
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == o_tag &&
+              spark_stub_ibv_posted_count() - first == 2u * SPARK_WEIGHTD_MESH_PEERS &&
+              SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) == 0u,
+            "tp16-20us phase3: hybrid poll rings both back-to-back variable-ds triggers in order with 0 mismatches");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+        seq = o_seq;
+    }
+
+    {
+        uint64_t bad_seq = (uint32_t)seq + 1u;
+        uint64_t bad_epoch = (weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] >> 32u) + 1u;
+        uint64_t bad_tag = (bad_epoch << 32u) | bad_seq;
         uint64_t bad_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
             ((bad_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
         const SparkWeightdMeshHybridPeer *hp0 = &ctrl->peers[0];

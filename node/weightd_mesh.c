@@ -3230,7 +3230,7 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
 {
     const SparkWeightdMeshLanePlan *plan;
     SparkWeightdMeshTransfer *transfer;
-    uint64_t meta = ctrl->trigger[trig_slot].meta;
+    uint64_t meta = __atomic_load_n(&ctrl->trigger[trig_slot].meta,__ATOMIC_ACQUIRE);
     uint32_t peer_mask = SparkWeightdMeshHybridMetaPeerMask(meta);
     uint32_t ds = SparkWeightdMeshHybridMetaDs(meta);
     uint32_t num_bb = SparkWeightdMeshHybridMetaNumBb(meta);
@@ -3240,6 +3240,8 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
     uint32_t index,record,all_peers,i,count = 0u;
     uint64_t wr_base,pending_mask = 0u;
     uint8_t order[SPARK_WEIGHTD_MESH_PEERS];
+    if ( __atomic_load_n(&ctrl->trigger[trig_slot].seq,__ATOMIC_ACQUIRE) != seq )
+        return 0u;
     if ( owner_lane >= SPARK_WEIGHTD_MESH_MAX_LANES || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
          gen != weightd_mesh.hybrid_grant_gen )
         return 0u;
@@ -3376,6 +3378,12 @@ static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
     issued = weightd_mesh.issued[index];
     seqs[0] = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
     seqs[1] = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
+    if ( seqs[1] > issued )
+    {
+        uint64_t recheck0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
+        if ( recheck0 > seqs[0] )
+            seqs[0] = recheck0;
+    }
     if ( seqs[0] <= issued && seqs[1] <= issued )
         return 0u;
     if ( seqs[0] > issued ) order[count++] = 0u;
@@ -3416,6 +3424,12 @@ static uint32_t SparkWeightdMeshHybridPendingTriggerLocked(const SparkWeightdMes
     issued = weightd_mesh.issued[index];
     s0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
     s1 = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
+    if ( s1 > issued )
+    {
+        uint64_t recheck0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
+        if ( recheck0 > s0 )
+            s0 = recheck0;
+    }
     cpu0 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,0u)[0],__ATOMIC_ACQUIRE);
     cpu1 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,1u)[0],__ATOMIC_ACQUIRE);
     if ( s0 > issued && !(cpu0 > issued && cpu0 < s0) && !(cpu1 > issued && cpu1 < s0) )
