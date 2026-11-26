@@ -1,0 +1,2 @@
++1006
+motif-3 local-head MLA FlashAttention prefill wire-cut and fused HC/KV/routing decode kernels (+718), plus gemma4 P3/P1 Blackwell MMA tile dispatch, zero-smem sliding GQA decode, and compile-time-specialized fast MoE kernels (+288).
