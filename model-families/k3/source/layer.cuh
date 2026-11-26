@@ -956,7 +956,7 @@ __global__ __launch_bounds__(128u, 4)
 void K3KdaNormGateVecKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16,
 	const float *__restrict__ norm_weight, uint32_t heads, float epsilon, uint32_t rows)
 {
-	static_assert(K3_KDA_VALUE_DIM == 128u, "one warp handles four elements per lane across 128-wide KDA value");
+	static_assert(K3_KDA_VALUE_DIM == 128u, "one warp handles four 32-strided elements across 128-wide KDA value");
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t task = blockIdx.x * 4u + warp;
 	LmDependentWait();
@@ -965,23 +965,30 @@ void K3KdaNormGateVecKernel(uint16_t *__restrict__ output_bf16, const uint16_t *
 		LmDependentRelease();
 		return;
 	}
-	const uint32_t off = lane * 4u;
 	const uint64_t base = (uint64_t)task * K3_KDA_VALUE_DIM;
-	const uint2 vv = *(const uint2 *)(output_bf16 + base + off);
-	const uint2 gv = __ldg((const uint2 *)(gate_bf16 + base + off));
-	const float4 nw = __ldg((const float4 *)(norm_weight + off));
-	const float v0 = LmBf16ToFloat((uint16_t)(vv.x & 0xffffu)), v1 = LmBf16ToFloat((uint16_t)(vv.x >> 16u));
-	const float v2 = LmBf16ToFloat((uint16_t)(vv.y & 0xffffu)), v3 = LmBf16ToFloat((uint16_t)(vv.y >> 16u));
-	float sum = fmaf(v0, v0, fmaf(v1, v1, fmaf(v2, v2, v3 * v3)));
+	const float v0 = LmBf16ToFloat(output_bf16[base + lane]);
+	const float v1 = LmBf16ToFloat(output_bf16[base + 32u + lane]);
+	const float v2 = LmBf16ToFloat(output_bf16[base + 64u + lane]);
+	const float v3 = LmBf16ToFloat(output_bf16[base + 96u + lane]);
+	float s0 = v0 * v0, s1 = v1 * v1, s2 = v2 * v2, s3 = v3 * v3;
 	#pragma unroll
 	for ( uint32_t s = 16u; s > 0u; s >>= 1u )
-		sum += __shfl_xor_sync(0xffffffffu, sum, s);
-	const float scale = SparkMathRmsScale(sum, (float)K3_KDA_VALUE_DIM, epsilon);
-	const float o0 = LmBf16ToFloat(LmFloatToBf16(v0 * scale * nw.x)) * SparkMathSigmoidFast(LmBf16ToFloat((uint16_t)(gv.x & 0xffffu)));
-	const float o1 = LmBf16ToFloat(LmFloatToBf16(v1 * scale * nw.y)) * SparkMathSigmoidFast(LmBf16ToFloat((uint16_t)(gv.x >> 16u)));
-	const float o2 = LmBf16ToFloat(LmFloatToBf16(v2 * scale * nw.z)) * SparkMathSigmoidFast(LmBf16ToFloat((uint16_t)(gv.y & 0xffffu)));
-	const float o3 = LmBf16ToFloat(LmFloatToBf16(v3 * scale * nw.w)) * SparkMathSigmoidFast(LmBf16ToFloat((uint16_t)(gv.y >> 16u)));
-	*(uint2 *)(output_bf16 + base + off) = make_uint2(LmPackBf16Pair(o0, o1), LmPackBf16Pair(o2, o3));
+	{
+		s0 += __shfl_down_sync(0xffffffffu, s0, s);
+		s1 += __shfl_down_sync(0xffffffffu, s1, s);
+		s2 += __shfl_down_sync(0xffffffffu, s2, s);
+		s3 += __shfl_down_sync(0xffffffffu, s3, s);
+	}
+	const float total = __shfl_sync(0xffffffffu, (s0 + s2) + (s1 + s3), 0u);
+	const float scale = SparkMathRmsScale(total, (float)K3_KDA_VALUE_DIM, epsilon);
+	const float n0 = LmBf16ToFloat(LmFloatToBf16(v0 * scale * __ldg(norm_weight + lane)));
+	const float n1 = LmBf16ToFloat(LmFloatToBf16(v1 * scale * __ldg(norm_weight + 32u + lane)));
+	const float n2 = LmBf16ToFloat(LmFloatToBf16(v2 * scale * __ldg(norm_weight + 64u + lane)));
+	const float n3 = LmBf16ToFloat(LmFloatToBf16(v3 * scale * __ldg(norm_weight + 96u + lane)));
+	output_bf16[base + lane] = LmFloatToBf16(n0 * SparkMathSigmoidFast(LmBf16ToFloat(__ldg(gate_bf16 + base + lane))));
+	output_bf16[base + 32u + lane] = LmFloatToBf16(n1 * SparkMathSigmoidFast(LmBf16ToFloat(__ldg(gate_bf16 + base + 32u + lane))));
+	output_bf16[base + 64u + lane] = LmFloatToBf16(n2 * SparkMathSigmoidFast(LmBf16ToFloat(__ldg(gate_bf16 + base + 64u + lane))));
+	output_bf16[base + 96u + lane] = LmFloatToBf16(n3 * SparkMathSigmoidFast(LmBf16ToFloat(__ldg(gate_bf16 + base + 96u + lane))));
 	LmDependentRelease();
 }
 #endif
@@ -1740,7 +1747,7 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 			return(LM_LAUNCH_OK);
 		if ( LmIsAligned16(b->mla_index_head_weight) && LmIsAligned16(b->normed_bf16) )
 		{
-			if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
+			if ( rows <= 64u || b->row_invariant != 0u )
 				LM_LAUNCH_DEPENDENT((K3IndexHeadSkipKernel), dim3((K3_INDEX_HEADS + 3u) / 4u, rows), 128u, 0, stream,
 					(const uint16_t *)b->mla_index_head_weight,b->normed_bf16,b->index_head_bf16,
 					b->sequence_of_row,b->context_length,b->positions,rows);
@@ -3292,13 +3299,13 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 		LmSkinnyAligned(b->latent_full_bf16) != 0u && LmSkinnyAligned(b->gate_up_bf16) != 0u &&
 		LmSkinnyAligned(b->intermediate_bf16) != 0u && LmSkinnyAligned(b->latent_bf16) != 0u )
 	{
-		if ( rows > 64u && b->row_invariant == 0u &&
+		if ( rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u &&
 			(channels % (LM_SKINNY_CELL_NEURONS * 4u)) == 0u )
 			return(K3MoeCellsMmaFastLaunch(b->expert_w1_weight, b->expert_w2_weight, b->latent_full_bf16,
 				b->gate_up_bf16, b->intermediate_bf16, b->latent_bf16, b->group_row_offset,
 				b->route_source_token, b->route_packed_row, b->route_weight, b->group_tile_prefix_w1,
 				rows, packed_rows, channels, stream));
-		if ( (rows <= 64u || b->row_invariant != 0u) && (channels % LM_SKINNY_CELL_NEURONS) == 0u )
+		if ( (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) && (channels % LM_SKINNY_CELL_NEURONS) == 0u )
 			return(K3MoeCellsSkinnyFastLaunch(b->expert_w1_weight, b->expert_w2_weight, b->latent_full_bf16,
 				b->gate_up_bf16, b->intermediate_bf16, b->latent_bf16, b->group_row_offset,
 				b->route_expert, b->route_source_token, b->route_packed_row, b->route_weight, b->group_tile_prefix_w1,

@@ -324,44 +324,6 @@ static void BenchSuite1Moe(cudaStream_t stream)
 		printf("BENCH MoE B1 W2FinalizeRow1 (224 CTAs): %.1f us\n", b1_us);
 	}
 
-	const uint32_t batch_rows[2] = {32u, 64u};
-	for ( uint32_t r : batch_rows )
-	{
-		const uint32_t packed = r * K3_TOP_K;
-		const uint32_t max_act = packed < K3_EXPERTS ? packed : K3_EXPERTS;
-		std::vector<uint32_t> re, goff, rpack, rsrc, ae;
-		std::vector<float> rw;
-		BuildSyntheticRoutes(r, re, rw, goff, rpack, rsrc, ae);
-		CHECK_CUDA(cudaMemcpy(d_re, re.data(), re.size() * 4u, cudaMemcpyHostToDevice));
-		CHECK_CUDA(cudaMemcpy(d_rw, rw.data(), rw.size() * 4u, cudaMemcpyHostToDevice));
-		CHECK_CUDA(cudaMemcpy(d_goff, goff.data(), goff.size() * 4u, cudaMemcpyHostToDevice));
-		CHECK_CUDA(cudaMemcpy(d_rpack, rpack.data(), rpack.size() * 4u, cudaMemcpyHostToDevice));
-		CHECK_CUDA(cudaMemcpy(d_rsrc, rsrc.data(), rsrc.size() * 4u, cudaMemcpyHostToDevice));
-		CHECK_CUDA(cudaMemcpy(d_act_exp, ae.data(), ae.size() * 4u, cudaMemcpyHostToDevice));
-
-		auto run_old = [&]() {
-			K3CellMmaW1SituKernel<2u><<<max_act * (HALF_CELLS / 4u), LM_CELL_MMA_THREADS, 0u, stream>>>(
-				d_w1, d_act, d_mid_ref, d_goff, d_rsrc, d_act_exp, W1_GROUP_BYTES, W1_KT, HALF_CELLS, K3_ROUTED_EXPERT_HIDDEN, CH);
-			K3CellMmaW2SliceKernel<2u, 4u, false><<<max_act * (W2_CELLS / LM_CELL_MMA_BLOCK_CELLS), LM_CELL_MMA_THREADS, 0u, stream>>>(
-				d_w2, d_mid_ref, d_gu_ref, d_goff, d_act_exp, W2_GROUP_BYTES, W2_KT, W2_CELLS, 0u, W2_CELLS, CH);
-			K3MoeFinalizeBlockKernel<<<dim3(((K3_ROUTED_EXPERT_HIDDEN / 8u) + 127u) / 128u, r), 128u, 0u, stream>>>(
-				d_gu_ref, d_rpack, d_rw, d_out_ref, r, K3_ROUTED_EXPERT_HIDDEN);
-		};
-		auto run_new = [&]() {
-			CHECK_OK(K3MoeCellsSkinnyFastLaunch(d_w1, d_w2, d_act, d_gu_new, d_mid_new, d_out_new,
-				d_goff, d_re, d_rsrc, d_rpack, d_rw, d_act_exp, r, packed, CH, (SparkGpuStream)stream));
-		};
-		run_old();
-		run_new();
-		CHECK_CUDA(cudaStreamSynchronize(stream));
-		char tag[64];
-		snprintf(tag, sizeof(tag), "MoE B%u Skinny8 vs Mma2", r);
-		CheckBf16Close(tag, d_out_ref, d_out_new, (uint64_t)r * K3_ROUTED_EXPERT_HIDDEN, 0.05f, 4u);
-		const double old_us = TimeUs(run_old, stream);
-		const double new_us = TimeUs(run_new, stream);
-		printf("BENCH MoE B%u: old_mma=%.1f us  new_skinny8=%.1f us  speedup=%.2fx\n", r, old_us, new_us, old_us / new_us);
-	}
-
 	const uint32_t pf_rows[2] = {1024u, 2048u};
 	for ( uint32_t r : pf_rows )
 	{
@@ -379,49 +341,41 @@ static void BenchSuite1Moe(cudaStream_t stream)
 
 		(void)SparkGpuFuncSetAttribute((const void *)K3CellMmaW1SituKernel<8u>,
 			SPARK_GPU_FUNCTION_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT, 100);
-		auto run_old_w1 = [&]() {
+		auto run_old_all = [&]() {
 			K3CellMmaW1SituKernel<8u><<<max_act * (HALF_CELLS / 4u), LM_CELL_MMA_THREADS, 0u, stream>>>(
 				d_w1, d_act, d_mid_ref, d_goff, d_rsrc, d_act_exp, W1_GROUP_BYTES, W1_KT, HALF_CELLS, K3_ROUTED_EXPERT_HIDDEN, CH);
+			K3CellMmaW2SliceKernel<6u, 3u, true><<<max_act * (W2_CELLS / LM_CELL_MMA_BLOCK_CELLS), LM_CELL_MMA_THREADS, 0u, stream>>>(
+				d_w2, d_mid_ref, d_gu_ref, d_goff, d_act_exp, W2_GROUP_BYTES, W2_KT, W2_CELLS, 0u, W2_CELLS, CH);
+			K3MoeFinalizeBlockKernel<<<dim3(((K3_ROUTED_EXPERT_HIDDEN / 8u) + 127u) / 128u, r), 128u, 0u, stream>>>(
+				d_gu_ref, d_rpack, d_rw, d_out_ref, r, K3_ROUTED_EXPERT_HIDDEN);
 		};
-		auto run_new_w1 = [&]() {
-			K3CellMmaW1Situ6WKernel<4u><<<max_act * (HALF_CELLS / 6u), 192u, 0u, stream>>>(
-				d_w1, d_act, d_mid_new, d_goff, d_rsrc, d_act_exp, W1_GROUP_BYTES, W1_KT, HALF_CELLS, K3_ROUTED_EXPERT_HIDDEN, CH);
-		};
-		run_old_w1();
-		run_new_w1();
-		CHECK_CUDA(cudaStreamSynchronize(stream));
-		char tag[64];
-		snprintf(tag, sizeof(tag), "MoE PF%u W1 6W<4> vs 4W<8>", r);
-		CheckBf16Exact0Ulp(tag, d_mid_ref, d_mid_new, (uint64_t)packed * CH);
-		const double old_w1 = TimeUs(run_old_w1, stream);
-		const double new_w1 = TimeUs(run_new_w1, stream);
-		printf("BENCH MoE PF%u W1: old_4w8=%.1f us  new_6w4=%.1f us  speedup=%.2fx\n", r, old_w1, new_w1, old_w1 / new_w1);
-
 		auto run_old_w2 = [&]() {
 			K3CellMmaW2SliceKernel<6u, 3u, true><<<max_act * (W2_CELLS / LM_CELL_MMA_BLOCK_CELLS), LM_CELL_MMA_THREADS, 0u, stream>>>(
 				d_w2, d_mid_ref, d_gu_ref, d_goff, d_act_exp, W2_GROUP_BYTES, W2_KT, W2_CELLS, 0u, W2_CELLS, CH);
 			K3MoeFinalizeBlockKernel<<<dim3(((K3_ROUTED_EXPERT_HIDDEN / 8u) + 127u) / 128u, r), 128u, 0u, stream>>>(
 				d_gu_ref, d_rpack, d_rw, d_out_ref, r, K3_ROUTED_EXPERT_HIDDEN);
 		};
+		auto run_new_w2 = [&]() {
+			K3CellMmaW2SliceKernel<4u, 3u, true><<<max_act * (W2_CELLS / LM_CELL_MMA_BLOCK_CELLS), LM_CELL_MMA_THREADS, 0u, stream>>>(
+				d_w2, d_mid_ref, d_gu_new, d_goff, d_act_exp, W2_GROUP_BYTES, W2_KT, W2_CELLS, 0u, W2_CELLS, CH);
+			K3MoeFinalizeToken224Kernel<<<r, 224u, 0u, stream>>>(d_gu_new, d_rpack, d_rw, d_out_new, r);
+		};
 		auto run_new_full = [&]() {
 			CHECK_OK(K3MoeCellsMmaFastLaunch(d_w1, d_w2, d_act, d_gu_new, d_mid_new, d_out_new,
 				d_goff, d_rsrc, d_rpack, d_rw, d_act_exp, r, packed, CH, (SparkGpuStream)stream));
 		};
-		auto run_new_w2_unsliced = [&]() {
-			K3CellMmaW2SliceKernel<4u, 3u, true><<<max_act * (W2_CELLS / LM_CELL_MMA_BLOCK_CELLS), LM_CELL_MMA_THREADS, 0u, stream>>>(
-				d_w2, d_mid_new, d_gu_new, d_goff, d_act_exp, W2_GROUP_BYTES, W2_KT, W2_CELLS, 0u, W2_CELLS, CH);
-			K3MoeFinalizeToken224Kernel<<<r, 224u, 0u, stream>>>(d_gu_new, d_rpack, d_rw, d_out_new, r);
-		};
-		run_old_w2();
+		run_old_all();
 		run_new_full();
 		CHECK_CUDA(cudaStreamSynchronize(stream));
+		char tag[64];
 		snprintf(tag, sizeof(tag), "MoE PF%u full W1+W2+Finalize", r);
 		CheckBf16Exact0Ulp(tag, d_out_ref, d_out_new, (uint64_t)r * K3_ROUTED_EXPERT_HIDDEN);
 		const double old_w2 = TimeUs(run_old_w2, stream);
-		const double new_w2 = TimeUs(run_new_w2_unsliced, stream);
+		const double new_w2 = TimeUs(run_new_w2, stream);
+		const double old_all = TimeUs(run_old_all, stream);
 		const double new_all = TimeUs(run_new_full, stream);
-		printf("BENCH MoE PF%u W2+Fin: old_6u3s=%.1f us  new_4u3s_tok224=%.1f us  speedup=%.2fx  (full_launch=%.1f us vs old_sum=%.1f us, total=%.2fx)\n",
-			r, old_w2, new_w2, old_w2 / new_w2, new_all, old_w1 + old_w2, (old_w1 + old_w2) / new_all);
+		printf("BENCH MoE PF%u W2+Fin: old_6u3s=%.1f us  new_4u3s_tok224=%.1f us  speedup=%.2fx  (full: old=%.1f us  new=%.1f us  total=%.2fx)\n",
+			r, old_w2, new_w2, old_w2 / new_w2, old_all, new_all, old_all / new_all);
 	}
 
 	CHECK_CUDA(cudaFree(d_w1)); CHECK_CUDA(cudaFree(d_w2)); CHECK_CUDA(cudaFree(d_act));
@@ -466,24 +420,27 @@ static void BenchSuite2Indexer(cudaStream_t stream)
 	const uint32_t test_rows[3] = {64u, 512u, 2048u};
 	for ( uint32_t r : test_rows )
 	{
-		CHECK_CUDA(cudaMemsetAsync(d_oh_ref, 0, (uint64_t)r * K3_INDEX_HEADS * 2u, stream));
-		CHECK_CUDA(cudaMemsetAsync(d_oh_new, 0, (uint64_t)r * K3_INDEX_HEADS * 2u, stream));
-		auto old_h = [&]() {
-			K3IndexHeadSkipKernel<<<dim3((K3_INDEX_HEADS + 3u) / 4u, r), 128u, 0u, stream>>>(
-				d_w_head, d_norm, d_oh_ref, d_seq, d_ctx, d_pos, r);
-		};
-		auto new_h = [&]() {
-			K3IndexHeadMmaSkipKernel<<<(r + 31u) / 32u, 128u, 0u, stream>>>(
-				(const uint8_t *)d_w_head, d_norm, d_oh_new, d_seq, d_ctx, d_pos, r);
-		};
-		old_h(); new_h();
-		CHECK_CUDA(cudaStreamSynchronize(stream));
 		char tag[64];
-		snprintf(tag, sizeof(tag), "IndexHead MMA vs Scalar R=%u", r);
-		CheckBf16Close(tag, d_oh_ref, d_oh_new, (uint64_t)r * K3_INDEX_HEADS, 0.02f, 2u);
-		const double t_old_h = TimeUs(old_h, stream);
-		const double t_new_h = TimeUs(new_h, stream);
-		printf("BENCH IndexHead R=%u: old_scalar=%.1f us  new_mma=%.1f us  speedup=%.2fx\n", r, t_old_h, t_new_h, t_old_h / t_new_h);
+		if ( r > 64u )
+		{
+			CHECK_CUDA(cudaMemsetAsync(d_oh_ref, 0, (uint64_t)r * K3_INDEX_HEADS * 2u, stream));
+			CHECK_CUDA(cudaMemsetAsync(d_oh_new, 0, (uint64_t)r * K3_INDEX_HEADS * 2u, stream));
+			auto old_h = [&]() {
+				K3IndexHeadSkipKernel<<<dim3((K3_INDEX_HEADS + 3u) / 4u, r), 128u, 0u, stream>>>(
+					d_w_head, d_norm, d_oh_ref, d_seq, d_ctx, d_pos, r);
+			};
+			auto new_h = [&]() {
+				K3IndexHeadMmaSkipKernel<<<(r + 31u) / 32u, 128u, 0u, stream>>>(
+					(const uint8_t *)d_w_head, d_norm, d_oh_new, d_seq, d_ctx, d_pos, r);
+			};
+			old_h(); new_h();
+			CHECK_CUDA(cudaStreamSynchronize(stream));
+			snprintf(tag, sizeof(tag), "IndexHead MMA vs Scalar R=%u", r);
+			CheckBf16Close(tag, d_oh_ref, d_oh_new, (uint64_t)r * K3_INDEX_HEADS, 0.02f, 2u);
+			const double t_old_h = TimeUs(old_h, stream);
+			const double t_new_h = TimeUs(new_h, stream);
+			printf("BENCH IndexHead R=%u: old_scalar=%.1f us  new_mma=%.1f us  speedup=%.2fx\n", r, t_old_h, t_new_h, t_old_h / t_new_h);
+		}
 
 		CHECK_CUDA(cudaMemsetAsync(d_oq_ref, 0, (uint64_t)r * K3_INDEX_QUERY * 2u, stream));
 		CHECK_CUDA(cudaMemsetAsync(d_oq_new, 0, (uint64_t)r * K3_INDEX_QUERY * 2u, stream));
@@ -900,7 +857,7 @@ static void BenchSuite5Elementwise(cudaStream_t stream)
 	K3KdaNormGateKernel<128u, K3_KDA_VALUE_DIM><<<dim3(ROWS, HEADS), 128u, 0u, stream>>>(d_ao_ref, d_gate, d_nw, HEADS, K3_RMS_EPSILON, ROWS);
 	K3KdaNormGateVecKernel<<<(ROWS * HEADS + 3u) / 4u, 128u, 0u, stream>>>(d_ao_new, d_gate, d_nw, HEADS, K3_RMS_EPSILON, ROWS);
 	CHECK_CUDA(cudaStreamSynchronize(stream));
-	CheckBf16Close("KdaNormGateVec", d_ao_ref, d_ao_new, (uint64_t)ROWS * HEADS * K3_KDA_VALUE_DIM, 1e-3f, 1u);
+	CheckBf16Exact0Ulp("KdaNormGateVec (0-ULP)", d_ao_ref, d_ao_new, (uint64_t)ROWS * HEADS * K3_KDA_VALUE_DIM);
 	const double t_ng_old = TimeUs([&]() {
 		K3KdaNormGateKernel<128u, K3_KDA_VALUE_DIM><<<dim3(ROWS, HEADS), 128u, 0u, stream>>>(d_ao_ref, d_gate, d_nw, HEADS, K3_RMS_EPSILON, ROWS);
 	}, stream);
