@@ -42,12 +42,7 @@ FAMILIES = (
 )
 REFUSED = ('skinny', 'cell', 'stream GEMM', 'attention')
 PENDING_FAMILY = 'attention'
-PENDING = {
-    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj128ELb1EELj512ELj1EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 40,
-    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj128ELb1EELj512ELj2EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 136,
-    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj256ELb1EELj512ELj1EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 40,
-    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj256ELb1EELj512ELj2EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 136,
-}
+PENDING = {}
 
 
 def resources(listing):

@@ -5452,9 +5452,9 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 		const uint32_t st = sbase + (k % STAGES) * STAGE_BYTES;
 		asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sa_dst), "l"(a_row + (uint64_t)k * TILE_K), "r"(a_live) : "memory");
 		if constexpr ( TILE_N == 16u )
-			asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
+			asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
 		else if ( r_cp < TILE_N )
-			asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
+			asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(st + sb_dst), "l"(b_row + (uint64_t)k * TILE_K), "r"(b_live) : "memory");
 		if ( sc_src != 0 )
 			asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(st + A_BYTES + B_BYTES + threadIdx.x * 4u),
 				"l"(sc_src + (uint64_t)k * 4u) : "memory");
@@ -5741,7 +5741,7 @@ static __device__ __forceinline__ void D41CellMxDirectBody(const uint8_t *__rest
 			#pragma unroll
 			for ( uint32_t p = 0u; p < W_PASSES; ++p )
 				if ( threadIdx.x + p * THREADS < W_VECS )
-					LmCellMxCopy(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
+					LmCellMxCopy256(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
 			w_base += (uint64_t)K_STEPS * TILE_STRIDE;
 		};
 		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
@@ -5990,7 +5990,7 @@ void D41CellFp4GemvKernel(const uint8_t *__restrict__ cells, const uint16_t *__r
 			#pragma unroll
 			for ( uint32_t p = 0u; p < W_PASSES; ++p )
 				if ( threadIdx.x + p * THREADS < W_VECS )
-					LmCellMxCopy(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
+					LmCellMxCopy256(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
 			w_base += (uint64_t)K_STEPS * TILE_STRIDE;
 		};
 		auto load_act = [&](uint32_t k_idx, uint32_t abuf)
