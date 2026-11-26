@@ -1,2 +1,2 @@
-+1828
-qwen38 Blackwell sm_121a P4 prefill kernels: 2D-parallel GDN conv + scalar-decay chunk-32 Tensor-Core GDN prefill, adaptive Q_WARPS=1/2/4 local prefill attention with L2::128B prefetch, persistent 3-stage vectorized NVFP4 MoE prefill, 3-stage dynamic-SMEM BF16 MoE W1W3, wide double-buffered small-N & fused shared GateUp SwiGLU MMA, Tensor-Core compact indexer scorer, and wide dynamic-SMEM hyper-connection MMA dispatch (all 0-ULP 5c/Gate GX invariant).
++1276
+qwen38 Blackwell sm_121a P4 prefill winners (verified on GB10): 2D-parallel GDN conv + scalar-decay chunk-32 Tensor-Core GDN prefill (1.17x-1.39x, 0-ULP Gate GX), wide double-buffered small-N & fused shared GateUp SwiGLU MMA (1.24x-2.15x, 0-ULP), and Tensor-Core compact indexer scorer (10.2x-11.1x).

@@ -527,10 +527,11 @@ static void QwenPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restric
 	LmDependentRelease();
 }
 
-template<uint32_t HD, uint32_t Q_WARPS = 2u>
+template<uint32_t HD>
 static __host__ __device__ constexpr uint32_t QwenLocalPrefillSharedBytes(void)
 {
 	constexpr uint32_t V_WARPS = HD / 128u;
+	constexpr uint32_t Q_WARPS = 2u;
 	constexpr uint32_t KV_TILE = 32u;
 	constexpr uint32_t ROW_BYTES = HD * 2u;
 	constexpr uint32_t KV_BYTES = 2u * KV_TILE * ROW_BYTES;
@@ -538,8 +539,8 @@ static __host__ __device__ constexpr uint32_t QwenLocalPrefillSharedBytes(void)
 	return KV_BYTES + SCORE_BYTES;
 }
 
-template<class Kv, uint32_t KVH, uint32_t HD, bool HAS_MASK, bool GATE_FROM_LOCAL, bool DIRECT_PAGED = false, uint32_t Q_WARPS = 2u>
-__global__ __launch_bounds__(Q_WARPS * 64u, Q_WARPS <= 2u ? 2 : 1)
+template<class Kv, uint32_t KVH, uint32_t HD, bool HAS_MASK, bool GATE_FROM_LOCAL, bool DIRECT_PAGED = false>
+__global__ __launch_bounds__(128u, 2)
 static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
 	const uint16_t *__restrict__ kv_cur, LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row,
 	const uint16_t *__restrict__ gate_base, uint32_t gate_stride,
@@ -550,6 +551,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 {
 	constexpr uint32_t KV_TILE = 32u;
 	constexpr uint32_t V_WARPS = HD / 128u;
+	constexpr uint32_t Q_WARPS = 2u;
 	constexpr uint32_t THREADS = Q_WARPS * V_WARPS * 32u;
 	constexpr uint32_t Q_TILE = Q_WARPS * 16u;
 	constexpr uint32_t PART = HD / V_WARPS;
@@ -560,7 +562,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 	constexpr uint32_t CHUNKS = HD / 8u;
 	constexpr uint32_t ROW_BYTES = HD * 2u;
 	constexpr uint32_t TILE_BYTES = KV_TILE * ROW_BYTES;
-	static_assert(HD == 256u && THREADS == Q_WARPS * 64u && Q_TILE * ROW_BYTES <= 2u * TILE_BYTES, "valid qwen local prefill MMA geometry");
+	static_assert(HD == 256u && THREADS == 128u && Q_TILE * ROW_BYTES <= 2u * TILE_BYTES, "valid qwen local prefill MMA geometry");
 	static_assert(!DIRECT_PAGED || (Kv::kPageSlots % KV_TILE) == 0u, "direct paged KV requires page slots divisible by KV_TILE");
 	extern __shared__ __align__(128) uint8_t qh_prefill_smem[];
 	uint8_t *k_smem = qh_prefill_smem;
@@ -601,7 +603,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 		const uint32_t r = idx / CHUNKS, c = idx % CHUNKS;
 		const bool vr = row_first + r < row_end;
 		const uint16_t *src = vr ? query_bf16 + ((uint64_t)(row_first + r) * rank_heads + local_h) * HD + c * 8u : query_bf16;
-		LmStreamCopy(k_base + r * ROW_BYTES + LmPrefillSwizzle(r, c) * 16u, src, vr ? 16u : 0u);
+		LmPrefillCopy(k_base + r * ROW_BYTES + LmPrefillSwizzle(r, c) * 16u, src, vr ? 16u : 0u);
 	}
 	asm volatile("cp.async.commit_group;\n" ::: "memory");
 	asm volatile("cp.async.wait_group 0;\n" ::: "memory");
@@ -651,69 +653,29 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 	auto copy_kv = [&](uint32_t tile, uint32_t dst_base, uint32_t is_v)
 	{
 		const uint32_t t0 = tile * KV_TILE;
-		if ( t0 + KV_TILE <= s_prior_keys )
+		const uint8_t *paged_base = (DIRECT_PAGED && t0 < s_prior_keys) ?
+			LmKvShardSlotRequired<Kv>(kv_view, s_seq_id, t0, 0u, LM_KV_ACCESS_READ) : (const uint8_t *)0;
+		for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
 		{
-			if constexpr ( DIRECT_PAGED )
+			const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
+			const uint32_t k_idx = t0 + s;
+			const bool valid = k_idx < total_kv;
+			const uint16_t *src = query_bf16;
+			if ( valid )
 			{
-				const uint8_t *paged_base = LmKvShardSlotRequired<Kv>(kv_view, s_seq_id, t0, 0u, LM_KV_ACCESS_READ);
-				const uint32_t head_off = (is_v * KVH + kh_global) * HD;
-				#pragma unroll 4
-				for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
+				if ( k_idx < s_prior_keys )
 				{
-					const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
-					const uint16_t *src = paged_base != 0 ?
-						((const uint16_t *)(paged_base + (uint64_t)s * Kv::kSlotBytes) + head_off + c * 8u) : query_bf16;
-					LmStreamCopy(dst_base + s * ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, paged_base != 0 ? 16u : 0u);
-				}
-			}
-			else
-			{
-				const uint16_t *base_ptr = kv_prior + (((uint64_t)lkvh * plan.total_prior + (s_prior_off + t0)) * 2u + is_v) * HD;
-				#pragma unroll 4
-				for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
-				{
-					const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
-					LmStreamCopy(dst_base + s * ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, base_ptr + (uint64_t)s * (2u * HD) + c * 8u, 16u);
-				}
-			}
-		}
-		else if ( t0 >= s_prior_keys && t0 + KV_TILE <= total_kv )
-		{
-			const uint16_t *base_ptr = kv_cur + (((uint64_t)lkvh * rows + (s_row_begin + t0 - s_prior_keys)) * 2u + is_v) * HD;
-			#pragma unroll 4
-			for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
-			{
-				const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
-				LmStreamCopy(dst_base + s * ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, base_ptr + (uint64_t)s * (2u * HD) + c * 8u, 16u);
-			}
-		}
-		else
-		{
-			const uint8_t *paged_base = (DIRECT_PAGED && t0 < s_prior_keys) ?
-				LmKvShardSlotRequired<Kv>(kv_view, s_seq_id, t0, 0u, LM_KV_ACCESS_READ) : (const uint8_t *)0;
-			#pragma unroll 4
-			for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
-			{
-				const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
-				const uint32_t k_idx = t0 + s;
-				const bool valid = k_idx < total_kv;
-				const uint16_t *src = query_bf16;
-				if ( valid )
-				{
-					if ( k_idx < s_prior_keys )
-					{
-						if constexpr ( DIRECT_PAGED )
-							src = paged_base != 0 ?
-								((const uint16_t *)(paged_base + (uint64_t)s * Kv::kSlotBytes) + (is_v * KVH + kh_global) * HD + c * 8u) :
-								query_bf16;
-						else
-							src = kv_prior + (((uint64_t)lkvh * plan.total_prior + (s_prior_off + k_idx)) * 2u + is_v) * HD + c * 8u;
-					}
+					if constexpr ( DIRECT_PAGED )
+						src = paged_base != 0 ?
+							((const uint16_t *)(paged_base + (uint64_t)s * Kv::kSlotBytes) + (is_v * KVH + kh_global) * HD + c * 8u) :
+							query_bf16;
 					else
-						src = kv_cur + (((uint64_t)lkvh * rows + (s_row_begin + k_idx - s_prior_keys)) * 2u + is_v) * HD + c * 8u;
+						src = kv_prior + (((uint64_t)lkvh * plan.total_prior + (s_prior_off + k_idx)) * 2u + is_v) * HD + c * 8u;
 				}
-				LmStreamCopy(dst_base + s * ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
+				else
+					src = kv_cur + (((uint64_t)lkvh * rows + (s_row_begin + k_idx - s_prior_keys)) * 2u + is_v) * HD + c * 8u;
 			}
+			LmPrefillCopy(dst_base + s * ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
 		}
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 	};
@@ -4877,291 +4839,23 @@ struct QwenBf16MmaSmem<BYTES, false>
 	__align__(128) uint8_t buf[BYTES];
 };
 
-template<uint32_t TILE_M, uint32_t WARPS_M, uint32_t WARPS_N, bool ACTIVATION_PACKED, bool FUSED_GATE_UP, uint32_t STAGES = 3u, uint32_t SCALE_TILES = 4u>
-static __host__ __device__ constexpr uint32_t QwenNvfp4PrefillSharedBytes(void)
-{
-	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
-	constexpr uint32_t W_ROWS_TOTAL = (FUSED_GATE_UP ? 2u : 1u) * WARPS_N * N_PER_WARP;
-	constexpr uint32_t A_BYTES = TILE_M * 128u * 2u;
-	constexpr uint32_t B_BYTES = W_ROWS_TOTAL * 64u;
-	constexpr uint32_t SC_BYTES = W_ROWS_TOTAL * SCALE_TILES * 8u;
-	return STAGES * (A_BYTES + B_BYTES) + 2u * SC_BYTES + 257u * 4u + 128u;
-}
-
-template<uint32_t TILE_M, uint32_t WARPS_M, uint32_t WARPS_N, bool ACTIVATION_PACKED, bool FUSED_GATE_UP, uint32_t STAGES = 3u, uint32_t SCALE_TILES = 4u>
-__global__ __launch_bounds__(WARPS_M * WARPS_N * 32u, TILE_M <= 32u ? 2 : 1)
-static void QwenNvfp4ExpertsPrefillKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
-	const uint8_t *__restrict__ w3, const uint8_t *__restrict__ w3_scale_blob, const uint16_t *__restrict__ activation,
-	const float *__restrict__ packed_weight, uint16_t *__restrict__ output, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ route_source_token, uint32_t groups, uint32_t input_dim, uint32_t output_dim)
-{
-	constexpr uint32_t WARPS = WARPS_M * WARPS_N;
-	constexpr uint32_t THREADS = WARPS * 32u;
-	constexpr uint32_t WARP_M = TILE_M / WARPS_M;
-	constexpr uint32_t MF = WARP_M / 16u;
-	constexpr uint32_t TILE_K = 128u;
-	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
-	constexpr uint32_t TILE_N = WARPS_N * N_PER_WARP;
-	constexpr uint32_t W_MATS = FUSED_GATE_UP ? 2u : 1u;
-	constexpr uint32_t W_ROWS_TOTAL = W_MATS * TILE_N;
-	constexpr uint32_t A_BYTES = TILE_M * 256u;
-	constexpr uint32_t B_ROW_BYTES = 64u;
-	constexpr uint32_t B_BYTES = W_ROWS_TOTAL * B_ROW_BYTES;
-	constexpr uint32_t STAGE_BYTES = A_BYTES + B_BYTES;
-	constexpr uint32_t SC_BYTES = SCALE_TILES * 8u;
-	constexpr uint32_t SC_VECS = SC_BYTES / 16u;
-	constexpr uint32_t SC_SHIFT = SCALE_TILES == 4u ? 2u : 1u;
-	constexpr uint32_t A_VEC_THREADS = TILE_K / 8u;
-	constexpr uint32_t A_ROW_STEP = THREADS / A_VEC_THREADS;
-	constexpr uint32_t A_COPIES = (TILE_M + A_ROW_STEP - 1u) / A_ROW_STEP;
-	static_assert(STAGES >= 3u && SCALE_TILES >= STAGES && (TILE_M % (WARPS_M * 16u)) == 0u, "valid persistent 3-stage NVFP4 prefill tile");
-	extern __shared__ __align__(128) uint8_t qh_nvfp4_smem[];
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(qh_nvfp4_smem);
-	uint8_t *const s_sc_base = qh_nvfp4_smem + STAGES * STAGE_BYTES;
-	uint32_t *const s_prefix = (uint32_t *)(s_sc_base + 2u * W_ROWS_TOTAL * SC_BYTES);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
-	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
-	const uint32_t a_vec = threadIdx.x % A_VEC_THREADS, a_row0 = threadIdx.x / A_VEC_THREADS;
-	const uint32_t n_tiles = (output_dim + TILE_N - 1u) / TILE_N;
-	const uint32_t k_tiles = input_dim / TILE_K;
-	const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u);
-	const uint64_t scale_pitch = (uint64_t)(input_dim >> 4u);
-	const uint64_t scale_group_stride = (uint64_t)output_dim * scale_pitch;
-	const uint8_t *w1_sc_data = w1_scale_blob + (uint64_t)groups * sizeof(float);
-	const uint8_t *w3_sc_data = FUSED_GATE_UP ? (w3_scale_blob + (uint64_t)groups * sizeof(float)) : (const uint8_t *)0;
-	const uint32_t b_row0 = FUSED_GATE_UP ? (warp_n * 8u + g) : (warp_n * 16u + g);
-	const uint32_t b_row1 = FUSED_GATE_UP ? (TILE_N + warp_n * 8u + g) : (warp_n * 16u + 8u + g);
-	LmDependentWait();
-	QwenBf16TilePrefixScan(group_row_offset, s_prefix, groups, TILE_M, n_tiles);
-	const uint32_t total_tiles = s_prefix[groups];
-	auto advance_st = [](uint32_t &st) {
-		++st;
-		if ( st == STAGES )
-			st = 0u;
-	};
-	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
-	{
-		uint32_t group, row_base, row_limit, nt;
-		QwenBf16GroupedTileLookup(group_row_offset, s_prefix, groups, tile, TILE_M, n_tiles, group, row_base, row_limit, nt);
-		const uint32_t n_base = nt * TILE_N;
-		const uint32_t count = row_limit - row_base < TILE_M ? row_limit - row_base : TILE_M;
-		const float g1_scaled = ((const float *)w1_scale_blob)[group] * 5.1922968585348276e33f;
-		const float g3_scaled = FUSED_GATE_UP ? (((const float *)w3_scale_blob)[group] * 5.1922968585348276e33f) : 0.0f;
-		const float g1_b = FUSED_GATE_UP ? g3_scaled : g1_scaled;
-		const uint16_t *a_ptrs[A_COPIES];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < A_COPIES; ++i )
-		{
-			const uint32_t lr = a_row0 + i * A_ROW_STEP;
-			if ( lr < count )
-			{
-				const uint32_t pr = row_base + lr;
-				a_ptrs[i] = activation + (uint64_t)(ACTIVATION_PACKED ? pr : route_source_token[pr]) * input_dim + (uint64_t)a_vec * 8u;
-			}
-			else
-				a_ptrs[i] = 0;
-		}
-		auto stage_tile = [&](uint32_t st, uint32_t kt)
-		{
-			const uint32_t st_base = shared_base + st * STAGE_BYTES;
-			#pragma unroll
-			for ( uint32_t i = 0u; i < A_COPIES; ++i )
-			{
-				const uint32_t lr = a_row0 + i * A_ROW_STEP;
-				if ( lr < TILE_M )
-				{
-					const uint32_t swz = (a_vec & 8u) | LmStreamSwizzle8(lr, a_vec & 7u);
-					const bool ok = a_ptrs[i] != 0;
-					LmStreamCopy(st_base + lr * 256u + swz * 16u, ok ? a_ptrs[i] + (uint64_t)kt * TILE_K : activation, ok ? 16u : 0u);
-				}
-			}
-			constexpr uint32_t B_VECS_PER_ROW = B_ROW_BYTES / 16u;
-			constexpr uint32_t B_TOTAL_VECS = W_ROWS_TOTAL * B_VECS_PER_ROW;
-			#pragma unroll
-			for ( uint32_t idx = threadIdx.x; idx < B_TOTAL_VECS; idx += THREADS )
-			{
-				const uint32_t wr = idx / B_VECS_PER_ROW, bv = idx % B_VECS_PER_ROW;
-				const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-				const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-				const bool ok = neuron < output_dim;
-				const uint8_t *wbase = (mat == 0u ? w1 : w3);
-				const uint8_t *src = ok ? wbase + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)kt * B_ROW_BYTES + (uint64_t)bv * 16u : wbase;
-				LmStreamCopy(st_base + A_BYTES + wr * B_ROW_BYTES + bv * 16u, src, ok ? 16u : 0u);
-			}
-			if ( (kt & (SCALE_TILES - 1u)) == 0u )
-			{
-				const uint32_t sc_off = kt * 8u, avail = sc_off < scale_pitch ? (uint32_t)(scale_pitch - sc_off) : 0u;
-				const uint32_t sb_slot = (kt >> SC_SHIFT) & 1u;
-				const uint32_t sc_slot_base = (uint32_t)__cvta_generic_to_shared(s_sc_base + sb_slot * W_ROWS_TOTAL * SC_BYTES);
-				const bool sc_aligned16 = (scale_pitch & 15u) == 0u;
-				#pragma unroll
-				for ( uint32_t idx = threadIdx.x; idx < W_ROWS_TOTAL * SC_VECS; idx += THREADS )
-				{
-					const uint32_t wr = idx / SC_VECS, half = idx % SC_VECS;
-					const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-					const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-					const uint32_t h_off = half * 16u;
-					const uint32_t bytes = (neuron < output_dim && h_off < avail) ? (avail - h_off >= 16u ? 16u : avail - h_off) : 0u;
-					const uint8_t *sbase = (mat == 0u ? w1_sc_data : w3_sc_data);
-					const uint8_t *src = bytes != 0u ? sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off + h_off : sbase;
-					if ( sc_aligned16 )
-						LmStreamCopy(sc_slot_base + wr * SC_BYTES + h_off, src, bytes);
-					else if ( bytes != 0u )
-					{
-						uint8_t *dst = s_sc_base + sb_slot * W_ROWS_TOTAL * SC_BYTES + wr * SC_BYTES + h_off;
-						*(uint64_t *)dst = *(const uint64_t *)src;
-						if ( bytes >= 16u )
-							*(uint64_t *)(dst + 8u) = *(const uint64_t *)(src + 8u);
-					}
-				}
-			}
-			LmStreamCommit();
-		};
-		float acc0[MF][4], acc1[MF][4];
-		#pragma unroll
-		for ( uint32_t m = 0u; m < MF; ++m )
-			acc0[m][0] = acc0[m][1] = acc0[m][2] = acc0[m][3] = acc1[m][0] = acc1[m][1] = acc1[m][2] = acc1[m][3] = 0.0f;
-		uint32_t kp_st = 0u, kc_st = 0u, kp_tile = 0u;
-		#pragma unroll
-		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
-		{
-			if ( kp_tile < k_tiles )
-				stage_tile(kp_st, kp_tile);
-			else
-				LmStreamCommit();
-			++kp_tile;
-			advance_st(kp_st);
-		}
-		const uint32_t shift_b = c * 8u;
-		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-		{
-			LmStreamWait<STAGES - 2u>();
-			__syncthreads();
-			if ( kp_tile < k_tiles )
-				stage_tile(kp_st, kp_tile);
-			else
-				LmStreamCommit();
-			++kp_tile;
-			advance_st(kp_st);
-			const uint32_t sb_slot = (kt >> SC_SHIFT) & 1u, sb_sub = (kt & (SCALE_TILES - 1u)) * 8u;
-			const uint8_t *sc_slot = s_sc_base + sb_slot * W_ROWS_TOTAL * SC_BYTES;
-			const uint64_t sc0_all = *(const uint64_t *)(sc_slot + b_row0 * SC_BYTES + sb_sub);
-			const uint64_t sc1_all = *(const uint64_t *)(sc_slot + b_row1 * SC_BYTES + sb_sub);
-			const uint32_t stage_a = shared_base + kc_st * STAGE_BYTES;
-			const uint8_t *s_b_cur = qh_nvfp4_smem + kc_st * STAGE_BYTES + A_BYTES;
-			#pragma unroll
-			for ( uint32_t kp = 0u; kp < 4u; ++kp )
-			{
-				const float2 f0 = LmSkinnyDecodeUe4m3Raw(LmSkinnyUe4m3Raw{ (uint8_t)(sc0_all >> (kp * 16u)), (uint8_t)(sc0_all >> (kp * 16u + 8u)) }, g1_scaled);
-				const float2 f1 = LmSkinnyDecodeUe4m3Raw(LmSkinnyUe4m3Raw{ (uint8_t)(sc1_all >> (kp * 16u)), (uint8_t)(sc1_all >> (kp * 16u + 8u)) }, g1_b);
-				uint32_t s0_pair[2], s1_pair[2];
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s0_pair[0]) : "f"(f0.x));
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s0_pair[1]) : "f"(f0.y));
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s1_pair[0]) : "f"(f1.x));
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s1_pair[1]) : "f"(f1.y));
-				const uint4 w0 = *(const uint4 *)(s_b_cur + b_row0 * B_ROW_BYTES + kp * 16u);
-				const uint4 w1 = *(const uint4 *)(s_b_cur + b_row1 * B_ROW_BYTES + kp * 16u);
-				const uint32_t w0_lo[2] = { w0.x, w0.z }, w0_hi[2] = { w0.y, w0.w };
-				const uint32_t w1_lo[2] = { w1.x, w1.z }, w1_hi[2] = { w1.y, w1.w };
-				#pragma unroll
-				for ( uint32_t sub = 0u; sub < 2u; ++sub )
-				{
-					const uint32_t ks = kp * 2u + sub;
-					const uint32_t s0_2 = s0_pair[sub], s1_2 = s1_pair[sub];
-					const uint32_t b0[2] = { QwenE2m1PairToBf16((w0_lo[sub] >> shift_b) & 0xffu, s0_2),
-						QwenE2m1PairToBf16((w0_hi[sub] >> shift_b) & 0xffu, s0_2) };
-					const uint32_t b1[2] = { QwenE2m1PairToBf16((w1_lo[sub] >> shift_b) & 0xffu, s1_2),
-						QwenE2m1PairToBf16((w1_hi[sub] >> shift_b) & 0xffu, s1_2) };
-					const uint32_t k_half = (ks & 4u) << 1u;
-					const uint32_t k_c = (ks & 3u) * 2u + ((lane >> 4u) & 1u);
-					#pragma unroll
-					for ( uint32_t m = 0u; m < MF; ++m )
-					{
-						if ( warp_m * WARP_M + m * 16u < count )
-						{
-							const uint32_t ar = warp_m * WARP_M + m * 16u + (lane & 15u);
-							const uint32_t ac = k_half | LmStreamSwizzle8(ar, k_c);
-							uint32_t af[4];
-							LmStreamLdMatrix4(af, stage_a + ar * 256u + ac * 16u);
-							LmMmaBf16(acc0[m], af, b0);
-							LmMmaBf16(acc1[m], af, b1);
-						}
-					}
-				}
-			}
-			advance_st(kc_st);
-		}
-		LmStreamWait<0u>();
-		if constexpr ( FUSED_GATE_UP )
-		{
-			const uint32_t col = n_base + warp_n * 8u + c * 2u;
-			if ( col < output_dim )
-				#pragma unroll
-				for ( uint32_t m = 0u; m < MF; ++m )
-					#pragma unroll
-					for ( uint32_t h = 0u; h < 2u; ++h )
-					{
-						const uint32_t pr = row_base + warp_m * WARP_M + m * 16u + g + h * 8u;
-						if ( pr < row_limit )
-						{
-							const float w = __ldg(packed_weight + pr);
-							const float v0 = SparkMathSiluFast(LmBf16ToFloat(LmFloatToBf16(acc0[m][h * 2u]))) * LmBf16ToFloat(LmFloatToBf16(acc1[m][h * 2u])) * w;
-							const float v1 = SparkMathSiluFast(LmBf16ToFloat(LmFloatToBf16(acc0[m][h * 2u + 1u]))) * LmBf16ToFloat(LmFloatToBf16(acc1[m][h * 2u + 1u])) * w;
-							*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
-						}
-					}
-		}
-		else
-		{
-			const uint32_t col0 = n_base + warp_n * 16u + c * 2u, col1 = col0 + 8u;
-			#pragma unroll
-			for ( uint32_t m = 0u; m < MF; ++m )
-				#pragma unroll
-				for ( uint32_t h = 0u; h < 2u; ++h )
-				{
-					const uint32_t pr = row_base + warp_m * WARP_M + m * 16u + g + h * 8u;
-					if ( pr < row_limit )
-					{
-						if ( col0 < output_dim )
-							*(uint32_t *)(output + (uint64_t)pr * output_dim + col0) = LmPackBf16Pair(acc0[m][h * 2u], acc0[m][h * 2u + 1u]);
-						if ( col1 < output_dim )
-							*(uint32_t *)(output + (uint64_t)pr * output_dim + col1) = LmPackBf16Pair(acc1[m][h * 2u], acc1[m][h * 2u + 1u]);
-					}
-				}
-		}
-		if ( tile + gridDim.x < total_tiles )
-			__syncthreads();
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES = 2u>
-static __host__ __device__ constexpr uint32_t QwenBf16MoeW1W3SharedBytes(void)
-{
-	return STAGES * (TILE_M + 2u * TILE_N) * 128u + 257u * 4u + 128u;
-}
-
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES = 2u>
-__global__ __launch_bounds__(THREADS, STAGES <= 2u ? 2 : 1)
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M>
+__global__ __launch_bounds__(THREADS, 2)
 static void QwenBf16MoeMmaW1W3ActKernel(const uint16_t *__restrict__ w_gate, const uint16_t *__restrict__ w_up, const uint16_t *__restrict__ act,
 	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ source_row_map,
 	uint16_t *__restrict__ out, uint32_t groups, uint32_t K, uint32_t N)
 {
-	constexpr uint32_t TILE_K = 64u, KSTEPS = 4u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
+	constexpr uint32_t TILE_K = 64u, KSTEPS = 4u, ROW_CHUNKS = 8u, ROW_BYTES = 128u, STAGES = 2u;
 	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
 	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + 2u * B_BYTES;
 	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
 	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
-	constexpr bool USE_DYN = (STAGES >= 3u);
-	constexpr bool USE_PREFIX = USE_DYN || (STAGES * STAGE_BYTES <= 48000u);
-	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS && STAGES >= 2u, "valid fused BF16 MoE gate-up MMA tile");
-	__shared__ QwenBf16MmaSmem<USE_DYN ? 128u : STAGES * STAGE_BYTES, !USE_DYN && USE_PREFIX> smem_s;
-	extern __shared__ __align__(128) uint8_t qh_bf16_w1w3_dyn[];
-	uint8_t *const smem = USE_DYN ? qh_bf16_w1w3_dyn : smem_s.buf;
-	uint32_t *const prefix_ptr = USE_DYN ? (uint32_t *)(qh_bf16_w1w3_dyn + STAGES * STAGE_BYTES) :
-		(uint32_t *)((uint8_t *)&smem_s + (STAGES * STAGE_BYTES));
+	constexpr bool USE_PREFIX = (STAGES * STAGE_BYTES <= 48000u);
+	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid fused BF16 MoE gate-up MMA tile");
+	__shared__ QwenBf16MmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
+	uint8_t *const smem = smem_s.buf;
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
 	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
@@ -5171,8 +4865,8 @@ static void QwenBf16MoeMmaW1W3ActKernel(const uint16_t *__restrict__ w_gate, con
 	uint32_t total_tiles;
 	if constexpr ( USE_PREFIX )
 	{
-		QwenBf16TilePrefixScan(group_row_offset, prefix_ptr, groups, TILE_M, n_tiles);
-		total_tiles = prefix_ptr[groups];
+		QwenBf16TilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
+		total_tiles = smem_s.prefix[groups];
 	}
 	else
 		total_tiles = QwenBf16GroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
@@ -5180,7 +4874,7 @@ static void QwenBf16MoeMmaW1W3ActKernel(const uint16_t *__restrict__ w_gate, con
 	{
 		uint32_t grp, row_base, row_limit, nt;
 		if constexpr ( USE_PREFIX )
-			QwenBf16GroupedTileLookup(group_row_offset, prefix_ptr, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
+			QwenBf16GroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
 		else
 			QwenBf16GroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
 		const uint32_t col_base = nt * TILE_N;
@@ -5224,17 +4918,6 @@ static void QwenBf16MoeMmaW1W3ActKernel(const uint16_t *__restrict__ w_gate, con
 			bg_base += TILE_K;
 			bu_base += TILE_K;
 		};
-		auto advance = [](uint32_t &off)
-		{
-			if constexpr ( STAGES == 2u )
-				off ^= STAGE_BYTES;
-			else
-			{
-				off += STAGE_BYTES;
-				if ( off == STAGES * STAGE_BYTES )
-					off = 0u;
-			}
-		};
 		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
 		float tg[MF][NF][4], tu[MF][NF][4];
 		#pragma unroll
@@ -5270,89 +4953,40 @@ static void QwenBf16MoeMmaW1W3ActKernel(const uint16_t *__restrict__ w_gate, con
 			}
 		};
 		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
-		#pragma unroll
-		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		if ( kp < k_tiles )
+			issue_k(sp_off);
+		LmStreamCommit();
+		kp++;
+		sp_off ^= STAGE_BYTES;
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 		{
-			if ( kp < k_tiles )
-				issue_k(sp_off);
-			LmStreamCommit();
-			kp++;
-			advance(sp_off);
-		}
-		if constexpr ( STAGES >= 3u )
-		{
-			LmStreamWait<STAGES - 2u>();
+			LmStreamWait<0u>();
 			__syncthreads();
-			load_frag(0u, 0u, shared_base + sc_off);
-			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+			const uint32_t stage_s = shared_base + sc_off;
+			if ( kp < k_tiles )
 			{
-				const uint32_t stage_s = shared_base + sc_off;
-				#pragma unroll
-				for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
-				{
-					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-					if ( ks == 0u )
-					{
-						if ( kp < k_tiles )
-						{
-							issue_k(sp_off);
-							kp++;
-							advance(sp_off);
-						}
-						LmStreamCommit();
-					}
-					if ( ks + 1u < KSTEPS )
-						load_frag(nxt, ks + 1u, stage_s);
-					else if ( kt + 1u < k_tiles )
-					{
-						LmStreamWait<STAGES - 2u>();
-						__syncthreads();
-						advance(sc_off);
-						load_frag(nxt, 0u, shared_base + sc_off);
-					}
-					#pragma unroll
-					for ( uint32_t i = 0u; i < MF; ++i )
-						#pragma unroll
-						for ( uint32_t j = 0u; j < NF; ++j )
-						{
-							LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
-						}
-				}
+				issue_k(sp_off);
+				kp++;
+				sp_off ^= STAGE_BYTES;
 			}
-		}
-		else
-		{
-			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+			LmStreamCommit();
+			load_frag(0u, 0u, stage_s);
+			#pragma unroll
+			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
 			{
-				LmStreamWait<0u>();
-				__syncthreads();
-				const uint32_t stage_s = shared_base + sc_off;
-				if ( kp < k_tiles )
-				{
-					issue_k(sp_off);
-					kp++;
-					advance(sp_off);
-				}
-				LmStreamCommit();
-				load_frag(0u, 0u, stage_s);
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks + 1u < KSTEPS )
+					load_frag(nxt, ks + 1u, stage_s);
 				#pragma unroll
-				for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
-				{
-					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-					if ( ks + 1u < KSTEPS )
-						load_frag(nxt, ks + 1u, stage_s);
+				for ( uint32_t i = 0u; i < MF; ++i )
 					#pragma unroll
-					for ( uint32_t i = 0u; i < MF; ++i )
-						#pragma unroll
-						for ( uint32_t j = 0u; j < NF; ++j )
-						{
-							LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
-						}
-				}
-				advance(sc_off);
+					for ( uint32_t j = 0u; j < NF; ++j )
+					{
+						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+					}
 			}
+			sc_off ^= STAGE_BYTES;
 		}
 		LmStreamWait<0u>();
 		#pragma unroll
@@ -5843,7 +5477,7 @@ static void QwenHcDownGateInjectMmaSplitKernel(const uint16_t *__restrict__ down
 }
 
 template<uint32_t STREAMS, uint32_t WIDTH, uint32_t LOW_RANK, bool HAS_INJECT, uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES = 3u>
-__global__ __launch_bounds__(THREADS, (STAGES * (TILE_M + TILE_N) * 128u <= 49152u) ? 2 : 1)
+__global__ __launch_bounds__(THREADS, 2)
 static void QwenHcDownGateInjectMmaKernel(const uint16_t *__restrict__ down, const uint16_t *__restrict__ inject_w,
 	const uint16_t *__restrict__ hc_normed, uint16_t *__restrict__ hc_low, float *__restrict__ hc_inject, uint32_t rows)
 {
@@ -5857,11 +5491,8 @@ static void QwenHcDownGateInjectMmaKernel(const uint16_t *__restrict__ down, con
 	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
 	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
 	constexpr uint32_t K_TILES = K / TILE_K;
-	constexpr bool USE_DYN = (STAGES * STAGE_BYTES > 49152u);
 	static_assert((K % TILE_K) == 0u && NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS && STAGES >= 2u, "HC down MMA geometry must divide 64/16");
-	__shared__ __align__(128) uint8_t smem_static[USE_DYN ? 128u : STAGES * STAGE_BYTES];
-	extern __shared__ __align__(128) uint8_t smem_dyn[];
-	uint8_t *const smem = USE_DYN ? smem_dyn : smem_static;
+	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
 	const uint32_t m_blocks = (rows + TILE_M - 1u) / TILE_M;
 	const uint32_t n_block = blockIdx.x / m_blocks, m_block = blockIdx.x % m_blocks;
@@ -6065,7 +5696,7 @@ static void QwenHcDownGateInjectMmaKernel(const uint16_t *__restrict__ down, con
 }
 
 template<uint32_t STREAMS, uint32_t WIDTH, uint32_t LOW_RANK, uint32_t TILE_M, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES = 3u>
-__global__ __launch_bounds__(THREADS, (STAGES * (TILE_M + 64u) * 128u <= 49152u) ? 2 : 1)
+__global__ __launch_bounds__(THREADS, 2)
 static void QwenHcUpMixMmaKernel(const uint16_t *__restrict__ up, const uint16_t *__restrict__ hc_low,
 	const uint16_t *__restrict__ hc_normed, uint16_t *__restrict__ mixed, uint32_t rows)
 {
@@ -6077,11 +5708,8 @@ static void QwenHcUpMixMmaKernel(const uint16_t *__restrict__ up, const uint16_t
 	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
 	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
 	constexpr uint32_t K_TILES = LOW_RANK / TILE_K;
-	constexpr bool USE_DYN = (STAGES * STAGE_BYTES > 49152u);
 	static_assert((LOW_RANK % TILE_K) == 0u && (WIDTH % TILE_N) == 0u && NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS && STAGES >= 2u, "HC up mix MMA geometry must divide 64");
-	__shared__ __align__(128) uint8_t smem_static[USE_DYN ? 128u : STAGES * STAGE_BYTES];
-	extern __shared__ __align__(128) uint8_t smem_dyn[];
-	uint8_t *const smem = USE_DYN ? smem_dyn : smem_static;
+	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
 	const uint32_t m_blocks = (rows + TILE_M - 1u) / TILE_M;
 	const uint32_t n_block = blockIdx.x / m_blocks, m_block = blockIdx.x % m_blocks;
@@ -7760,7 +7388,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		if ( output_dimension < 512u && (input_dimension % 256u) == 0u )
 		{
 			const uint32_t nb = (output_dimension + 15u) / 16u;
-			if ( rows > 16u )
+			if ( rows > 16u && (output_dimension >= 16u || rows >= 1024u) )
 			{
 				constexpr uint32_t smem = QwenBf16SmallNMmaWideSharedBytes<32u>();
 				static bool granted_smalln32 = false;
@@ -8241,50 +7869,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		return CudaStageLaunched();
 	}
 
-	template<bool HAS_MASK, bool kGateFromLocal, bool kDirectPaged, uint32_t Q_WARPS>
-	static SparkStatus LaunchLocalPrefillAttnTile(State *state, const SparkStageRunnerStep *step, SparkGpuStream stream,
-		const LmKvShardView &view, const QwenPrefillSeqPlan &plan, const uint16_t *kv_prior, const uint16_t *kv_cur,
-		const uint16_t *gate_ptr, uint32_t gate_stride, uint32_t rows, uint32_t max_seq_rows, uint32_t rank_heads,
-		uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t local_kvh, uint32_t elem_first)
-	{
-		constexpr uint32_t Q_TILE = Q_WARPS * 16u;
-		constexpr uint32_t shared_bytes = QwenLocalPrefillSharedBytes<G::kHeadDim, Q_WARPS>();
-		static bool granted = false;
-		if ( !granted )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)QwenLocalPrefillAttnKernel<typename S::Kv, G::kKvHeads, G::kHeadDim, HAS_MASK, kGateFromLocal, kDirectPaged, Q_WARPS>,
-				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			granted = true;
-		}
-		const uint32_t q_blocks = (max_seq_rows + Q_TILE - 1u) / Q_TILE;
-		const dim3 prefill_grid = kDirectPaged ? dim3(group * q_blocks, local_kvh, plan.count) : dim3(rank_heads, q_blocks, plan.count);
-		(void)LM_LAUNCH_DEPENDENT((QwenLocalPrefillAttnKernel<typename S::Kv, G::kKvHeads, G::kHeadDim, HAS_MASK, kGateFromLocal, kDirectPaged, Q_WARPS>),
-			prefill_grid, Q_WARPS * 64u, shared_bytes, stream,
-			state->attn_query, kv_prior, kv_cur, view, step->sequence_of_row, gate_ptr, gate_stride, step->positions, plan, rows, rank_heads,
-			q_first, group, kv_first, elem_first, state->attn_width, 1.0f / sqrtf((float)G::kHeadDim),
-			HAS_MASK ? state->index_mask : (const uint32_t *)0, HAS_MASK ? state->index_mask_words : 0u, G::kIndexRatio, S::kIndexBlocks, state->merged);
-		return CudaStageLaunched();
-	}
-
-	template<bool HAS_MASK, bool kGateFromLocal, bool kDirectPaged>
-	static SparkStatus DispatchLocalPrefillAttn(State *state, const SparkStageRunnerStep *step, SparkGpuStream stream,
-		const LmKvShardView &view, const QwenPrefillSeqPlan &plan, const uint16_t *kv_prior, const uint16_t *kv_cur,
-		const uint16_t *gate_ptr, uint32_t gate_stride, uint32_t rows, uint32_t max_seq_rows, uint32_t rank_heads,
-		uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t local_kvh, uint32_t elem_first, uint32_t sms)
-	{
-		const uint32_t blocks64 = rank_heads * ((max_seq_rows + 63u) / 64u) * plan.count;
-		const uint32_t blocks32 = rank_heads * ((max_seq_rows + 31u) / 32u) * plan.count;
-		if ( blocks64 >= sms && max_seq_rows >= 48u )
-			return LaunchLocalPrefillAttnTile<HAS_MASK, kGateFromLocal, kDirectPaged, 4u>(state, step, stream, view, plan, kv_prior, kv_cur,
-				gate_ptr, gate_stride, rows, max_seq_rows, rank_heads, q_first, group, kv_first, local_kvh, elem_first);
-		if ( blocks32 >= sms || max_seq_rows <= 16u )
-			return LaunchLocalPrefillAttnTile<HAS_MASK, kGateFromLocal, kDirectPaged, 2u>(state, step, stream, view, plan, kv_prior, kv_cur,
-				gate_ptr, gate_stride, rows, max_seq_rows, rank_heads, q_first, group, kv_first, local_kvh, elem_first);
-		return LaunchLocalPrefillAttnTile<HAS_MASK, kGateFromLocal, kDirectPaged, 1u>(state, step, stream, view, plan, kv_prior, kv_cur,
-			gate_ptr, gate_stride, rows, max_seq_rows, rank_heads, q_first, group, kv_first, local_kvh, elem_first);
-	}
-
 	static SparkStatus Attention(State *state, const Frame &frame, const QwenHybridLayer &entry)
 	{
 		const QwenHybridLayer *layer = &entry;
@@ -8484,15 +8068,44 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				}
 			}
 			constexpr bool kGateFromLocal = G::kTpDegree == 1u || kKvOnlyGather;
+			constexpr uint32_t shared_bytes = QwenLocalPrefillSharedBytes<G::kHeadDim>();
+			const uint32_t q_blocks = (max_seq_rows + 31u) / 32u;
 			const uint16_t *gate_ptr = kGateFromLocal ? state->attn_local : state->merged_gate;
 			const uint32_t gate_stride = kGateFromLocal ? state->attn_rows : state->attn_width;
+			const dim3 prefill_grid = kDirectPaged ? dim3(group * q_blocks, local_kvh, plan.count) : dim3(rank_heads, q_blocks, plan.count);
 			if ( S::kIndexer && !host_dense )
-				status = DispatchLocalPrefillAttn<true, kGateFromLocal, kDirectPaged>(state, step, stream, *view, plan, kv_prior, kv_cur,
-					gate_ptr, gate_stride, rows, max_seq_rows, rank_heads, q_first, group, kv_first, local_kvh, elem_first, sms);
+			{
+				static bool granted_masked = false;
+				if ( !granted_masked )
+				{
+					if ( SparkGpuFuncSetAttribute((const void *)QwenLocalPrefillAttnKernel<typename S::Kv, G::kKvHeads, G::kHeadDim, true, kGateFromLocal, kDirectPaged>,
+						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					granted_masked = true;
+				}
+				(void)LM_LAUNCH_DEPENDENT((QwenLocalPrefillAttnKernel<typename S::Kv, G::kKvHeads, G::kHeadDim, true, kGateFromLocal, kDirectPaged>),
+					prefill_grid, 128u, shared_bytes, stream,
+					state->attn_query, kv_prior, kv_cur, *view, step->sequence_of_row, gate_ptr, gate_stride, step->positions, plan, rows, rank_heads,
+					q_first, group, kv_first, elem_first, state->attn_width, 1.0f / sqrtf((float)G::kHeadDim),
+					state->index_mask, state->index_mask_words, G::kIndexRatio, S::kIndexBlocks, state->merged);
+			}
 			else
-				status = DispatchLocalPrefillAttn<false, kGateFromLocal, kDirectPaged>(state, step, stream, *view, plan, kv_prior, kv_cur,
-					gate_ptr, gate_stride, rows, max_seq_rows, rank_heads, q_first, group, kv_first, local_kvh, elem_first, sms);
-			if ( status != SPARK_STATUS_OK ||
+			{
+				static bool granted_dense = false;
+				if ( !granted_dense )
+				{
+					if ( SparkGpuFuncSetAttribute((const void *)QwenLocalPrefillAttnKernel<typename S::Kv, G::kKvHeads, G::kHeadDim, false, kGateFromLocal, kDirectPaged>,
+						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					granted_dense = true;
+				}
+				(void)LM_LAUNCH_DEPENDENT((QwenLocalPrefillAttnKernel<typename S::Kv, G::kKvHeads, G::kHeadDim, false, kGateFromLocal, kDirectPaged>),
+					prefill_grid, 128u, shared_bytes, stream,
+					state->attn_query, kv_prior, kv_cur, *view, step->sequence_of_row, gate_ptr, gate_stride, step->positions, plan, rows, rank_heads,
+					q_first, group, kv_first, elem_first, state->attn_width, 1.0f / sqrtf((float)G::kHeadDim),
+					(const uint32_t *)0, 0u, G::kIndexRatio, S::kIndexBlocks, state->merged);
+			}
+			if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 				Linear(state, layer->out_weight, layer->out_scale, state->merged, state->partial, rows, state->attn_width, G::kHidden, exact, sms,
 					stream, prefill_wave) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -8626,77 +8239,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		return expert_routes;
 	}
 
-	template<uint32_t TILE_M, uint32_t WARPS_M, uint32_t WARPS_N, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
-	static SparkStatus LaunchNvfp4PrefillPair(const uint8_t *w1, const uint8_t *w1_scale, const uint8_t *w3, const uint8_t *w3_scale,
-		const uint16_t *activation, const float *packed_weight, uint16_t *output, const uint32_t *group_row_offset,
-		const uint32_t *route_source_token, uint32_t groups, uint32_t input_dim, uint32_t output_dim, uint32_t blocks, SparkGpuStream stream)
-	{
-		constexpr uint32_t smem = QwenNvfp4PrefillSharedBytes<TILE_M, WARPS_M, WARPS_N, ACTIVATION_PACKED, FUSED_GATE_UP, 3u, 4u>();
-		static bool granted = false;
-		if ( !granted )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)QwenNvfp4ExpertsPrefillKernel<TILE_M, WARPS_M, WARPS_N, ACTIVATION_PACKED, FUSED_GATE_UP, 3u, 4u>,
-				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			granted = true;
-		}
-		(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsPrefillKernel<TILE_M, WARPS_M, WARPS_N, ACTIVATION_PACKED, FUSED_GATE_UP, 3u, 4u>),
-			blocks, WARPS_M * WARPS_N * 32u, smem, stream,
-			w1, w1_scale, w3, w3_scale, activation, packed_weight, output, group_row_offset, route_source_token, groups, input_dim, output_dim);
-		return CudaStageLaunched();
-	}
-
-	template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M>
-	static SparkStatus LaunchBf16MoeW1W3Stage3(const uint16_t *w1, const uint16_t *w3, const uint16_t *act, const float *packed_weight,
-		const uint32_t *group_row_offset, const uint32_t *source_row_map, uint16_t *out, uint32_t groups, uint32_t K, uint32_t N,
-		uint32_t blocks, SparkGpuStream stream)
-	{
-		constexpr uint32_t smem = QwenBf16MoeW1W3SharedBytes<TILE_M, TILE_N, THREADS, WARPS_M, 3u>();
-		static bool granted = false;
-		if ( !granted )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)QwenBf16MoeMmaW1W3ActKernel<TILE_M, TILE_N, THREADS, WARPS_M, 3u>,
-				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			granted = true;
-		}
-		(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<TILE_M, TILE_N, THREADS, WARPS_M, 3u>), blocks, THREADS, smem, stream,
-			w1, w3, act, packed_weight, group_row_offset, source_row_map, out, groups, K, N);
-		return CudaStageLaunched();
-	}
-
-	static SparkStatus LaunchNvfp4PrefillExperts(State *state, const QwenHybridLayer *layer, const uint16_t *normed,
-		uint32_t local_mean, uint32_t sms, SparkGpuStream stream)
-	{
-		if ( local_mean <= 16u )
-		{
-			if ( LaunchNvfp4PrefillPair<16u, 1u, 8u, false, true>(layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale,
-				normed, state->packed_weight, state->expert_act, state->group_row_offset, state->route_source_token,
-				G::kLocalExperts, G::kHidden, G::kMoeInter, sms * 2u, stream) != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			return LaunchNvfp4PrefillPair<16u, 1u, 8u, true, false>(layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0,
-				state->expert_act, (const float *)0, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-				G::kLocalExperts, G::kMoeInter, G::kHidden, sms * 2u, stream);
-		}
-		if ( local_mean <= 40u )
-		{
-			if ( LaunchNvfp4PrefillPair<32u, 2u, 4u, false, true>(layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale,
-				normed, state->packed_weight, state->expert_act, state->group_row_offset, state->route_source_token,
-				G::kLocalExperts, G::kHidden, G::kMoeInter, sms * 2u, stream) != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			return LaunchNvfp4PrefillPair<32u, 2u, 4u, true, false>(layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0,
-				state->expert_act, (const float *)0, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-				G::kLocalExperts, G::kMoeInter, G::kHidden, sms * 2u, stream);
-		}
-		if ( LaunchNvfp4PrefillPair<64u, 2u, 4u, false, true>(layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale,
-			normed, state->packed_weight, state->expert_act, state->group_row_offset, state->route_source_token,
-			G::kLocalExperts, G::kHidden, G::kMoeInter, sms, stream) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		return LaunchNvfp4PrefillPair<64u, 2u, 4u, true, false>(layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0,
-			state->expert_act, (const float *)0, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-			G::kLocalExperts, G::kMoeInter, G::kHidden, sms, stream);
-	}
-
 	static SparkStatus Moe(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows,
 		SparkGpuStream stream)
 	{
@@ -8773,12 +8315,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			constexpr uint32_t DN_SINGLE_PER_BLK = DN_PER_BLK * 4u;
 			const uint32_t local_mean = (routes + G::kExperts - 1u) / G::kExperts;
 			const bool use_mma = prefill_wave || (exact == 0u && rows > LM_SKINNY_ROWS_WIDE && (G::kHidden >= 4096u || local_mean > 2u));
-			if ( prefill_wave )
-			{
-				if ( LaunchNvfp4PrefillExperts(state, layer, normed, local_mean, sms, stream) != SPARK_STATUS_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			}
-			else if ( use_mma )
+			if ( use_mma )
 			{
 				const uint32_t up_blocks = G::kLocalExperts * ((G::kMoeInter + 63u) / 64u);
 				const uint32_t dn_blocks = G::kLocalExperts * ((G::kHidden + 127u) / 128u);
@@ -8850,31 +8387,17 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				}
 				else if ( local_mean <= 32u )
 				{
-					if ( prefill_wave )
-					{
-						if ( LaunchBf16MoeW1W3Stage3<32u, 64u, 256u, 2u>(w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset,
-							state->route_source_token, state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, sms, stream) != SPARK_STATUS_OK )
-							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-					}
-					else
-						(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<32u, 64u, 256u, 2u>), sms * 2u, 256u, 0, stream,
-							w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
-							state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
+					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<32u, 64u, 256u, 2u>), sms * 2u, 256u, 0, stream,
+						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
+						state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
 					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW2Kernel<32u, 64u, 256u, 2u, 3u>), sms * 2u, 256u, 0, stream,
 						w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden);
 				}
 				else
 				{
-					if ( prefill_wave )
-					{
-						if ( LaunchBf16MoeW1W3Stage3<64u, 64u, 256u, 2u>(w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset,
-							state->route_source_token, state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, sms, stream) != SPARK_STATUS_OK )
-							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-					}
-					else
-						(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<64u, 64u, 256u, 2u>), sms * 2u, 256u, 0, stream,
-							w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
-							state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
+					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<64u, 64u, 256u, 2u>), sms * 2u, 256u, 0, stream,
+						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
+						state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
 					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW2Kernel<64u, 128u, 256u, 2u, 2u>), sms * 2u, 256u, 0, stream,
 						w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden);
 				}
@@ -9047,71 +8570,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	template<bool HAS_INJECT, uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES>
-	static SparkStatus LaunchHcDownDyn(const uint16_t *down, const uint16_t *inject, const uint16_t *hc_normed,
-		uint16_t *hc_low, float *hc_inject, uint32_t rows, SparkGpuStream stream)
-	{
-		constexpr uint32_t smem = STAGES * (TILE_M + TILE_N) * 128u;
-		constexpr uint32_t n_blocks = (G::kHcLowRank + (HAS_INJECT ? G::kStreams : 0u) + TILE_N - 1u) / TILE_N;
-		static bool granted = false;
-		if ( !granted )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)QwenHcDownGateInjectMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, HAS_INJECT, TILE_M, TILE_N, THREADS, WARPS_M, STAGES>,
-				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			granted = true;
-		}
-		(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, HAS_INJECT, TILE_M, TILE_N, THREADS, WARPS_M, STAGES>),
-			((rows + TILE_M - 1u) / TILE_M) * n_blocks, THREADS, smem, stream, down, inject, hc_normed, hc_low, hc_inject, rows);
-		return CudaStageLaunched();
-	}
-
-	template<uint32_t TILE_M, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES>
-	static SparkStatus LaunchHcUpDyn(const uint16_t *up, const uint16_t *hc_low, const uint16_t *hc_normed,
-		uint16_t *mixed, uint32_t rows, SparkGpuStream stream)
-	{
-		constexpr uint32_t smem = STAGES * (TILE_M + 64u) * 128u;
-		static bool granted = false;
-		if ( !granted )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)QwenHcUpMixMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, TILE_M, THREADS, WARPS_M, STAGES>,
-				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			granted = true;
-		}
-		(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, TILE_M, THREADS, WARPS_M, STAGES>),
-			((rows + TILE_M - 1u) / TILE_M) * (G::kHidden / 64u), THREADS, smem, stream, up, hc_low, hc_normed, mixed, rows);
-		return CudaStageLaunched();
-	}
-
-	static SparkStatus LaunchHcDownPrefillWide(const uint16_t *down, const uint16_t *inject, const uint16_t *hc_normed,
-		uint16_t *hc_low, float *hc_inject, uint32_t rows, uint32_t sms, SparkGpuStream stream)
-	{
-		const uint32_t n128 = (G::kHcLowRank + (inject != 0 ? G::kStreams : 0u) + 127u) / 128u;
-		if ( ((rows + 63u) / 64u) * n128 >= sms )
-			return inject != 0 ?
-				LaunchHcDownDyn<true, 64u, 128u, 256u, 2u, 3u>(down, inject, hc_normed, hc_low, hc_inject, rows, stream) :
-				LaunchHcDownDyn<false, 64u, 128u, 256u, 2u, 3u>(down, (const uint16_t *)0, hc_normed, hc_low, (float *)0, rows, stream);
-		if ( ((rows + 31u) / 32u) * n128 >= sms )
-			return inject != 0 ?
-				LaunchHcDownDyn<true, 32u, 128u, 256u, 2u, 3u>(down, inject, hc_normed, hc_low, hc_inject, rows, stream) :
-				LaunchHcDownDyn<false, 32u, 128u, 256u, 2u, 3u>(down, (const uint16_t *)0, hc_normed, hc_low, (float *)0, rows, stream);
-		const uint32_t m64 = (rows + 63u) / 64u;
-		if ( inject != 0 )
-		{
-			constexpr uint32_t n_blocks = (G::kHcLowRank + G::kStreams + 63u) / 64u;
-			(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, true, 64u, 64u, 128u, 2u, 3u>),
-				m64 * n_blocks, 128u, 0, stream, down, inject, hc_normed, hc_low, hc_inject, rows);
-		}
-		else
-		{
-			constexpr uint32_t n_blocks = (G::kHcLowRank + 63u) / 64u;
-			(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, false, 64u, 64u, 128u, 2u, 3u>),
-				m64 * n_blocks, 128u, 0, stream, down, (const uint16_t *)0, hc_normed, hc_low, (float *)0, rows);
-		}
-		return CudaStageLaunched();
-	}
-
 	static SparkStatus HcPre(State *state, const float *norm, const uint16_t *down, const uint16_t *up, const uint16_t *inject,
 		uint16_t *mixed, uint32_t rows, uint32_t exact, uint32_t sms, SparkGpuStream stream, bool prefill_unified = false)
 	{
@@ -9210,11 +8668,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 							m32 * n_blocks, 128u, 0, stream, down, (const uint16_t *)0, state->hc_normed, state->hc_low, (float *)0, rows);
 					}
 				}
-				else if ( rows >= 512u )
-				{
-					if ( LaunchHcDownPrefillWide(down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows, sms, stream) != SPARK_STATUS_OK )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				}
 				else
 				{
 					const uint32_t m64 = (rows + 63u) / 64u;
@@ -9231,12 +8684,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 							m64 * n_blocks, 128u, 0, stream, down, (const uint16_t *)0, state->hc_normed, state->hc_low, (float *)0, rows);
 					}
 				}
-				if ( prefill_unified && rows >= 128u )
-				{
-					if ( LaunchHcUpDyn<128u, 256u, 4u, 3u>(up, state->hc_low, state->hc_normed, mixed, rows, stream) != SPARK_STATUS_OK )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				}
-				else if ( rows >= 128u )
+				if ( rows >= 128u )
 					(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixMmaKernel<G::kStreams, G::kHidden, G::kHcLowRank, 128u, 256u, 4u, 2u>),
 						((rows + 127u) / 128u) * (G::kHidden / 64u), 256u, 0, stream, up, state->hc_low, state->hc_normed, mixed, rows);
 				else if ( rows > 32u )
