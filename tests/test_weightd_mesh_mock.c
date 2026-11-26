@@ -4089,6 +4089,29 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         seq = next_seq;
     }
 
+    {
+        uint64_t bad_seq = ++seq;
+        uint64_t bad_tag = (UINT64_C(0x73) << 32u) | bad_seq;
+        uint64_t bad_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((bad_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        const SparkWeightdMeshHybridPeer *hp0 = &ctrl->peers[0];
+        SparkWeightdMeshSendQueue *q0 = &weightd_mesh.send_queues[hp0->peer];
+        uint32_t bad_idx = q0->produced & q0->mask;
+        CHECK(test_hybrid_write_wqe(ctrl,band,bad_slot,bad_seq,bad_tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7300000000000000)) == 1u,
+            "tp16-20us phase3: stage hybrid WQE before corrupting SQ header");
+        memset(q0->buffer + (size_t)bad_idx * 64u,0,8u);
+        first = spark_stub_ibv_posted_count();
+        SparkWeightdMeshDoorbellPoll();
+        CHECK(spark_stub_ibv_posted_count() == first &&
+              SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) != 0u,
+            "tp16-20us phase3: hybrid ring rejects corrupted WQE header without ringing QP doorbells");
+        pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        SparkWeightdMeshLaneResetLocked(0u);
+        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+        CHECK(SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) == 0u,
+            "tp16-20us phase3: lane reset clears failed cell after hybrid header mismatch");
+    }
+
     pthread_mutex_lock(&SparkWeightdMeshWireLock);
     SparkWeightdMeshHybridRevokeLocked();
     for (peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++)
