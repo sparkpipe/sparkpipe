@@ -356,7 +356,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		d->scratch_bytes += (sizes[item] + 31u) & ~(size_t)15u;
 	if ( tp_degree > 1u )
 		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(attention_rows, tp_degree) + 48u +
-			(size_t)K3DispatchExpandedValueBytes(attention_rows, tp_degree) + 16u;
+			(size_t)K3DispatchExpandedValueBytes(attention_rows, tp_degree) + 16u +
+			(size_t)attention_rows * ((K3_MLA_HEADS + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES) * sizeof(uint32_t) + 32u;
 	d->scratch_bytes += 256u;
 	if ( SparkGpuMalloc(&d->scratch, d->scratch_bytes) != SPARK_GPU_SUCCESS )
 		{ SparkK3DispatchDestroy(d); SPARK_FAIL(SPARK_K3_DISPATCH_ERR_CUDA); }
@@ -402,6 +403,8 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		b->shard_gather_keys = (const uint8_t *)b->shard_query_gathered_bf16;
 		b->shard_gather_values_bytes = K3DispatchExpandedValueBytes(attention_rows, tp_degree);
 		b->shard_gather_values = b->shard_gather_values_bytes != 0u ? k3_carve(d, &off, (size_t)b->shard_gather_values_bytes) : 0;
+		b->shard_split_done_count = attention_rows * ((K3_MLA_HEADS + LM_LATENT_SHARD_QUERIES - 1u) / LM_LATENT_SHARD_QUERIES);
+		b->shard_split_done = (uint32_t *)k3_carve(d, &off, (size_t)b->shard_split_done_count * sizeof(uint32_t) + 16u);
 		if ( SparkGpuMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 			{ SparkK3DispatchDestroy(d); SPARK_FAIL(SPARK_K3_DISPATCH_ERR_CUDA); }
 		if ( SparkGpuMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
@@ -1025,6 +1028,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->pending_partial_add = 0;
 	b->fuse_shared_out = 0u;
 	b->row_invariant = commit == 0u ? 1u : 0u;
+	b->prefill_wave = in->prefill_wave != 0u && commit != 0u ? 1u : 0u;
 	b->shard_gather = 0u;
 	b->shard_gather_expanded = 0u;
 	b->shard_gather_history = 0u;
@@ -1052,7 +1056,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE && commit != 0u )
 	{
 		const int32_t mha = d->indexed != 0u ? 0 : K3DispatchMhaPlan(d, b, rows, sequences, in, stream);
-		const int32_t gather = mha == 0 && in->gather_context != 0u && sequences == 1u
+		const int32_t gather = mha == 0 && (in->gather_context >= 512u || (in->gather_context != 0u && rows > d->attention_rows)) && sequences == 1u
 			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, in->gather_first, d->indexed, stream) : 0;
 		if ( mha < 0 || gather < 0 )
 			SPARK_FAIL(SPARK_K3_DISPATCH_ERR_CUDA);

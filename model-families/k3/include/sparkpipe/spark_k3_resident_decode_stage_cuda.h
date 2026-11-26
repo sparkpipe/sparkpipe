@@ -105,6 +105,7 @@ typedef struct SparkK3StepInput
 	uint32_t gather_context;
 	uint32_t gather_first;
 	uint32_t pair_rows;
+	uint32_t prefill_wave;
 } SparkK3StepInput;
 
 typedef struct SparkK3ScratchWidths

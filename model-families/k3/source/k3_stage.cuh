@@ -1355,6 +1355,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	LM_LAUNCH((LmDenseRowOffsetsKernel), 1u, 1u, 0, stream, state->dense_row_offset, step->rows);
 	in.pair_rows = state->head_last_rows != 0u && step->sequences == 1u && step->rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->has_collective != 0u && state->deferred != 0u ? K3RunnerPairRows(step->rows, state->tp_degree, state->dispatch.attention_rows) : 0u;
+	in.prefill_wave = step->last_rows_only != 0u && step->commit != 0u ? 1u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
 		step->rows * K3_TOP_K, K3StepContext(state, step, stream), step->multiprocessors, stream);
 	if ( status == SPARK_K3_DISPATCH_ERR_CAPACITY )

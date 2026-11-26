@@ -6,7 +6,7 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
 
-#define GLM_ROW_SHARD_ROWS 256u
+#define GLM_ROW_SHARD_ROWS 16u
 
 struct GlmRowShare
 {
