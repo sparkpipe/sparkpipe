@@ -104,6 +104,9 @@ typedef struct ResponderState
     volatile uint64_t hybrid_wqe_errors;
     volatile uint64_t cpu_doorbell_count;
     volatile uint64_t revoke_count;
+    volatile uint32_t verify_staging_tail;
+    volatile uint64_t staging_clobber_errors;
+    volatile uint64_t full_staging_checked;
 } ResponderState;
 
 static void ResponderServiceGate(ResponderState *st, uint64_t *gate_seen)
@@ -352,6 +355,23 @@ static void ResponderDeliverRoute(ResponderState *st, uint64_t tag, uint64_t byt
     {
         uint64_t d0 = NowNs();
         while ( NowNs() - d0 < (uint64_t)sdelay ) {}
+    }
+    if ( __atomic_load_n(&st->verify_staging_tail, __ATOMIC_ACQUIRE) != 0u &&
+         route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER &&
+         route.fields.compact_tail != 0u &&
+         bytes + 8u > SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES )
+    {
+        __atomic_fetch_add(&st->full_staging_checked, 1ull, __ATOMIC_RELEASE);
+        for ( uint32_t p = 0u; p < st->degree; ++p )
+        {
+            if ( p == st->rank || (mask & (1u << p)) == 0u )
+                continue;
+            uint64_t stg_tail = __atomic_load_n(
+                (const volatile uint64_t *)(st->staging + (uint64_t)p * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES + bytes),
+                __ATOMIC_ACQUIRE);
+            if ( stg_tail != tag )
+                __atomic_fetch_add(&st->staging_clobber_errors, 1ull, __ATOMIC_RELEASE);
+        }
     }
     __atomic_store_n(st->shipped, tag, __ATOMIC_RELEASE);
     st->chunk_idx++;
@@ -636,6 +656,9 @@ static void FixtureResetEpoch(LargeFixture *f, uint32_t rank, uint32_t degree, u
     __atomic_store_n(&f->responder.hybrid_wqe_errors, 0ull, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.cpu_doorbell_count, 0ull, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.revoke_count, 0ull, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.verify_staging_tail, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.staging_clobber_errors, 0ull, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.full_staging_checked, 0ull, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.reset_req, 1u, __ATOMIC_RELEASE);
     while ( __atomic_load_n(&f->responder.reset_req, __ATOMIC_ACQUIRE) != 0u ) {}
     CUDA_OK(cudaMemcpyAsync(f->control, &host, sizeof(host), cudaMemcpyHostToDevice, f->stream));
@@ -1323,6 +1346,70 @@ static void Test2dDisabledMatches1dVerify(LargeFixture *f)
     }
 }
 
+static void TestFullStagingFollowedBy2dHalfOverlapRegression(LargeFixture *f)
+{
+    const uint32_t degree = 16u;
+    const uint32_t rank = 5u;
+    const uint64_t a2a_sizes[2] = { 262144ull, 266240ull };
+    SparkWeightdMeshHybridCtrl *ctrl_host = 0, *ctrl_dev = 0;
+    uint8_t *shm_host = 0, *shm_dev = 0;
+    CUDA_OK(cudaHostAlloc(&ctrl_host, sizeof(*ctrl_host), cudaHostAllocPortable | cudaHostAllocMapped));
+    CUDA_OK(cudaHostGetDevicePointer(&ctrl_dev, ctrl_host, 0u));
+    CUDA_OK(cudaHostAlloc(&shm_host, 16u * 65536u, cudaHostAllocPortable | cudaHostAllocMapped));
+    CUDA_OK(cudaHostGetDevicePointer(&shm_dev, shm_host, 0u));
+    f->responder.hybrid_shm = shm_host;
+    SparkTpMeshFastHybridBindOverride(f->gate_dev, ctrl_dev, shm_dev, 0u);
+
+    const uint64_t ar_sizes[2] = { 262144ull, 32768ull };
+    for ( uint32_t c = 0u; c < 2u; ++c )
+    {
+        for ( uint32_t m = 0u; m < 2u; ++m )
+        {
+            const uint64_t a2a_elems = a2a_sizes[c];
+            const uint64_t ar_elems = ar_sizes[m];
+            __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
+            FixtureResetEpoch(f, rank, degree, 1u, ar_elems, 0u, 0u, 0u);
+            SetupHybrid2dCtrl(f, ctrl_host, shm_host, rank, degree);
+            __atomic_store_n(&f->responder.ship_delay_ns, 400000u, __ATOMIC_RELEASE);
+            __atomic_store_n(&f->responder.verify_staging_tail, 1u, __ATOMIC_RELEASE);
+            __atomic_store_n(&f->responder.hybrid_ctrl, ctrl_host, __ATOMIC_RELEASE);
+            f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+            CUDA_OK(cudaMemset(f->local_dev, 0x3c, (size_t)(16ull * a2a_elems) * sizeof(uint16_t)));
+            CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)(16ull * a2a_elems) * sizeof(uint16_t)));
+            cudaGraph_t graph = 0;
+            cudaGraphExec_t exec = 0;
+            CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_dev, f->scratch,
+                a2a_elems, SPARK_TP_MESH_OPERATION_ALL_TO_ALL, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_dev, f->scratch,
+                ar_elems, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+            CUDA_OK(cudaStreamEndCapture(f->stream, &graph));
+            CUDA_OK(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+            for ( uint32_t rep = 0u; rep < 4u; ++rep )
+                CUDA_OK(cudaGraphLaunch(exec, f->stream));
+            CUDA_OK(cudaStreamSynchronize(f->stream));
+            SparkTpMeshRoundControl ctrl;
+            CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+            CHECK(ctrl.error_word == 0u && ctrl.rounds_done == 8u &&
+                  __atomic_load_n(&f->responder.full_staging_checked, __ATOMIC_ACQUIRE) == 4u &&
+                  __atomic_load_n(&f->responder.staging_clobber_errors, __ATOMIC_ACQUIRE) == 0u &&
+                  __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
+                "full-staging AllToAll (>=524288B) followed by half-staging 2D/RSAG waits for ship without clobbering staging tail");
+            cudaGraphExecDestroy(exec);
+            cudaGraphDestroy(graph);
+        }
+    }
+
+    SparkTpMeshFastHybridClearOverride(f->gate_dev);
+    __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
+    f->responder.hybrid_shm = 0;
+    f->gate_host->capabilities = 0u;
+    cudaFreeHost(shm_host);
+    cudaFreeHost(ctrl_host);
+}
+
 int main(void)
 {
     LargeFixture fixture;
@@ -1352,6 +1439,7 @@ int main(void)
     Test2dRows63DeadlockRegression(&fixture);
     Test2dHybridB64AndRevokeResume(&fixture);
     Test2dDisabledMatches1dVerify(&fixture);
+    TestFullStagingFollowedBy2dHalfOverlapRegression(&fixture);
     TestLargeCancelAndTimeout(&fixture);
 
     RunLargeBenchmarks(&fixture);
