@@ -19,10 +19,17 @@
 #define D41A_PLANNER D41A_WARPS
 #define D41A_ISSUER (D41A_WARPS + 1u)
 
+template<uint32_t DIM>
+static __host__ __device__ constexpr uint32_t D41AttendQt2SmemSteps(void)
+{
+	return DIM / 32u > 10u ? DIM / 32u - 10u : 0u;
+}
+
 template<uint32_t DIM, uint32_t QTILES>
 static __host__ __device__ constexpr uint32_t D41AttendFixedBytes(void)
 {
-	return 2u * D41A_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) + (QTILES == 1u ? D41A_QUERIES * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) : 0u) +
+	return 2u * D41A_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) +
+		(QTILES == 1u ? D41A_QUERIES * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) : 4u * D41AttendQt2SmemSteps<DIM>() * 32u * 16u) +
 		2u * QTILES * D41A_QUERIES * D41A_SCORE_STRIDE * 4u + QTILES * D41A_QUERIES * D41A_WEIGHT_STRIDE * 2u + 4u * QTILES * D41A_QUERIES * 4u + (5u + 2u * D41A_PLANS) * 8u + D41A_PLANS * D41A_PLAN_WORDS * 4u;
 }
 
@@ -37,7 +44,7 @@ static __device__ __forceinline__ void D41AttendBarrier(void)
 	asm volatile("bar.sync 1, %0;\n" :: "n"(D41A_CONSUMERS) : "memory");
 }
 
-template<class Geometry, uint32_t DIM, uint32_t QTILES, bool WITH_CODES>
+template<class Geometry, uint32_t DIM, uint32_t QTILES, bool WITH_CODES, bool USE_ROPE_TABLE = false>
 static __device__ __forceinline__ void D41AttendBody(
 	LmKvShardView cache,
 	uint32_t compressed,
@@ -62,6 +69,7 @@ static __device__ __forceinline__ void D41AttendBody(
 	uint16_t *__restrict__ output,
 	uint64_t output_part_stride,
 	const float *__restrict__ frequency,
+	const float2 *__restrict__ rope_sc,
 	uint32_t rope_offset,
 	uint32_t group_heads,
 	uint8_t *__restrict__ codes,
@@ -80,19 +88,31 @@ static __device__ __forceinline__ void D41AttendBody(
 	constexpr uint32_t QT = QTILES * QUERIES;
 	constexpr uint32_t TILE = D41A_TILE;
 	constexpr uint32_t HALF_STEPS = DIM / 32u;
+	constexpr uint32_t QT2_SMEM_STEPS = D41AttendQt2SmemSteps<DIM>();
+	constexpr uint32_t QT2_REG_STEPS = HALF_STEPS - QT2_SMEM_STEPS;
+	constexpr uint32_t QUERY_BYTES = QTILES == 1u ? QUERIES * PITCH : 4u * QT2_SMEM_STEPS * 32u * 16u;
 	constexpr uint32_t WARP_COLUMNS = DIM / D41A_WARPS;
 	constexpr uint32_t COLUMN_FRAGS = WARP_COLUMNS / 8u;
 	constexpr uint32_t PLANS = D41A_PLANS, PLAN_WORDS = D41A_PLAN_WORDS;
-	static_assert(DIM % 64u == 0u && HALF_STEPS % 2u == 0u, "each warp multiplies an even number of 16-wide steps over half the width");
+	static_assert(DIM % 64u == 0u && HALF_STEPS % 2u == 0u && QT2_REG_STEPS % 2u == 0u, "each warp multiplies an even number of 16-wide steps over half the width");
 	static_assert(WARP_COLUMNS % 16u == 0u, "each warp owns whole 16-column value slices");
 	static_assert(PITCH % 128u == 16u, "a padded row starts four banks after the row before it");
 	static_assert(Geometry::kSlotBytes >= ROW_BYTES, "the slot holds the latent");
 	static_assert(QTILES == 1u || QTILES == 2u, "a warp's keys split evenly over the query tiles");
 	static_assert(D41AttendFixedBytes<DIM, QTILES>() + 4096u <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
+	if (blockIdx.y != 0u)
+	{
+		query += (uint64_t)blockIdx.y * QTILES * query_part_stride;
+		sink += blockIdx.y * QT;
+		if (output != 0)
+			output += (uint64_t)blockIdx.y * QTILES * output_part_stride;
+		if (codes != 0)
+			codes += (uint64_t)blockIdx.y * QTILES * codes_part_stride;
+	}
 	extern __shared__ __align__(128) uint8_t d41a_shared[];
 	uint8_t *keys = d41a_shared;
 	uint8_t *query_rows = keys + 2u * TILE * PITCH;
-	float *score_parts = (float *)(query_rows + (QTILES == 1u ? QUERIES * PITCH : 0u));
+	float *score_parts = (float *)(query_rows + QUERY_BYTES);
 	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QT * D41A_SCORE_STRIDE);
 	float *running_max = (float *)(weight_high + QT * D41A_WEIGHT_STRIDE);
 	float *running_sum = running_max + QT;
@@ -201,7 +221,7 @@ static __device__ __forceinline__ void D41AttendBody(
 	}
 	if (warp == D41A_ISSUER)
 	{
-		uint32_t zeroed[2] = { 0u, 0u }, zeroed0 = 0u, zeroed1 = 0u;
+		uint32_t zeroed0 = 0u, zeroed1 = 0u;
 		used = 0u;
 		for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 		{
@@ -263,24 +283,13 @@ static __device__ __forceinline__ void D41AttendBody(
 					}
 				}
 				const uint32_t present = __ballot_sync(0xffffffffu, source != 0);
-				uint32_t clear;
-				if constexpr (WITH_CODES)
-				{
-					clear = ~present & ~zeroed[buffer];
-					if (uses > 0u)
-						LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
-					zeroed[buffer] = ~present;
-				}
+				uint32_t clear = ~present & ~(buffer == 0u ? zeroed0 : zeroed1);
+				if (uses > 0u)
+					LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
+				if (buffer == 0u)
+					zeroed0 = ~present;
 				else
-				{
-					clear = ~present & ~(buffer == 0u ? zeroed0 : zeroed1);
-					if (uses > 0u)
-						LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
-					if (buffer == 0u)
-						zeroed0 = ~present;
-					else
-						zeroed1 = ~present;
-				}
+					zeroed1 = ~present;
 				if (source != 0)
 					LmTmaLoadBulk1d(keys + (buffer * TILE + lane) * PITCH, source, &full[buffer], ROW_BYTES);
 				for (; clear != 0u; clear &= clear - 1u)
@@ -301,38 +310,52 @@ static __device__ __forceinline__ void D41AttendBody(
 		}
 		return;
 	}
-	uint32_t query_frag[QTILES == 1u ? 1u : HALF_STEPS][4];
+	uint32_t query_frag[QTILES == 1u ? 1u : QT2_REG_STEPS][4];
 	float accumulator[QTILES][COLUMN_FRAGS][4];
 	const uint16_t *tile_query = query + query_tile * query_part_stride;
 	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query_rows), a_row = (matrix & 1u) * 8u + within;
+	uint4 *query_smem = (uint4 *)query_rows;
+	const uint32_t pair_id = query_tile * 2u + qk_half;
 	auto fetch = [&](uint32_t row)
 	{
-		if constexpr (QTILES == 1u)
-			return;
-		const uint32_t low = lane >> 2u, high = low + 8u;
-		const uint32_t *low_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + low) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
-		const uint32_t *high_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + high) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
-#pragma unroll
-		for (uint32_t step = 0u; step < HALF_STEPS; step++)
+		if constexpr (QTILES != 1u)
 		{
-			query_frag[step][0] = low_query[step * 8u];
-			query_frag[step][1] = high_query[step * 8u];
-			query_frag[step][2] = low_query[step * 8u + 4u];
-			query_frag[step][3] = high_query[step * 8u + 4u];
+			const uint32_t low = lane >> 2u, high = low + 8u;
+			const uint32_t *low_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + low) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
+			const uint32_t *high_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + high) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
+#pragma unroll
+			for (uint32_t step = 0u; step < QT2_REG_STEPS; step++)
+			{
+				query_frag[step][0] = low_query[step * 8u];
+				query_frag[step][1] = high_query[step * 8u];
+				query_frag[step][2] = low_query[step * 8u + 4u];
+				query_frag[step][3] = high_query[step * 8u + 4u];
+			}
+			if (QT2_SMEM_STEPS > 0u && key_group == 0u)
+			{
+#pragma unroll
+				for (uint32_t step = QT2_REG_STEPS; step < HALF_STEPS; step++)
+					query_smem[(pair_id * QT2_SMEM_STEPS + (step - QT2_REG_STEPS)) * 32u + lane] =
+						make_uint4(low_query[step * 8u], high_query[step * 8u], low_query[step * 8u + 4u], high_query[step * 8u + 4u]);
+			}
 		}
 	};
 	used = 0u;
-	if (blockIdx.x < live)
-		fetch(blockIdx.x);
 	for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 	{
-		const uint32_t record = ordinal % PLANS, row = block, following = block + gridDim.x;
+		const uint32_t record = ordinal % PLANS, row = block;
 		if constexpr (QTILES == 1u)
 		{
 			const uint4 *source = (const uint4 *)(tile_query + (uint64_t)block * QUERIES * DIM);
 			for (uint32_t chunk = threadIdx.x; chunk < QUERIES * CHUNKS; chunk += D41A_CONSUMERS)
 				*(uint4 *)(query_rows + (chunk / CHUNKS) * PITCH + (chunk % CHUNKS) * 16u) = source[chunk];
 			D41AttendBarrier();
+		}
+		else
+		{
+			fetch(row);
+			if constexpr (QT2_SMEM_STEPS > 0u)
+				D41AttendBarrier();
 		}
 		const uint32_t *plan = plans + record * PLAN_WORDS;
 		uint32_t tiles, window_from, limit, valid, window_begin, tile_first;
@@ -388,8 +411,20 @@ static __device__ __forceinline__ void D41AttendBody(
 					}
 					else
 					{
-						LmMmaBf16(score, query_frag[2u * pair], first);
-						LmMmaBf16(score, query_frag[2u * pair + 1u], second);
+						if (2u * pair < QT2_REG_STEPS)
+						{
+							LmMmaBf16(score, query_frag[2u * pair], first);
+							LmMmaBf16(score, query_frag[2u * pair + 1u], second);
+						}
+						else
+						{
+							const uint32_t s_idx = (pair_id * QT2_SMEM_STEPS + (2u * pair - QT2_REG_STEPS)) * 32u + lane;
+							const uint4 q0 = query_smem[s_idx], q1 = query_smem[s_idx + 32u];
+							uint32_t low_step[4] = { q0.x, q0.y, q0.z, q0.w };
+							uint32_t high_step[4] = { q1.x, q1.y, q1.z, q1.w };
+							LmMmaBf16(score, low_step, first);
+							LmMmaBf16(score, high_step, second);
+						}
 					}
 				}
 #pragma unroll
@@ -397,8 +432,6 @@ static __device__ __forceinline__ void D41AttendBody(
 					score_parts[(qk_half * QT + query_tile * QUERIES + (lane >> 2u) + (index >> 1u) * 8u) * D41A_SCORE_STRIDE + key_first + (lane & 3u) * 2u +
 						(index & 1u)] = score[index];
 			}
-			if (tile + 1u == tiles && following < live)
-				fetch(following);
 			D41AttendBarrier();
 #pragma unroll
 			for (uint32_t qt = 0u; qt < QTILES; qt++)
@@ -489,8 +522,6 @@ static __device__ __forceinline__ void D41AttendBody(
 			if (lane == 0u)
 				LmMbarrierArrive(&empty[buffer]);
 		}
-		if (tiles == 0u && following < live)
-			fetch(following);
 		if (threadIdx.x < QT)
 		{
 			const float maximum = running_max[threadIdx.x], top = fmaxf(-1.0e30f, maximum);
@@ -498,76 +529,93 @@ static __device__ __forceinline__ void D41AttendBody(
 			rescale[threadIdx.x] = kept;
 			denominator[threadIdx.x] = fmaf(running_sum[threadIdx.x], kept, 0.0f) + __expf(sink[threadIdx.x] - top);
 		}
+		if constexpr (WITH_CODES && USE_ROPE_TABLE)
+		{
+			if (codes != 0 && warp == 1u)
+				((float2 *)score_parts)[lane] = __ldg(rope_sc + (uint64_t)(row_base + row) * D41K_ROPE_PAIRS + lane);
+		}
 		D41AttendBarrier();
+		const uint32_t rope_smem_base = (uint32_t)__cvta_generic_to_shared(score_parts);
 #pragma unroll
 		for (uint32_t step = 0u; step < 2u * QTILES; step++)
 		{
 			const uint32_t qt = step / 2u, index = (step % 2u) * 2u;
 			const uint32_t q = (lane >> 2u) + (index >> 1u) * 8u;
 			const float kept = rescale[qt * QUERIES + q], divisor = denominator[qt * QUERIES + q];
-			uint16_t value[COLUMN_FRAGS][2];
-#pragma unroll
-			for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
-			{
-				value[frag][0] = LmFloatToBf16(fmaf(accumulator[qt][frag][index], kept, 0.0f) / divisor);
-				value[frag][1] = LmFloatToBf16(fmaf(accumulator[qt][frag][index + 1u], kept, 0.0f) / divisor);
-			}
 			if ( !WITH_CODES || codes == 0 )
 			{
 				uint16_t *target = output + qt * output_part_stride + ((uint64_t)row * QUERIES + q) * DIM + warp * WARP_COLUMNS + (lane & 3u) * 2u;
 #pragma unroll
 				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
-					*(uint32_t *)(target + frag * 8u) = (uint32_t)value[frag][0] | ((uint32_t)value[frag][1] << 16u);
+				{
+					const uint16_t v0 = LmFloatToBf16(fmaf(accumulator[qt][frag][index], kept, 0.0f) / divisor);
+					const uint16_t v1 = LmFloatToBf16(fmaf(accumulator[qt][frag][index + 1u], kept, 0.0f) / divisor);
+					*(uint32_t *)(target + frag * 8u) = (uint32_t)v0 | ((uint32_t)v1 << 16u);
+				}
 				continue;
 			}
 			if constexpr (WITH_CODES)
 			{
-				if (warp * WARP_COLUMNS >= rope_offset)
-				{
-					const uint32_t position = positions[row_base + row];
-#pragma unroll
-					for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
-					{
-						const uint32_t pair = (warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u - rope_offset) / 2u;
-						const float real = LmBf16ToFloat(value[frag][0]), imaginary = LmBf16ToFloat(value[frag][1]);
-						float sine, cosine;
-						D41RopeTurn(position, 0, frequency[pair], 1u, &sine, &cosine);
-						value[frag][0] = D41RopeReal(real, imaginary, sine, cosine);
-						value[frag][1] = D41RopeImaginary(real, imaginary, sine, cosine);
-					}
-				}
 				const uint32_t group = q / group_heads, width = group_heads * DIM;
 				const uint32_t base = (q % group_heads) * DIM + warp * WARP_COLUMNS;
 				uint8_t *part_codes = codes + qt * codes_part_stride;
 				uint8_t *group_codes = part_codes + ((uint64_t)group * rows + row) * width;
 				uint8_t *group_scales = part_codes + (uint64_t)(QUERIES / group_heads) * rows * width + ((uint64_t)group * rows + row) * (width / 32u);
+				const uint32_t do_rope = warp * WARP_COLUMNS >= rope_offset ? 1u : 0u;
+				const uint32_t position = (!USE_ROPE_TABLE && do_rope != 0u) ? positions[row_base + row] : 0u;
 #pragma unroll
 				for (uint32_t block = 0u; block < COLUMN_FRAGS / 4u; block++)
 				{
+					uint32_t packed[4];
 					float amax = 0.0f;
 #pragma unroll
-					for (uint32_t frag = block * 4u; frag < block * 4u + 4u; frag++)
-						amax = fmaxf(amax, fmaxf(fabsf(LmBf16ToFloat(value[frag][0])), fabsf(LmBf16ToFloat(value[frag][1]))));
+					for (uint32_t f = 0u; f < 4u; f++)
+					{
+						const uint32_t frag = block * 4u + f;
+						uint16_t b0 = LmFloatToBf16(fmaf(accumulator[qt][frag][index], kept, 0.0f) / divisor);
+						uint16_t b1 = LmFloatToBf16(fmaf(accumulator[qt][frag][index + 1u], kept, 0.0f) / divisor);
+						float r0 = LmBf16ToFloat(b0), r1 = LmBf16ToFloat(b1);
+						if (do_rope != 0u)
+						{
+							const uint32_t pair = (warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u - rope_offset) / 2u;
+							float sine, cosine;
+							if constexpr (USE_ROPE_TABLE)
+							{
+								asm volatile("ld.shared.v2.f32 {%0, %1}, [%2];\n" : "=f"(sine), "=f"(cosine) : "r"(rope_smem_base + pair * 8u));
+								sine = -sine;
+							}
+							else
+								D41RopeTurn(position, 0, frequency[pair], 1u, &sine, &cosine);
+							b0 = D41RopeReal(r0, r1, sine, cosine);
+							b1 = D41RopeImaginary(r0, r1, sine, cosine);
+							r0 = LmBf16ToFloat(b0);
+							r1 = LmBf16ToFloat(b1);
+						}
+						packed[f] = (uint32_t)b0 | ((uint32_t)b1 << 16u);
+						amax = fmaxf(amax, fmaxf(fabsf(r0), fabsf(r1)));
+					}
 					amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1u));
 					amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2u));
 					const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
+					const uint32_t scale_bits = __float_as_uint(scale);
+					const float inv_scale = __uint_as_float(0x7f000000u - scale_bits);
 #pragma unroll
-					for (uint32_t frag = block * 4u; frag < block * 4u + 4u; frag++)
+					for (uint32_t f = 0u; f < 4u; f++)
 					{
-						const uint32_t column = base + frag * 8u + (lane & 3u) * 2u;
-						const uint32_t low = LmFloatToE4m3(fminf(fmaxf(LmBf16ToFloat(value[frag][0]) / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
-						const uint32_t high = LmFloatToE4m3(fminf(fmaxf(LmBf16ToFloat(value[frag][1]) / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
-						*(uint16_t *)(group_codes + column) = (uint16_t)(low | (high << 8u));
+						const uint32_t column = base + (block * 4u + f) * 8u + (lane & 3u) * 2u;
+						const float v0 = __uint_as_float(packed[f] << 16u);
+						const float v1 = __uint_as_float(packed[f] & 0xffff0000u);
+						*(uint16_t *)(group_codes + column) = LmFloatPairToE4m3(v0 * inv_scale, v1 * inv_scale);
 					}
 					if ((lane & 3u) == 0u)
-						group_scales[(base + block * 32u) / 32u] = (uint8_t)(__float_as_uint(scale) >> 23u);
+						group_scales[(base + block * 32u) / 32u] = (uint8_t)((scale_bits >> 23u) & 0xffu);
 				}
 			}
 		}
 	}
 }
 
-template<class Geometry, uint32_t DIM, uint32_t QTILES>
+template<class Geometry, uint32_t DIM, uint32_t QTILES, bool USE_ROPE_TABLE = false>
 __global__ __launch_bounds__(D41A_THREADS, 1)
 void D41AttendKernel(
 	LmKvShardView cache, uint32_t compressed, const uint16_t *__restrict__ query, uint64_t query_part_stride, const uint32_t *__restrict__ sequence_of_row,
@@ -575,13 +623,13 @@ void D41AttendKernel(
 	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, uint64_t ring_slot_stride, uint32_t ring_rows,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ sequence_row_begin,
 	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, const float *__restrict__ sink, float qk_scale,
-	uint16_t *__restrict__ output, uint64_t output_part_stride, const float *__restrict__ frequency, uint32_t rope_offset, uint32_t group_heads,
-	uint8_t *__restrict__ codes, uint64_t codes_part_stride, uint32_t rows, uint32_t live, uint32_t row_base)
+	uint16_t *__restrict__ output, uint64_t output_part_stride, const float *__restrict__ frequency, const float2 *__restrict__ rope_sc,
+	uint32_t rope_offset, uint32_t group_heads, uint8_t *__restrict__ codes, uint64_t codes_part_stride, uint32_t rows, uint32_t live, uint32_t row_base)
 {
 	LmDependentWait();
-	D41AttendBody<Geometry, DIM, QTILES, true>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
+	D41AttendBody<Geometry, DIM, QTILES, true, USE_ROPE_TABLE>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
 		ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride,
-		frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base, 0, 0, 0);
+		frequency, rope_sc, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base, 0, 0, 0);
 	LmDependentRelease();
 }
 
@@ -597,32 +645,35 @@ void D41AttendTreeKernel(
 	const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets, const uint32_t *__restrict__ parent_rows)
 {
 	LmDependentWait();
-	D41AttendBody<Geometry, DIM, QTILES, false>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
+	D41AttendBody<Geometry, DIM, QTILES, false, false>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound, selected, topk, wave_kv, ring,
 		ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride,
-		0, 0u, 0u, 0, 0u, rows, live, row_base, fork_positions, slot_offsets, parent_rows);
+		0, 0, 0u, 0u, 0, 0u, rows, live, row_base, fork_positions, slot_offsets, parent_rows);
 	LmDependentRelease();
 }
 
-template<class Geometry, uint32_t DIM, uint32_t QTILES = 1u>
+template<class Geometry, uint32_t DIM, uint32_t QTILES = 1u, bool USE_ROPE_TABLE = false>
 static inline SparkGpuError D41AttendLaunch(LmKvShardView cache, uint32_t compressed, const uint16_t *query, const uint32_t *sequence_of_row,
 	const uint32_t *length, const uint32_t *bound, const uint32_t *selected, uint32_t topk, const uint16_t *wave_kv, const uint16_t *ring,
 	uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *sequence_row_begin,
 	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, const float *frequency,
 	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, SparkGpuStream stream,
 	uint64_t query_part_stride = 0u, uint64_t output_part_stride = 0u, uint64_t codes_part_stride = 0u,
-	const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, const uint32_t *parent_rows = 0)
+	const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, const uint32_t *parent_rows = 0,
+	const float2 *rope_sc = 0, uint32_t passes = 1u)
 {
 	const uint64_t shared = D41AttendSharedBytes<DIM, QTILES>(compressed != 0u && selected != 0 ? topk : 0u);
 	const bool tree = fork_positions != 0 || parent_rows != 0;
 	static bool granted = false, granted_tree = false;
 	if (live == 0u)
 		return SPARK_GPU_SUCCESS;
-	if (rows == 0u || live > rows || query == 0 || (output == 0) == (codes == 0) || (QTILES > 1u && query_part_stride == 0u) ||
-		(QTILES > 1u && (output != 0 ? output_part_stride : codes_part_stride) == 0u) || (fork_positions == 0) != (slot_offsets == 0) ||
-		(tree && codes != 0) ||
-		(codes != 0 && (frequency == 0 || group_heads == 0u || D41A_QUERIES % group_heads != 0u || rope_offset % (DIM / D41A_WARPS) != 0u ||
-		rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
-		sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u || shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
+	if (rows == 0u || live > rows || passes == 0u || query == 0 || (output == 0) == (codes == 0) ||
+		((QTILES > 1u || passes > 1u) && query_part_stride == 0u) ||
+		((QTILES > 1u || passes > 1u) && (output != 0 ? output_part_stride : codes_part_stride) == 0u) || (fork_positions == 0) != (slot_offsets == 0) ||
+		(tree && (codes != 0 || passes != 1u)) ||
+		(codes != 0 && ((USE_ROPE_TABLE ? rope_sc == 0 : frequency == 0) || group_heads == 0u || D41A_QUERIES % group_heads != 0u ||
+		rope_offset % (DIM / D41A_WARPS) != 0u || rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 ||
+		positions == 0 || row_lane == 0 || sequence_row_begin == 0 || sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u ||
+		shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
 		(compressed != 0u && (length == 0 || bound == 0 || sequence_of_row == 0 || SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u)))
 		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (tree)
@@ -648,17 +699,19 @@ static inline SparkGpuError D41AttendLaunch(LmKvShardView cache, uint32_t compre
 	}
 	if (!granted)
 	{
-		const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM, QTILES>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,
-			(int)LM_PREFILL_ATTN_SHARED_LIMIT);
+		const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM, QTILES, USE_ROPE_TABLE>,
+			SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)LM_PREFILL_ATTN_SHARED_LIMIT);
 		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		granted = true;
 	}
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors();
-	const uint32_t grid = live < resident ? live : resident;
-	LM_LAUNCH_DEPENDENT((D41AttendKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
-		selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink,
-		qk_scale, output, output_part_stride, frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base);
+	const uint32_t per_pass = resident / passes > 0u ? resident / passes : 1u;
+	const dim3 grid(live < per_pass ? live : per_pass, passes);
+	LM_LAUNCH_DEPENDENT((D41AttendKernel<Geometry, DIM, QTILES, USE_ROPE_TABLE>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride,
+		sequence_of_row, length, bound, selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin,
+		sequence_row_indices, recurrent_slot, sink, qk_scale, output, output_part_stride, frequency, rope_sc, rope_offset, group_heads, codes,
+		codes_part_stride, rows, live, row_base);
 	return SparkGpuPeekAtLastError();
 }
 
