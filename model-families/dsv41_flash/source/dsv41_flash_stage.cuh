@@ -2877,7 +2877,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight,
 			routes);
 	}
-	const uint32_t fast_r16_moe = D41_ROWS && state->dump == 0 && (rows <= 12u || (state->row_invariant != 0u && routes <= 512u)) ? 1u : 0u;
+	const uint32_t fast_r16_moe = D41_ROWS && state->dump == 0 && (rows <= 12u || state->row_invariant != 0u) ? 1u : 0u;
 	const uint32_t split_mx = split != 0u && in_mx != 0u && D41MxReady(&state->mx, rows, split_width, state->row_invariant) != 0u ? 1u : 0u;
 	const uint32_t sh_mx = shared_rows != 0u && D41MxReady(&state->mx, shared_rows, state->shared_width, state->row_invariant) != 0u ? 1u : 0u;
 	D41Mx sh_in = { state->mx.codes + (uint64_t)shared_first * D41_HIDDEN, state->mx.scales + (uint64_t)shared_first * (D41_HIDDEN / D41_FP8_BLOCK), state->mx.grid };
@@ -2995,9 +2995,9 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		return D41MoeWhole(state, layer, step, stream);
 #if D41_TP == 4u && D41_MOE_CODES != 0u && D41_SHARED_ROUTED != 0u
 	const uint32_t fast_tp4_w13 = state->dump == 0 && (2u * D41_EXPERT_SLICE) % 128u == 0u && D41_HIDDEN % 128u == 0u &&
-		(rows <= 12u || (state->row_invariant != 0u && routes <= 512u)) ? 1u : 0u;
+		(rows <= 12u || state->row_invariant != 0u) ? 1u : 0u;
 	const uint32_t fast_tp4_w2 = state->dump == 0 && D41_HIDDEN_SLICE % 128u == 0u && D41_MOE_INTER % 128u == 0u &&
-		(rows <= 12u || (state->row_invariant != 0u && routes <= 512u)) ? 1u : 0u;
+		(rows <= 12u || state->row_invariant != 0u) ? 1u : 0u;
 #else
 	const uint32_t fast_tp4_w13 = 0u;
 	const uint32_t fast_tp4_w2 = 0u;

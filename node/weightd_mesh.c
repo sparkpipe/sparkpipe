@@ -3314,7 +3314,7 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
 static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
 {
     SparkWeightdMeshHybridCtrl *ctrl;
-    uint32_t index,owner_band,owner_rank,order[2],count = 0u,c,rung = 0u;
+    uint32_t index,owner_band,owner_rank,order[2] = {0u, 0u},count = 0u,c,rung = 0u;
     uint64_t issued,seqs[2];
     if ( weightd_mesh.hybrid_active == 0u || weightd_mesh.mesh_ready == 0u )
         return 0u;
@@ -3337,10 +3337,18 @@ static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
         order[0] = order[1];
         order[1] = tmp;
     }
+    const volatile uint64_t *db0 = SparkWeightdMeshDoorbellAt(index,0u);
+    const volatile uint64_t *db1 = SparkWeightdMeshDoorbellAt(index,1u);
+    uint64_t cpu0 = __atomic_load_n(&db0[0],__ATOMIC_ACQUIRE);
+    uint64_t cpu1 = __atomic_load_n(&db1[0],__ATOMIC_ACQUIRE);
     for (c = 0u; c < count; c++)
     {
-        if ( SparkWeightdMeshHybridRingOneLocked(ctrl,order[c],seqs[order[c]],now_ns) == 0u )
+        uint64_t cand = seqs[order[c]];
+        if ( (cpu0 > issued && cpu0 < cand) || (cpu1 > issued && cpu1 < cand) )
             break;
+        if ( SparkWeightdMeshHybridRingOneLocked(ctrl,order[c],cand,now_ns) == 0u )
+            break;
+        issued = weightd_mesh.issued[index];
         rung++;
     }
     return rung;
