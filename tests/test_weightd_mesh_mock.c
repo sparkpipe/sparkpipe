@@ -4105,8 +4105,10 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         CHECK(spark_stub_ibv_posted_count() == first &&
               SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) != 0u,
             "tp16-20us phase3: hybrid ring rejects corrupted WQE header without ringing QP doorbells");
-        CHECK(SparkWeightdMeshResetLane(0u) == SPARK_STATUS_OK &&
-              SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) == 0u,
+        pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        SparkWeightdMeshLaneResetLocked(0u);
+        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+        CHECK(SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) == 0u,
             "tp16-20us phase3: lane reset clears failed cell after hybrid header mismatch");
     }
 
