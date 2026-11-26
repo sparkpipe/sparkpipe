@@ -10,6 +10,14 @@ extern "C" {
 struct ibv_context { int unused; };
 struct ibv_device { int unused; };
 struct ibv_pd { int unused; };
+struct ibv_td { struct ibv_context *context; };
+struct ibv_td_init_attr { uint32_t comp_mask; };
+struct ibv_parent_domain_init_attr
+{
+    struct ibv_pd *pd;
+    struct ibv_td *td;
+    uint32_t comp_mask;
+};
 struct ibv_cq { int unused; };
 struct ibv_comp_channel { int fd; };
 struct ibv_qp { uint32_t qp_num; };
@@ -193,6 +201,10 @@ struct ibv_context *ibv_open_device(struct ibv_device *device);
 int ibv_close_device(struct ibv_context *context);
 struct ibv_pd *ibv_alloc_pd(struct ibv_context *context);
 int ibv_dealloc_pd(struct ibv_pd *pd);
+struct ibv_td *ibv_alloc_td(struct ibv_context *context, struct ibv_td_init_attr *init_attr);
+int ibv_dealloc_td(struct ibv_td *td);
+struct ibv_pd *ibv_alloc_parent_domain(struct ibv_context *context,
+    struct ibv_parent_domain_init_attr *attr);
 int ibv_query_port(struct ibv_context *context, uint8_t port,
     struct ibv_port_attr *attributes);
 int ibv_query_gid(struct ibv_context *context, uint8_t port, int index,
@@ -236,6 +248,8 @@ int spark_stub_ibv_qp_remote_qpn(uint32_t qpn);
 uint32_t spark_stub_ibv_qp_remote_address(uint32_t qpn);
 const char *ibv_wc_status_str(int status);
 void spark_stub_ibv_set_port_state(const char *name, int state);
+void spark_stub_ibv_set_td_fail(uint32_t fail);
+void spark_stub_ibv_set_max_inline(uint32_t max_inline);
 
 #ifdef __cplusplus
 }
@@ -252,6 +266,7 @@ typedef struct SparkStubIbvPostedWork
     uint32_t lkey;
     uint32_t wqe_index;
     uint64_t inline_word;
+    uint64_t inline_tail;
 } SparkStubIbvPostedWork;
 
 uint32_t spark_stub_ibv_posted_count(void);

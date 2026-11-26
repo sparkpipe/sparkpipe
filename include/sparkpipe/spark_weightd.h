@@ -197,10 +197,12 @@ typedef struct SparkWeightdMeshWaitRequest
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES 16u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_FIRST 32u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK 64u
+#define SPARK_WEIGHTD_MESH_CAPABILITY_COMPACT_TAIL 128u
 #define SPARK_WEIGHTD_MESH_CAPABILITIES \
     (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES | \
      SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_ROUTES | \
-     SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_FIRST)
+     SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_FIRST | \
+     SPARK_WEIGHTD_MESH_CAPABILITY_COMPACT_TAIL)
 #define SPARK_WEIGHTD_MESH_ROUTE_FULL 0u
 #define SPARK_WEIGHTD_MESH_ROUTE_SCATTER 1u
 #define SPARK_WEIGHTD_MESH_ROUTE_GATHER 2u
@@ -249,7 +251,8 @@ typedef struct SparkWeightdMeshRouteFields
     uint64_t half:2;
     uint64_t pair:1;
     uint64_t pair_first:1;
-    uint64_t reserved:2;
+    uint64_t compact_tail:1;
+    uint64_t reserved:1;
 } SparkWeightdMeshRouteFields;
 
 typedef union SparkWeightdMeshRoute
@@ -278,6 +281,12 @@ static inline uint64_t SparkWeightdMeshPairFirstArea(uint32_t band,uint32_t send
 
 static inline uint32_t SparkWeightdMeshRouteValid(SparkWeightdMeshRoute route)
 {
+    if ( route.fields.compact_tail != 0u )
+        return route.fields.reserved == 0u && route.fields.pair == 0u && route.fields.pair_first == 0u &&
+            route.fields.half == SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE &&
+            (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL ? route.fields.slice_bytes == 0u :
+             route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER && route.fields.slice_bytes != 0u &&
+                (route.fields.slice_bytes & 7u) == 0u && route.fields.slice_bytes + 8u <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
     if ( route.fields.pair_first != 0u )
         return route.fields.reserved == 0u && route.fields.pair == 0u && route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER &&
             route.fields.slice_bytes == 0u && route.fields.half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE &&
@@ -296,6 +305,9 @@ static inline uint32_t SparkWeightdMeshRouteFits(SparkWeightdMeshRoute route,uin
 {
     if ( SparkWeightdMeshRouteValid(route) == 0u || bytes == 0u )
         return 0u;
+    if ( route.fields.compact_tail != 0u )
+        return (bytes & 7u) == 0u && (route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ?
+            bytes == route.fields.slice_bytes : bytes <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u) ? 1u : 0u;
     if ( route.fields.pair_first != 0u )
         return SparkWeightdMeshPairFirstGroupBytes(bytes) <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES &&
             SparkWeightdMeshPairFirstPairBytes(bytes) <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES &&
