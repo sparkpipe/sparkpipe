@@ -3680,6 +3680,45 @@ static void test_tp16_20us_weightd_upgrades(uint32_t local_rank)
         CHECK(wrap_ok == 1u && q->produced == q->retired,
             "tp16-20us: 120x 648 B (1320 WQEBBs) multi-BB inline writes wrap cleanly across 1024-BB SQ ring");
     }
+
+    {
+        uint32_t row_mask = (0xfu << ((local_rank >> 2u) << 2u)) & ~(1u << local_rank);
+        uint32_t col_mask = (0x1111u << (local_rank & 3u)) & ~(1u << local_rank);
+        uint32_t masks[2] = { row_mask, col_mask };
+        uint32_t m;
+        for (m = 0u; m < 2u; m++)
+        {
+            uint64_t half_off;
+            seq++;
+            slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((slot + 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+            half_off = SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(slot);
+            tag = (UINT64_C(0x40) << 32u) | seq;
+            for (peer = 0u; peer < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer++)
+            {
+                uint8_t *dst = (uint8_t *)weightd_mesh.staging_buffer + SPARK_WEIGHTD_MESH_STAGING_OFFSET(band,peer) + half_off;
+                *(uint64_t *)dst = UINT64_C(0x2d44000000000000) | (uint64_t)peer;
+                *(uint64_t *)(dst + 640u) = tag;
+            }
+            memset(&route,0,sizeof(route));
+            route.fields.peer_mask = masks[m];
+            route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+            route.fields.slice_bytes = 640u;
+            route.fields.compact_tail = 1u;
+            first = spark_stub_ibv_posted_count();
+            CHECK(SparkWeightdMeshPostSlot(band,local_rank,seq,slot,640u,route,UINT64_C(7000) + m * 1000u) == SPARK_STATUS_OK,
+                "tp16-20us phase2: 2D 4x4 3-peer subset compact_tail PEER route posts cleanly");
+            count = spark_stub_ibv_posted_count() - first;
+            ok = count == 3u ? 1u : 0u;
+            for (p2 = 0u; p2 < count; p2++)
+            {
+                if (spark_stub_ibv_posted(first + p2,&work) != 0 || work.source != 0u ||
+                    work.length != 648u || (work.flags & IBV_SEND_SIGNALED) == 0u || work.inline_tail != tag)
+                    ok = 0u;
+            }
+            CHECK(ok == 1u,"tp16-20us phase2: 2D 4x4 3-peer subset emits exactly 3 inline 648 B WQEs");
+            test_complete_range(first,spark_stub_ibv_posted_count());
+        }
+    }
 }
 
 static void test_tp16_20us_fallback(uint32_t local_rank)
