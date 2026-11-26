@@ -649,6 +649,12 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 	if (weight_scale != 0)
 		LM_LAUNCH_REFUSE("k3 projection: a %u x %u projection came with a weight scale; K3 projections are unquantised and experts go weight-only\n",
 			output_dimension,input_dimension);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( accumulate == 0 && rows > LM_SKINNY_ROWS_WIDE && rows <= 64u && b->row_invariant == 0u &&
+		output_dimension >= 2048u && (output_dimension & 1u) == 0u && (input_dimension & 7u) == 0u &&
+		LmIsAligned16(source) && LmIsAligned16(weight) && LmIsAligned16(destination) )
+		return(K3WideMmaLaunch(weight, source, destination, rows, input_dimension, output_dimension, stream));
+#endif
 	if ( accumulate == 0 && (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) )
 	{
 		status = K3SkinnyRows(weight,source,destination,(float *)0,rows,input_dimension,output_dimension,0u,stream);
@@ -1071,6 +1077,51 @@ static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_
 	if ( head_base + rank_heads > K3_KDA_HEADS )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( rows > LM_SKINNY_ROWS_WIDE && rows <= 64u && b->row_invariant == 0u &&
+		LmIsAligned16(b->normed_bf16) && LmIsAligned16(b->kda_qkv_beta_weight) && LmIsAligned16(b->kda_gate_weight) &&
+		(decay == 0u || LmIsAligned16(b->kda_decay_down_weight)) &&
+		(rank_qk & 1u) == 0u && (rank_v & 1u) == 0u && (rank_heads & 1u) == 0u )
+	{
+		const uint32_t qkvb_rows = K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS);
+		const uint32_t gate_rows = K3_RANK_DIM(b,kda_gate_rows,K3_KDA_V_DIM);
+		const uint32_t decay_rows = decay != 0u ? K3_KDA_KEY_DIM : 0u;
+		K3KdaProjMmaArgs mma = {};
+		mma.w_qkvb = (const uint8_t *)b->kda_qkv_beta_weight;
+		mma.w_gate = (const uint8_t *)b->kda_gate_weight;
+		mma.w_decay = (const uint8_t *)b->kda_decay_down_weight;
+		mma.activation = b->normed_bf16;
+		mma.q = b->query_bf16;
+		mma.k = b->key_bf16;
+		mma.v = b->value_bf16;
+		mma.beta = (uint16_t *)b->kda_beta_logit;
+		mma.gate = b->gate_bf16;
+		mma.latent = b->latent_bf16;
+		mma.rq = b->replay_conv_q;
+		mma.rk = b->replay_conv_q != 0 ? b->replay_conv_k : (uint16_t *)0;
+		mma.rv = b->replay_conv_q != 0 ? b->replay_conv_v : (uint16_t *)0;
+		mma.rows = rows;
+		mma.qkvb_n = qkvb_rows;
+		mma.gate_n = gate_rows;
+		mma.decay_n = decay_rows;
+		mma.rank_qk = rank_qk;
+		mma.rank_v = rank_v;
+		mma.rank_heads = rank_heads;
+		mma.tiles_qkvb = (qkvb_rows + 31u) / 32u;
+		mma.tiles_gate = (gate_rows + 31u) / 32u;
+		const uint32_t total_tiles = mma.tiles_qkvb + mma.tiles_gate + (decay_rows + 31u) / 32u;
+		LmWeightPrefetchNote(stream, b->kda_qkv_beta_weight, (uint64_t)qkvb_rows * K3_HIDDEN * sizeof(uint16_t));
+		LmWeightPrefetchNote(stream, b->kda_gate_weight, (uint64_t)gate_rows * K3_HIDDEN * sizeof(uint16_t));
+		if ( decay != 0u )
+			LmWeightPrefetchNote(stream, b->kda_decay_down_weight, (uint64_t)decay_rows * K3_HIDDEN * sizeof(uint16_t));
+		if ( rows <= 32u )
+			LM_LAUNCH_DEPENDENT((K3KdaProjMmaKernel<32u>), total_tiles, 128u, 0u, stream, mma);
+		else
+			LM_LAUNCH_DEPENDENT((K3KdaProjMmaKernel<64u>), total_tiles, 128u, 0u, stream, mma);
+		(void)state_slot_bytes;
+		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	}
+#endif
 #if !defined(LM_HOST_CUDA_PRELUDE)
 	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
 	{
@@ -1196,6 +1247,32 @@ static int32_t K3LayerKdaGate(const K3LayerBuffers *b, uint32_t rows, SparkGpuSt
 template<class Format>
 static int32_t K3LayerKdaFinish(const K3LayerBuffers *b, uint32_t rows, uint16_t *destination, uint16_t *partial_accumulate, uint32_t multiprocessors, SparkGpuStream stream)
 {
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( b->tp_sharded != 0u && b->kda_out_scale == 0 &&
+		K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS) == 6u && K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM) == 6u * K3_KDA_VALUE_DIM &&
+		(rows <= 12u || b->row_invariant != 0u) &&
+		LmIsAligned16(b->kda_out_weight) && LmIsAligned16(destination) )
+	{
+		LmWeightPrefetchNote(stream, b->kda_out_weight, (uint64_t)K3_HIDDEN * 6u * K3_KDA_VALUE_DIM * sizeof(uint16_t));
+		if ( rows == 1u )
+			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<1u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
+				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
+				destination, rows, K3_RMS_EPSILON);
+		else if ( rows <= 4u )
+			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<4u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
+				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
+				destination, rows, K3_RMS_EPSILON);
+		else if ( rows <= 8u )
+			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<8u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
+				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
+				destination, rows, K3_RMS_EPSILON);
+		else
+			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<12u>), dim3(K3_HIDDEN / 32u, (rows + 11u) / 12u), 256u, 0u, stream,
+				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
+				destination, rows, K3_RMS_EPSILON);
+		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	}
+#endif
 	const int32_t status = K3LayerKdaGate(b,rows,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -1231,7 +1308,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 }
 
 #define K3_MLA_DOWN_SLICED(b, rows) \
-	((b)->tp_sharded != 0u && (b)->kv_shard.degree > 1u && ((rows) <= LM_SKINNY_ROWS_WIDE || (b)->row_invariant != 0u) && \
+	((b)->tp_sharded != 0u && (b)->kv_shard.degree > 1u && ((rows) <= 64u || (b)->row_invariant != 0u) && \
 	(b)->mla_q_down_scale == 0 && (b)->mla_kv_a_scale == 0 && \
 	(K3_Q_LORA_RANK % (b)->kv_shard.degree) == 0u && (K3_MLA_KV_A_DIM % (b)->kv_shard.degree) == 0u)
 
@@ -1251,6 +1328,17 @@ static int32_t K3LayerMlaDownSlice(const K3LayerBuffers *b, uint32_t rows, Spark
 	}
 #if !defined(LM_HOST_CUDA_PRELUDE)
 	{
+#if defined(__CUDACC__)
+		if ( rows > LM_SKINNY_ROWS_WIDE && rows <= 64u && b->row_invariant == 0u && b->gate_up_bf16 != 0 &&
+			LmIsAligned16(qw) && LmIsAligned16(kw) && LmIsAligned16(b->normed_bf16) && (query & 1u) == 0u && (key & 1u) == 0u )
+		{
+			const K3SplitKTarget st[2] = {
+				{qw, b->latent_bf16, (float *)0, query, query + key, 0u, 0u},
+				{kw, b->latent_bf16, (float *)0, key, query + key, query, 0u}
+			};
+			return(K3SplitKMmaLaunch(st, 2u, b->normed_bf16, (float *)b->gate_up_bf16, rows, K3_HIDDEN, 10u, (uint16_t *)0, stream));
+		}
+#endif
 		const LmSkinnyDenseTarget targets[2] = {
 			{qw, b->latent_bf16, (float *)0, query, query + key, 0u, LmScaleTensorNone()},
 			{kw, b->latent_bf16, (float *)0, key, query + key, query, LmScaleTensorNone()}};
@@ -1398,23 +1486,64 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 	if ( b->index_key_bf16 == 0 || b->index_query_bf16 == 0 || b->index_head_bf16 == 0 || b->index_shard.shard.degree != b->kv_shard.degree ||
 		LmKvViewIsConfigured(b->index_shard.pages) == 0u )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	const uint32_t can_skip = b->index_active != 0u && b->fork_positions == 0 && b->sequence_of_row != 0 &&
+		b->context_length != 0 && b->positions != 0 ? 1u : 0u;
 #if !defined(LM_HOST_CUDA_PRELUDE)
 	if ( b->index_active != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u || rows <= 64u) )
 	{
-		LmSkinnyDenseTarget targets[2] = {
-			{b->mla_index_key_weight, b->index_key_bf16, (float *)0, K3_INDEX_DIM, K3_INDEX_DIM, 0u, LmScaleTensorNone()},
-			{b->mla_index_head_weight, b->index_head_bf16, (float *)0, K3_INDEX_HEADS, K3_INDEX_HEADS, 0u, LmScaleTensorNone()}
-		};
 #if defined(__CUDACC__)
-		status = rows > LM_SKINNY_ROWS_WIDE ?
-			K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream) :
-			LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
+		if ( can_skip != 0u && LmIsAligned16(b->mla_index_head_weight) && LmIsAligned16(b->normed_bf16) )
+		{
+			LmSkinnyDenseTarget key_target[1] = {
+				{b->mla_index_key_weight, b->index_key_bf16, (float *)0, K3_INDEX_DIM, K3_INDEX_DIM, 0u, LmScaleTensorNone()}
+			};
+			status = rows > LM_SKINNY_ROWS_WIDE ?
+				K3ExactSplitMultiLaunch(key_target,1u,b->normed_bf16,rows,K3_HIDDEN,stream) :
+				LmSkinnyDenseMulti<LmBf16Format>(key_target,1u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
+			if ( status != LM_LAUNCH_OK )
+				return(status);
+		}
+		else
+#endif
+		{
+			LmSkinnyDenseTarget targets[2] = {
+				{b->mla_index_key_weight, b->index_key_bf16, (float *)0, K3_INDEX_DIM, K3_INDEX_DIM, 0u, LmScaleTensorNone()},
+				{b->mla_index_head_weight, b->index_head_bf16, (float *)0, K3_INDEX_HEADS, K3_INDEX_HEADS, 0u, LmScaleTensorNone()}
+			};
+#if defined(__CUDACC__)
+			status = rows > LM_SKINNY_ROWS_WIDE ?
+				K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream) :
+				LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
 #else
-		status = LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
+			status = LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant != 0u ? 1u : 0u,1u);
+#endif
+			if ( status != LM_LAUNCH_OK )
+				return(status);
+			head_done = 1u;
+		}
+	}
+	else if ( b->index_active == 0u && rows > LM_SKINNY_ROWS_WIDE && rows <= 64u )
+	{
+#if defined(__CUDACC__)
+		if ( b->row_invariant == 0u && b->gate_up_bf16 != 0 && LmIsAligned16(b->mla_index_key_weight) && LmIsAligned16(b->normed_bf16) )
+		{
+			const K3SplitKTarget st[1] = {
+				{(const uint8_t *)b->mla_index_key_weight, b->index_key_bf16, (float *)0, K3_INDEX_DIM, K3_INDEX_DIM, 0u, 0u}
+			};
+			status = K3SplitKMmaLaunch(st, 1u, b->normed_bf16, (float *)b->gate_up_bf16, rows, K3_HIDDEN, 12u, (uint16_t *)0, stream);
+		}
+		else
+		{
+			LmSkinnyDenseTarget key_target[1] = {
+				{b->mla_index_key_weight, b->index_key_bf16, (float *)0, K3_INDEX_DIM, K3_INDEX_DIM, 0u, LmScaleTensorNone()}
+			};
+			status = K3ExactSplitMultiLaunch(key_target,1u,b->normed_bf16,rows,K3_HIDDEN,stream);
+		}
+#else
+		status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_index_key_weight,0,b->index_key_bf16,rows,K3_HIDDEN,K3_INDEX_DIM,multiprocessors,stream);
 #endif
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		head_done = 1u;
 	}
 	else
 #endif
@@ -1428,6 +1557,31 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		b->sequence_of_row,b->slots != 0 ? b->slots : b->positions,rows,K3_INDEX_EPSILON);
 	if ( b->index_active == 0u )
 		return(LM_LAUNCH_OK);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( can_skip != 0u && LmIsAligned16(b->mla_index_query_weight) && LmIsAligned16(b->latent_bf16) && LmIsAligned16(b->index_query_bf16) )
+	{
+		if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
+			LM_LAUNCH_DEPENDENT((K3IndexQExactSkipKernel), K3_INDEX_QUERY / 8u, 128u, 0, stream,
+				(const uint16_t *)b->mla_index_query_weight,b->latent_bf16,b->index_query_bf16,
+				b->sequence_of_row,b->context_length,b->positions,rows);
+		else
+			LM_LAUNCH_DEPENDENT((K3IndexQMmaSkipKernel), dim3(K3_INDEX_QUERY / 64u,(rows + 15u) / 16u), LM_STREAM_THREADS, 0, stream,
+				(const uint8_t *)b->mla_index_query_weight,b->latent_bf16,b->index_query_bf16,
+				b->sequence_of_row,b->context_length,b->positions,rows);
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		if ( head_done != 0u )
+			return(LM_LAUNCH_OK);
+		if ( LmIsAligned16(b->mla_index_head_weight) && LmIsAligned16(b->normed_bf16) )
+		{
+			LM_LAUNCH_DEPENDENT((K3IndexHeadSkipKernel), dim3((K3_INDEX_HEADS + 3u) / 4u, rows), 128u, 0, stream,
+				(const uint16_t *)b->mla_index_head_weight,b->normed_bf16,b->index_head_bf16,
+				b->sequence_of_row,b->context_length,b->positions,rows);
+			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		}
+		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_index_head_weight,0,b->index_head_bf16,rows,K3_HIDDEN,K3_INDEX_HEADS,multiprocessors,stream));
+	}
+#endif
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_index_query_weight,0,b->index_query_bf16,rows,K3_Q_LORA_RANK,K3_INDEX_QUERY,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK || head_done != 0u )
 		return(status);
@@ -1480,9 +1634,19 @@ static int32_t K3LayerMlaIndexMerge(const K3LayerBuffers *b, uint32_t rows, Spar
 
 static int32_t K3LayerMlaGate(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, SparkGpuStream stream)
 {
+	const uint32_t gate_rows = K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( rows > LM_SKINNY_ROWS_WIDE && rows <= 64u && b->row_invariant == 0u && b->gate_up_bf16 != 0 &&
+		LmIsAligned16(b->mla_gate_weight) && LmIsAligned16(b->normed_bf16) && (gate_rows & 1u) == 0u )
+	{
+		const K3SplitKTarget st[1] = {
+			{(const uint8_t *)b->mla_gate_weight, b->gate_bf16, (float *)0, gate_rows, gate_rows, 0u, 0u}
+		};
+		return(K3SplitKMmaLaunch(st, 1u, b->normed_bf16, (float *)b->gate_up_bf16, rows, K3_HIDDEN, 4u, (uint16_t *)0, stream));
+	}
+#endif
 	return(K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,0,
-		b->gate_bf16,rows,K3_HIDDEN,
-		K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM),multiprocessors,stream));
+		b->gate_bf16,rows,K3_HIDDEN,gate_rows,multiprocessors,stream));
 }
 
 template<class Format>
@@ -1511,6 +1675,43 @@ static int32_t K3LayerMlaGated(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 template<class Format>
 static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t *partial_accumulate, uint32_t gate_ready, uint32_t multiprocessors, SparkGpuStream stream)
 {
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( b->tp_sharded != 0u && b->mla_out_scale == 0 && (rows <= 12u || b->row_invariant != 0u) &&
+		K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS) == 6u && K3_RANK_DIM(b,mla_out_input,K3_MLA_OUT_DIM) == 6u * K3_V_HEAD_DIM &&
+		K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM) == 6u * K3_V_HEAD_DIM &&
+		LmIsAligned16(b->mla_out_weight) && LmIsAligned16(b->attention_out_bf16) )
+	{
+		if ( b->shard_mha == 0u && (b->shard_gather == 0u || b->shard_gather_expanded == 0u) )
+		{
+			LmWeightPrefetchNote(stream, b->mla_kv_b_value_weight,
+				(uint64_t)6u * K3_V_HEAD_DIM * K3_KV_LORA_RANK * sizeof(uint16_t));
+			if ( LmPerHeadProjectChainLaunch<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>(
+					b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight,b->value_bf16,
+					6u,rows,stream,b->row_invariant) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		}
+		if ( gate_ready == 0u )
+		{
+			const int32_t gs = K3LayerMlaGate(b,rows,multiprocessors,stream);
+			if ( gs != LM_LAUNCH_OK )
+				return(gs);
+		}
+		LmWeightPrefetchNote(stream, b->mla_out_weight, (uint64_t)K3_HIDDEN * 6u * K3_V_HEAD_DIM * sizeof(uint16_t));
+		if ( rows == 1u )
+			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<1u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
+				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
+		else if ( rows <= 4u )
+			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<4u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
+				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
+		else if ( rows <= 8u )
+			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<8u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
+				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
+		else
+			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<12u>), dim3(K3_HIDDEN / 32u, (rows + 11u) / 12u), 256u, 0u, stream,
+				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
+		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	}
+#endif
 	const int32_t status = K3LayerMlaGated<Format>(b,rows,gate_ready,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -1559,7 +1760,7 @@ static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, S
 	}
 	if ( b->row_invariant != 0u )
 	{
-		const uint32_t splits = K3LayerIndexed(b) != 0u ? 1u : LmLatentShardDecodeSplits(1u);
+		const uint32_t splits = 1u;
 		if ( !(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,splits,stream,b->fork_positions,b->slot_offsets) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return(LM_LAUNCH_OK);
@@ -1570,7 +1771,7 @@ static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, S
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		return(LM_LAUNCH_OK);
 	}
-	if ( K3LayerIndexed(b) != 0u )
+	if ( K3LayerIndexed(b) != 0u || rows <= LM_SKINNY_ROWS_WIDE )
 	{
 		if ( !(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,1u,stream,b->fork_positions,b->slot_offsets) == SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
@@ -2420,14 +2621,44 @@ static int32_t K3LayerSharedUp(const K3LayerBuffers *b, uint32_t rows, uint16_t 
 	uint32_t multiprocessors, SparkGpuStream stream)
 {
 	int32_t status;
+	const uint32_t w1_rows = K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u);
+	const uint32_t ch = K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+	if ( b->shared_w1_scale == 0 && w1_rows == ch * 2u && (ch & 1u) == 0u &&
+		LmIsAligned16(b->shared_w1_weight) && LmIsAligned16(b->normed_bf16) && LmIsAligned16(intermediate) )
+	{
+		if ( rows > LM_SKINNY_ROWS_WIDE && rows <= 64u && b->row_invariant == 0u && b->gate_up_bf16 != 0 && (ch % 16u) == 0u )
+		{
+			const K3SplitKTarget st[1] = {
+				{(const uint8_t *)b->shared_w1_weight, (uint16_t *)0, (float *)0, w1_rows, w1_rows, 0u, 0u}
+			};
+			return(K3SplitKMmaLaunch(st, 1u, b->normed_bf16, (float *)b->gate_up_bf16, rows, K3_HIDDEN, 4u, intermediate, stream));
+		}
+		if ( rows <= 12u || b->row_invariant != 0u )
+		{
+			LmWeightPrefetchNote(stream, b->shared_w1_weight, (uint64_t)w1_rows * K3_HIDDEN * sizeof(uint16_t));
+			if ( rows == 1u )
+				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<1u>), dim3(ch, 1u), 256u, 0u, stream,
+					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
+			else if ( rows <= 4u )
+				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<4u>), dim3(ch, 1u), 256u, 0u, stream,
+					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
+			else if ( rows <= 8u )
+				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<8u>), dim3(ch, 1u), 256u, 0u, stream,
+					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
+			else
+				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<12u>), dim3(ch, (rows + 11u) / 12u), 256u, 0u, stream,
+					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
+			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		}
+	}
+#endif
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
-		b->gate_up_bf16,rows,K3_HIDDEN,
-		K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u),multiprocessors,stream);
+		b->gate_up_bf16,rows,K3_HIDDEN,w1_rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,intermediate,
-		K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),(uint64_t)K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE),
+		b->gate_up_bf16,intermediate,ch,(uint64_t)ch,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA,1u);
 	return(LM_LAUNCH_OK);
 }
@@ -2471,16 +2702,25 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 			b->latent_bf16,rows,K3_HIDDEN,slice,multiprocessors,stream));
 #if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
-	if ( rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u && b->expert_tile_k == LM_SKINNY_CELL_TILE_K &&
-		b->group_tile_prefix_w1 != 0 && packed_rows <= 65535u && packed_rows == rows * K3_TOP_K &&
-		(channels % (LM_SKINNY_CELL_NEURONS * 4u)) == 0u && (channels % LM_SKINNY_CELL_TILE_K) == 0u &&
+	if ( b->expert_tile_k == LM_SKINNY_CELL_TILE_K && b->group_tile_prefix_w1 != 0 &&
+		packed_rows <= 65535u && packed_rows == rows * K3_TOP_K &&
+		(channels % LM_SKINNY_CELL_TILE_K) == 0u &&
 		LmSkinnyAligned(b->expert_w1_weight) != 0u && LmSkinnyAligned(b->expert_w2_weight) != 0u &&
 		LmSkinnyAligned(b->latent_full_bf16) != 0u && LmSkinnyAligned(b->gate_up_bf16) != 0u &&
 		LmSkinnyAligned(b->intermediate_bf16) != 0u && LmSkinnyAligned(b->latent_bf16) != 0u )
-		return(K3MoeCellsMmaFastLaunch(b->expert_w1_weight, b->expert_w2_weight, b->latent_full_bf16,
-			b->gate_up_bf16, b->intermediate_bf16, b->latent_bf16, b->group_row_offset,
-			b->route_source_token, b->route_packed_row, b->route_weight, b->group_tile_prefix_w1,
-			rows, packed_rows, channels, stream));
+	{
+		if ( rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u &&
+			(channels % (LM_SKINNY_CELL_NEURONS * 4u)) == 0u )
+			return(K3MoeCellsMmaFastLaunch(b->expert_w1_weight, b->expert_w2_weight, b->latent_full_bf16,
+				b->gate_up_bf16, b->intermediate_bf16, b->latent_bf16, b->group_row_offset,
+				b->route_source_token, b->route_packed_row, b->route_weight, b->group_tile_prefix_w1,
+				rows, packed_rows, channels, stream));
+		if ( (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) && (channels % LM_SKINNY_CELL_NEURONS) == 0u )
+			return(K3MoeCellsSkinnyFastLaunch(b->expert_w1_weight, b->expert_w2_weight, b->latent_full_bf16,
+				b->gate_up_bf16, b->intermediate_bf16, b->latent_bf16, b->group_row_offset,
+				b->route_expert, b->route_source_token, b->route_packed_row, b->route_weight, b->group_tile_prefix_w1,
+				rows, packed_rows, channels, stream));
+	}
 #endif
 	status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u ?
 		LmCellMmaExperts(b->expert_w1_weight,b->latent_full_bf16,b->gate_up_bf16,
@@ -2644,7 +2884,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 #if !defined(LM_HOST_CUDA_PRELUDE)
 		if ( K3_EXPERT_CELLS(b) && b->tp_sharded != 0u && b->expert_interleave != 0u &&
 			b->expert_w2_input == b->expert_w1_output / 2u && b->routed_down_scale == 0 &&
-			(rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) )
+			(rows <= 64u || b->row_invariant != 0u) )
 		{
 			const uint32_t slice = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 			const uint32_t experts = K3_EXPERTS / (K3_ROUTED_EXPERT_HIDDEN / slice);
@@ -2657,20 +2897,35 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 				LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 					b->hidden_bf16,(const uint16_t *)0,(const uint16_t *)b->mlp_norm_weight, (uint16_t *)0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 			}
-			const LmSkinnyDenseTarget targets[2] = {
-				{b->routed_down_weight, b->latent_bf16, (float *)0, slice, slice, 0u, LmScaleTensorNone()},
-				{rslice, (uint16_t *)0, K3_ROUTER_SLICE(b,rows), experts, experts, 0u, LmScaleTensorNone()}};
 #if defined(__CUDACC__)
-			status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant != 0u ?
-				K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream) :
-				LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u);
-#else
-			status = LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u);
+			if ( rows > LM_SKINNY_ROWS_WIDE && rows <= 64u && b->row_invariant == 0u && b->gate_up_bf16 != 0 &&
+				LmIsAligned16(b->routed_down_weight) && LmIsAligned16(rslice) && LmIsAligned16(b->normed_bf16) &&
+				(slice & 1u) == 0u && (experts & 1u) == 0u )
+			{
+				const K3SplitKTarget st[2] = {
+					{(const uint8_t *)b->routed_down_weight, b->latent_bf16, (float *)0, slice, slice, 0u, 0u},
+					{rslice, (uint16_t *)0, K3_ROUTER_SLICE(b,rows), experts, experts, 0u, 0u}
+				};
+				return(K3SplitKMmaLaunch(st, 2u, b->normed_bf16, (float *)b->gate_up_bf16, rows, K3_HIDDEN, 8u, (uint16_t *)0, stream));
+			}
 #endif
-			if ( status == LM_LAUNCH_ERR_SHAPE )
-				LM_LAUNCH_REFUSE("k3 moe route+down: the multi-target skinny kernel refused %u rows; waves of up to %u rows and row-invariant waves "
-					"run on it, so the weights and activation need 16-byte alignment\n",rows,LM_SKINNY_ROWS_WIDE);
-			return(status);
+			if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
+			{
+				const LmSkinnyDenseTarget targets[2] = {
+					{b->routed_down_weight, b->latent_bf16, (float *)0, slice, slice, 0u, LmScaleTensorNone()},
+					{rslice, (uint16_t *)0, K3_ROUTER_SLICE(b,rows), experts, experts, 0u, LmScaleTensorNone()}};
+#if defined(__CUDACC__)
+				status = rows > LM_SKINNY_ROWS_WIDE && b->row_invariant != 0u ?
+					K3ExactSplitMultiLaunch(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream) :
+					LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u);
+#else
+				status = LmSkinnyDenseMulti<LmBf16Format>(targets,2u,b->normed_bf16,rows,K3_HIDDEN,stream,b->row_invariant,1u);
+#endif
+				if ( status == LM_LAUNCH_ERR_SHAPE )
+					LM_LAUNCH_REFUSE("k3 moe route+down: the multi-target skinny kernel refused %u rows; waves of up to %u rows and row-invariant waves "
+						"run on it, so the weights and activation need 16-byte alignment\n",rows,LM_SKINNY_ROWS_WIDE);
+				return(status);
+			}
 		}
 #endif
 		status = K3LayerMoeRoute<Format>(b,rows,packed_rows,multiprocessors,stream);
