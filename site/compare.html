@@ -99,7 +99,7 @@
       <li>A request <b>wrote its context again after a pause</b> when it came more than the cache's lifetime after the previous request of the same session (5 minutes, or 1 hour for a 1-hour cache write; 5 minutes for OpenAI), its prompt had at least 10,000 tokens, and at least half of it was written or read uncached. "Saved had they been cache reads" is what those tokens cost beyond the cache-read price.</li>
       <li>On a subscription you do not pay these prices, but the same tokens count against your plan's limits.</li>
       <li>A SparkPipe fleet has no per-token price: a week is one flat price. With our engine installed from the Catalogue, its cache stays on the fleet while you hold it. To compare a team, add every member's logs.</li>
-      <li>To inspect live hardware-anchored serving efficiency across all 19 fleet models (currently <b>42.9 / 100</b> Certified Fleet RAIS v1.1, Base R <b>42.0</b>, across 19/19 VALID models on 16× DGX Spark), see the <a href="rais.html">RAIS v1.1 scorecard</a>.</li>
+      <li>To inspect live hardware-anchored serving efficiency across all 19 fleet models (live at <b>44.87 / 100</b> VALID on 16× DGX Spark Wave-6 with Pillar 5; Wave-4B 19/19 <b>42.86</b>; 4× DGX Spark TP4 <b>68.45</b>; 1× GB10 NVRM + SKL <b>84.24</b>), see the <a href="rais.html">RAIS v1.1 scorecard</a>.</li>
     </ul>
   </section>
 </main>

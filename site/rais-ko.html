@@ -158,7 +158,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <a class="btn" href="#reproduce">내 엔진에서 실행</a>
         <a class="btn" href="#pillars">평가 방법론</a>
       </div>
-      <p class="note">모든 OpenAI 호환 추론 엔진을 지원하는 공개 참조 러너·채점기입니다. DGX Spark 16대(<span class="mono">16x-gb10-1x100g</span>) Wave-4B 단일 릴리스 실측 스윕 공개: <b>19개 표준 모델 전원 VALID 인증</b>(플릿 비중 100%, <b>인증 플릿 RAIS v1.1 42.9</b> · 기본 루프라인 R <b>42.0</b> · Pillar 5 운영 물리 여지 10점), 4× DGX Spark TP4(<b>54.7</b> VALID), 단일 GB10 <span class="rais-stack-badge compact">Zero-NVIDIA NVRM + SKL</span>(<b>57.0</b> VALID vs <span class="rais-stack-badge compact">CUDA 13.0</span> 56.9)·Apple M5 Ultra <span class="rais-stack-badge compact">Apple Metal 4.0</span>(<b>18.3</b> VALID).</p>
+      <p class="note">모든 OpenAI 호환 추론 엔진을 지원하는 공개 참조 러너·채점기입니다. 최신 인증 RAIS v1.1 실측 현황: <b>단일 GB10</b> <span class="rais-stack-badge compact">Zero-NVIDIA NVRM + SKL</span> <b>84.24 VALID</b>(동일 커밋 <span class="rais-stack-badge compact">CUDA 13.0</span> 82.58 대비 +1.66, 기준선 대비 +27.24), <b>4× DGX Spark TP4</b> <b>68.45 VALID</b>(외부 vLLM SOTA 65.91 대비 +2.54), <b>16× DGX Spark</b> Wave-6 <b>44.87 VALID</b>(17/17 Pillar 5 활성 · Wave-4B 19/19 <b>42.86</b> · Wave-7A DeepSeek V4.1 Flash <b>47.10</b>), <b>Apple M5 Ultra</b> <span class="rais-stack-badge compact">Apple Metal 4.0</span> <b>34.45 VALID</b>(+88.7%).</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.1</b> · 물리적 하한</span><span>0–100 척도</span></div>
@@ -318,7 +318,15 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>시간에 따른 RAIS 향상 추이 및 세부 지표 변화.</h2>
-    <p class="prose">DGX Spark 16대 단일 릴리스 실측 스윕은 5개 축, 15개 세부 지표, 19개 모델별 실측치와 함께 시계열 원장에 누적 기록됩니다. 보기를 전환해 플릿 전체 추이, 15개 세부 지표, 또는 개별 모델의 개선 곡선을 한눈에 확인하고, 각 릴리스 지점을 클릭해 기준선 대비 증감을 비교할 수 있습니다.</p>
+    <p class="prose">단일 GB10(Zero-NVIDIA NVRM + SKL), 4× DGX Spark TP4, 16× DGX Spark 플릿 릴리스, Apple M5 Ultra Metal 4.0의 모든 인증 RAIS v1.1 실측 결과가 5개 축·15개 세부 지표와 함께 시계열 원장에 누적 기록됩니다. 아래 멀티 하드웨어 진척 그래픽과 16-Spark 시계열 곡선에서 기준선 대비 증감을 한눈에 확인하세요.</p>
+
+    <div class="rais-hist-box">
+      <div class="rais-meta-row">
+        <span class="label">멀티 하드웨어 인증 RAIS v1.1 진척 (기준선 → 최신 VALID)</span>
+        <span id="rais-updated-utc" class="mono"></span>
+      </div>
+      <div id="rais-hw-graphic" class="rais-hist-svg-wrap"></div>
+    </div>
 
     <div class="rais-hist-box">
       <div class="rais-hist-head">
@@ -374,7 +382,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>플릿 스코어카드 및 하드웨어 루프라인.</h2>
-    <p class="prose">DGX Spark 16대 단일 릴리스 실측, 4× DGX Spark TP4, 단일 GB10 제로-NVIDIA NVRM + SKL, Apple M5 Ultra Metal 4.0 실측 결과를 RAIS v1.1 참조 채점기로 직접 채점해 생성했습니다. 티어 1·2·3 전체를 포함한 19개 표준 모델 전원(플릿 비중 100%)이 4개 이진 정확성 게이트를 오류 0건으로 통과(<span class="mono">VALID</span>)해 <b>인증 플릿 RAIS v1.1 42.9</b>(기본 루프라인 R <b>42.0</b>, Pillar 5 운영 물리 실측 전 0.0)를 기록했습니다. 미측정 항목은 절대 보간하지 않습니다.</p>
+    <p class="prose">DGX Spark 16대(Wave-6 <b>44.87</b> VALID 17/17 Pillar 5 활성 · Wave-4B 19/19 <b>42.86</b> VALID · Wave-7A DeepSeek V4.1 Flash <b>47.10</b> VALID), 4× DGX Spark TP4(<b>68.45</b> VALID, 외부 vLLM SOTA 65.91 대비 +2.54), 단일 GB10 제로-NVIDIA NVRM + SKL(<b>84.24</b> VALID vs CUDA 13.0 <b>82.58</b>), Apple M5 Ultra Metal 4.0(<b>34.45</b> VALID) 실측 결과를 RAIS v1.1 참조 채점기로 직접 채점했습니다. 미측정 항목은 절대 보간하지 않습니다.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
@@ -558,6 +566,6 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
     <nav aria-label="바닥글"><a href="index-ko.html">홈</a><a href="fleets-ko.html">플릿 목록</a><a href="rais-ko.html" aria-current="page">RAIS v1.1</a><a href="availability-ko.html">예약 현황</a><a href="compare-ko.html">비용 확인</a><a href="buy.html" hreflang="en">HC 구매 (영문)</a><a href="terms-ko.html">약관</a><a href="security-ko.html">보안</a><a href="privacy-ko.html">개인정보처리방침</a><a href="rais.html?lang=en" hreflang="en" lang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="rais.js?v=2"></script>
+<script src="rais.js?v=3"></script>
 </body>
 </html>

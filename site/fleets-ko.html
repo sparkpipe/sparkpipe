@@ -196,7 +196,7 @@
       <tr><td><b>K-EXAONE 2.0</b></td><td class="num">–</td><td class="num">–</td></tr>
     </table>
     </div>
-    <p>메모리 한계는 활성 가중치가 형식별로 어떻게 나뉘는지 검증된 모델에만 표시합니다. 네트워크 한계는 각 모델의 너비와 깊이로 추정한 값으로, GLM 5.3의 8K 프롬프트에서 측정한 2.9초 한계에 맞춰 보정했습니다. Kimi K3와 DeepSeek V4.1 Flash처럼 전문가를 다르게 분산하는 모델은 근사치입니다. Ling 3.0 Flash와 Gemma 4 26B A4B 같은 작은 모델은 실제로는 메모리보다 레이어마다 드는 고정된 교환 시간에 묶이므로, 메모리 한계 대비 비율이 실제보다 낮게 보입니다. 프리필 비율이 가장 낮은 Qwen 3.8 Max, MiMo, Hy4가 저희 프리필 작업의 다음 대상입니다. 5개 축과 19개 플릿 모델 전체에 대한 루프라인 및 운영 물리 분해와 실측 점수(19/19 전원 VALID, 플릿 비중 100%, <b>인증 플릿 RAIS v1.1 42.9 / 100</b> · 기본 R <b>42.0</b> · K-EXAONE 2.0 57.6, Kimi K3 49.0, Solar Open 2 48.4, Qwen 3.8 Max 48.3, Kimi K3.1 Pro 48.0, DeepSeek V4.1 Flash 42.2)는 <a href="rais-ko.html">RAIS v1.1 스코어카드</a>에서 확인할 수 있습니다.</p>
+    <p>메모리 한계는 활성 가중치가 형식별로 어떻게 나뉘는지 검증된 모델에만 표시합니다. 네트워크 한계는 각 모델의 너비와 깊이로 추정한 값으로, GLM 5.3의 8K 프롬프트에서 측정한 2.9초 한계에 맞춰 보정했습니다. Kimi K3와 DeepSeek V4.1 Flash처럼 전문가를 다르게 분산하는 모델은 근사치입니다. Ling 3.0 Flash와 Gemma 4 26B A4B 같은 작은 모델은 실제로는 메모리보다 레이어마다 드는 고정된 교환 시간에 묶이므로, 메모리 한계 대비 비율이 실제보다 낮게 보입니다. 프리필 비율이 가장 낮은 Qwen 3.8 Max, MiMo, Hy4가 저희 프리필 작업의 다음 대상입니다. 5개 축과 19개 플릿 모델 전체에 대한 루프라인 및 운영 물리 분해와 최신 실측 점수(16× DGX Spark Wave-6 <b>44.87 / 100 VALID</b> 17/17 Pillar 5 활성 · Wave-4B 19/19 <b>42.86</b> · Wave-7A DeepSeek V4.1 Flash <b>47.10</b>, 4× DGX Spark TP4 <b>68.45</b> VALID, 단일 GB10 Zero-NVIDIA NVRM + SKL <b>84.24</b> VALID)는 <a href="rais-ko.html">RAIS v1.1 스코어카드</a>에서 확인할 수 있습니다.</p>
   </section>
 
   <section id="speculation">
