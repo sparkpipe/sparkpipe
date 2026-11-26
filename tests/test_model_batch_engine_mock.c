@@ -2962,6 +2962,48 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioWarmSingleWaveNoPromptSplit(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t cold[18],warm_short[23],warm_long[38],spans[8],ends[8],stateful[8],count,index;
+	for (index=0u; index<18u; index++)
+		cold[index] = warm_short[index] = warm_long[index] = 1400u + index;
+	for (index=18u; index<23u; index++)
+		warm_short[index] = 1500u + index;
+	for (index=18u; index<38u; index++)
+		warm_long[index] = 1600u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,32u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,710u,1u,cold,18u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u,"warm single wave: cold prompt completes");
+	TestSubmitPrompt(engine,2u,711u,1u,cold,18u);
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"warm single wave: exact repeat still resumes at prompt - 1");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	TestSubmitPrompt(engine,3u,712u,1u,warm_short,23u);
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"warm single wave: short warm follow-up resumes at prompt - 1");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	count = TestPrefillSpans(3u,23u,spans,8u);
+	CHECK(count == 1u && spans[0] == 6u,"warm single wave: short warm follow-up runs in one single wave without a one-row tail split");
+	count = TestPrefillPublishes(3u,23u,ends,stateful,8u);
+	CHECK(count == 1u && ends[0] == 23u && stateful[0] == 0u,"warm single wave: short warm follow-up publishes prompt end without blocking TTFT on state capture");
+	TestSubmitPrompt(engine,4u,713u,1u,warm_long,38u);
+	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 17u,"warm single wave: long warm follow-up resumes at prompt - 1");
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	count = TestPrefillPublishes(4u,38u,ends,stateful,8u);
+	CHECK(count >= 2u && ends[count - 2u] == 37u && stateful[count - 2u] == 1u && ends[count - 1u] == 38u,
+		"warm single wave: long warm follow-up past 4 blocks still lands a stateful prompt - 1 checkpoint");
+	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u,
+		"warm single wave: all four requests complete without error");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRecurrentStreamedCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t expected_ends[2] = {17u,18u},expected_stateful[2] = {1u,0u};
@@ -3234,6 +3276,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioWarmSingleWaveNoPromptSplit(&deployment,runtime_root);
 	TestScenarioDeclaredCachePoint(&deployment,runtime_root);
 	TestScenarioRecurrentAutoBranchCheckpoint(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedCheckpoint(&deployment,runtime_root);

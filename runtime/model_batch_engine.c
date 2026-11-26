@@ -43,6 +43,7 @@
 #define SPARK_MODEL_BATCH_PEER_PREFIX_INTERVAL_NS UINT64_C(2000000000)
 #define SPARK_MODEL_BATCH_STATUS_INTERVAL_NS UINT64_C(1000000000)
 #define SPARK_MODEL_BATCH_RESTORE_POLL_MS 2u
+#define SPARK_MODEL_BATCH_WARM_PROMPT_CHECKPOINT_BLOCKS 4u
 #define SPARK_MODEL_BATCH_SELECT_AGED 1u
 #define SPARK_MODEL_BATCH_SELECT_PRIORITY 2u
 #define SPARK_MODEL_BATCH_SELECT_FILL 3u
@@ -2864,10 +2865,15 @@ static uint32_t SparkModelBatchPromptCheckpoint(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request)
 {
+	uint32_t checkpoint;
 	if ( engine->adapter_descriptor->cache_checkpoint_token_count == 0u || request->prompt_token_count < 2u ||
 		request->prompt_token_count - 1u < engine->cache_block_token_count )
 		return(0u);
-	return(request->prompt_token_count - 1u);
+	checkpoint = request->prompt_token_count - 1u;
+	if ( request->stale_prefix_recompute_count == 0u && request->cache_prefix_token_count != 0u && checkpoint > request->cache_prefix_token_count &&
+		checkpoint - request->cache_prefix_token_count < SPARK_MODEL_BATCH_WARM_PROMPT_CHECKPOINT_BLOCKS * engine->cache_block_token_count )
+		return(0u);
+	return(checkpoint);
 }
 
 static uint32_t SparkModelBatchNextCachePoint(const SparkModelBatchRequestState *request,uint32_t after)

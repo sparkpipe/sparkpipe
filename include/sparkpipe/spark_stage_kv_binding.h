@@ -132,6 +132,7 @@ typedef struct SparkStageKvLayoutIdentity
 #define SPARK_STAGE_KV_LANE_STATE_CAPTURED 0x2u
 #define SPARK_STAGE_KV_LANE_STATE_LOADING 0x4u
 #define SPARK_STAGE_KV_LANE_STATE_WARM_SLOTS 4u
+#define SPARK_STAGE_KV_STATE_STORE_WARM_SLOTS 16u
 
 typedef SparkStatus (*SparkStageKvRecurrentCopyFunction)(void *context,uint32_t direction,uint32_t resident_slot,void *buffer,uint64_t bytes,SparkDeviceQueue *queue);
 
