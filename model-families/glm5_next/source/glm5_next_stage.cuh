@@ -1253,7 +1253,7 @@ static __global__ __launch_bounds__(256u, 2) void Glm5NextHcPostDotMmaKernel(con
 {
 	using S = LmHcSiteShape<G5N_HIDDEN>;
 	constexpr uint32_t TILE_R = 32u, SLICE_COLS = G5N_HIDDEN / LM_HC_SITE_CLUSTER, C_SUB = 64u, C_BLOCKS = SLICE_COLS / C_SUB;
-	__shared__ __align__(16) uint16_t s_a[G5N_HC][TILE_R][C_SUB + 4u];
+	__shared__ __align__(16) uint16_t s_a[G5N_HC][TILE_R][C_SUB + 8u];
 	__shared__ __align__(16) float s_b[LM_HC_SITE_MIX][C_SUB + 4u];
 	__shared__ float s_post[TILE_R][G5N_HC];
 	__shared__ float s_comb[TILE_R][G5N_HC * G5N_HC];
