@@ -128,6 +128,11 @@ static __device__ __forceinline__ void SparkTpStVolatileU32(volatile void *addre
     asm volatile("st.volatile.global.u32 [%0],%1;" :: "l"(address),"r"(v) : "memory");
 }
 
+static __device__ __forceinline__ void SparkTpStReleaseSysU32(volatile void *address,uint32_t v)
+{
+    asm volatile("st.release.sys.global.u32 [%0],%1;" :: "l"(address),"r"(v) : "memory");
+}
+
 static __device__ __forceinline__ uint32_t SparkTpBe32(uint32_t v)
 {
     return __byte_perm(v,0u,0x0123u);
@@ -559,13 +564,12 @@ static __device__ __forceinline__ void SparkTpMeshHybridCommitWarp0(
     {
         const uint32_t next_pi = SparkTpLdAcquireSysU32(&ctrl->gpu_pi[lane]) + g.num_bb;
         const uint32_t next_wrs = SparkTpLdAcquireSysU32(&ctrl->gpu_wrs[lane]) + 1u;
-        SparkTpStVolatileU32(&ctrl->gpu_pi[lane],next_pi);
-        SparkTpStVolatileU32(&ctrl->gpu_wrs[lane],next_wrs);
+        SparkTpStReleaseSysU32(&ctrl->gpu_pi[lane],next_pi);
+        SparkTpStReleaseSysU32(&ctrl->gpu_wrs[lane],next_wrs);
         if ( dbr_shm != 0u )
             SparkTpStVolatileU32(shm + ctrl->peers[lane].dbrec_shm_off + 4u,SparkTpBe32(next_pi & 0xffffu));
     }
-    if ( dbr_shm != 0u )
-        __threadfence_system();
+    __threadfence_system();
     __syncwarp();
     if ( lane == 0u )
     {

@@ -760,6 +760,17 @@ static inline void SparkWeightdMeshStoreBarrier(void)
 #endif
 }
 
+static inline void SparkWeightdMeshFullBarrier(void)
+{
+#if defined(__aarch64__)
+    __asm__ volatile ("dsb sy" ::: "memory");
+#elif defined(__x86_64__)
+    __asm__ volatile ("mfence" ::: "memory");
+#else
+#error "SparkWeightdMeshFullBarrier requires aarch64 or x86_64"
+#endif
+}
+
 static inline void SparkWeightdMeshLoadBarrier(void)
 {
 #if defined(__aarch64__)
@@ -3186,6 +3197,35 @@ static void SparkWeightdMeshHybridUpdateCreditsLocked(void)
     }
 }
 
+static uint32_t SparkWeightdMeshHybridHeaderOkLocked(const SparkWeightdMeshLanePlan *plan,
+    uint32_t peer_mask,uint32_t all_peers,uint32_t ds)
+{
+    uint32_t i;
+    for (i = 0u; i < plan->peer_count; i++)
+    {
+        const SparkWeightdMeshPlanPeer *p = &plan->peers[i];
+        const SparkWeightdMeshSendQueue *queue;
+        uint32_t sq_idx,w0,w1;
+        uint64_t expected_hdr,actual_hdr;
+        if ( all_peers == 0u && (peer_mask & (1u << p->target)) == 0u )
+            continue;
+        queue = &weightd_mesh.send_queues[p->peer];
+        sq_idx = queue->produced & queue->mask;
+        w0 = htobe32(((uint32_t)(uint16_t)queue->produced << 8u) | MLX5_OPCODE_RDMA_WRITE);
+        w1 = htobe32(p->qpn_shifted | ds);
+        expected_hdr = (uint64_t)w0 | ((uint64_t)w1 << 32u);
+        memcpy(&actual_hdr,queue->buffer + (uint64_t)sq_idx * 64u,sizeof(actual_hdr));
+        if ( actual_hdr != expected_hdr )
+        {
+            fprintf(stderr,"WD-MESH-HYBRID-HDR-MISMATCH rank=%u peer=%u prod=%u ds=%u expected=%016llx actual=%016llx\n",
+                weightd_mesh.local_rank,p->peer,queue->produced & 0xffffu,ds,
+                (unsigned long long)expected_hdr,(unsigned long long)actual_hdr);
+            return 0u;
+        }
+    }
+    return 1u;
+}
+
 static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *ctrl,uint32_t trig_slot,uint64_t seq,uint64_t now_ns)
 {
     const SparkWeightdMeshLanePlan *plan;
@@ -3221,6 +3261,13 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
     if ( SparkWeightdMeshNextTransferGeneration == (SPARK_WEIGHTD_MESH_TRANSFER_ID >> 16u) - 1u )
         return 0u;
     all_peers = peer_mask == plan->all_peers_mask ? 1u : 0u;
+    if ( SparkWeightdMeshHybridHeaderOkLocked(plan,peer_mask,all_peers,ds) == 0u )
+    {
+        transfer->seq = seq;
+        transfer->failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
+        SparkWeightdMeshChanged();
+        return 0u;
+    }
     if ( ctrl->dbrec_in_shm == 0u )
     {
         for (i = 0u; i < plan->peer_count; i++)
@@ -3321,7 +3368,8 @@ static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
         return 0u;
     ctrl = SparkWeightdMeshHybridCtrlPtr();
     owner_band = weightd_mesh.hybrid_owner_band;
-    if ( ctrl == 0 || owner_band >= SPARK_WEIGHTD_MESH_BANDS || ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
+    if ( ctrl == 0 || weightd_mesh.mesh_ready == 0u || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
+         ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
         return 0u;
     owner_rank = ctrl->owner_rank;
     index = owner_band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + owner_rank;
@@ -3359,7 +3407,8 @@ static uint32_t SparkWeightdMeshHybridPendingTriggerLocked(const SparkWeightdMes
 {
     uint32_t owner_band = weightd_mesh.hybrid_owner_band,index;
     uint64_t issued,s0,s1,cpu0,cpu1;
-    if ( ctrl == 0 || owner_band >= SPARK_WEIGHTD_MESH_BANDS || ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
+    if ( ctrl == 0 || weightd_mesh.mesh_ready == 0u || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
+         ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
         return 0u;
     index = owner_band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + ctrl->owner_rank;
     if ( SparkWeightdMeshCellFailed(index) != 0u )
@@ -3389,7 +3438,7 @@ static void SparkWeightdMeshHybridRevokeLocked(void)
     if ( ctrl != 0 )
     {
         __atomic_store_n(&ctrl->cpu_mode,0u,__ATOMIC_SEQ_CST);
-        SparkWeightdMeshStoreBarrier();
+        SparkWeightdMeshFullBarrier();
         deadline = SparkMonotonicNs() + SPARK_WEIGHTD_MESH_HYBRID_REVOKE_NS;
         while ( __atomic_load_n(&ctrl->gpu_busy,__ATOMIC_ACQUIRE) != 0u )
         {
@@ -3469,7 +3518,9 @@ static void SparkWeightdMeshHybridGrantLocked(uint32_t lane,uint32_t band,uint32
     weightd_mesh.hybrid_owner_band = band;
     weightd_mesh.hybrid_active = 1u;
     __atomic_store_n(&ctrl->grant_gen,(uint64_t)gen,__ATOMIC_RELEASE);
+    SparkWeightdMeshFullBarrier();
     __atomic_store_n(&ctrl->cpu_mode,1u,__ATOMIC_SEQ_CST);
+    SparkWeightdMeshFullBarrier();
 }
 
 static void SparkWeightdMeshHybridRefreshLocked(uint32_t preferred_band)
