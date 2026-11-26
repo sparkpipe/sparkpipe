@@ -41,6 +41,30 @@ struct LmGemmArguments
 	LmFrameError *frame_error;
 };
 
+template<class Format>
+struct LmGemmIsBf16
+{
+	static constexpr bool kValue = false;
+};
+
+template<>
+struct LmGemmIsBf16<LmBf16Format>
+{
+	static constexpr bool kValue = true;
+};
+
+static __device__ __forceinline__ void LmGemmLoadX4(uint32_t address, uint32_t out[4])
+{
+	asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+		: "=r"(out[0]), "=r"(out[1]), "=r"(out[2]), "=r"(out[3]) : "r"(address));
+}
+
+static __device__ __forceinline__ void LmGemmLoadX2(uint32_t address, uint32_t out[2])
+{
+	asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
+		: "=r"(out[0]), "=r"(out[1]) : "r"(address));
+}
+
 template<class FormatA, class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARPS, bool INTERLEAVED_B = false>
 static __device__ void LmGemmConsume(
     float (*total)[4],
@@ -77,72 +101,156 @@ static __device__ void LmGemmConsume(
     constexpr uint32_t steps = TILE_K / FormatA::kMmaK;
     const bool a_has_scale = scale_a.encoding != LM_SCALE_ENCODING_NONE;
     const bool b_has_scale = scale_b.encoding != LM_SCALE_ENCODING_NONE;
+    const uint32_t matrix = lane >> 3u, within = lane & 7u;
     uint32_t step, mi, ni, neuron, k_base, reg;
-    uint32_t a[4], b_frags[n_frags][2];
+    uint32_t a[2][4], b_frags[n_frags][2];
 
     for (step = 0u; step < steps; ++step)
     {
         k_base = step * FormatA::kMmaK;
-        #pragma unroll
-        for (ni = 0u; ni < n_frags; ++ni)
+        if constexpr ( LmGemmIsBf16<FormatB>::kValue && !INTERLEAVED_B )
         {
-            neuron = (warp * (TILE_N / WARPS)) + (ni * FormatA::kMmaN);
-            const uint32_t local_row = neuron + FormatB::OperandBRow(lane);
-            if constexpr ( INTERLEAVED_B )
+            constexpr uint32_t span_b = LmSwizzleSpanFor(pitch_b);
+            if ( !b_has_scale )
             {
-                const uint32_t cell = local_row / 16u;
-                const uint32_t r16 = local_row % 16u;
-                const uint32_t scale_byte = (TILE_K == 128u)
-                    ? LmSwizzledOffset((cell * 17u) + 16u,
-                        (r16 * 4u) + (k_base / 32u),
-                        pitch_b, 64u)
-                    : ((cell * 17u) + 16u) * pitch_b + r16;
-                const float scale = FormatB::ScaleDecode(stage_b[scale_byte]);
-                #pragma unroll
-                for (reg = 0u; reg < 2u; ++reg)
+                if constexpr ( (n_frags & 1u) == 0u )
                 {
-                    const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
-                    b_frags[ni][reg] = FormatB::Fragment(
-                        stage_b,
-                        (cell * 17u) + r16,
-                        local_k,
-                        pitch_b,
-                        scale);
+                    #pragma unroll
+                    for (ni = 0u; ni < n_frags; ni += 2u)
+                    {
+                        uint32_t val[4];
+                        const uint32_t b_row = (warp * (TILE_N / WARPS)) + (ni * 8u) + ((matrix >> 1u) * 8u) + within;
+                        const uint32_t off = LmSwizzledOffset(b_row, k_base * 2u + (matrix & 1u) * 16u, pitch_b, span_b);
+                        LmGemmLoadX4((uint32_t)__cvta_generic_to_shared(stage_b + off), val);
+                        b_frags[ni][0] = val[0]; b_frags[ni][1] = val[1];
+                        b_frags[ni + 1u][0] = val[2]; b_frags[ni + 1u][1] = val[3];
+                    }
                 }
-            }
-            else if constexpr ( FormatB::kScaleGroup == 0u || FormatB::kScaleGroup >= FormatA::kMmaK )
-            {
-                const float scale = b_has_scale
-                    ? LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + k_base)
-                    : 1.0f;
-                #pragma unroll
-                for (reg = 0u; reg < 2u; ++reg)
+                else
                 {
-                    const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
-                    b_frags[ni][reg] = FormatB::Fragment(
-                        stage_b,
-                        local_row,
-                        local_k,
-                        pitch_b,
-                        scale);
+                    #pragma unroll
+                    for (ni = 0u; ni < n_frags; ++ni)
+                    {
+                        const uint32_t b_row = (warp * (TILE_N / WARPS)) + (ni * 8u) + within;
+                        const uint32_t off = LmSwizzledOffset(b_row, k_base * 2u + (matrix & 1u) * 16u, pitch_b, span_b);
+                        LmGemmLoadX2((uint32_t)__cvta_generic_to_shared(stage_b + off), b_frags[ni]);
+                    }
                 }
             }
             else
             {
                 #pragma unroll
-                for (reg = 0u; reg < 2u; ++reg)
+                for (ni = 0u; ni < n_frags; ++ni)
                 {
-                    const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
-                    const float scale = b_has_scale
-                        ? LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + local_k)
-                        : 1.0f;
-                    b_frags[ni][reg] = FormatB::Fragment(
-                        stage_b,
-                        local_row,
-                        local_k,
-                        pitch_b,
-                        scale);
+                    neuron = (warp * (TILE_N / WARPS)) + (ni * FormatA::kMmaN);
+                    const uint32_t local_row = neuron + FormatB::OperandBRow(lane);
+                    const float scale = LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + k_base);
+                    #pragma unroll
+                    for (reg = 0u; reg < 2u; ++reg)
+                    {
+                        const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                        b_frags[ni][reg] = FormatB::Fragment(stage_b, local_row, local_k, pitch_b, scale);
+                    }
                 }
+            }
+        }
+        else
+        {
+            #pragma unroll
+            for (ni = 0u; ni < n_frags; ++ni)
+            {
+                neuron = (warp * (TILE_N / WARPS)) + (ni * FormatA::kMmaN);
+                const uint32_t local_row = neuron + FormatB::OperandBRow(lane);
+                if constexpr ( INTERLEAVED_B )
+                {
+                    const uint32_t cell = local_row / 16u;
+                    const uint32_t r16 = local_row % 16u;
+                    const uint32_t scale_byte = (TILE_K == 128u)
+                        ? LmSwizzledOffset((cell * 17u) + 16u,
+                            (r16 * 4u) + (k_base / 32u),
+                            pitch_b, 64u)
+                        : ((cell * 17u) + 16u) * pitch_b + r16;
+                    const float scale = FormatB::ScaleDecode(stage_b[scale_byte]);
+                    #pragma unroll
+                    for (reg = 0u; reg < 2u; ++reg)
+                    {
+                        const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                        b_frags[ni][reg] = FormatB::Fragment(
+                            stage_b,
+                            (cell * 17u) + r16,
+                            local_k,
+                            pitch_b,
+                            scale);
+                    }
+                }
+                else if constexpr ( FormatB::kScaleGroup == 0u || FormatB::kScaleGroup >= FormatA::kMmaK )
+                {
+                    const float scale = b_has_scale
+                        ? LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + k_base)
+                        : 1.0f;
+                    #pragma unroll
+                    for (reg = 0u; reg < 2u; ++reg)
+                    {
+                        const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                        b_frags[ni][reg] = FormatB::Fragment(
+                            stage_b,
+                            local_row,
+                            local_k,
+                            pitch_b,
+                            scale);
+                    }
+                }
+                else
+                {
+                    #pragma unroll
+                    for (reg = 0u; reg < 2u; ++reg)
+                    {
+                        const uint32_t local_k = k_base + FormatB::OperandBK(lane, reg);
+                        const float scale = b_has_scale
+                            ? LmScaleTensorLoad(&scale_b, group_index, neuron_base + local_row, global_k_base + local_k)
+                            : 1.0f;
+                        b_frags[ni][reg] = FormatB::Fragment(
+                            stage_b,
+                            local_row,
+                            local_k,
+                            pitch_b,
+                            scale);
+                    }
+                }
+            }
+        }
+        if constexpr ( LmGemmIsBf16<FormatA>::kValue )
+        {
+            if ( !a_has_scale )
+            {
+                auto load_a = [&](uint32_t mi_idx, uint32_t dst[4])
+                {
+                    const uint32_t a_row = mi_idx * 16u + (matrix & 1u) * 8u + within;
+                    if constexpr ( INTERLEAVED_B && TILE_K == 128u )
+                    {
+                        const uint8_t *tile_a = stage_a + ((k_base >= 64u) ? (TILE_M * 128u) : 0u);
+                        const uint32_t off = LmSwizzledOffset(a_row, (k_base & 63u) * 2u + (matrix >> 1u) * 16u, 128u, 128u);
+                        LmGemmLoadX4((uint32_t)__cvta_generic_to_shared(tile_a + off), dst);
+                    }
+                    else
+                    {
+                        constexpr uint32_t span_a = LmSwizzleSpanFor(pitch_a);
+                        const uint32_t off = LmSwizzledOffset(a_row, k_base * 2u + (matrix >> 1u) * 16u, pitch_a, span_a);
+                        LmGemmLoadX4((uint32_t)__cvta_generic_to_shared(stage_a + off), dst);
+                    }
+                };
+                load_a(0u, a[0]);
+                #pragma unroll
+                for (mi = 0u; mi < m_frags; ++mi)
+                {
+                    const uint32_t cur = mi & 1u, nxt = cur ^ 1u;
+                    if ( mi + 1u < m_frags )
+                        load_a(mi + 1u, a[nxt]);
+                    #pragma unroll
+                    for (ni = 0u; ni < n_frags; ++ni)
+                        LmMmaBf16(total[(mi * n_frags) + ni], a[cur], b_frags[ni]);
+                }
+                continue;
             }
         }
         #pragma unroll
@@ -172,7 +280,7 @@ static __device__ void LmGemmConsume(
                 }
                 if constexpr ( INTERLEAVED_B && TILE_K == 128u )
                 {
-                    a[reg] = FormatA::Fragment(
+                    a[0][reg] = FormatA::Fragment(
                         stage_a + ((local_k >= 64u) ? (TILE_M * 128u) : 0u),
                         local_row,
                         local_k & 63u,
@@ -181,7 +289,7 @@ static __device__ void LmGemmConsume(
                 }
                 else
                 {
-                    a[reg] = FormatA::Fragment(
+                    a[0][reg] = FormatA::Fragment(
                         stage_a,
                         local_row,
                         local_k,
@@ -191,7 +299,7 @@ static __device__ void LmGemmConsume(
             }
             #pragma unroll
             for (ni = 0u; ni < n_frags; ++ni)
-                LmMmaBf16(total[(mi * n_frags) + ni], a, b_frags[ni]);
+                LmMmaBf16(total[(mi * n_frags) + ni], a[0], b_frags[ni]);
         }
     }
 }
@@ -206,6 +314,30 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 	uint16_t *accumulate = (uint16_t *)args.accumulate_bf16;
 	uint64_t at;
 	uint32_t i,e,mi,ni,row,column;
+	const bool fast_bf16 = accumulate == 0 && output_f32 == 0 && (args.output_dimension & 1u) == 0u &&
+		(args.output_row_stride & 1u) == 0u && (args.output_column_offset & 1u) == 0u && (((uintptr_t)output & 3u) == 0u);
+	if ( fast_bf16 )
+	{
+		const uint32_t col_base = neuron_base + (warp * (TILE_N / WARPS)) + LmMmaAccumulatorColumn(lane, 0u);
+		#pragma unroll
+		for (mi = 0u; mi < (TILE_M / Format::kMmaM); ++mi)
+			#pragma unroll
+			for (e = 0u; e < 4u; e += 2u)
+			{
+				row = row_base + (mi * Format::kMmaM) + LmMmaAccumulatorRow(lane, e);
+				if ( row >= row_limit )
+					continue;
+				uint16_t *out_row = output + ((uint64_t)row * args.output_row_stride) + args.output_column_offset;
+				#pragma unroll
+				for (ni = 0u; ni < n_frags; ++ni)
+				{
+					column = col_base + (ni * Format::kMmaN);
+					if ( column < args.output_dimension )
+						*(uint32_t *)(out_row + column) = LmPackBf16Pair(total[(mi * n_frags) + ni][e], total[(mi * n_frags) + ni][e + 1u]);
+				}
+			}
+		return;
+	}
 	#pragma unroll
 	for (i = 0u; i < kCount; ++i)
 	{
@@ -411,11 +543,18 @@ void LmGemmKernel(
         in_group = args.group_count == 1u
             ? tile
             : tile - args.group_tile_prefix[group];
-        row_base =
-            args.group_row_offset[group] +
-            ((in_group / neuron_tiles) * TILE_M);
+        const uint32_t group_first = args.group_row_offset[group];
         row_limit = args.group_row_offset[group + 1u];
-        neuron_base = (in_group % neuron_tiles) * TILE_N;
+        {
+            const uint32_t group_row_tiles = (row_limit - group_first + TILE_M - 1u) / TILE_M;
+            const uint32_t band = in_group / (8u * neuron_tiles);
+            const uint32_t band_first = band * 8u;
+            const uint32_t band_rows = group_row_tiles - band_first < 8u ? group_row_tiles - band_first : 8u;
+            const uint32_t within = in_group - band * (8u * neuron_tiles);
+            const uint32_t rn = (band & 1u) != 0u ? neuron_tiles - 1u - (within / band_rows) : (within / band_rows);
+            row_base = group_first + ((band_first + (within % band_rows)) * TILE_M);
+            neuron_base = rn * TILE_N;
+        }
         LmGemmZero<count>(total);
         for (stage = 0u;
              stage + 1u < STAGES && stage < k_tiles;
@@ -486,7 +625,8 @@ void LmGemmKernel(
                     k * TILE_K,
                     warp,
                     lane);
-            __syncthreads();
+            if ( k + 1u < k_tiles )
+                __syncthreads();
         }
         LmGemmStore<FormatA, TILE_M, TILE_N, WARPS>(
             args,
@@ -497,7 +637,8 @@ void LmGemmKernel(
             neuron_base,
             warp,
             lane);
-        __syncthreads();
+        if ( tile + gridDim.x < total_tiles )
+            __syncthreads();
     }
     LmPipelineRelease<STAGES>(barrier);
     LmDependentRelease();

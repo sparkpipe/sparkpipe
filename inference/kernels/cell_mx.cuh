@@ -73,6 +73,11 @@ static __device__ __forceinline__ void LmCellMxCopy(uint32_t shared, const void 
 	asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
 }
 
+static __device__ __forceinline__ void LmCellMxCopy256(uint32_t shared, const void *source, uint32_t bytes)
+{
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
+}
+
 static __device__ __forceinline__ uint32_t LmCellMxSwizzle(uint32_t row, uint32_t chunk)
 {
 	return(row * LM_CELL_MX_TILE_K + ((chunk ^ (row & 7u)) << 4u));
@@ -206,7 +211,7 @@ static __device__ __forceinline__ void LmCellMxWideRows(const LmSkinnyCellArgume
 			if ( threadIdx.x + p * LM_CELL_MX_THREADS < LM_CELL_MX_WIDE_W_VECTORS )
 			{
 				const uint32_t ok = (w_mask >> p) & 1u;
-				LmCellMxCopy(w_stage + (threadIdx.x + p * LM_CELL_MX_THREADS) * 16u, ok != 0u ? w_base + w_off[p] : cells, ok << 4u);
+				LmCellMxCopy256(w_stage + (threadIdx.x + p * LM_CELL_MX_THREADS) * 16u, ok != 0u ? w_base + w_off[p] : cells, ok << 4u);
 			}
 		}
 		w_base += k_stride;
@@ -442,7 +447,7 @@ static __device__ __forceinline__ void LmCellMxRows(const LmSkinnyCellArguments 
 			if ( threadIdx.x + p * LM_CELL_MX_THREADS < LM_CELL_MX_W_VECTORS )
 			{
 				const uint32_t ok = (w_mask >> p) & 1u;
-				LmCellMxCopy(w_stage + (threadIdx.x + p * LM_CELL_MX_THREADS) * 16u, ok != 0u ? w_base + w_off[p] : cells, ok << 4u);
+				LmCellMxCopy256(w_stage + (threadIdx.x + p * LM_CELL_MX_THREADS) * 16u, ok != 0u ? w_base + w_off[p] : cells, ok << 4u);
 			}
 		}
 		w_base += k_stride;
@@ -589,8 +594,10 @@ static __global__ __launch_bounds__(LM_CELL_MX_THREADS, 1) void LmCellMxKernel(c
 		last = end - first < LM_CELL_MX_ROWS ? end : first + LM_CELL_MX_ROWS;
 		if ( last - first > 64u )
 			LmCellMxRows<LM_CELL_MX_WARP_CHUNKS>(args, mx, cells, tile_stride, cell_first, block_first, warp_m, warp_n, n_active, first, last, shared_base, s_scratch);
-		else
+		else if ( last - first > 32u )
 			LmCellMxRows<2u>(args, mx, cells, tile_stride, cell_first, block_first, warp_m, warp_n, n_active, first, last, shared_base, s_scratch);
+		else
+			LmCellMxRows<1u>(args, mx, cells, tile_stride, cell_first, block_first, warp_m, warp_n, n_active, first, last, shared_base, s_scratch);
 	}
 	LmDependentRelease();
 }
@@ -633,7 +640,10 @@ static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint3
 	segments.split = upper != 0 ? split : 0u;
 	segments.upper_offset = upper != 0 ? (uint64_t)((uintptr_t)upper - (uintptr_t)weight) : 0u;
 	args.group_bytes = segments.group_bytes;
-	if ( (uint64_t)args.packed_rows <= (uint64_t)args.groups * 4u && (args.cells % LM_CELL_MX_WIDE_CELLS) == 0u )
+	const uint64_t wide_blocks = (uint64_t)args.groups * (args.cells / LM_CELL_MX_WIDE_CELLS);
+	if ( (args.cells % LM_CELL_MX_WIDE_CELLS) == 0u &&
+		((uint64_t)args.packed_rows <= (uint64_t)args.groups * 4u ||
+			((uint64_t)args.packed_rows <= (uint64_t)args.groups * 20u && wide_blocks >= 48u)) )
 	{
 		if ( (granted_wide.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
 		{
@@ -641,7 +651,7 @@ static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint3
 				return(LM_LAUNCH_ERR_ATTRIBUTE);
 			granted_wide.fetch_or(UINT64_C(1) << (uint32_t)device);
 		}
-		blocks = (uint64_t)args.groups * (args.cells / LM_CELL_MX_WIDE_CELLS);
+		blocks = wide_blocks;
 		LM_LAUNCH_DEPENDENT((LmCellMxWideKernel), (uint32_t)blocks, LM_CELL_MX_THREADS, LM_CELL_MX_WIDE_SHARED_BYTES, stream, args, segments, mx);
 		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 	}
@@ -652,6 +662,8 @@ static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint3
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
 	slots = ((uint64_t)args.packed_rows + (uint64_t)args.groups * LM_CELL_MX_ROWS - 1u) / ((uint64_t)args.groups * LM_CELL_MX_ROWS);
+	if ( args.k_tiles >= LM_CELL_MMA_SLOT_MIN_K_TILES && (uint64_t)args.packed_rows >= (uint64_t)args.groups * (slots * LM_CELL_MX_ROWS - 64u) )
+		slots++;
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
 	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MX_WARPS_N - 1u) / LM_CELL_MX_WARPS_N);
 	LM_LAUNCH_DEPENDENT((LmCellMxKernel), (uint32_t)blocks, LM_CELL_MX_THREADS, LM_CELL_MX_SHARED_BYTES, stream, args, segments, mx);
