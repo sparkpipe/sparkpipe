@@ -677,7 +677,7 @@ kernel[BLOCK, 24] stage_row_lanes_u32(
     }
 }
 
-kernel[BLOCK, 48] qwen_row_dot_pdl_bf16x8(
+kernel[BLOCK, 48] stage_row_dot_pdl_bf16x8(
     global u32* rows_bf16, global u32* weight_bf16, global u32* output_bf16, u32 width
 ) {
     shared f32 reduce[8];

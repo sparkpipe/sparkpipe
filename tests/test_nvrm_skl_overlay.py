@@ -46,7 +46,7 @@ PROD_OVERLAY_KERNELS = (
     ("stage_combine_u64_max", "_Z30StageRunnerCombineU64MaxKernelPKmPmj"),
     ("stage_tap_copy_bf16", "_Z24StageRunnerTapCopyKernelPKtPtjjm"),
     ("stage_row_lanes_u32", "_Z16LmRowLanesKernelPKjS0_PjS1_"),
-    ("qwen_row_dot_pdl_bf16x8", "_Z22QwenHybridRowDotKernelILj256EEvPKtS1_Ptj"),
+    ("stage_row_dot_pdl_bf16x8", "_Z22QwenHybridRowDotKernelILj256EEvPKtS1_Ptj"),
     ("device_program_copy_exact", "SparkDeviceProgramCopy"),
     ("device_program_fill_exact", "SparkDeviceProgramFill"),
 )

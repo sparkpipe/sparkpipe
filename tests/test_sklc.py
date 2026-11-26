@@ -58,7 +58,7 @@ EXPECTED_KERNELS = [
     "stage_combine_u64_max",
     "stage_tap_copy_bf16",
     "stage_row_lanes_u32",
-    "qwen_row_dot_pdl_bf16x8",
+    "stage_row_dot_pdl_bf16x8",
     "latent_attn_decode_512_64",
     "router_softmax_256",
     "router_softmax_bf16_256",
