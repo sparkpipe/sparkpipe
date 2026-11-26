@@ -369,7 +369,7 @@ static SparkStatus GpuOsDescriptor(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, c
 	made.fd = -1;
 	made.params.hRoot = gpu->rm.client;
 	made.params.hObjectParent = gpu->device;
-	made.params.hObjectNew = gpu->host_handle_next++;
+	made.params.hObjectNew = __atomic_fetch_add(&gpu->host_handle_next,1u,__ATOMIC_RELAXED);
 	made.params.hClass = NV01_MEMORY_SYSTEM_OS_DESCRIPTOR;
 	made.params.flags = (NvV32)(SPARK_NVRM_VALUE(NVOS02_FLAGS_PHYSICALITY,NVOS02_FLAGS_PHYSICALITY_NONCONTIGUOUS) |
 		SPARK_NVRM_VALUE(NVOS02_FLAGS_COHERENCY,NVOS02_FLAGS_COHERENCY_CACHED) | SPARK_NVRM_VALUE(NVOS02_FLAGS_MAPPING,NVOS02_FLAGS_MAPPING_NO_MAP) |

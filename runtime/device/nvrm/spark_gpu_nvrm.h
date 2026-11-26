@@ -26,6 +26,25 @@ typedef int SparkGpuCaptureMode;
 typedef int SparkGpuDeviceAttribute;
 typedef int SparkGpuFunctionAttribute;
 
+typedef struct SparkGpuDeviceProperties
+{
+	char name[256];
+	size_t totalGlobalMem;
+	size_t sharedMemPerBlock;
+	size_t sharedMemPerMultiprocessor;
+	int regsPerBlock;
+	int warpSize;
+	int maxThreadsPerBlock;
+	int multiProcessorCount;
+	int major;
+	int minor;
+	int unifiedAddressing;
+	int integrated;
+	int canMapHostMemory;
+	int pageableMemoryAccess;
+	int pageableMemoryAccessUsesHostPageTables;
+} SparkGpuDeviceProperties;
+
 typedef struct SparkGpuFunctionAttributes
 {
 	int maxThreadsPerBlock;
@@ -58,9 +77,14 @@ typedef struct SparkGpuFunctionAttributes
 #define SPARK_GPU_HOST_REGISTER_DEFAULT 0u
 #define SPARK_GPU_HOST_REGISTER_PORTABLE 1u
 #define SPARK_GPU_HOST_REGISTER_MAPPED 2u
+#define SPARK_GPU_HOST_REGISTER_READ_ONLY 8u
 #define SPARK_GPU_MEM_ATTACH_GLOBAL 1u
 #define SPARK_GPU_CAPTURE_STATUS_NONE 0
+#define SPARK_GPU_CAPTURE_STATUS_ACTIVE 1
+#define SPARK_GPU_CAPTURE_STATUS_INVALIDATED 2
+#define SPARK_GPU_CAPTURE_MODE_GLOBAL 0
 #define SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL 1
+#define SPARK_GPU_CAPTURE_MODE_RELAXED 2
 
 #define SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT 16
 #define SPARK_GPU_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS 88
@@ -73,8 +97,10 @@ SparkGpuError SparkGpuGetLastError(void);
 SparkGpuError SparkGpuPeekAtLastError(void);
 const char *SparkGpuGetErrorString(SparkGpuError error);
 
+SparkGpuError SparkGpuGetDeviceCount(int *count);
 SparkGpuError SparkGpuGetDevice(int *device);
 SparkGpuError SparkGpuSetDevice(int device);
+SparkGpuError SparkGpuGetDeviceProperties(SparkGpuDeviceProperties *properties, int device);
 SparkGpuError SparkGpuDeviceGetAttribute(int *value, SparkGpuDeviceAttribute attribute, int device);
 SparkGpuError SparkGpuDeviceGetStreamPriorityRange(int *least_priority, int *greatest_priority);
 SparkGpuError SparkGpuDeviceSynchronize(void);

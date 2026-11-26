@@ -159,9 +159,41 @@ static void TestStreamsAndEvents(void)
 	CHECK(SparkGpuEventSynchronize(stop) == SPARK_GPU_SUCCESS && SparkGpuEventQuery(stop) == SPARK_GPU_SUCCESS && SparkGpuStreamQuery(first) == SPARK_GPU_SUCCESS &&
 		SparkGpuEventElapsedTime(&milliseconds,start,stop) == SPARK_GPU_SUCCESS && milliseconds >= 0.0f,"events complete and time the fill");
 	CHECK(SparkGpuStreamIsCapturing(first,&capture) == SPARK_GPU_SUCCESS && capture == SPARK_GPU_CAPTURE_STATUS_NONE,"no stream is capturing");
-	CHECK(SparkGpuStreamBeginCapture(first,SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
-		SparkGpuGraphInstantiate(&exec,graph,0u) == SPARK_GPU_ERROR_NOT_SUPPORTED && SparkGpuGraphLaunch(exec,first) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
-		strstr(SparkDeviceLastError()->text,"command lists") != 0,"stream capture and graphs are refused until command lists exist");
+	CHECK(SparkGpuStreamBeginCapture(0,SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL) == SPARK_GPU_ERROR_NOT_SUPPORTED,
+		"the legacy default stream cannot be captured");
+	(void)SparkGpuGetLastError();
+	{
+		size_t node_count = 0u;
+		SparkGpuGraphNode nodes[4];
+		memset(pinned,0,API_BYTES);
+		CHECK(SparkGpuStreamBeginCapture(first,SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL) == SPARK_GPU_SUCCESS,
+			"begin stream capture on a non-blocking stream");
+		CHECK(SparkGpuStreamIsCapturing(first,&capture) == SPARK_GPU_SUCCESS && capture == SPARK_GPU_CAPTURE_STATUS_ACTIVE,
+			"stream reports active capture while recording");
+		CHECK(SparkGpuMemsetAsync(device,0x6d,API_BYTES,first) == SPARK_GPU_SUCCESS &&
+			SparkGpuMemcpyAsync(pinned,device,API_BYTES,SPARK_GPU_COPY_DEVICE_TO_HOST,first) == SPARK_GPU_SUCCESS,
+			"record fill and device-to-pinned copy into the graph");
+		CHECK(SparkGpuStreamEndCapture(first,&graph) == SPARK_GPU_SUCCESS && graph != 0,
+			"end stream capture and obtain a graph");
+		CHECK(SparkGpuStreamIsCapturing(first,&capture) == SPARK_GPU_SUCCESS && capture == SPARK_GPU_CAPTURE_STATUS_NONE,
+			"stream is no longer capturing after end-capture");
+		CHECK(SparkGpuGraphGetNodes(graph,0,&node_count) == SPARK_GPU_SUCCESS && node_count == 2u,
+			"captured graph reports its recorded node count");
+		node_count = 4u;
+		CHECK(SparkGpuGraphGetNodes(graph,nodes,&node_count) == SPARK_GPU_SUCCESS && node_count == 2u && nodes[0] != 0 && nodes[1] != 0,
+			"captured graph enumerates its nodes");
+		CHECK(SparkGpuGraphInstantiate(&exec,graph,0u) == SPARK_GPU_SUCCESS && exec != 0,
+			"instantiate the captured graph");
+		CHECK(SparkGpuGraphDestroy(graph) == SPARK_GPU_SUCCESS,
+			"destroy the graph template while keeping its executable instance alive");
+		CHECK(SparkGpuGraphUpload(exec,second) == SPARK_GPU_SUCCESS &&
+			SparkGpuGraphLaunch(exec,second) == SPARK_GPU_SUCCESS &&
+			SparkGpuStreamSynchronize(second) == SPARK_GPU_SUCCESS,
+			"upload and launch the executable graph on another stream");
+		CHECK(pinned[0] == 0x6d && pinned[API_BYTES - 1u] == 0x6d,
+			"the replayed graph executed its fill and copy");
+		CHECK(SparkGpuGraphExecDestroy(exec) == SPARK_GPU_SUCCESS,"destroy the executable graph");
+	}
 	(void)SparkGpuGetLastError();
 	CHECK(SparkGpuEventDestroy(start) == SPARK_GPU_SUCCESS && SparkGpuEventDestroy(stop) == SPARK_GPU_SUCCESS && SparkGpuEventDestroy(ready) == SPARK_GPU_SUCCESS &&
 		SparkGpuFree(device) == SPARK_GPU_SUCCESS && SparkGpuFreeHost(pinned) == SPARK_GPU_SUCCESS,"destroy the events and free");
@@ -171,14 +203,25 @@ static void TestStreamsAndEvents(void)
 static void TestDevice(void)
 {
 	size_t free_bytes = 0u,total_bytes = 0u;
-	int device = -1,count = 0,value = 0;
+	SparkGpuDeviceProperties properties;
+	int device = -1,device_count = 0,count = 0,value = -1;
+	CHECK(SparkGpuGetDeviceCount(&device_count) == SPARK_GPU_SUCCESS && device_count == 1,"the backend reports one active device");
 	CHECK(SparkGpuGetDevice(&device) == SPARK_GPU_SUCCESS && device == 0 && SparkGpuSetDevice(0) == SPARK_GPU_SUCCESS,"the process uses device 0");
 	CHECK(SparkGpuSetDevice(1) == SPARK_GPU_ERROR_INVALID_DEVICE && SparkGpuGetLastError() == SPARK_GPU_ERROR_INVALID_DEVICE,
 		"another device is refused once the first is in use");
+	CHECK(SparkGpuGetDeviceProperties(&properties,0) == SPARK_GPU_SUCCESS &&
+		(uint32_t)properties.multiProcessorCount == SparkDeviceGetProperties()->compute_units &&
+		properties.canMapHostMemory == 1 && properties.pageableMemoryAccess == 0 && properties.major >= 8,
+		"device properties mirror the open device");
 	CHECK(SparkGpuDeviceGetAttribute(&count,SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT,0) == SPARK_GPU_SUCCESS && count > 0 &&
 		(uint32_t)count == SparkDeviceGetProperties()->compute_units,"the multiprocessor count is the device's");
-	CHECK(SparkGpuDeviceGetAttribute(&value,SPARK_GPU_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS,0) == SPARK_GPU_ERROR_NOT_SUPPORTED,
-		"an attribute the backend cannot answer yet is refused");
+	CHECK(SparkGpuDeviceGetAttribute(&value,SPARK_GPU_ATTRIBUTE_HOST_POINTER_FOR_REGISTERED_MEMORY,0) == SPARK_GPU_SUCCESS && value == 1,
+		"registered host memory keeps its host pointer on the device");
+	CHECK(SparkGpuDeviceGetAttribute(&value,SPARK_GPU_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS,0) == SPARK_GPU_SUCCESS && value == 0 &&
+		SparkGpuDeviceGetAttribute(&value,SPARK_GPU_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES,0) == SPARK_GPU_SUCCESS && value == 0,
+		"unregistered pageable access is honestly reported false so callers register mesh regions explicitly");
+	CHECK(SparkGpuDeviceGetAttribute(&value,9999,0) == SPARK_GPU_ERROR_NOT_SUPPORTED,
+		"an unknown attribute is refused");
 	(void)SparkGpuGetLastError();
 	CHECK(SparkGpuMemGetInfo(&free_bytes,&total_bytes) == SPARK_GPU_SUCCESS && total_bytes > 0u && free_bytes <= total_bytes,
 		"free and total memory are reported, free within total");
@@ -271,6 +314,20 @@ static void TestRegistration(void)
 			SparkGpuMemcpy(back,device,bytes,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS && Wrong(back,bytes,59u) == 0u,
 			"registered again, the GPU reads the new memory at that address, not the old");
 		CHECK(SparkGpuHostUnregister(shared) == SPARK_GPU_SUCCESS && munmap(shared,bytes) == 0,"unregister and unmap the new memory");
+	}
+	{
+		uint8_t *ro = 0;
+		const long page = sysconf(_SC_PAGESIZE);
+		CHECK(posix_memalign((void **)&ro,(size_t)page,API_BYTES) == 0,"allocate a page-aligned read-only host buffer");
+		if ( ro != 0 )
+		{
+			Fill(ro,API_BYTES,73u);
+			CHECK(SparkGpuHostRegister(ro,API_BYTES,SPARK_GPU_HOST_REGISTER_PORTABLE | SPARK_GPU_HOST_REGISTER_MAPPED | SPARK_GPU_HOST_REGISTER_READ_ONLY) ==
+				SPARK_GPU_SUCCESS && SparkGpuMemcpy(device,ro,API_BYTES,SPARK_GPU_COPY_DEVICE_TO_DEVICE) == SPARK_GPU_SUCCESS &&
+				SparkGpuMemcpy(back,device,API_BYTES,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS && Wrong(back,API_BYTES,73u) == 0u &&
+				SparkGpuHostUnregister(ro) == SPARK_GPU_SUCCESS,"read-only host registration lets the GPU read host memory and unregisters cleanly");
+			free(ro);
+		}
 	}
 	CHECK(SparkGpuFree(device) == SPARK_GPU_SUCCESS,"free the device memory");
 	free(back);

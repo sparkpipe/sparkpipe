@@ -377,12 +377,15 @@ SparkGpuError SparkGpuHostRegister(void *host_pointer, size_t bytes, unsigned in
 {
 	GpuAllocation *entry;
 	SparkStatus status;
-	if ( host_pointer == 0 || bytes == 0u || (flags & ~(SPARK_GPU_HOST_REGISTER_PORTABLE | SPARK_GPU_HOST_REGISTER_MAPPED)) != 0u )
-		GPU_REFUSE_IN("register",SPARK_STATUS_INVALID_ARGUMENT,"a registration needs host memory, a size and only the portable and mapped flags");
+	const uint32_t allowed = SPARK_GPU_HOST_REGISTER_PORTABLE | SPARK_GPU_HOST_REGISTER_MAPPED | SPARK_GPU_HOST_REGISTER_READ_ONLY;
+	const uint32_t access = (flags & SPARK_GPU_HOST_REGISTER_READ_ONLY) != 0u ? SPARK_DEVICE_ACCESS_DEVICE_READ :
+		(SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE);
+	if ( host_pointer == 0 || bytes == 0u || (flags & ~allowed) != 0u )
+		GPU_REFUSE_IN("register",SPARK_STATUS_INVALID_ARGUMENT,"a registration needs host memory, a size and only the portable, mapped or read-only flags");
 	GPU_TRY(GpuReady());
 	if ( (entry = (GpuAllocation *)calloc(1u,sizeof(*entry))) == 0 )
 		GPU_REFUSE_IN("register",SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the allocation table");
-	status = SparkDeviceRegister(&entry->buffer,host_pointer,bytes,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE,"gpu register");
+	status = SparkDeviceRegister(&entry->buffer,host_pointer,bytes,access,"gpu register");
 	if ( status != SPARK_STATUS_OK )
 	{
 		free(entry);
@@ -569,6 +572,11 @@ static SparkGpuError GpuCopy(void *destination, const void *source, size_t bytes
 		GPU_REFUSE_IN("copy",SPARK_STATUS_INVALID_ARGUMENT,"an address in the device range lies in no buffer and no mapping");
 	if ( destination_known != 0u && source_known != 0u )
 		GPU_TRY(SparkDeviceCopy(stream,to,from,bytes));
+	else if ( stream->recording != 0 )
+	{
+		stream->recording->broken = 1u;
+		GPU_REFUSE_IN("copy",SPARK_STATUS_UNSUPPORTED,"stream capture copies only allocated or registered GPU-addressable memory");
+	}
 	else if ( destination_kind == SPARK_DEVICE_ADDRESS_MAPPED || source_kind == SPARK_DEVICE_ADDRESS_MAPPED )
 	{
 		const uint32_t to_device = GpuDeviceSide(destination,destination_known,&to,destination_kind,bytes,&to_address);
@@ -726,28 +734,152 @@ SparkGpuError SparkGpuStreamWaitEvent(SparkGpuStream stream, SparkGpuEvent event
 	return(SPARK_GPU_SUCCESS);
 }
 
-SparkGpuError SparkGpuStreamIsCapturing(SparkGpuStream stream, SparkGpuCaptureStatus *status)
+struct SparkNvrmGpuGraph
 {
-	(void)stream;
-	if ( status == 0 )
-		GPU_REFUSE_IN("queue_capture",SPARK_STATUS_INVALID_ARGUMENT,"a capture query needs an output");
-	*status = SPARK_GPU_CAPTURE_STATUS_NONE;
+	SparkDeviceProgram *program;
+	uint32_t refs;
+};
+
+struct SparkNvrmGpuGraphExec
+{
+	struct SparkNvrmGpuGraph *graph;
+};
+
+static SparkGpuError GpuGraphRelease(struct SparkNvrmGpuGraph *graph, const char *operation)
+{
+	uint32_t drop;
+	SparkStatus status;
+	pthread_mutex_lock(&gpu_mutex);
+	drop = graph->refs != 0u && --graph->refs == 0u ? 1u : 0u;
+	pthread_mutex_unlock(&gpu_mutex);
+	if ( drop == 0u )
+		return(SPARK_GPU_SUCCESS);
+	status = SparkDeviceProgramDestroy(graph->program);
+	if ( status == SPARK_STATUS_BUSY )
+	{
+		GPU_TRY(SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER));
+		status = SparkDeviceProgramDestroy(graph->program);
+	}
+	if ( status != SPARK_STATUS_OK )
+		GPU_FAIL(status);
+	graph->program = 0;
+	free(graph);
+	(void)operation;
 	return(SPARK_GPU_SUCCESS);
 }
 
-static SparkGpuError GpuNoCommandLists(const char *operation)
+SparkGpuError SparkGpuStreamIsCapturing(SparkGpuStream stream, SparkGpuCaptureStatus *status)
 {
-	GPU_REFUSE_IN(operation,SPARK_STATUS_UNSUPPORTED,"stream capture and graphs need command lists, which the backend does not record yet");
+	if ( status == 0 )
+		GPU_REFUSE_IN("queue_capture",SPARK_STATUS_INVALID_ARGUMENT,"a capture query needs an output");
+	if ( stream == 0 || stream->recording == 0 )
+		*status = SPARK_GPU_CAPTURE_STATUS_NONE;
+	else
+		*status = stream->recording->broken != 0u ? SPARK_GPU_CAPTURE_STATUS_INVALIDATED : SPARK_GPU_CAPTURE_STATUS_ACTIVE;
+	return(SPARK_GPU_SUCCESS);
 }
 
-SparkGpuError SparkGpuStreamBeginCapture(SparkGpuStream stream, SparkGpuCaptureMode mode) { (void)stream; (void)mode; return(GpuNoCommandLists("capture_begin")); }
-SparkGpuError SparkGpuStreamEndCapture(SparkGpuStream stream, SparkGpuGraph *graph) { (void)stream; (void)graph; return(GpuNoCommandLists("capture_end")); }
-SparkGpuError SparkGpuGraphInstantiate(SparkGpuGraphExec *exec, SparkGpuGraph graph, unsigned long long flags) { (void)exec; (void)graph; (void)flags; return(GpuNoCommandLists("graph_instantiate")); }
-SparkGpuError SparkGpuGraphUpload(SparkGpuGraphExec exec, SparkGpuStream stream) { (void)exec; (void)stream; return(GpuNoCommandLists("graph_upload")); }
-SparkGpuError SparkGpuGraphLaunch(SparkGpuGraphExec exec, SparkGpuStream stream) { (void)exec; (void)stream; return(GpuNoCommandLists("graph_launch")); }
-SparkGpuError SparkGpuGraphGetNodes(SparkGpuGraph graph, SparkGpuGraphNode *nodes, size_t *count) { (void)graph; (void)nodes; (void)count; return(GpuNoCommandLists("graph_nodes")); }
-SparkGpuError SparkGpuGraphExecDestroy(SparkGpuGraphExec exec) { (void)exec; return(GpuNoCommandLists("graph_exec_destroy")); }
-SparkGpuError SparkGpuGraphDestroy(SparkGpuGraph graph) { (void)graph; return(GpuNoCommandLists("graph_destroy")); }
+SparkGpuError SparkGpuStreamBeginCapture(SparkGpuStream stream, SparkGpuCaptureMode mode)
+{
+	if ( stream == 0 )
+		GPU_REFUSE_IN("capture_begin",SPARK_STATUS_UNSUPPORTED,"the legacy default stream cannot be captured; pass an explicit stream");
+	if ( mode < SPARK_GPU_CAPTURE_MODE_GLOBAL || mode > SPARK_GPU_CAPTURE_MODE_RELAXED )
+		GPU_REFUSE_IN("capture_begin",SPARK_STATUS_INVALID_ARGUMENT,"stream capture needs a known capture mode");
+	GPU_TRY(GpuReady());
+	GPU_TRY(SparkDeviceProgramRecord(stream,"gpu graph"));
+	return(SPARK_GPU_SUCCESS);
+}
+
+SparkGpuError SparkGpuStreamEndCapture(SparkGpuStream stream, SparkGpuGraph *graph)
+{
+	struct SparkNvrmGpuGraph *created;
+	SparkStatus status;
+	if ( stream == 0 || graph == 0 )
+		GPU_REFUSE_IN("capture_end",SPARK_STATUS_INVALID_ARGUMENT,"ending stream capture needs a stream and a graph output");
+	*graph = 0;
+	if ( (created = (struct SparkNvrmGpuGraph *)calloc(1u,sizeof(*created))) == 0 )
+		GPU_REFUSE_IN("capture_end",SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the captured graph");
+	if ( (status = SparkDeviceProgramFinish(stream,&created->program)) != SPARK_STATUS_OK )
+	{
+		free(created);
+		GPU_FAIL(status);
+	}
+	created->refs = 1u;
+	*graph = created;
+	return(SPARK_GPU_SUCCESS);
+}
+
+SparkGpuError SparkGpuGraphInstantiate(SparkGpuGraphExec *exec, SparkGpuGraph graph, unsigned long long flags)
+{
+	struct SparkNvrmGpuGraphExec *created;
+	if ( exec == 0 || graph == 0 || graph->program == 0 || flags != 0u )
+		GPU_REFUSE_IN("graph_instantiate",SPARK_STATUS_INVALID_ARGUMENT,"graph instantiation needs a live graph, an output and no flags");
+	*exec = 0;
+	if ( (created = (struct SparkNvrmGpuGraphExec *)calloc(1u,sizeof(*created))) == 0 )
+		GPU_REFUSE_IN("graph_instantiate",SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the executable graph");
+	pthread_mutex_lock(&gpu_mutex);
+	graph->refs++;
+	pthread_mutex_unlock(&gpu_mutex);
+	created->graph = graph;
+	*exec = created;
+	return(SPARK_GPU_SUCCESS);
+}
+
+SparkGpuError SparkGpuGraphUpload(SparkGpuGraphExec exec, SparkGpuStream stream)
+{
+	if ( exec == 0 || exec->graph == 0 || exec->graph->program == 0 )
+		GPU_REFUSE_IN("graph_upload",SPARK_STATUS_INVALID_ARGUMENT,"graph upload needs a live executable graph");
+	if ( GpuStream(&stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(gpu_last_error);
+	return(SPARK_GPU_SUCCESS);
+}
+
+SparkGpuError SparkGpuGraphLaunch(SparkGpuGraphExec exec, SparkGpuStream stream)
+{
+	if ( exec == 0 || exec->graph == 0 || exec->graph->program == 0 )
+		GPU_REFUSE_IN("graph_launch",SPARK_STATUS_INVALID_ARGUMENT,"graph launch needs a live executable graph");
+	if ( GpuStream(&stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(gpu_last_error);
+	GPU_TRY(SparkDeviceProgramRun(exec->graph->program,stream,0,0u));
+	return(SPARK_GPU_SUCCESS);
+}
+
+SparkGpuError SparkGpuGraphGetNodes(SparkGpuGraph graph, SparkGpuGraphNode *nodes, size_t *count)
+{
+	SparkDeviceProgramInfo info;
+	size_t index,fill;
+	if ( graph == 0 || graph->program == 0 || count == 0 )
+		GPU_REFUSE_IN("graph_nodes",SPARK_STATUS_INVALID_ARGUMENT,"a graph node query needs a live graph and a count output");
+	GPU_TRY(SparkDeviceProgramGetInfo(graph->program,&info));
+	if ( nodes == 0 )
+	{
+		*count = (size_t)info.nodes;
+		return(SPARK_GPU_SUCCESS);
+	}
+	fill = *count < info.nodes ? *count : (size_t)info.nodes;
+	for (index = 0u; index < fill; index++)
+		nodes[index] = (SparkGpuGraphNode)(uintptr_t)(index + 1u);
+	*count = fill;
+	return(SPARK_GPU_SUCCESS);
+}
+
+SparkGpuError SparkGpuGraphExecDestroy(SparkGpuGraphExec exec)
+{
+	struct SparkNvrmGpuGraph *graph;
+	if ( exec == 0 || exec->graph == 0 )
+		GPU_REFUSE_IN("graph_exec_destroy",SPARK_STATUS_INVALID_ARGUMENT,"destroying an executable graph needs a live handle");
+	graph = exec->graph;
+	exec->graph = 0;
+	free(exec);
+	return(GpuGraphRelease(graph,"graph_exec_destroy"));
+}
+
+SparkGpuError SparkGpuGraphDestroy(SparkGpuGraph graph)
+{
+	if ( graph == 0 || graph->program == 0 )
+		GPU_REFUSE_IN("graph_destroy",SPARK_STATUS_INVALID_ARGUMENT,"destroying a graph needs a live handle");
+	return(GpuGraphRelease(graph,"graph_destroy"));
+}
 
 SparkGpuError SparkGpuLaunchHostFunc(SparkGpuStream stream, SparkGpuHostFunction function, void *context)
 {
@@ -818,6 +950,27 @@ SparkGpuError SparkGpuEventElapsedTime(float *milliseconds, SparkGpuEvent start,
 	return(SPARK_GPU_SUCCESS);
 }
 
+static void GpuParseComputeCapability(const char *target, int *major, int *minor)
+{
+	unsigned int code = 0u;
+	*major = 0;
+	*minor = 0;
+	if ( target != 0 && sscanf(target,"sm_%u",&code) == 1 && code >= 10u )
+	{
+		*major = (int)(code / 10u);
+		*minor = (int)(code % 10u);
+	}
+}
+
+SparkGpuError SparkGpuGetDeviceCount(int *count)
+{
+	if ( count == 0 )
+		GPU_REFUSE_IN("device_count",SPARK_STATUS_INVALID_ARGUMENT,"a device count query needs an output");
+	GPU_TRY(GpuReady());
+	*count = 1;
+	return(SPARK_GPU_SUCCESS);
+}
+
 SparkGpuError SparkGpuGetDevice(int *device)
 {
 	if ( device == 0 )
@@ -838,6 +991,37 @@ SparkGpuError SparkGpuSetDevice(int device)
 	return(SPARK_GPU_SUCCESS);
 }
 
+SparkGpuError SparkGpuGetDeviceProperties(SparkGpuDeviceProperties *properties, int device)
+{
+	const SparkDeviceProperties *info;
+	if ( properties == 0 )
+		GPU_REFUSE_IN("device_properties",SPARK_STATUS_INVALID_ARGUMENT,"a device properties query needs an output");
+	if ( device != gpu_ordinal )
+	{
+		(void)SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"device_properties",GPU_OWNER,device,"properties are available only for this process's device");
+		gpu_last_error = SPARK_GPU_ERROR_INVALID_DEVICE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_DEVICE);
+	}
+	GPU_TRY(GpuReady());
+	info = SparkDeviceGetProperties();
+	memset(properties,0,sizeof(*properties));
+	snprintf(properties->name,sizeof(properties->name),"%s",info->name);
+	properties->totalGlobalMem = (size_t)info->memory_budget_bytes;
+	properties->sharedMemPerBlock = (size_t)info->max_shared_bytes;
+	properties->sharedMemPerMultiprocessor = (size_t)info->max_shared_bytes;
+	properties->regsPerBlock = 65536;
+	properties->warpSize = (int)info->simd_width;
+	properties->maxThreadsPerBlock = (int)info->max_group_threads;
+	properties->multiProcessorCount = (int)info->compute_units;
+	GpuParseComputeCapability(info->target,&properties->major,&properties->minor);
+	properties->unifiedAddressing = (info->properties & SPARK_DEVICE_PROPERTY_SHARED_ADDRESS) != 0u ? 1 : 0;
+	properties->integrated = (info->properties & SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY) != 0u ? 1 : 0;
+	properties->canMapHostMemory = 1;
+	properties->pageableMemoryAccess = 0;
+	properties->pageableMemoryAccessUsesHostPageTables = 0;
+	return(SPARK_GPU_SUCCESS);
+}
+
 SparkGpuError SparkGpuDeviceGetAttribute(int *value, SparkGpuDeviceAttribute attribute, int device)
 {
 	const SparkDeviceProperties *properties;
@@ -845,10 +1029,21 @@ SparkGpuError SparkGpuDeviceGetAttribute(int *value, SparkGpuDeviceAttribute att
 		GPU_REFUSE_IN("device_attribute",SPARK_STATUS_INVALID_ARGUMENT,"an attribute query needs an output and this process's device");
 	GPU_TRY(GpuReady());
 	properties = SparkDeviceGetProperties();
-	if ( attribute != SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT )
-		GPU_REFUSE_IN("device_attribute",SPARK_STATUS_UNSUPPORTED,"the backend answers only the multiprocessor count yet");
-	*value = (int)properties->compute_units;
-	return(SPARK_GPU_SUCCESS);
+	switch ( attribute )
+	{
+	case SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT:
+		*value = (int)properties->compute_units;
+		return(SPARK_GPU_SUCCESS);
+	case SPARK_GPU_ATTRIBUTE_HOST_POINTER_FOR_REGISTERED_MEMORY:
+		*value = 1;
+		return(SPARK_GPU_SUCCESS);
+	case SPARK_GPU_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS:
+	case SPARK_GPU_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES:
+		*value = 0;
+		return(SPARK_GPU_SUCCESS);
+	default:
+		GPU_REFUSE_IN("device_attribute",SPARK_STATUS_UNSUPPORTED,"the backend does not support this device attribute");
+	}
 }
 
 SparkGpuError SparkGpuDeviceSynchronize(void)

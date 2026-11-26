@@ -55,6 +55,8 @@ LOAD_CALLS = {
     "ldg8_persist": ("u32", "8_const"),
 }
 
+SR_CALLS = ("ctaid_x", "ctaid_y", "ctaid_z", "tid_x", "lane_id", "ntid_x", "ntid_y", "grid_x", "grid_y", "warp_id")
+
 
 class Val:
     def __init__(self, vtype, regs, is_temp=False):
@@ -294,6 +296,9 @@ class KernelCompiler:
         elif key == "ctaid_y":
             v = self.alloc_val("u32", temp=False)
             self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_s2r(r, isa.SR_CTAID_Y, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
+        elif key == "ctaid_z":
+            v = self.alloc_val("u32", temp=False)
+            self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_s2r(r, isa.SR_CTAID_Z, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
         elif key == "tid_x":
             v = self.alloc_val("u32", temp=False)
             self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_s2r(r, isa.SR_TID_X, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
@@ -303,9 +308,15 @@ class KernelCompiler:
         elif key == "ntid_x":
             v = self.alloc_val("u32", temp=False)
             self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_ldc(r, isa.C0_NTID_X, width=32, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
+        elif key == "ntid_y":
+            v = self.alloc_val("u32", temp=False)
+            self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_ldc(r, isa.C0_NTID_Y, width=32, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
         elif key == "grid_x":
             v = self.alloc_val("u32", temp=False)
             self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_ldc(r, isa.C0_NCTAID_X, width=32, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
+        elif key == "grid_y":
+            v = self.alloc_val("u32", temp=False)
+            self.emit(Op(lambda wr, rd, wait, stall, r=v.r0: isa.encode_ldc(r, isa.C0_NCTAID_Y, width=32, wr=wr, stall=stall, wait=wait), writes=v.regs, var_lat=True))
         elif key == "warp_id":
             tid = self.get_sr("tid_x")
             v = self.alloc_val("u32", temp=False)
@@ -326,7 +337,7 @@ class KernelCompiler:
         if tag == "ident":
             used_idents.add(node[1])
             return
-        if tag == "call" and node[1] in ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id"):
+        if tag == "call" and node[1] in SR_CALLS:
             used_srs.add(node[1])
             if node[1] == "warp_id":
                 used_srs.add("tid_x")
@@ -387,7 +398,7 @@ class KernelCompiler:
                     first_sr[sr] = idx
                 last_sr[sr] = idx
 
-        sr_order = ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id")
+        sr_order = SR_CALLS
         for idx, st in enumerate(body):
             for p in self.kdef["params"]:
                 pname = p["name"]
@@ -490,7 +501,7 @@ class KernelCompiler:
                 init is not None
                 and name not in self.assigned_vars
                 and init[0] == "call"
-                and init[1] in ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id")
+                and init[1] in SR_CALLS
                 and vtype == "u32"
             ):
                 self.bind_var(name, self.get_sr(init[1]))
@@ -1233,7 +1244,7 @@ class KernelCompiler:
         raise ValueError(f"unsupported u32 op: {op}")
 
     def eval_call(self, name, args, hint_dst=None):
-        if name in ("ctaid_x", "ctaid_y", "tid_x", "lane_id", "ntid_x", "grid_x", "warp_id"):
+        if name in SR_CALLS:
             return self.get_sr(name)
 
         if name == "pdl_wait":
@@ -1579,6 +1590,19 @@ class KernelCompiler:
             self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, a=cl.r0: isa.encode_sel_i(r, a, 0, 2, neg_sp=False, stall=stall, wait=wait), reads=(cl.r0,), preads=(2,), writes=(d.r0,)))
             return d
 
+        if name == "u32_to_f32":
+            v = self.eval_expr(args[0])
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "f32") else self.alloc_val("f32", temp=True)
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, rb=v.r0: isa.encode_i2fp_u32(r, rb, stall=stall, wait=wait), reads=(v.r0,), writes=(d.r0,)))
+            return d
+
+        if name == "pack_u32x2":
+            vals = [self.eval_expr(a) for a in args]
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u32x2") else self.alloc_val("u32x2", temp=True)
+            for dr, v in zip(d.regs, vals):
+                self.emit(Op(lambda wr, rd, wait, stall, r=dr, s=v.r0: isa.encode_mov_r(r, s, stall=stall, wait=wait), reads=(v.r0,), writes=(dr,)))
+            return d
+
         if name == "pack_u32x4":
             vals = [self.eval_expr(a) for a in args]
             d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u32x4") else self.alloc_val("u32x4", temp=True)
@@ -1605,6 +1629,13 @@ class KernelCompiler:
             delta = int(try_eval_const(args[1], self.consts))
             d = hint_dst if (hint_dst is not None and hint_dst.vtype == v.vtype) else self.alloc_val(v.vtype, temp=True)
             self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, a=v.r0, dl=delta: isa.encode_shfl_down(r, a, dl, wr=wr, stall=stall, wait=wait), reads=(v.r0,), writes=(d.r0,), var_lat=True))
+            return d
+
+        if name == "shfl_up":
+            v = self.eval_expr(args[0])
+            delta = int(try_eval_const(args[1], self.consts))
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == v.vtype) else self.alloc_val(v.vtype, temp=True)
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, a=v.r0, dl=delta: isa.encode_shfl_up(r, a, dl, wr=wr, stall=stall, wait=wait), reads=(v.r0,), writes=(d.r0,), var_lat=True))
             return d
 
         if name == "shfl_idx":

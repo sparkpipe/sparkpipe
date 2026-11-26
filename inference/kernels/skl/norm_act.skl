@@ -584,3 +584,590 @@ kernel[BLOCK, 48] add_elements_pdl_exact_bf16x8(
         stg16(ptr_add(dst_bf16, i, 2), f32_to_bf16(av + bv));
     }
 }
+
+kernel[BLOCK, 48] head_rmsnorm_sigmoid_gate_pdl_exact_128_bf16(
+    global u32* input_bf16, global u32* gate_bf16, global u32* weight_bf16, global u32* output_bf16,
+    u32 rows, u32 heads, u32 gate_row_stride, u32 gate_col_offset
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 head = ctaid_x() * 8 + wid;
+    reg u32 row = ctaid_y();
+    if (row >= rows) { return; }
+    if (head >= heads) { return; }
+
+    reg u32 base = (row * heads + head) * 128;
+    reg u32 gbase = row * gate_row_stride + gate_col_offset + head * 128;
+
+    reg f32 in0 = bf16_lo(ldg16_stream(ptr_add(input_bf16, base + lane, 2)));
+    reg f32 in1 = bf16_lo(ldg16_stream(ptr_add(input_bf16, base + 32 + lane, 2)));
+    reg f32 in2 = bf16_lo(ldg16_stream(ptr_add(input_bf16, base + 64 + lane, 2)));
+    reg f32 in3 = bf16_lo(ldg16_stream(ptr_add(input_bf16, base + 96 + lane, 2)));
+
+    reg f32 sq0 = in0 * in0;
+    sq0 = sq0 + shfl_down(sq0, 16);
+    sq0 = sq0 + shfl_down(sq0, 8);
+    sq0 = sq0 + shfl_down(sq0, 4);
+    sq0 = sq0 + shfl_down(sq0, 2);
+    sq0 = sq0 + shfl_down(sq0, 1);
+    sq0 = shfl_idx(sq0, 0);
+
+    reg f32 sq1 = in1 * in1;
+    sq1 = sq1 + shfl_down(sq1, 16);
+    sq1 = sq1 + shfl_down(sq1, 8);
+    sq1 = sq1 + shfl_down(sq1, 4);
+    sq1 = sq1 + shfl_down(sq1, 2);
+    sq1 = sq1 + shfl_down(sq1, 1);
+    sq1 = shfl_idx(sq1, 0);
+
+    reg f32 sq2 = in2 * in2;
+    sq2 = sq2 + shfl_down(sq2, 16);
+    sq2 = sq2 + shfl_down(sq2, 8);
+    sq2 = sq2 + shfl_down(sq2, 4);
+    sq2 = sq2 + shfl_down(sq2, 2);
+    sq2 = sq2 + shfl_down(sq2, 1);
+    sq2 = shfl_idx(sq2, 0);
+
+    reg f32 sq3 = in3 * in3;
+    sq3 = sq3 + shfl_down(sq3, 16);
+    sq3 = sq3 + shfl_down(sq3, 8);
+    sq3 = sq3 + shfl_down(sq3, 4);
+    sq3 = sq3 + shfl_down(sq3, 2);
+    sq3 = sq3 + shfl_down(sq3, 1);
+    sq3 = shfl_idx(sq3, 0);
+
+    reg f32 total = (sq0 + sq2) + (sq1 + sq3);
+    reg f32 scale = rsqrt(fma(total, 0.0078125f, 1.0e-6f));
+
+    reg f32 w0 = bf16_lo(ldg16_persist(ptr_add(weight_bf16, lane, 2)));
+    reg f32 g0 = bf16_lo(ldg16_stream(ptr_add(gate_bf16, gbase + lane, 2)));
+    reg f32 d0 = exp2_ftz(g0 * -1.4426950408889634f) + 1.0f;
+    reg f32 s0 = rcp(d0);
+    s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+    s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+    reg f32 n0 = bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(in0 * scale)) * w0));
+    stg16(ptr_add(output_bf16, base + lane, 2), f32_to_bf16(n0 * s0));
+
+    reg f32 w1 = bf16_lo(ldg16_persist(ptr_add(weight_bf16, 32 + lane, 2)));
+    reg f32 g1 = bf16_lo(ldg16_stream(ptr_add(gate_bf16, gbase + 32 + lane, 2)));
+    reg f32 d1 = exp2_ftz(g1 * -1.4426950408889634f) + 1.0f;
+    reg f32 s1 = rcp(d1);
+    s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+    s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+    reg f32 n1 = bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(in1 * scale)) * w1));
+    stg16(ptr_add(output_bf16, base + 32 + lane, 2), f32_to_bf16(n1 * s1));
+
+    reg f32 w2 = bf16_lo(ldg16_persist(ptr_add(weight_bf16, 64 + lane, 2)));
+    reg f32 g2 = bf16_lo(ldg16_stream(ptr_add(gate_bf16, gbase + 64 + lane, 2)));
+    reg f32 d2 = exp2_ftz(g2 * -1.4426950408889634f) + 1.0f;
+    reg f32 s2 = rcp(d2);
+    s2 = fma(s2, fma(-d2, s2, 1.0f), s2);
+    s2 = fma(s2, fma(-d2, s2, 1.0f), s2);
+    reg f32 n2 = bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(in2 * scale)) * w2));
+    stg16(ptr_add(output_bf16, base + 64 + lane, 2), f32_to_bf16(n2 * s2));
+
+    reg f32 w3 = bf16_lo(ldg16_persist(ptr_add(weight_bf16, 96 + lane, 2)));
+    reg f32 g3 = bf16_lo(ldg16_stream(ptr_add(gate_bf16, gbase + 96 + lane, 2)));
+    reg f32 d3 = exp2_ftz(g3 * -1.4426950408889634f) + 1.0f;
+    reg f32 s3 = rcp(d3);
+    s3 = fma(s3, fma(-d3, s3, 1.0f), s3);
+    s3 = fma(s3, fma(-d3, s3, 1.0f), s3);
+    reg f32 n3 = bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(in3 * scale)) * w3));
+    stg16(ptr_add(output_bf16, base + 96 + lane, 2), f32_to_bf16(n3 * s3));
+}
+
+kernel[BLOCK, 64] fused_residual_rmsnorm_f32_generic_pdl_exact_bf16x8(
+    global u32* input_bf16, global u32* residual_bf16, global u32* weight_f32,
+    global u32* residual_out_bf16, global u32* output_bf16,
+    u32 dimension, u32 row_stride, f32 epsilon
+) {
+    shared f32 sq_wave[2048];
+    shared f32 reduction[8];
+    pdl_wait();
+    pdl_release();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 row_bytes = row_stride << 1;
+    ureg u64 in_row = ptr_add(input_bf16, row, row_bytes);
+    ureg u64 out_row = ptr_add(output_bf16, row, row_bytes);
+    reg u32 has_res = residual_bf16[0] | residual_bf16[1];
+    reg u32 has_res_out = residual_out_bf16[0] | residual_out_bf16[1];
+    reg u32 align_bad = (dimension & 7) | (row_stride & 7) | (input_bf16[0] & 15) | (output_bf16[0] & 15) | (weight_f32[0] & 15);
+    if (has_res != 0) {
+        align_bad = align_bad | (residual_bf16[0] & 15);
+    }
+    if (has_res_out != 0) {
+        align_bad = align_bad | (residual_out_bf16[0] & 15);
+    }
+
+    reg f32 total = 0.0f;
+    if (align_bad == 0) {
+        reg u32 tid8 = tid << 3;
+        reg u32 vecs = dimension >> 3;
+        for (reg u32 wave_base = 0; wave_base < dimension; wave_base += 2048) {
+            reg u32 off = wave_base + tid8;
+            if (off < dimension) {
+                reg u32 v_idx = off >> 3;
+                reg u32x4 sv = ldg128_stream(ptr_add(in_row, v_idx, 16));
+                if (has_res != 0) {
+                    ureg u64 res_row = ptr_add(residual_bf16, row, row_bytes);
+                    reg u32x4 rv = ldg128_stream(ptr_add(res_row, v_idx, 16));
+                    unroll (k = 0..4) {
+                        sv[k] = pack_bf16x2(bf16_lo(sv[k]) + bf16_lo(rv[k]), bf16_hi(sv[k]) + bf16_hi(rv[k]));
+                    }
+                }
+                if (has_res_out != 0) {
+                    ureg u64 rout_row = ptr_add(residual_out_bf16, row, row_bytes);
+                    stg128(ptr_add(rout_row, v_idx, 16), sv);
+                }
+                unroll (k = 0..4) {
+                    reg f32 v0 = bf16_lo(sv[k]);
+                    reg f32 v1 = bf16_hi(sv[k]);
+                    sts32(sq_wave, tid8 + k * 2, v0 * v0);
+                    sts32(sq_wave, tid8 + k * 2 + 1, v1 * v1);
+                }
+            }
+            barrier();
+            unroll (s = 0..8) {
+                if (wave_base + s * BLOCK + tid < dimension) {
+                    total = total + lds32(sq_wave, s * BLOCK + tid);
+                }
+            }
+            barrier();
+        }
+        total = total + shfl_down(total, 16);
+        total = total + shfl_down(total, 8);
+        total = total + shfl_down(total, 4);
+        total = total + shfl_down(total, 2);
+        total = total + shfl_down(total, 1);
+        if (lane == 0) {
+            sts32(reduction, wid, total);
+        }
+        barrier();
+        reg f32 b = 0.0f;
+        if (lane < 8) {
+            b = lds32(reduction, lane);
+        }
+        b = b + shfl_down(b, 4);
+        b = b + shfl_down(b, 2);
+        b = b + shfl_down(b, 1);
+        b = shfl_idx(b, 0);
+
+        reg f32 df = u32_to_f32(dimension);
+        reg f32 rf = rcp(df);
+        rf = fma(rf, fma(-df, rf, 1.0f), rf);
+        reg f32 qf = b * rf;
+        qf = fma(rf, fma(-df, qf, b), qf);
+        reg f32 scale = rsqrt(qf + epsilon);
+
+        for (reg u32 v = tid; v < vecs; v += BLOCK) {
+            reg u32x4 sv = pack_u32x4(0, 0, 0, 0);
+            if (has_res_out != 0) {
+                ureg u64 rout_row = ptr_add(residual_out_bf16, row, row_bytes);
+                sv = ldg128_persist(ptr_add(rout_row, v, 16));
+            } else {
+                sv = ldg128_persist(ptr_add(in_row, v, 16));
+                if (has_res != 0) {
+                    ureg u64 res_row = ptr_add(residual_bf16, row, row_bytes);
+                    reg u32x4 rv = ldg128_persist(ptr_add(res_row, v, 16));
+                    unroll (k = 0..4) {
+                        sv[k] = pack_bf16x2(bf16_lo(sv[k]) + bf16_lo(rv[k]), bf16_hi(sv[k]) + bf16_hi(rv[k]));
+                    }
+                }
+            }
+            reg u32x8 wv = ldg256_persist(ptr_add(weight_f32, v, 32));
+            unroll (k = 0..4) {
+                reg f32 lo = bf16_lo(sv[k]) * scale * u32_as_f32(wv[k * 2]);
+                reg f32 hi = bf16_hi(sv[k]) * scale * u32_as_f32(wv[k * 2 + 1]);
+                sv[k] = pack_bf16x2(lo, hi);
+            }
+            stg128(ptr_add(out_row, v, 16), sv);
+        }
+        return;
+    }
+
+    for (reg u32 idx = tid; idx < dimension; idx += BLOCK) {
+        reg u32 bits = ldg16_stream(ptr_add(in_row, idx, 2));
+        reg f32 val = bf16_lo(bits);
+        if (has_res != 0) {
+            ureg u64 res_row = ptr_add(residual_bf16, row, row_bytes);
+            reg f32 rv = bf16_lo(ldg16_stream(ptr_add(res_row, idx, 2)));
+            bits = f32_to_bf16(val + rv);
+            val = bf16_lo(bits);
+        }
+        if (has_res_out != 0) {
+            ureg u64 rout_row = ptr_add(residual_out_bf16, row, row_bytes);
+            stg16(ptr_add(rout_row, idx, 2), bits);
+        }
+        total = fma(val, val, total);
+    }
+    total = total + shfl_down(total, 16);
+    total = total + shfl_down(total, 8);
+    total = total + shfl_down(total, 4);
+    total = total + shfl_down(total, 2);
+    total = total + shfl_down(total, 1);
+    if (lane == 0) {
+        sts32(reduction, wid, total);
+    }
+    barrier();
+    reg f32 bs = 0.0f;
+    if (lane < 8) {
+        bs = lds32(reduction, lane);
+    }
+    bs = bs + shfl_down(bs, 4);
+    bs = bs + shfl_down(bs, 2);
+    bs = bs + shfl_down(bs, 1);
+    bs = shfl_idx(bs, 0);
+
+    reg f32 dfs = u32_to_f32(dimension);
+    reg f32 rfs = rcp(dfs);
+    rfs = fma(rfs, fma(-dfs, rfs, 1.0f), rfs);
+    reg f32 qfs = bs * rfs;
+    qfs = fma(rfs, fma(-dfs, qfs, bs), qfs);
+    reg f32 scale_s = rsqrt(qfs + epsilon);
+
+    for (reg u32 idx = tid; idx < dimension; idx += BLOCK) {
+        reg f32 val = 0.0f;
+        if (has_res_out != 0) {
+            ureg u64 rout_row = ptr_add(residual_out_bf16, row, row_bytes);
+            val = bf16_lo(ldg16_persist(ptr_add(rout_row, idx, 2)));
+        } else {
+            val = bf16_lo(ldg16_persist(ptr_add(in_row, idx, 2)));
+            if (has_res != 0) {
+                ureg u64 res_row = ptr_add(residual_bf16, row, row_bytes);
+                reg f32 rv = bf16_lo(ldg16_persist(ptr_add(res_row, idx, 2)));
+                val = bf16_lo(f32_to_bf16(val + rv));
+            }
+        }
+        reg f32 w = u32_as_f32(ldg32_persist(ptr_add(weight_f32, idx, 4)));
+        stg16(ptr_add(out_row, idx, 2), f32_to_bf16(val * scale_s * w));
+    }
+}
+
+kernel[BLOCK, 48] lm_output_gate_pdl_exact_bf16x8(
+    global u32* output_bf16, global u32* gate_bf16, u32 dimension
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x();
+    reg u32 row_bytes = dimension << 1;
+    ureg u64 out_row = ptr_add(output_bf16, row, row_bytes);
+    ureg u64 gate_row = ptr_add(gate_bf16, row, row_bytes);
+    reg u32 align_bad = (dimension & 7) | (out_row[0] & 15) | (gate_row[0] & 15);
+    if (align_bad == 0) {
+        reg u32 vecs = dimension >> 3;
+        for (reg u32 v = tid; v < vecs; v += BLOCK) {
+            reg u32x4 ov = ldg128_stream(ptr_add(out_row, v, 16));
+            reg u32x4 gv = ldg128_stream(ptr_add(gate_row, v, 16));
+            unroll (k = 0..4) {
+                reg f32 g0 = bf16_lo(gv[k]);
+                reg f32 g1 = bf16_hi(gv[k]);
+                reg f32 d0 = exp2_ftz(g0 * -1.4426950408889634f) + 1.0f;
+                reg f32 d1 = exp2_ftz(g1 * -1.4426950408889634f) + 1.0f;
+                reg f32 s0 = rcp(d0);
+                reg f32 s1 = rcp(d1);
+                s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                ov[k] = pack_bf16x2(bf16_lo(ov[k]) * s0, bf16_hi(ov[k]) * s1);
+            }
+            stg128(ptr_add(out_row, v, 16), ov);
+        }
+        return;
+    }
+    for (reg u32 i = tid; i < dimension; i += BLOCK) {
+        reg f32 v = bf16_lo(ldg16_stream(ptr_add(out_row, i, 2)));
+        reg f32 g = bf16_lo(ldg16_stream(ptr_add(gate_row, i, 2)));
+        reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
+        reg f32 s = rcp(d);
+        s = fma(s, fma(-d, s, 1.0f), s);
+        s = fma(s, fma(-d, s, 1.0f), s);
+        stg16(ptr_add(out_row, i, 2), f32_to_bf16(v * s));
+    }
+}
+
+kernel[BLOCK, 48] lm_sigmoid_rows_pdl_bf16x8(
+    global u32* logits_bf16, global u32* scores_f32, u32 width
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x();
+    ureg u64 src = ptr_add(logits_bf16, row, width << 1);
+    ureg u64 dst = ptr_add(scores_f32, row, width << 2);
+    reg u32 align_bad = (width & 7) | (src[0] & 15) | (dst[0] & 15);
+    if (align_bad == 0) {
+        reg u32 vecs = width >> 3;
+        for (reg u32 v = tid; v < vecs; v += BLOCK) {
+            reg u32x4 lv = ldg128_stream(ptr_add(src, v, 16));
+            reg u32x4 o0 = pack_u32x4(0, 0, 0, 0);
+            reg u32x4 o1 = pack_u32x4(0, 0, 0, 0);
+            unroll (k = 0..2) {
+                reg f32 g0 = bf16_lo(lv[k]);
+                reg f32 g1 = bf16_hi(lv[k]);
+                reg f32 d0 = exp2_ftz(g0 * -1.4426950408889634f) + 1.0f;
+                reg f32 d1 = exp2_ftz(g1 * -1.4426950408889634f) + 1.0f;
+                reg f32 s0 = rcp(d0);
+                reg f32 s1 = rcp(d1);
+                s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                o0[k * 2] = f32_as_u32(s0);
+                o0[k * 2 + 1] = f32_as_u32(s1);
+            }
+            unroll (k = 0..2) {
+                reg f32 g0 = bf16_lo(lv[2 + k]);
+                reg f32 g1 = bf16_hi(lv[2 + k]);
+                reg f32 d0 = exp2_ftz(g0 * -1.4426950408889634f) + 1.0f;
+                reg f32 d1 = exp2_ftz(g1 * -1.4426950408889634f) + 1.0f;
+                reg f32 s0 = rcp(d0);
+                reg f32 s1 = rcp(d1);
+                s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                o1[k * 2] = f32_as_u32(s0);
+                o1[k * 2 + 1] = f32_as_u32(s1);
+            }
+            stg128(ptr_add(dst, v << 1, 16), o0);
+            stg128(ptr_add(dst, (v << 1) + 1, 16), o1);
+        }
+        return;
+    }
+    for (reg u32 i = tid; i < width; i += BLOCK) {
+        reg f32 g = bf16_lo(ldg16_stream(ptr_add(src, i, 2)));
+        reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
+        reg f32 s = rcp(d);
+        s = fma(s, fma(-d, s, 1.0f), s);
+        s = fma(s, fma(-d, s, 1.0f), s);
+        stg32(ptr_add(dst, i, 4), f32_as_u32(s));
+    }
+}
+
+kernel[BLOCK, 48] lm_add_rows_pdl_bf16x8(
+    global u32* a_bf16, global u32* b_bf16, global u32* out_bf16,
+    u32 rows, u32 dimension
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 tid = tid_x();
+    reg u32 bx = ctaid_x();
+    reg u32 gy = grid_y();
+    reg u32 align_bad = (dimension & 7) | (a_bf16[0] & 15) | (b_bf16[0] & 15) | (out_bf16[0] & 15);
+    if (align_bad == 0) {
+        reg u32 elem = 0;
+        reg u32 gx256 = grid_x() * BLOCK;
+        if (gx256 >= dimension) {
+            if (tid >= 32) { return; }
+            elem = bx * BLOCK + (tid << 3);
+        } else {
+            elem = (bx * BLOCK + tid) << 3;
+        }
+        if (elem >= dimension) { return; }
+        reg u32 vec_idx = elem >> 3;
+        reg u32 row_bytes = dimension << 1;
+        for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+            ureg u64 ap = ptr_add(a_bf16, row, row_bytes);
+            ureg u64 bp = ptr_add(b_bf16, row, row_bytes);
+            ureg u64 op = ptr_add(out_bf16, row, row_bytes);
+            reg u32x4 av = ldg128_stream(ptr_add(ap, vec_idx, 16));
+            reg u32x4 bv = ldg128_stream(ptr_add(bp, vec_idx, 16));
+            unroll (k = 0..4) {
+                av[k] = pack_bf16x2(bf16_lo(av[k]) + bf16_lo(bv[k]), bf16_hi(av[k]) + bf16_hi(bv[k]));
+            }
+            stg128(ptr_add(op, vec_idx, 16), av);
+        }
+        return;
+    }
+    reg u32 elem = bx * BLOCK + tid;
+    if (elem >= dimension) { return; }
+    reg u32 row_bytes = dimension << 1;
+    for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+        ureg u64 ap = ptr_add(a_bf16, row, row_bytes);
+        ureg u64 bp = ptr_add(b_bf16, row, row_bytes);
+        ureg u64 op = ptr_add(out_bf16, row, row_bytes);
+        reg f32 av = bf16_lo(ldg16_stream(ptr_add(ap, elem, 2)));
+        reg f32 bv = bf16_lo(ldg16_stream(ptr_add(bp, elem, 2)));
+        stg16(ptr_add(op, elem, 2), f32_to_bf16(av + bv));
+    }
+}
+
+kernel[BLOCK, 32] lm_copy_rows_pdl_bf16x8(
+    global u32* source_bf16, global u32* destination_bf16,
+    u32 rows, u32 dimension
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 tid = tid_x();
+    reg u32 bx = ctaid_x();
+    reg u32 gy = grid_y();
+    reg u32 align_bad = (dimension & 7) | (source_bf16[0] & 15) | (destination_bf16[0] & 15);
+    if (align_bad == 0) {
+        reg u32 elem = 0;
+        reg u32 gx256 = grid_x() * BLOCK;
+        if (gx256 >= dimension) {
+            if (tid >= 32) { return; }
+            elem = bx * BLOCK + (tid << 3);
+        } else {
+            elem = (bx * BLOCK + tid) << 3;
+        }
+        if (elem >= dimension) { return; }
+        reg u32 vec_idx = elem >> 3;
+        reg u32 row_bytes = dimension << 1;
+        for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+            ureg u64 sp = ptr_add(source_bf16, row, row_bytes);
+            ureg u64 dp = ptr_add(destination_bf16, row, row_bytes);
+            reg u32x4 v = ldg128_stream(ptr_add(sp, vec_idx, 16));
+            stg128(ptr_add(dp, vec_idx, 16), v);
+        }
+        return;
+    }
+    reg u32 elem = bx * BLOCK + tid;
+    if (elem >= dimension) { return; }
+    reg u32 row_bytes = dimension << 1;
+    for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+        ureg u64 sp = ptr_add(source_bf16, row, row_bytes);
+        ureg u64 dp = ptr_add(destination_bf16, row, row_bytes);
+        reg u32 v = ldg16_stream(ptr_add(sp, elem, 2));
+        stg16(ptr_add(dp, elem, 2), v);
+    }
+}
+
+kernel[BLOCK, 48] lm_add_rows_strided_pdl_bf16x8(
+    global u32* source_bf16, global u32* addend_bf16, global u32* destination_bf16,
+    u32 rows, u32 dimension, u64 destination_stride
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 tid = tid_x();
+    reg u32 bx = ctaid_x();
+    reg u32 gy = grid_y();
+    reg u32 dst_stride = destination_stride[0];
+    reg u32 align_bad = (dimension & 7) | (dst_stride & 7) | (source_bf16[0] & 15) | (addend_bf16[0] & 15) | (destination_bf16[0] & 15);
+    if (align_bad == 0) {
+        reg u32 elem = 0;
+        reg u32 gx256 = grid_x() * BLOCK;
+        if (gx256 >= dimension) {
+            if (tid >= 32) { return; }
+            elem = bx * BLOCK + (tid << 3);
+        } else {
+            elem = (bx * BLOCK + tid) << 3;
+        }
+        if (elem >= dimension) { return; }
+        reg u32 vec_idx = elem >> 3;
+        reg u32 src_bytes = dimension << 1;
+        reg u32 dst_bytes = dst_stride << 1;
+        for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+            ureg u64 sp = ptr_add(source_bf16, row, src_bytes);
+            ureg u64 ap = ptr_add(addend_bf16, row, src_bytes);
+            ureg u64 dp = ptr_add(destination_bf16, row, dst_bytes);
+            reg u32x4 sv = ldg128_stream(ptr_add(sp, vec_idx, 16));
+            reg u32x4 av = ldg128_stream(ptr_add(ap, vec_idx, 16));
+            unroll (k = 0..4) {
+                sv[k] = pack_bf16x2(bf16_lo(sv[k]) + bf16_lo(av[k]), bf16_hi(sv[k]) + bf16_hi(av[k]));
+            }
+            stg128(ptr_add(dp, vec_idx, 16), sv);
+        }
+        return;
+    }
+    reg u32 elem = bx * BLOCK + tid;
+    if (elem >= dimension) { return; }
+    reg u32 src_bytes = dimension << 1;
+    reg u32 dst_bytes = dst_stride << 1;
+    for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+        ureg u64 sp = ptr_add(source_bf16, row, src_bytes);
+        ureg u64 ap = ptr_add(addend_bf16, row, src_bytes);
+        ureg u64 dp = ptr_add(destination_bf16, row, dst_bytes);
+        reg f32 sv = bf16_lo(ldg16_stream(ptr_add(sp, elem, 2)));
+        reg f32 av = bf16_lo(ldg16_stream(ptr_add(ap, elem, 2)));
+        stg16(ptr_add(dp, elem, 2), f32_to_bf16(sv + av));
+    }
+}
+
+kernel[BLOCK, 32] lm_copy_rows_strided_pdl_bf16x8(
+    global u32* source_bf16, global u32* destination_bf16,
+    u32 rows, u32 dimension, u64 destination_stride
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 tid = tid_x();
+    reg u32 bx = ctaid_x();
+    reg u32 gy = grid_y();
+    reg u32 dst_stride = destination_stride[0];
+    reg u32 align_bad = (dimension & 7) | (dst_stride & 7) | (source_bf16[0] & 15) | (destination_bf16[0] & 15);
+    if (align_bad == 0) {
+        reg u32 elem = 0;
+        reg u32 gx256 = grid_x() * BLOCK;
+        if (gx256 >= dimension) {
+            if (tid >= 32) { return; }
+            elem = bx * BLOCK + (tid << 3);
+        } else {
+            elem = (bx * BLOCK + tid) << 3;
+        }
+        if (elem >= dimension) { return; }
+        reg u32 vec_idx = elem >> 3;
+        reg u32 src_bytes = dimension << 1;
+        reg u32 dst_bytes = dst_stride << 1;
+        for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+            ureg u64 sp = ptr_add(source_bf16, row, src_bytes);
+            ureg u64 dp = ptr_add(destination_bf16, row, dst_bytes);
+            reg u32x4 v = ldg128_stream(ptr_add(sp, vec_idx, 16));
+            stg128(ptr_add(dp, vec_idx, 16), v);
+        }
+        return;
+    }
+    reg u32 elem = bx * BLOCK + tid;
+    if (elem >= dimension) { return; }
+    reg u32 src_bytes = dimension << 1;
+    reg u32 dst_bytes = dst_stride << 1;
+    for (reg u32 row = ctaid_y(); row < rows; row += gy) {
+        ureg u64 sp = ptr_add(source_bf16, row, src_bytes);
+        ureg u64 dp = ptr_add(destination_bf16, row, dst_bytes);
+        reg u32 v = ldg16_stream(ptr_add(sp, elem, 2));
+        stg16(ptr_add(dp, elem, 2), v);
+    }
+}
+
+kernel[BLOCK, 48] lm_widen_bf16_to_f32_pdl(
+    global u32* source_bf16, global u32* target_f32, u64 elements
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 tid = ctaid_x() * ntid_x() + tid_x();
+    reg u32 stride = grid_x() * ntid_x();
+    reg u32 elems32 = elements[0];
+    reg u32 align_bad = (source_bf16[0] & 15) | (target_f32[0] & 15);
+    if (align_bad == 0) {
+        reg u32 vecs = elems32 >> 3;
+        for (reg u32 v = tid; v < vecs; v += stride) {
+            reg u32x4 sv = ldg128_stream(ptr_add(source_bf16, v, 16));
+            reg u32x4 o0 = pack_u32x4(
+                f32_as_u32(bf16_lo(sv[0])), f32_as_u32(bf16_hi(sv[0])),
+                f32_as_u32(bf16_lo(sv[1])), f32_as_u32(bf16_hi(sv[1]))
+            );
+            reg u32x4 o1 = pack_u32x4(
+                f32_as_u32(bf16_lo(sv[2])), f32_as_u32(bf16_hi(sv[2])),
+                f32_as_u32(bf16_lo(sv[3])), f32_as_u32(bf16_hi(sv[3]))
+            );
+            stg128(ptr_add(target_f32, v << 1, 16), o0);
+            stg128(ptr_add(target_f32, (v << 1) + 1, 16), o1);
+        }
+        reg u32 tail_base = vecs << 3;
+        for (reg u32 i = tail_base + tid; i < elems32; i += stride) {
+            reg f32 f = bf16_lo(ldg16_stream(ptr_add(source_bf16, i, 2)));
+            stg32(ptr_add(target_f32, i, 4), f32_as_u32(f));
+        }
+        return;
+    }
+    for (reg u32 i = tid; i < elems32; i += stride) {
+        reg f32 f = bf16_lo(ldg16_stream(ptr_add(source_bf16, i, 2)));
+        stg32(ptr_add(target_f32, i, 4), f32_as_u32(f));
+    }
+}
