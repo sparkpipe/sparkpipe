@@ -9,7 +9,7 @@
 #define SPARK_STUB_IBV_QPS_MAX 4096u
 #define SPARK_STUB_IBV_COMPLETIONS_MAX 1024u
 #define SPARK_STUB_IBV_LID 0x1234u
-#define SPARK_STUB_MLX5_WQES 512u
+#define SPARK_STUB_MLX5_WQES 1024u
 #define SPARK_STUB_MLX5_CQES 1024u
 #define SPARK_STUB_MLX5_CQS 512u
 
@@ -38,6 +38,8 @@ typedef struct SparkStubIbvQp
     uint8_t *send_queue;
     uint32_t record[2];
     uint64_t doorbell;
+    uint64_t doorbell_alt;
+    uint32_t has_td;
     uint32_t parsed;
 } SparkStubIbvQp;
 
@@ -78,6 +80,9 @@ static uint32_t spark_stub_ibv_empty_gid_queries;
 static uint64_t spark_stub_ibv_gid_queries;
 static SparkStubIbvCq spark_stub_ibv_cqs[SPARK_STUB_MLX5_CQS];
 static uint32_t spark_stub_ibv_cq_count;
+static uint32_t spark_stub_ibv_td_fail;
+static uint32_t spark_stub_ibv_max_inline = 828u;
+static uint64_t spark_stub_ibv_shared_bf[8];
 uint64_t spark_stub_mlx5_wr_id(uint32_t qpn,uint32_t index) __attribute__((weak));
 int spark_stub_mlx5_cq_live(const struct ibv_cq *cq) __attribute__((weak));
 
@@ -184,6 +189,51 @@ int ibv_dealloc_pd(struct ibv_pd *pd)
     return 0;
 }
 
+struct ibv_td *ibv_alloc_td(struct ibv_context *context, struct ibv_td_init_attr *init_attr)
+{
+    struct ibv_td *td;
+    (void)init_attr;
+    if ( spark_stub_ibv_td_fail != 0u )
+    {
+        errno = EOPNOTSUPP;
+        return 0;
+    }
+    td = (struct ibv_td *)calloc(1u,sizeof(*td));
+    if ( td != 0 ) td->context = context;
+    return td;
+}
+
+int ibv_dealloc_td(struct ibv_td *td)
+{
+    free(td);
+    return 0;
+}
+
+struct ibv_pd *ibv_alloc_parent_domain(struct ibv_context *context,
+    struct ibv_parent_domain_init_attr *attr)
+{
+    struct ibv_pd *pd;
+    (void)context;
+    if ( attr == 0 || attr->pd == 0 )
+    {
+        errno = EINVAL;
+        return 0;
+    }
+    pd = (struct ibv_pd *)calloc(1u,sizeof(*pd));
+    if ( pd != 0 ) pd->unused = attr->td != 0 ? 1 : 0;
+    return pd;
+}
+
+void spark_stub_ibv_set_td_fail(uint32_t fail)
+{
+    spark_stub_ibv_td_fail = fail;
+}
+
+void spark_stub_ibv_set_max_inline(uint32_t max_inline)
+{
+    spark_stub_ibv_max_inline = max_inline;
+}
+
 int ibv_query_port(struct ibv_context *context, uint8_t port,
     struct ibv_port_attr *attributes)
 {
@@ -265,12 +315,18 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd,
     struct ibv_qp_init_attr *attributes)
 {
     SparkStubIbvQp *qp;
-    (void)pd;
+    if ( attributes != 0 && attributes->cap.max_inline_data > spark_stub_ibv_max_inline )
+    {
+        errno = EINVAL;
+        return 0;
+    }
     if (spark_stub_ibv_qp_count >= SPARK_STUB_IBV_QPS_MAX)
     {
         errno = ENOMEM;
         return 0;
     }
+    if ( attributes != 0 && attributes->cap.max_inline_data >= 768u && spark_stub_ibv_max_inline >= 828u )
+        attributes->cap.max_inline_data = 828u;
     qp = &spark_stub_ibv_qps[spark_stub_ibv_qp_count];
     qp->pub.qp_num = spark_stub_ibv_qp_count + 1u;
     qp->state = IBV_QPS_RESET;
@@ -279,6 +335,7 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd,
     qp->send_cq = attributes != 0 ? attributes->send_cq : 0;
     qp->send_queue = 0;
     qp->record[0] = qp->record[1] = 0u;
+    qp->has_td = pd != 0 && pd->unused != 0 ? 1u : 0u;
     qp->parsed = 0u;
     spark_stub_ibv_qp_count++;
     return &qp->pub;
@@ -526,8 +583,8 @@ int mlx5dv_init_obj(struct mlx5dv_obj *obj, uint64_t obj_type)
         obj->qp.out->sq.buf = qp->send_queue;
         obj->qp.out->sq.wqe_cnt = SPARK_STUB_MLX5_WQES;
         obj->qp.out->sq.stride = 64u;
-        obj->qp.out->bf.reg = &qp->doorbell;
-        obj->qp.out->bf.size = 0u;
+        obj->qp.out->bf.reg = qp->has_td != 0u ? &qp->doorbell : &spark_stub_ibv_shared_bf[qp->pub.qp_num & 3u];
+        obj->qp.out->bf.size = qp->has_td != 0u ? (uint32_t)sizeof(qp->doorbell) : 0u;
     }
     if ( (obj_type & MLX5DV_OBJ_CQ) != 0u )
     {
@@ -568,6 +625,8 @@ void spark_stub_mlx5_scan(void)
             const struct mlx5_wqe_raddr_seg *remote = (const struct mlx5_wqe_raddr_seg *)(control + 1);
             const struct mlx5_wqe_data_seg *data = (const struct mlx5_wqe_data_seg *)(remote + 1);
             uint32_t count = be32toh(data->byte_count);
+            uint32_t ds = be32toh(control->qpn_ds) & 0x3fu;
+            uint32_t num_bb = ds != 0u ? (ds + 3u) >> 2u : 1u;
             SparkStubIbvPostedWork *work = &spark_stub_ibv_posted_work[spark_stub_ibv_posted_work_count++];
             memset(work,0,sizeof(*work));
             work->qp_number = be32toh(control->qpn_ds) >> 8;
@@ -576,9 +635,32 @@ void spark_stub_mlx5_scan(void)
             work->flags = (control->fm_ce_se & MLX5_WQE_CTRL_CQ_UPDATE) != 0u ? IBV_SEND_SIGNALED : 0u;
             if ( (count & MLX5_INLINE_SEG) != 0u )
             {
+                uint32_t sq_bytes = SPARK_STUB_MLX5_WQES * 64u;
+                uint32_t src_off = index * 64u + 36u;
+                uint32_t copy_len;
                 work->flags |= IBV_SEND_INLINE;
                 work->length = count & ~MLX5_INLINE_SEG;
-                memcpy(&work->inline_word,(const uint8_t *)data + 4u,sizeof(work->inline_word));
+                copy_len = work->length < sizeof(work->inline_word) ? work->length : (uint32_t)sizeof(work->inline_word);
+                if ( src_off + copy_len <= sq_bytes )
+                    memcpy(&work->inline_word,qp->send_queue + src_off,copy_len);
+                else
+                {
+                    uint32_t first = sq_bytes - src_off;
+                    memcpy(&work->inline_word,qp->send_queue + src_off,first);
+                    memcpy((uint8_t *)&work->inline_word + first,qp->send_queue,copy_len - first);
+                }
+                if ( work->length >= 8u )
+                {
+                    uint32_t tail_off = (src_off + work->length - 8u) % sq_bytes;
+                    if ( tail_off + 8u <= sq_bytes )
+                        memcpy(&work->inline_tail,qp->send_queue + tail_off,8u);
+                    else
+                    {
+                        uint32_t first = sq_bytes - tail_off;
+                        memcpy(&work->inline_tail,qp->send_queue + tail_off,first);
+                        memcpy((uint8_t *)&work->inline_tail + first,qp->send_queue,8u - first);
+                    }
+                }
             }
             else
             {
@@ -587,7 +669,7 @@ void spark_stub_mlx5_scan(void)
                 work->source = be64toh(data->addr);
             }
             work->wr_id = spark_stub_mlx5_wr_id != 0 ? spark_stub_mlx5_wr_id(work->qp_number,work->wqe_index) : 0u;
-            qp->parsed++;
+            qp->parsed += num_bb;
             advanced = 1u;
         }
         spark_stub_ibv_post_sends += advanced;
@@ -682,6 +764,8 @@ void spark_stub_ibv_reset(void)
     spark_stub_ibv_fail_post_at = 0u;
     spark_stub_ibv_posted_work_count = 0u;
     spark_stub_ibv_empty_gid_queries = 0u;
+    spark_stub_ibv_td_fail = 0u;
+    spark_stub_ibv_max_inline = 828u;
 }
 
 void spark_stub_ibv_empty_gids(uint32_t queries)
