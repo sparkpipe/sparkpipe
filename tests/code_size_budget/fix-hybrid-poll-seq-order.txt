@@ -1,0 +1,2 @@
++14
+Fix Hybrid MODE 0 trigger[0]/trigger[1] poll ordering race (recheck trigger[0].seq when trigger[1].seq > issued and verify trigger seq stability after reading meta) preventing skipped even triggers and ds mismatches.
