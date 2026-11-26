@@ -1,4 +1,4 @@
-"""Verify 0-bit parity and benchmark shared Blackwell prefill MXFP8 dense GEMM, MXFP4 block-scaled MoE, and strided MXFP4/MXFP8 MoE kernels across frontier hidden shapes and M=64..2048 on an sm_121 device."""
+"""Verify 0-bit parity and benchmark shared Blackwell prefill MXFP4 block-scaled MoE (cell_mx), BF16 TMA GEMM (gemm), and expanded latent prefill attention (attn_expanded_prefill) kernels across frontier shapes and M=64..2048 on an sm_121 device."""
 import os
 import pathlib
 import shutil

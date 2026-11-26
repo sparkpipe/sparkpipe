@@ -28,7 +28,6 @@
 #define LM_CELL_MMA_WIDE_ROW_BYTES 32u
 #define LM_CELL_MMA_WIDE_TILE_BYTES (LM_CELL_MMA_THREADS * LM_CELL_MMA_WIDE_ROW_BYTES)
 #define LM_CELL_MMA_TILE_BYTES(BITS) ((BITS) == 8u ? LM_CELL_MMA_WIDE_TILE_BYTES : LM_CELL_MMA_WEIGHT_TILE_BYTES)
-#define LM_CELL_MMA_SCALE_SLOTS(SCALES) ((SCALES) == 1u ? 2u : LM_CELL_MMA_STAGES)
 
 static_assert(LM_CELL_MMA_ROWS % LM_CELL_MMA_STAGE_ROW_STEP == 0u, "one cooperative pass covers whole rows of the stage");
 static_assert(LM_CELL_MMA_STAGE_PITCH * 2u * 2u == 128u, "two 64-byte rows fill the banks so fragment loads stay conflict free");
@@ -98,12 +97,6 @@ static __device__ __forceinline__ void LmCellMmaCopy(void *destination, const vo
 	asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
 }
 
-static __device__ __forceinline__ void LmCellMmaCopy256(void *destination, const void *source, uint32_t bytes)
-{
-	const uint32_t shared = (uint32_t)__cvta_generic_to_shared(destination);
-	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
-}
-
 static __device__ __forceinline__ void LmCellMmaCopyWord(void *destination, const void *source, uint32_t bytes)
 {
 	const uint32_t shared = (uint32_t)__cvta_generic_to_shared(destination);
@@ -122,7 +115,7 @@ static __device__ __forceinline__ void LmCellMmaWait(void)
 }
 
 template<uint32_t COPIES, uint32_t SCALES, uint32_t BITS, uint32_t CHUNKS>
-static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t *weights, uint32_t *scales, const uint16_t *source[COPIES], const uint16_t *fallback, const LmCellMmaSegments &segments, uint64_t cells_offset, uint64_t tile_stride, uint32_t &seg_idx, uint32_t &seg_t, const uint8_t *&cells_ptr, const uint8_t *&w_codes_ptr, const uint8_t *w_scale_ptr, uint32_t w_valid, uint32_t t, uint32_t row, uint32_t vector, uint32_t weight_vectors)
+static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t *weights, uint32_t *scales, const uint16_t *source[COPIES], const uint16_t *fallback, const LmSkinnyCellArguments &args, const LmCellMmaSegments &segments, const LmCellMmaStride &stride, uint32_t group, uint32_t block_first, uint64_t cells_offset, uint64_t tile_stride, uint32_t &seg_idx, uint32_t &seg_t, const uint8_t *&cells_ptr, uint32_t t, uint32_t row, uint32_t vector, uint32_t weight_vectors)
 {
 	#pragma unroll
 	for ( uint32_t m = 0u; m < COPIES; m++ )
@@ -141,7 +134,7 @@ static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t 
 		const uint8_t *cells = cells_ptr;
 		#pragma unroll
 		for ( uint32_t index = threadIdx.x; index < LM_CELL_MMA_WEIGHT_TILE_VECTORS; index += LM_CELL_MMA_THREADS )
-			LmCellMmaCopy256(weights + index * 16u,index < weight_vectors ? cells + index * 16u : cells,index < weight_vectors ? 16u : 0u);
+			LmCellMmaCopy(weights + index * 16u,index < weight_vectors ? cells + index * 16u : cells,index < weight_vectors ? 16u : 0u);
 		if ( ++seg_t == segments.tiles )
 		{
 			seg_t = 0u;
@@ -153,21 +146,18 @@ static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t 
 	}
 	else
 	{
-		const uint8_t *codes = w_codes_ptr;
+		const uint64_t neuron = (uint64_t)block_first * LM_SKINNY_CELL_NEURONS + threadIdx.x;
+		const uint32_t valid = neuron < args.output_dimension ? 1u : 0u;
+		const uint64_t entry = (uint64_t)group * stride.scale_group_entries + neuron * stride.scale_row_entries + t * SCALES;
+		const uint8_t *codes = valid != 0u ? args.weight + ((uint64_t)group * args.output_dimension + neuron) * stride.payload_pitch + (uint64_t)t * (LM_SKINNY_CELL_TILE_K * BITS / 8u) : args.weight;
 		if constexpr ( BITS == 8u )
 		{
-			LmCellMmaCopy256(weights + threadIdx.x * LM_CELL_MMA_WIDE_ROW_BYTES,codes,w_valid != 0u ? 16u : 0u);
-			LmCellMmaCopy256(weights + threadIdx.x * LM_CELL_MMA_WIDE_ROW_BYTES + 16u,w_valid != 0u ? codes + 16u : codes,w_valid != 0u ? 16u : 0u);
+			LmCellMmaCopy(weights + threadIdx.x * LM_CELL_MMA_WIDE_ROW_BYTES,codes,valid != 0u ? 16u : 0u);
+			LmCellMmaCopy(weights + threadIdx.x * LM_CELL_MMA_WIDE_ROW_BYTES + 16u,valid != 0u ? codes + 16u : codes,valid != 0u ? 16u : 0u);
 		}
 		else
-			LmCellMmaCopy256(weights + (threadIdx.x / LM_SKINNY_CELL_NEURONS) * LM_CELL_MMA_CELL_BYTES + (threadIdx.x % LM_SKINNY_CELL_NEURONS) * LM_SKINNY_CHUNK_BYTES,codes,w_valid != 0u ? 16u : 0u);
-		if ( w_valid != 0u )
-			w_codes_ptr += (LM_SKINNY_CELL_TILE_K * BITS / 8u);
-		if ( ((t * SCALES) & 3u) == 0u )
-		{
-			const uint32_t s_slot = ((t * SCALES) >> 2u) % LM_CELL_MMA_SCALE_SLOTS(SCALES);
-			LmCellMmaCopyWord(scales + s_slot * LM_CELL_MMA_THREADS + threadIdx.x,w_valid != 0u ? w_scale_ptr + (uint64_t)((t * SCALES) & ~3u) : w_scale_ptr,w_valid != 0u ? 4u : 0u);
-		}
+			LmCellMmaCopy(weights + (threadIdx.x / LM_SKINNY_CELL_NEURONS) * LM_CELL_MMA_CELL_BYTES + (threadIdx.x % LM_SKINNY_CELL_NEURONS) * LM_SKINNY_CHUNK_BYTES,codes,valid != 0u ? 16u : 0u);
+		LmCellMmaCopyWord(scales + threadIdx.x,valid != 0u ? stride.scale + (entry & ~(uint64_t)3u) : stride.scale,valid != 0u ? 4u : 0u);
 	}
 }
 
@@ -236,10 +226,6 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 	const uint16_t *source[COPIES];
 	uint32_t m, h, f, j, t, packed, seg_idx = column_segment, seg_t = 0u;
 	const uint8_t *cells_ptr = SCALES == 0u ? segments.weight[column_segment] + cells_offset : (const uint8_t *)0;
-	const uint64_t w_neuron = (uint64_t)block_first * LM_SKINNY_CELL_NEURONS + threadIdx.x;
-	const uint32_t w_valid = SCALES != 0u && w_neuron < args.output_dimension ? 1u : 0u;
-	const uint8_t *w_codes_ptr = w_valid != 0u ? args.weight + ((uint64_t)group * args.output_dimension + w_neuron) * stride.payload_pitch : args.weight;
-	const uint8_t *w_scale_ptr = w_valid != 0u ? stride.scale + (uint64_t)group * stride.scale_group_entries + w_neuron * stride.scale_row_entries : stride.scale;
 	#pragma unroll
 	for ( m = 0u; m < CHUNKS; m++ )
 	{
@@ -258,7 +244,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 	for ( t = 0u; t + 1u < LM_CELL_MMA_STAGES; t++ )
 	{
 		if ( t < args.k_tiles )
-			LmCellMmaStage<COPIES,SCALES,BITS,CHUNKS>(stage + t * STAGE_ELEMENTS,weights + t * TILE_BYTES,scales,source,args.activation,segments,cells_offset,tile_stride,seg_idx,seg_t,cells_ptr,w_codes_ptr,w_scale_ptr,w_valid,t,row,vector,weight_vectors);
+			LmCellMmaStage<COPIES,SCALES,BITS,CHUNKS>(stage + t * STAGE_ELEMENTS,weights + t * TILE_BYTES,scales + t * LM_CELL_MMA_THREADS,source,args.activation,args,segments,stride,group,block_first,cells_offset,tile_stride,seg_idx,seg_t,cells_ptr,t,row,vector,weight_vectors);
 		LmCellMmaCommit();
 	}
 	for ( t = 0u; t < args.k_tiles; t++ )
@@ -268,44 +254,54 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 		LmCellMmaWait<LM_CELL_MMA_STAGES - 2u>();
 		__syncthreads();
 		if ( ahead < args.k_tiles )
-			LmCellMmaStage<COPIES,SCALES,BITS,CHUNKS>(stage + (ahead % LM_CELL_MMA_STAGES) * STAGE_ELEMENTS,weights + (ahead % LM_CELL_MMA_STAGES) * TILE_BYTES,scales,source,args.activation,segments,cells_offset,tile_stride,seg_idx,seg_t,cells_ptr,w_codes_ptr,w_scale_ptr,w_valid,ahead,row,vector,weight_vectors);
+			LmCellMmaStage<COPIES,SCALES,BITS,CHUNKS>(stage + (ahead % LM_CELL_MMA_STAGES) * STAGE_ELEMENTS,weights + (ahead % LM_CELL_MMA_STAGES) * TILE_BYTES,scales + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_THREADS,source,args.activation,args,segments,stride,group,block_first,cells_offset,tile_stride,seg_idx,seg_t,cells_ptr,ahead,row,vector,weight_vectors);
 		LmCellMmaCommit();
 		if ( active != 0u )
 		{
 			uint32_t b[LM_CELL_MMA_FRAGS][4], current[LM_CELL_MMA_FRAGS], scale_bits[LM_CELL_MMA_FRAGS];
-			uint4 a_low[2], a_high[2];
-			const uint16_t *a_row0 = buffer + g * LM_CELL_MMA_STAGE_PITCH + c * 8u;
-			a_low[0] = *(const uint4 *)a_row0;
-			a_high[0] = *(const uint4 *)(a_row0 + 8u * LM_CELL_MMA_STAGE_PITCH);
 			if constexpr ( BITS == 4u )
 				LmCellMmaLoad(weights + slot * LM_CELL_MMA_WEIGHT_TILE_BYTES + warp_offset, lane, g, current, scale_bits);
-			if constexpr ( SCALES != 0u )
+			#pragma unroll
+			for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
 			{
-				const uint32_t s_base = (((t * SCALES) >> 2u) % LM_CELL_MMA_SCALE_SLOTS(SCALES)) * LM_CELL_MMA_THREADS + (threadIdx.x / LM_WARP_LANES) * LM_WARP_LANES + g;
-				const uint32_t s_shift = ((t * SCALES + (SCALES == 2u ? c / 2u : 0u)) & 3u) * 8u;
-				uint2 wide_codes[BITS == 8u ? LM_CELL_MMA_FRAGS : 1u];
-				#pragma unroll
-				for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
+				if constexpr ( SCALES == 0u )
 				{
-					const uint32_t n_off = (f / 2u) * LM_SKINNY_CELL_NEURONS + (f % 2u) * 8u;
-					scale_bits[f] = (scales[s_base + n_off] >> s_shift) & 255u;
-					if constexpr ( BITS == 8u )
-						wide_codes[f] = *(const uint2 *)(weights + slot * TILE_BYTES + ((threadIdx.x / LM_WARP_LANES) * LM_WARP_LANES + n_off + g) * LM_CELL_MMA_WIDE_ROW_BYTES + c * 8u);
+					const uint32_t code = scale_bits[f] & 255u;
+					if ( code >= 2u && code <= 142u )
+					{
+						const uint32_t s16 = (code + 112u) << 7u;
+						const uint32_t s2 = s16 | (s16 << 16u);
+						#pragma unroll
+						for ( j = 0u; j < 4u; j++ )
+							b[f][j] = LmCellMmaE2m1Bf16Fused(current[f],j,s2);
+					}
+					else
+					{
+						const float scale = LmUe8m0ToFloat((uint8_t)code);
+						#pragma unroll
+						for ( j = 0u; j < 4u; j++ )
+						{
+							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
+						}
+					}
 				}
-				#pragma unroll
-				for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
+				else
 				{
-					const uint32_t code = scale_bits[f];
+					const uint32_t neuron = threadIdx.x / LM_WARP_LANES * LM_WARP_LANES + (f / 2u) * LM_SKINNY_CELL_NEURONS + (f % 2u) * 8u + g;
+					const uint32_t word = scales[slot * LM_CELL_MMA_THREADS + neuron];
+					const uint32_t code = (word >> (((t * SCALES + (SCALES == 2u ? c / 2u : 0u)) & 3u) * 8u)) & 255u;
 					if constexpr ( BITS == 8u )
 					{
+						const uint32_t *codes = (const uint32_t *)(weights + slot * TILE_BYTES + neuron * LM_CELL_MMA_WIDE_ROW_BYTES + c * 8u);
 						if ( code >= 16u && code <= 134u )
 						{
 							const uint32_t s16 = (code + 120u) << 7u;
 							const uint32_t s2 = s16 | (s16 << 16u);
-							b[f][0] = LmCellMmaE4m3Bf16Fused(wide_codes[f].x,0x1404u,s2);
-							b[f][1] = LmCellMmaE4m3Bf16Fused(wide_codes[f].x,0x3424u,s2);
-							b[f][2] = LmCellMmaE4m3Bf16Fused(wide_codes[f].y,0x1404u,s2);
-							b[f][3] = LmCellMmaE4m3Bf16Fused(wide_codes[f].y,0x3424u,s2);
+							b[f][0] = LmCellMmaE4m3Bf16Fused(codes[0],0x1404u,s2);
+							b[f][1] = LmCellMmaE4m3Bf16Fused(codes[0],0x3424u,s2);
+							b[f][2] = LmCellMmaE4m3Bf16Fused(codes[1],0x1404u,s2);
+							b[f][3] = LmCellMmaE4m3Bf16Fused(codes[1],0x3424u,s2);
 						}
 						else
 						{
@@ -313,7 +309,7 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 							#pragma unroll
 							for ( j = 0u; j < 4u; j++ )
 							{
-								const uint32_t bytes = (j < 2u ? wide_codes[f].x : wide_codes[f].y) >> ((j % 2u) * 16u);
+								const uint32_t bytes = (j < 2u ? codes[0] : codes[1]) >> ((j % 2u) * 16u);
 								b[f][j] = LmCellMmaPackExact(LmE4m3ToFloat((uint8_t)bytes) * scale,LmE4m3ToFloat((uint8_t)(bytes >> 8u)) * scale);
 							}
 						}
@@ -351,44 +347,14 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 					}
 				}
 			}
-			else
-			{
-				#pragma unroll
-				for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
-				{
-					const uint32_t code = scale_bits[f] & 255u;
-					if ( code >= 2u && code <= 142u )
-					{
-						const uint32_t s16 = (code + 112u) << 7u;
-						const uint32_t s2 = s16 | (s16 << 16u);
-						#pragma unroll
-						for ( j = 0u; j < 4u; j++ )
-							b[f][j] = LmCellMmaE2m1Bf16Fused(current[f],j,s2);
-					}
-					else
-					{
-						const float scale = LmUe8m0ToFloat((uint8_t)code);
-						#pragma unroll
-						for ( j = 0u; j < 4u; j++ )
-						{
-							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
-							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
-						}
-					}
-				}
-			}
 			#pragma unroll
 			for ( m = 0u; m < CHUNKS; m++ )
 			{
-				const uint32_t cur = m & 1u, nxt = cur ^ 1u;
-				if ( m + 1u < CHUNKS )
-				{
-					const uint16_t *a_next = a_row0 + (m + 1u) * 16u * LM_CELL_MMA_STAGE_PITCH;
-					a_low[nxt] = *(const uint4 *)a_next;
-					a_high[nxt] = *(const uint4 *)(a_next + 8u * LM_CELL_MMA_STAGE_PITCH);
-				}
-				const uint32_t a0[4] = {a_low[cur].x,a_high[cur].x,a_low[cur].y,a_high[cur].y};
-				const uint32_t a1[4] = {a_low[cur].z,a_high[cur].z,a_low[cur].w,a_high[cur].w};
+				const uint16_t *a_row = buffer + (m * 16u + g) * LM_CELL_MMA_STAGE_PITCH + c * 8u;
+				const uint4 low = *(const uint4 *)a_row;
+				const uint4 high = *(const uint4 *)(a_row + 8u * LM_CELL_MMA_STAGE_PITCH);
+				const uint32_t a0[4] = {low.x,high.x,low.y,high.y};
+				const uint32_t a1[4] = {low.z,high.z,low.w,high.w};
 				#pragma unroll
 				for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
 				{
@@ -428,7 +394,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	constexpr uint32_t STAGE_ELEMENTS = MAX_ROWS * LM_CELL_MMA_STAGE_PITCH;
 	__shared__ __align__(16) uint16_t stage[LM_CELL_MMA_STAGES * STAGE_ELEMENTS];
 	__shared__ __align__(16) uint8_t weights[LM_CELL_MMA_STAGES * LM_CELL_MMA_TILE_BYTES(BITS)];
-	__shared__ __align__(16) uint32_t scales[SCALES != 0u ? LM_CELL_MMA_SCALE_SLOTS(SCALES) * LM_CELL_MMA_THREADS : 1u];
+	__shared__ __align__(16) uint32_t scales[SCALES != 0u ? LM_CELL_MMA_STAGES * LM_CELL_MMA_THREADS : 1u];
 	const uint32_t pairs = args.cells / LM_CELL_MMA_CELLS;
 	const uint32_t blocks = (pairs + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS;
 	const uint32_t slots = gridDim.x / (args.groups * blocks);
@@ -532,26 +498,17 @@ static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegme
 	const uint64_t mean_rows = ((uint64_t)args.packed_rows + args.groups - 1u) / args.groups;
 	const uint64_t col_blocks = (args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS;
 	args.group_bytes = segments.group_bytes;
-	if ( mean_rows <= 26u )
-	{
-		slots = args.k_tiles >= LM_CELL_MMA_SLOT_MIN_K_TILES && col_blocks <= 4u && args.packed_rows >= 8192u ? 2u : 1u;
-		blocks = (uint64_t)args.groups * slots * col_blocks;
-		LM_LAUNCH_DEPENDENT((LmCellMmaKernel<SCALES,BITS,2u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
-		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	}
-	if ( mean_rows <= 54u )
-	{
-		slots = args.k_tiles >= LM_CELL_MMA_SLOT_MIN_K_TILES && col_blocks <= 8u && mean_rows >= 40u ? 2u : 1u;
-		blocks = (uint64_t)args.groups * slots * col_blocks;
-		LM_LAUNCH_DEPENDENT((LmCellMmaKernel<SCALES,BITS,4u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
-		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	}
 	if constexpr ( SCALES == 0u && BITS == 4u )
 	{
 		if ( args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES && mean_rows <= 96u )
 		{
 			blocks = (uint64_t)args.groups * col_blocks;
-			LM_LAUNCH_DEPENDENT((LmCellMmaKernel<0u,4u,6u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
+			if ( mean_rows <= 26u )
+				LM_LAUNCH_DEPENDENT((LmCellMmaKernel<0u,4u,2u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
+			else if ( mean_rows <= 54u )
+				LM_LAUNCH_DEPENDENT((LmCellMmaKernel<0u,4u,4u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
+			else
+				LM_LAUNCH_DEPENDENT((LmCellMmaKernel<0u,4u,6u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
 			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 		}
 	}

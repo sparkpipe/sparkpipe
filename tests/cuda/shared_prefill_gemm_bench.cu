@@ -5,13 +5,15 @@
 #include <string.h>
 #include <vector>
 
+#include "runtime/gemm.cuh"
 #include "inference/kernels/cell_mx.cuh"
-#include "inference/kernels/mx_gemm.cuh"
+#include "inference/kernels/attn_expanded_prefill.cuh"
 
 #define BENCH_WARMUP 5u
 #define BENCH_ITERS 20u
 
 #define CHECK_CUDA(call) do { cudaError_t err_ = (call); if ( err_ != cudaSuccess ) { printf("FAIL cuda %s: %s\n", #call, cudaGetErrorString(err_)); exit(1); } } while (0)
+#define CHECK_GPU(call) do { SparkGpuError err_ = (call); if ( err_ != SPARK_GPU_SUCCESS ) { printf("FAIL gpu %s: %d\n", #call, (int)err_); exit(1); } } while (0)
 #define CHECK_OK(call) do { int32_t st_ = (call); if ( st_ != LM_LAUNCH_OK ) { printf("FAIL launch %s: %d\n", #call, st_); exit(1); } } while (0)
 
 static int g_failures;
@@ -42,19 +44,12 @@ static __global__ void FillScaleKernel(uint8_t *dst, uint64_t count, uint64_t se
 		dst[idx] = (uint8_t)(base_exp + (uint32_t)(Hash64(idx + seed) % 9u));
 }
 
-static __global__ void FillBytesKernel(uint8_t *dst, uint64_t count, uint64_t seed)
-{
-	const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( idx < count )
-		dst[idx] = (uint8_t)Hash64(idx * 5u + seed);
-}
-
-static __global__ void FillBf16Kernel(uint16_t *dst, uint64_t count, uint64_t seed)
+static __global__ void FillBf16Kernel(uint16_t *dst, uint64_t count, uint64_t seed, float scale)
 {
 	const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	if ( idx < count )
 	{
-		const float v = (float)((int64_t)(Hash64(idx + seed) % 2001u) - 1000) * 0.0025f;
+		const float v = (float)((int64_t)(Hash64(idx + seed) % 2001u) - 1000) * scale;
 		dst[idx] = LmFloatToBf16(v);
 	}
 }
@@ -73,20 +68,38 @@ static __global__ void FillCellWeightKernel(uint8_t *dst, uint64_t cells_total, 
 	}
 }
 
-static __global__ void CountDiffKernel(const uint16_t *a, const uint16_t *b, uint64_t count, uint64_t *diffs)
+static __global__ void CountDiffU16Kernel(const uint16_t *a, const uint16_t *b, uint64_t count, uint64_t *diffs)
 {
 	const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
 	if ( idx < count && a[idx] != b[idx] )
 		atomicAdd((unsigned long long *)diffs, 1ull);
 }
 
-static uint64_t DiffCount(const uint16_t *a, const uint16_t *b, uint64_t count, cudaStream_t stream)
+static __global__ void CountDiffF32Kernel(const float *a, const float *b, uint64_t count, uint64_t *diffs)
+{
+	const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	if ( idx < count && __float_as_uint(a[idx]) != __float_as_uint(b[idx]) )
+		atomicAdd((unsigned long long *)diffs, 1ull);
+}
+
+static uint64_t DiffCountU16(const uint16_t *a, const uint16_t *b, uint64_t count, cudaStream_t stream)
 {
 	uint64_t *d_diffs = 0, host_diffs = 0u;
 	CHECK_CUDA(cudaMalloc(&d_diffs, sizeof(uint64_t)));
 	CHECK_CUDA(cudaMemsetAsync(d_diffs, 0, sizeof(uint64_t), stream));
-	const uint32_t grid = (uint32_t)((count + 255u) / 256u);
-	CountDiffKernel<<<grid, 256u, 0u, stream>>>(a, b, count, d_diffs);
+	CountDiffU16Kernel<<<(uint32_t)((count + 255u) / 256u), 256u, 0u, stream>>>(a, b, count, d_diffs);
+	CHECK_CUDA(cudaMemcpyAsync(&host_diffs, d_diffs, sizeof(uint64_t), cudaMemcpyDeviceToHost, stream));
+	CHECK_CUDA(cudaStreamSynchronize(stream));
+	CHECK_CUDA(cudaFree(d_diffs));
+	return host_diffs;
+}
+
+static uint64_t DiffCountF32(const float *a, const float *b, uint64_t count, cudaStream_t stream)
+{
+	uint64_t *d_diffs = 0, host_diffs = 0u;
+	CHECK_CUDA(cudaMalloc(&d_diffs, sizeof(uint64_t)));
+	CHECK_CUDA(cudaMemsetAsync(d_diffs, 0, sizeof(uint64_t), stream));
+	CountDiffF32Kernel<<<(uint32_t)((count + 255u) / 256u), 256u, 0u, stream>>>(a, b, count, d_diffs);
 	CHECK_CUDA(cudaMemcpyAsync(&host_diffs, d_diffs, sizeof(uint64_t), cudaMemcpyDeviceToHost, stream));
 	CHECK_CUDA(cudaStreamSynchronize(stream));
 	CHECK_CUDA(cudaFree(d_diffs));
@@ -156,6 +169,32 @@ static __global__ void PublisherFp4RefKernel(const uint8_t *codes, const uint8_t
 	}
 }
 
+static __global__ void Bf16MmaRefKernel(const uint16_t *act, const uint16_t *weight, const uint32_t *offset, uint32_t input, uint32_t output, uint16_t *out)
+{
+	const uint32_t group = blockIdx.z, lane = threadIdx.x, g = lane / 4u, t = lane % 4u;
+	const uint32_t first = offset[group] + blockIdx.y * 16u, end = offset[group + 1u], column = blockIdx.x * 8u;
+	float acc[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	if ( first >= end || column >= output )
+		return;
+	const uint32_t r0 = first + g, r1 = r0 + 8u;
+	const uint16_t *w_row = weight + ((uint64_t)group * output + column + g) * input;
+	for ( uint32_t k = 0u; k < input; k += 16u )
+	{
+		uint32_t a[4], b[2];
+		a[0] = r0 < end ? *(const uint32_t *)(act + (uint64_t)r0 * input + k + 2u * t) : 0u;
+		a[1] = r1 < end ? *(const uint32_t *)(act + (uint64_t)r1 * input + k + 2u * t) : 0u;
+		a[2] = r0 < end ? *(const uint32_t *)(act + (uint64_t)r0 * input + k + 8u + 2u * t) : 0u;
+		a[3] = r1 < end ? *(const uint32_t *)(act + (uint64_t)r1 * input + k + 8u + 2u * t) : 0u;
+		b[0] = *(const uint32_t *)(w_row + k + 2u * t);
+		b[1] = *(const uint32_t *)(w_row + k + 8u + 2u * t);
+		LmMmaBf16(acc, a, b);
+	}
+	if ( r0 < end )
+		*(uint32_t *)(out + (uint64_t)r0 * output + column + 2u * t) = LmPackBf16Pair(acc[0], acc[1]);
+	if ( r1 < end )
+		*(uint32_t *)(out + (uint64_t)r1 * output + column + 2u * t) = LmPackBf16Pair(acc[2], acc[3]);
+}
+
 static void BuildRoutes(uint32_t groups, uint32_t tokens, uint32_t top_k, bool skewed, std::vector<uint32_t> &offset, std::vector<uint32_t> &source)
 {
 	const uint32_t packed = tokens * top_k;
@@ -183,109 +222,6 @@ static void BuildRoutes(uint32_t groups, uint32_t tokens, uint32_t top_k, bool s
 			source[at++] = tok;
 		offset[g + 1u] = at;
 	}
-}
-
-static void VerifyMxGemmExact(uint32_t rows, uint32_t input, uint32_t output, cudaStream_t stream)
-{
-	const uint64_t a_n = (uint64_t)rows * input, w_n = (uint64_t)output * input, o_n = (uint64_t)rows * output;
-	uint8_t *d_a = 0, *d_as = 0, *d_w = 0, *d_ws = 0;
-	uint16_t *d_ref = 0, *d_out = 0;
-	CHECK_CUDA(cudaMalloc(&d_a, a_n));
-	CHECK_CUDA(cudaMalloc(&d_as, a_n / 32u));
-	CHECK_CUDA(cudaMalloc(&d_w, w_n));
-	CHECK_CUDA(cudaMalloc(&d_ws, w_n / 32u));
-	CHECK_CUDA(cudaMalloc(&d_ref, o_n * 2u));
-	CHECK_CUDA(cudaMalloc(&d_out, o_n * 2u));
-	FillFp8Kernel<<<(uint32_t)((a_n + 255u) / 256u), 256u, 0u, stream>>>(d_a, a_n, 11u + rows);
-	FillScaleKernel<<<(uint32_t)((a_n / 32u + 255u) / 256u), 256u, 0u, stream>>>(d_as, a_n / 32u, 23u + rows, 118u);
-	FillFp8Kernel<<<(uint32_t)((w_n + 255u) / 256u), 256u, 0u, stream>>>(d_w, w_n, 37u + output);
-	FillScaleKernel<<<(uint32_t)((w_n / 32u + 255u) / 256u), 256u, 0u, stream>>>(d_ws, w_n / 32u, 53u + output, 116u);
-	LmMxGemmArguments args;
-	memset(&args, 0, sizeof(args));
-	args.activation = d_a;
-	args.activation_scale = d_as;
-	args.weight = d_w;
-	args.weight_scale = d_ws;
-	args.output_bf16 = d_ref;
-	args.rows = rows;
-	args.input_dimension = input;
-	args.output_dimension = output;
-	args.output_row_stride = output;
-	CHECK_OK((LmMxGemmLaunchTile<128u, 128u, 2u>(&args, g_sms, stream)));
-	uint64_t diff_disp = 0u, diff_64x128 = 0u, diff_64x64 = 0u, diff_32x128 = 0u;
-	CHECK_CUDA(cudaMemsetAsync(d_out, 0xff, o_n * 2u, stream));
-	CHECK_OK(LmMxGemmDense(d_a, d_as, d_w, d_ws, d_out, rows, input, output, 0u, 0u, g_sms, stream));
-	diff_disp = DiffCount(d_ref, d_out, o_n, stream);
-	args.output_bf16 = d_out;
-	CHECK_CUDA(cudaMemsetAsync(d_out, 0xff, o_n * 2u, stream));
-	CHECK_OK((LmMxGemmLaunchTile<64u, 128u, 2u, 4u, 2u>(&args, g_sms, stream)));
-	diff_64x128 = DiffCount(d_ref, d_out, o_n, stream);
-	CHECK_CUDA(cudaMemsetAsync(d_out, 0xff, o_n * 2u, stream));
-	CHECK_OK((LmMxGemmLaunchTile<64u, 64u, 2u, 4u, 2u>(&args, g_sms, stream)));
-	diff_64x64 = DiffCount(d_ref, d_out, o_n, stream);
-	CHECK_CUDA(cudaMemsetAsync(d_out, 0xff, o_n * 2u, stream));
-	CHECK_OK((LmMxGemmLaunchTile<32u, 128u, 2u>(&args, g_sms, stream)));
-	diff_32x128 = DiffCount(d_ref, d_out, o_n, stream);
-	const uint64_t total = diff_disp + diff_64x128 + diff_64x64 + diff_32x128;
-	if ( total != 0u )
-		g_failures++;
-	printf("%s mx_gemm_exact M=%u K=%u N=%u: diff disp=%llu 64x128=%llu 64x64=%llu 32x128=%llu\n",
-		total == 0u ? "PASS" : "FAIL", rows, input, output,
-		(unsigned long long)diff_disp, (unsigned long long)diff_64x128, (unsigned long long)diff_64x64, (unsigned long long)diff_32x128);
-	CHECK_CUDA(cudaFree(d_a));
-	CHECK_CUDA(cudaFree(d_as));
-	CHECK_CUDA(cudaFree(d_w));
-	CHECK_CUDA(cudaFree(d_ws));
-	CHECK_CUDA(cudaFree(d_ref));
-	CHECK_CUDA(cudaFree(d_out));
-}
-
-static void BenchMxGemmShapes(cudaStream_t stream)
-{
-	static const uint32_t dims[] = {7168u, 6144u, 5120u, 4096u};
-	static const uint32_t ms[] = {64u, 256u, 512u, 1024u, 2048u};
-	cudaEvent_t ev0, ev1;
-	CHECK_CUDA(cudaEventCreate(&ev0));
-	CHECK_CUDA(cudaEventCreate(&ev1));
-	for ( uint32_t di = 0u; di < 4u; di++ )
-	{
-		const uint32_t h = dims[di];
-		const uint64_t max_m = 2048u, a_n = max_m * h, w_n = (uint64_t)h * h, o_n = max_m * h;
-		uint8_t *d_a = 0, *d_as = 0, *d_w = 0, *d_ws = 0;
-		uint16_t *d_out = 0;
-		CHECK_CUDA(cudaMalloc(&d_a, a_n));
-		CHECK_CUDA(cudaMalloc(&d_as, a_n / 32u));
-		CHECK_CUDA(cudaMalloc(&d_w, w_n));
-		CHECK_CUDA(cudaMalloc(&d_ws, w_n / 32u));
-		CHECK_CUDA(cudaMalloc(&d_out, o_n * 2u));
-		FillFp8Kernel<<<(uint32_t)((a_n + 255u) / 256u), 256u, 0u, stream>>>(d_a, a_n, 101u + h);
-		FillScaleKernel<<<(uint32_t)((a_n / 32u + 255u) / 256u), 256u, 0u, stream>>>(d_as, a_n / 32u, 202u + h, 120u);
-		FillFp8Kernel<<<(uint32_t)((w_n + 255u) / 256u), 256u, 0u, stream>>>(d_w, w_n, 303u + h);
-		FillScaleKernel<<<(uint32_t)((w_n / 32u + 255u) / 256u), 256u, 0u, stream>>>(d_ws, w_n / 32u, 404u + h, 118u);
-		for ( uint32_t mi = 0u; mi < 5u; mi++ )
-		{
-			const uint32_t m = ms[mi];
-			for ( uint32_t w = 0u; w < BENCH_WARMUP; w++ )
-				CHECK_OK(LmMxGemmDense(d_a, d_as, d_w, d_ws, d_out, m, h, h, 0u, 0u, g_sms, stream));
-			CHECK_CUDA(cudaEventRecord(ev0, stream));
-			for ( uint32_t it = 0u; it < BENCH_ITERS; it++ )
-				CHECK_OK(LmMxGemmDense(d_a, d_as, d_w, d_ws, d_out, m, h, h, 0u, 0u, g_sms, stream));
-			CHECK_CUDA(cudaEventRecord(ev1, stream));
-			CHECK_CUDA(cudaEventSynchronize(ev1));
-			float total_ms = 0.0f;
-			CHECK_CUDA(cudaEventElapsedTime(&total_ms, ev0, ev1));
-			const double ms_each = (double)total_ms / (double)BENCH_ITERS;
-			const double tflops = (2.0 * (double)m * (double)h * (double)h) / (ms_each * 1.0e9);
-			printf("BENCH mx_gemm H=%u M=%u: %.3f ms (%.1f TFLOPS)\n", h, m, ms_each, tflops);
-		}
-		CHECK_CUDA(cudaFree(d_a));
-		CHECK_CUDA(cudaFree(d_as));
-		CHECK_CUDA(cudaFree(d_w));
-		CHECK_CUDA(cudaFree(d_ws));
-		CHECK_CUDA(cudaFree(d_out));
-	}
-	CHECK_CUDA(cudaEventDestroy(ev0));
-	CHECK_CUDA(cudaEventDestroy(ev1));
 }
 
 static void VerifyCellMxExact(uint32_t groups, uint32_t tokens, uint32_t top_k, uint32_t input, uint32_t output, bool skewed, cudaStream_t stream)
@@ -348,7 +284,7 @@ static void VerifyCellMxExact(uint32_t groups, uint32_t tokens, uint32_t top_k, 
 	CHECK_OK(LmCellMxExperts(d_w, d_c, d_cs, d_mx, d_off, d_src, groups, packed, 0u, input, output, stream));
 	PublisherFp4RefKernel<<<dim3(output / 8u, (longest + 15u) / 16u, groups), 32u, 0u, stream>>>(
 		d_c, d_cs, d_wc, d_ws, d_off, d_src, input, output, d_ref);
-	const uint64_t diff = DiffCount(d_ref, d_mx, (uint64_t)packed * output, stream);
+	const uint64_t diff = DiffCountU16(d_ref, d_mx, (uint64_t)packed * output, stream);
 	if ( diff != 0u )
 		g_failures++;
 	printf("%s cell_mx_exact groups=%u M=%u routes=%u %s K=%u N=%u: diff=%llu\n",
@@ -366,7 +302,7 @@ static void VerifyCellMxExact(uint32_t groups, uint32_t tokens, uint32_t top_k, 
 
 static void BenchCellMxShapes(cudaStream_t stream)
 {
-	static const uint32_t ms[] = {64u, 256u, 512u, 1024u, 2048u};
+	static const uint32_t ms[] = {64u, 128u, 256u, 512u, 1024u, 2048u};
 	const uint32_t groups = 64u, top_k = 8u, input = 5120u, output = 2048u;
 	const uint64_t cells_total = (uint64_t)groups * (input / 32u) * (output / 16u);
 	const uint32_t max_m = 2048u, max_packed = max_m * top_k;
@@ -386,7 +322,7 @@ static void BenchCellMxShapes(cudaStream_t stream)
 	FillFp8Kernel<<<(uint32_t)(((uint64_t)max_m * input + 255u) / 256u), 256u, 0u, stream>>>(d_c, (uint64_t)max_m * input, 919u);
 	FillScaleKernel<<<(uint32_t)(((uint64_t)max_m * (input / 32u) + 255u) / 256u), 256u, 0u, stream>>>(d_cs, (uint64_t)max_m * (input / 32u), 929u, 118u);
 	for ( uint32_t skewed = 0u; skewed < 2u; skewed++ )
-		for ( uint32_t mi = 0u; mi < 5u; mi++ )
+		for ( uint32_t mi = 0u; mi < 6u; mi++ )
 		{
 			const uint32_t m = ms[mi], packed = m * top_k;
 			std::vector<uint32_t> offset, source;
@@ -417,120 +353,267 @@ static void BenchCellMxShapes(cudaStream_t stream)
 	CHECK_CUDA(cudaEventDestroy(ev1));
 }
 
-template<class Format>
-static void VerifyAndBenchCellMma(const char *name, cudaStream_t stream)
+static void VerifyBf16GemmExact(uint32_t groups, uint32_t rows, uint32_t input, uint32_t output, cudaStream_t stream)
 {
-	constexpr uint32_t BITS = LmCellMmaFormat<Format>::kBits;
-	constexpr uint32_t SCALES = LmCellMmaFormat<Format>::kScales;
-	static const uint32_t exact_tokens[] = {32u, 80u, 160u};
-	const uint32_t eq_groups = 16u, top_k = 8u, eq_k = 1024u, eq_n = 512u;
-	const uint64_t eq_w_bytes = (uint64_t)eq_groups * eq_n * eq_k * BITS / 8u;
-	const uint64_t eq_s_bytes = (uint64_t)eq_groups * eq_n * (eq_k / Format::kScaleGroup);
-	uint8_t *d_w = 0, *d_s = 0;
-	CHECK_CUDA(cudaMalloc(&d_w, eq_w_bytes));
-	CHECK_CUDA(cudaMalloc(&d_s, eq_s_bytes));
-	if constexpr ( BITS == 8u )
-		FillFp8Kernel<<<(uint32_t)((eq_w_bytes + 255u) / 256u), 256u, 0u, stream>>>(d_w, eq_w_bytes, 1103u);
-	else
-		FillBytesKernel<<<(uint32_t)((eq_w_bytes + 255u) / 256u), 256u, 0u, stream>>>(d_w, eq_w_bytes, 1103u);
-	FillScaleKernel<<<(uint32_t)((eq_s_bytes + 255u) / 256u), 256u, 0u, stream>>>(d_s, eq_s_bytes, 1117u, 118u);
-	const LmScaleTensor scale = LmScaleTensorBuild(d_s, LM_SCALE_ENCODING_UE8M0, eq_groups, eq_n, eq_k, 1u, Format::kScaleGroup);
-	for ( uint32_t ti = 0u; ti < 3u; ti++ )
+	std::vector<uint32_t> offset(groups + 1u, 0u);
+	uint32_t longest = 0u;
+	for ( uint32_t g = 0u; g < groups; g++ )
 	{
-		const uint32_t tokens = exact_tokens[ti], packed = tokens * top_k;
-		std::vector<uint32_t> offset, source;
-		BuildRoutes(eq_groups, tokens, top_k, true, offset, source);
-		uint32_t *d_off = 0, *d_src = 0;
-		uint16_t *d_act = 0, *d_out = 0, *d_ref = 0;
-		CHECK_CUDA(cudaMalloc(&d_off, offset.size() * 4u));
-		CHECK_CUDA(cudaMalloc(&d_src, source.size() * 4u));
-		CHECK_CUDA(cudaMalloc(&d_act, (uint64_t)tokens * eq_k * 2u));
-		CHECK_CUDA(cudaMalloc(&d_out, (uint64_t)packed * eq_n * 2u));
-		CHECK_CUDA(cudaMalloc(&d_ref, (uint64_t)packed * eq_n * 2u));
-		CHECK_CUDA(cudaMemcpyAsync(d_off, offset.data(), offset.size() * 4u, cudaMemcpyHostToDevice, stream));
-		CHECK_CUDA(cudaMemcpyAsync(d_src, source.data(), source.size() * 4u, cudaMemcpyHostToDevice, stream));
-		FillBf16Kernel<<<(uint32_t)(((uint64_t)tokens * eq_k + 255u) / 256u), 256u, 0u, stream>>>(d_act, (uint64_t)tokens * eq_k, 1201u + tokens);
-		CHECK_CUDA(cudaMemsetAsync(d_out, 0xff, (uint64_t)packed * eq_n * 2u, stream));
-		CHECK_CUDA(cudaMemsetAsync(d_ref, 0xff, (uint64_t)packed * eq_n * 2u, stream));
-		CHECK_OK(LmCellMmaStridedExperts<Format>(d_w, scale, d_act, d_out, d_off, d_src, eq_groups, packed, 0u, eq_k, eq_n, stream));
-		LmSkinnyCellArguments args;
-		LmCellMmaSegments segments;
-		LmCellMmaStride stride;
-		const void *wptr = d_w;
-		CHECK_OK(LmCellMmaLaunchSegments(args, segments, &wptr, 1u, d_act, d_ref, d_off, d_src, eq_groups, packed, 0u, eq_k, eq_n, LM_SKINNY_CELL_TILE_K));
-		stride.scale = (const uint8_t *)scale.data;
-		stride.global = (const float *)scale.global_data;
-		stride.payload_pitch = (uint64_t)eq_k * BITS / 8u;
-		stride.scale_group_entries = scale.group_stride_entries;
-		stride.scale_row_entries = scale.row_group_stride_entries;
-		const uint32_t col_blocks = (args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS;
-		LmCellMmaKernel<SCALES, BITS, LM_CELL_MMA_CHUNKS><<<eq_groups * col_blocks, LM_CELL_MMA_THREADS, 0u, stream>>>(args, segments, stride);
-		const uint64_t diff = DiffCount(d_ref, d_out, (uint64_t)packed * eq_n, stream);
-		if ( diff != 0u )
-			g_failures++;
-		printf("%s cell_mma_exact %s G=%u M=%u mean=%u: diff=%llu\n",
-			diff == 0u ? "PASS" : "FAIL", name, eq_groups, tokens, packed / eq_groups, (unsigned long long)diff);
-		CHECK_CUDA(cudaFree(d_off));
-		CHECK_CUDA(cudaFree(d_src));
-		CHECK_CUDA(cudaFree(d_act));
-		CHECK_CUDA(cudaFree(d_out));
-		CHECK_CUDA(cudaFree(d_ref));
+		const uint32_t span = groups == 1u ? rows : (rows / groups + (g < (rows % groups) ? 1u : 0u));
+		offset[g + 1u] = offset[g] + span;
+		if ( span > longest )
+			longest = span;
 	}
+	const uint64_t a_n = (uint64_t)rows * input, w_n = (uint64_t)groups * output * input, o_n = (uint64_t)rows * output;
+	uint16_t *d_a = 0, *d_w = 0, *d_out = 0, *d_ref = 0;
+	uint32_t *d_off = 0, *d_prefix = 0;
+	CHECK_CUDA(cudaMalloc(&d_a, a_n * 2u));
+	CHECK_CUDA(cudaMalloc(&d_w, w_n * 2u));
+	CHECK_CUDA(cudaMalloc(&d_out, o_n * 2u));
+	CHECK_CUDA(cudaMalloc(&d_ref, o_n * 2u));
+	CHECK_CUDA(cudaMalloc(&d_off, (groups + 1u) * 4u));
+	CHECK_CUDA(cudaMalloc(&d_prefix, (groups + 1u) * 4u));
+	FillBf16Kernel<<<(uint32_t)((a_n + 255u) / 256u), 256u, 0u, stream>>>(d_a, a_n, 1511u + rows, 0.002f);
+	FillBf16Kernel<<<(uint32_t)((w_n + 255u) / 256u), 256u, 0u, stream>>>(d_w, w_n, 1523u + output, 0.001f);
+	CHECK_CUDA(cudaMemcpyAsync(d_off, offset.data(), (groups + 1u) * 4u, cudaMemcpyHostToDevice, stream));
+	CHECK_CUDA(cudaMemsetAsync(d_prefix, 0, (groups + 1u) * 4u, stream));
+	CHECK_CUDA(cudaMemsetAsync(d_out, 0xff, o_n * 2u, stream));
+	CHECK_CUDA(cudaMemsetAsync(d_ref, 0xff, o_n * 2u, stream));
+	LmGemmArguments gemm;
+	memset(&gemm, 0, sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
+	gemm.prefix_built = groups == 1u ? 1u : 0u;
+	gemm.group_row_offset = d_off;
+	gemm.group_tile_prefix = d_prefix;
+	gemm.output_bf16 = d_out;
+	gemm.output_row_stride = output;
+	CHECK_OK((LmGemmLaunch<LmBf16Format, 128u, LmBf16Format::kTileK, 2u, 8u>(
+		&gemm, d_a, d_w, rows, rows, 1u, groups, input, output, g_sms, groups > 1u, stream)));
+	Bf16MmaRefKernel<<<dim3(output / 8u, (longest + 15u) / 16u, groups), 32u, 0u, stream>>>(d_a, d_w, d_off, input, output, d_ref);
+	const uint64_t diff = DiffCountU16(d_ref, d_out, o_n, stream);
+	if ( diff != 0u )
+		g_failures++;
+	printf("%s bf16_gemm_exact G=%u M=%u K=%u N=%u: diff=%llu\n",
+		diff == 0u ? "PASS" : "FAIL", groups, rows, input, output, (unsigned long long)diff);
+	CHECK_CUDA(cudaFree(d_a));
 	CHECK_CUDA(cudaFree(d_w));
-	CHECK_CUDA(cudaFree(d_s));
+	CHECK_CUDA(cudaFree(d_out));
+	CHECK_CUDA(cudaFree(d_ref));
+	CHECK_CUDA(cudaFree(d_off));
+	CHECK_CUDA(cudaFree(d_prefix));
+}
 
-	static const uint32_t bench_ms[] = {64u, 256u, 512u, 1024u};
-	const uint32_t bg = 64u, bk = 4096u, bn = 2048u, max_m = 1024u, max_packed = max_m * top_k;
-	const uint64_t bw_bytes = (uint64_t)bg * bn * bk * BITS / 8u;
-	const uint64_t bs_bytes = (uint64_t)bg * bn * (bk / Format::kScaleGroup);
-	uint8_t *db_w = 0, *db_s = 0;
-	uint32_t *db_off = 0, *db_src = 0;
-	uint16_t *db_act = 0, *db_out = 0;
+static void BenchBf16GemmShapes(cudaStream_t stream)
+{
+	static const uint32_t dims[] = {4096u, 5120u, 6144u};
+	static const uint32_t ms[] = {64u, 256u, 512u, 1024u, 2048u};
 	cudaEvent_t ev0, ev1;
 	CHECK_CUDA(cudaEventCreate(&ev0));
 	CHECK_CUDA(cudaEventCreate(&ev1));
-	CHECK_CUDA(cudaMalloc(&db_w, bw_bytes));
-	CHECK_CUDA(cudaMalloc(&db_s, bs_bytes));
-	CHECK_CUDA(cudaMalloc(&db_off, (bg + 1u) * 4u));
-	CHECK_CUDA(cudaMalloc(&db_src, (uint64_t)max_packed * 4u));
-	CHECK_CUDA(cudaMalloc(&db_act, (uint64_t)max_m * bk * 2u));
-	CHECK_CUDA(cudaMalloc(&db_out, (uint64_t)max_packed * bn * 2u));
-	if constexpr ( BITS == 8u )
-		FillFp8Kernel<<<(uint32_t)((bw_bytes + 255u) / 256u), 256u, 0u, stream>>>(db_w, bw_bytes, 1409u);
-	else
-		FillBytesKernel<<<(uint32_t)((bw_bytes + 255u) / 256u), 256u, 0u, stream>>>(db_w, bw_bytes, 1409u);
-	FillScaleKernel<<<(uint32_t)((bs_bytes + 255u) / 256u), 256u, 0u, stream>>>(db_s, bs_bytes, 1423u, 118u);
-	FillBf16Kernel<<<(uint32_t)(((uint64_t)max_m * bk + 255u) / 256u), 256u, 0u, stream>>>(db_act, (uint64_t)max_m * bk, 1433u);
-	const LmScaleTensor bscale = LmScaleTensorBuild(db_s, LM_SCALE_ENCODING_UE8M0, bg, bn, bk, 1u, Format::kScaleGroup);
-	for ( uint32_t mi = 0u; mi < 4u; mi++ )
+	for ( uint32_t di = 0u; di < 3u; di++ )
 	{
-		const uint32_t m = bench_ms[mi], packed = m * top_k;
-		std::vector<uint32_t> offset, source;
-		BuildRoutes(bg, m, top_k, false, offset, source);
-		CHECK_CUDA(cudaMemcpyAsync(db_off, offset.data(), offset.size() * 4u, cudaMemcpyHostToDevice, stream));
-		CHECK_CUDA(cudaMemcpyAsync(db_src, source.data(), source.size() * 4u, cudaMemcpyHostToDevice, stream));
-		for ( uint32_t w = 0u; w < BENCH_WARMUP; w++ )
-			CHECK_OK(LmCellMmaStridedExperts<Format>(db_w, bscale, db_act, db_out, db_off, db_src, bg, packed, 0u, bk, bn, stream));
-		CHECK_CUDA(cudaEventRecord(ev0, stream));
-		for ( uint32_t it = 0u; it < BENCH_ITERS; it++ )
-			CHECK_OK(LmCellMmaStridedExperts<Format>(db_w, bscale, db_act, db_out, db_off, db_src, bg, packed, 0u, bk, bn, stream));
-		CHECK_CUDA(cudaEventRecord(ev1, stream));
-		CHECK_CUDA(cudaEventSynchronize(ev1));
-		float total_ms = 0.0f;
-		CHECK_CUDA(cudaEventElapsedTime(&total_ms, ev0, ev1));
-		const double ms_each = (double)total_ms / (double)BENCH_ITERS;
-		const double tflops = (2.0 * (double)packed * (double)bk * (double)bn) / (ms_each * 1.0e9);
-		printf("BENCH cell_mma %s G=%u M=%u routes=%u K=%u N=%u: %.3f ms (%.1f TFLOPS)\n",
-			name, bg, m, packed, bk, bn, ms_each, tflops);
+		const uint32_t h = dims[di], max_m = 2048u;
+		uint16_t *d_a = 0, *d_w = 0, *d_out = 0;
+		uint32_t *d_off = 0, *d_prefix = 0;
+		CHECK_CUDA(cudaMalloc(&d_a, (uint64_t)max_m * h * 2u));
+		CHECK_CUDA(cudaMalloc(&d_w, (uint64_t)h * h * 2u));
+		CHECK_CUDA(cudaMalloc(&d_out, (uint64_t)max_m * h * 2u));
+		CHECK_CUDA(cudaMalloc(&d_off, 8u));
+		CHECK_CUDA(cudaMalloc(&d_prefix, 8u));
+		FillBf16Kernel<<<(uint32_t)(((uint64_t)max_m * h + 255u) / 256u), 256u, 0u, stream>>>(d_a, (uint64_t)max_m * h, 1601u + h, 0.002f);
+		FillBf16Kernel<<<(uint32_t)(((uint64_t)h * h + 255u) / 256u), 256u, 0u, stream>>>(d_w, (uint64_t)h * h, 1607u + h, 0.001f);
+		CHECK_CUDA(cudaMemsetAsync(d_prefix, 0, 8u, stream));
+		for ( uint32_t mi = 0u; mi < 5u; mi++ )
+		{
+			const uint32_t m = ms[mi];
+			const uint32_t host_off[2] = {0u, m};
+			CHECK_CUDA(cudaMemcpyAsync(d_off, host_off, 8u, cudaMemcpyHostToDevice, stream));
+			LmGemmArguments gemm;
+			memset(&gemm, 0, sizeof(gemm));
+			gemm.scale_a = LmScaleTensorNone();
+			gemm.scale_b = LmScaleTensorNone();
+			gemm.prefix_built = 1u;
+			gemm.group_row_offset = d_off;
+			gemm.group_tile_prefix = d_prefix;
+			gemm.output_bf16 = d_out;
+			gemm.output_row_stride = h;
+			for ( uint32_t w = 0u; w < BENCH_WARMUP; w++ )
+				CHECK_OK((LmGemmLaunch<LmBf16Format, 128u, LmBf16Format::kTileK, 2u, 8u>(
+					&gemm, d_a, d_w, m, m, 1u, 1u, h, h, g_sms, false, stream)));
+			CHECK_CUDA(cudaEventRecord(ev0, stream));
+			for ( uint32_t it = 0u; it < BENCH_ITERS; it++ )
+				CHECK_OK((LmGemmLaunch<LmBf16Format, 128u, LmBf16Format::kTileK, 2u, 8u>(
+					&gemm, d_a, d_w, m, m, 1u, 1u, h, h, g_sms, false, stream)));
+			CHECK_CUDA(cudaEventRecord(ev1, stream));
+			CHECK_CUDA(cudaEventSynchronize(ev1));
+			float total_ms = 0.0f;
+			CHECK_CUDA(cudaEventElapsedTime(&total_ms, ev0, ev1));
+			const double ms_each = (double)total_ms / (double)BENCH_ITERS;
+			const double tflops = (2.0 * (double)m * (double)h * (double)h) / (ms_each * 1.0e9);
+			printf("BENCH bf16_gemm H=%u M=%u: %.3f ms (%.1f TFLOPS)\n", h, m, ms_each, tflops);
+		}
+		CHECK_CUDA(cudaFree(d_a));
+		CHECK_CUDA(cudaFree(d_w));
+		CHECK_CUDA(cudaFree(d_out));
+		CHECK_CUDA(cudaFree(d_off));
+		CHECK_CUDA(cudaFree(d_prefix));
 	}
-	CHECK_CUDA(cudaFree(db_w));
-	CHECK_CUDA(cudaFree(db_s));
-	CHECK_CUDA(cudaFree(db_off));
-	CHECK_CUDA(cudaFree(db_src));
-	CHECK_CUDA(cudaFree(db_act));
-	CHECK_CUDA(cudaFree(db_out));
 	CHECK_CUDA(cudaEventDestroy(ev0));
 	CHECK_CUDA(cudaEventDestroy(ev1));
+}
+
+struct BenchExpandKv
+{
+	static constexpr uint32_t kSlotBytes = 576u * 2u;
+	static constexpr uint32_t kPageSlots = 64u;
+	static constexpr uint32_t kPageBytes = kSlotBytes * 64u;
+	static constexpr bool kGrows = true;
+	static __host__ __device__ constexpr uint32_t PageOf(uint32_t position) { return position / 64u; }
+	static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position) { return position % 64u; }
+	static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens) { return (tokens + 63u) / 64u; }
+};
+
+static void VerifyAndBenchExpandedPrefill(cudaStream_t stream)
+{
+	constexpr uint32_t LATENT = 512u, ROPE = 64u, WIDTH = 576u, VALUE = 128u;
+	constexpr uint32_t DEGREE = 4u, HEADS = 16u, CONTEXT = 4096u, MAX_ROWS = 1024u;
+	const uint32_t pages = (CONTEXT + 63u) / 64u;
+	const SparkKvShard probe = {DEGREE, 0u, 1u};
+	const uint32_t most = SparkKvShardGatherKeys(probe, CONTEXT);
+	const uint64_t key_stride = ((uint64_t)most * BenchExpandKv::kSlotBytes + 4095u) / 4096u * 4096u;
+	const uint64_t value_stride = (uint64_t)most * HEADS * VALUE * 2u;
+	const uint64_t record_floats = LM_LATENT_SHARD_RECORD_FLOATS(VALUE);
+	const uint64_t max_partial_stride = (uint64_t)MAX_ROWS * HEADS * record_floats;
+	const float qk_scale = 0.07216878365f;
+	std::vector<uint32_t> table(pages, 0u), seqs(MAX_ROWS, 0u), ctxs(1u, CONTEXT), plan(3u, 0u);
+	plan[2] = CONTEXT;
+	uint8_t *d_pool = 0, *d_keys = 0, *d_values = 0;
+	uint32_t *d_table = 0, *d_seqs = 0, *d_ctxs = 0, *d_pos = 0, *d_plan = 0;
+	uint16_t *d_query = 0, *d_weight = 0;
+	float *d_part_fused = 0, *d_part_single = 0;
+	LmKvAccessError *d_err = 0, h_err;
+	CHECK_CUDA(cudaMalloc(&d_pool, 4096u));
+	CHECK_CUDA(cudaMalloc(&d_keys, (uint64_t)DEGREE * key_stride));
+	CHECK_CUDA(cudaMalloc(&d_values, (uint64_t)DEGREE * value_stride));
+	CHECK_CUDA(cudaMalloc(&d_table, pages * 4u));
+	CHECK_CUDA(cudaMalloc(&d_seqs, MAX_ROWS * 4u));
+	CHECK_CUDA(cudaMalloc(&d_ctxs, 4u));
+	CHECK_CUDA(cudaMalloc(&d_pos, MAX_ROWS * 4u));
+	CHECK_CUDA(cudaMalloc(&d_plan, 12u));
+	CHECK_CUDA(cudaMalloc(&d_query, (uint64_t)MAX_ROWS * HEADS * WIDTH * 2u));
+	CHECK_CUDA(cudaMalloc(&d_weight, (uint64_t)HEADS * VALUE * LATENT * 2u));
+	CHECK_CUDA(cudaMalloc(&d_part_fused, (uint64_t)DEGREE * max_partial_stride * 4u));
+	CHECK_CUDA(cudaMalloc(&d_part_single, (uint64_t)DEGREE * max_partial_stride * 4u));
+	CHECK_CUDA(cudaMalloc(&d_err, sizeof(LmKvAccessError)));
+	LmKvAccessErrorReset(&h_err);
+	CHECK_CUDA(cudaMemcpyAsync(d_table, table.data(), pages * 4u, cudaMemcpyHostToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(d_seqs, seqs.data(), MAX_ROWS * 4u, cudaMemcpyHostToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(d_ctxs, ctxs.data(), 4u, cudaMemcpyHostToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(d_plan, plan.data(), 12u, cudaMemcpyHostToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(d_err, &h_err, sizeof(LmKvAccessError), cudaMemcpyHostToDevice, stream));
+	FillBf16Kernel<<<(uint32_t)(((uint64_t)DEGREE * (key_stride / 2u) + 255u) / 256u), 256u, 0u, stream>>>((uint16_t *)d_keys, (uint64_t)DEGREE * (key_stride / 2u), 1709u, 0.002f);
+	FillBf16Kernel<<<(uint32_t)(((uint64_t)MAX_ROWS * HEADS * WIDTH + 255u) / 256u), 256u, 0u, stream>>>(d_query, (uint64_t)MAX_ROWS * HEADS * WIDTH, 1721u, 0.002f);
+	FillBf16Kernel<<<(uint32_t)(((uint64_t)HEADS * VALUE * LATENT + 255u) / 256u), 256u, 0u, stream>>>(d_weight, (uint64_t)HEADS * VALUE * LATENT, 1733u, 0.0001f);
+
+	auto make_view = [&](uint32_t rank, LmKvShardGatherView *out_view)
+	{
+		SparkKvShard shard = {DEGREE, rank, 1u};
+		LmKvShardView pv;
+		if ( LmKvShardViewInitialize<BenchExpandKv>(&pv, d_pool, d_table, pages, 1u, pages, d_err, shard) != 0 )
+		{
+			printf("FAIL expand shard view init\n");
+			exit(1);
+		}
+		if ( LmKvShardGatherViewInitialize<BenchExpandKv>(out_view, pv.pages, shard, d_keys + (uint64_t)rank * key_stride, d_plan + 1u, d_plan + 2u) != 0 )
+		{
+			printf("FAIL expand gather view init\n");
+			exit(1);
+		}
+	};
+
+	CHECK_GPU(LmLatentValueExpandLaunch<LATENT, WIDTH, VALUE>(d_keys, key_stride, DEGREE, most, d_weight, HEADS, d_values, value_stride, stream));
+	{
+		const uint32_t eq_rows = 128u;
+		const uint64_t eq_stride = (uint64_t)eq_rows * HEADS * record_floats;
+		std::vector<uint32_t> pos(eq_rows);
+		for ( uint32_t r = 0u; r < eq_rows; r++ )
+			pos[r] = CONTEXT - eq_rows + r;
+		CHECK_CUDA(cudaMemcpyAsync(d_pos, pos.data(), eq_rows * 4u, cudaMemcpyHostToDevice, stream));
+		LmKvShardGatherView base_view;
+		make_view(0u, &base_view);
+		CHECK_GPU(LmExpandedGatherPrefillSourcesLaunch<BenchExpandKv, LATENT, ROPE, VALUE>(
+			base_view, DEGREE, key_stride, d_values, value_stride, d_query, HEADS, d_seqs, d_ctxs, d_pos, qk_scale, d_part_fused, eq_stride, eq_rows, stream));
+		for ( uint32_t rank = 0u; rank < DEGREE; rank++ )
+		{
+			LmKvShardGatherView one;
+			make_view(rank, &one);
+			CHECK_GPU(LmExpandedGatherPrefillLaunch<BenchExpandKv, LATENT, ROPE, VALUE>(
+				one, d_values + (uint64_t)rank * value_stride, d_query, HEADS, d_seqs, d_ctxs, d_pos, qk_scale, d_part_single + (uint64_t)rank * eq_stride, eq_rows, stream));
+		}
+		const uint64_t diff = DiffCountF32(d_part_fused, d_part_single, (uint64_t)DEGREE * eq_stride, stream);
+		CHECK_CUDA(cudaMemcpy(&h_err, d_err, sizeof(LmKvAccessError), cudaMemcpyDeviceToHost));
+		const int ok = diff == 0u && h_err.error_code == LM_FRAME_ERROR_NONE;
+		if ( !ok )
+			g_failures++;
+		printf("%s expanded_prefill_exact rows=%u ctx=%u degree=%u heads=%u: diff=%llu err=%u\n",
+			ok ? "PASS" : "FAIL", eq_rows, CONTEXT, DEGREE, HEADS, (unsigned long long)diff, h_err.error_code);
+	}
+
+	cudaEvent_t ev0, ev1;
+	CHECK_CUDA(cudaEventCreate(&ev0));
+	CHECK_CUDA(cudaEventCreate(&ev1));
+	for ( uint32_t w = 0u; w < BENCH_WARMUP; w++ )
+		CHECK_GPU(LmLatentValueExpandLaunch<LATENT, WIDTH, VALUE>(d_keys, key_stride, DEGREE, most, d_weight, HEADS, d_values, value_stride, stream));
+	CHECK_CUDA(cudaEventRecord(ev0, stream));
+	for ( uint32_t it = 0u; it < BENCH_ITERS; it++ )
+		CHECK_GPU(LmLatentValueExpandLaunch<LATENT, WIDTH, VALUE>(d_keys, key_stride, DEGREE, most, d_weight, HEADS, d_values, value_stride, stream));
+	CHECK_CUDA(cudaEventRecord(ev1, stream));
+	CHECK_CUDA(cudaEventSynchronize(ev1));
+	float expand_ms = 0.0f;
+	CHECK_CUDA(cudaEventElapsedTime(&expand_ms, ev0, ev1));
+	printf("BENCH attn_value_expand ctx=%u degree=%u heads=%u: %.3f ms\n", CONTEXT, DEGREE, HEADS, (double)expand_ms / (double)BENCH_ITERS);
+
+	static const uint32_t row_cases[] = {256u, 1024u};
+	LmKvShardGatherView base_view;
+	make_view(0u, &base_view);
+	for ( uint32_t ri = 0u; ri < 2u; ri++ )
+	{
+		const uint32_t rows = row_cases[ri];
+		const uint64_t p_stride = (uint64_t)rows * HEADS * record_floats;
+		std::vector<uint32_t> pos(rows);
+		for ( uint32_t r = 0u; r < rows; r++ )
+			pos[r] = CONTEXT - rows + r;
+		CHECK_CUDA(cudaMemcpyAsync(d_pos, pos.data(), rows * 4u, cudaMemcpyHostToDevice, stream));
+		for ( uint32_t w = 0u; w < BENCH_WARMUP; w++ )
+			CHECK_GPU(LmExpandedGatherPrefillSourcesLaunch<BenchExpandKv, LATENT, ROPE, VALUE>(
+				base_view, DEGREE, key_stride, d_values, value_stride, d_query, HEADS, d_seqs, d_ctxs, d_pos, qk_scale, d_part_fused, p_stride, rows, stream));
+		CHECK_CUDA(cudaEventRecord(ev0, stream));
+		for ( uint32_t it = 0u; it < BENCH_ITERS; it++ )
+			CHECK_GPU(LmExpandedGatherPrefillSourcesLaunch<BenchExpandKv, LATENT, ROPE, VALUE>(
+				base_view, DEGREE, key_stride, d_values, value_stride, d_query, HEADS, d_seqs, d_ctxs, d_pos, qk_scale, d_part_fused, p_stride, rows, stream));
+		CHECK_CUDA(cudaEventRecord(ev1, stream));
+		CHECK_CUDA(cudaEventSynchronize(ev1));
+		float attn_ms = 0.0f;
+		CHECK_CUDA(cudaEventElapsedTime(&attn_ms, ev0, ev1));
+		printf("BENCH attn_expanded_prefill rows=%u ctx=%u degree=%u heads=%u: %.3f ms\n",
+			rows, CONTEXT, DEGREE, HEADS, (double)attn_ms / (double)BENCH_ITERS);
+	}
+	CHECK_CUDA(cudaEventDestroy(ev0));
+	CHECK_CUDA(cudaEventDestroy(ev1));
+	CHECK_CUDA(cudaFree(d_pool));
+	CHECK_CUDA(cudaFree(d_keys));
+	CHECK_CUDA(cudaFree(d_values));
+	CHECK_CUDA(cudaFree(d_table));
+	CHECK_CUDA(cudaFree(d_seqs));
+	CHECK_CUDA(cudaFree(d_ctxs));
+	CHECK_CUDA(cudaFree(d_pos));
+	CHECK_CUDA(cudaFree(d_plan));
+	CHECK_CUDA(cudaFree(d_query));
+	CHECK_CUDA(cudaFree(d_weight));
+	CHECK_CUDA(cudaFree(d_part_fused));
+	CHECK_CUDA(cudaFree(d_part_single));
+	CHECK_CUDA(cudaFree(d_err));
 }
 
 int main(void)
@@ -541,20 +624,20 @@ int main(void)
 	g_sms = (uint32_t)prop.multiProcessorCount;
 	CHECK_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
-	VerifyMxGemmExact(64u, 1024u, 1024u, stream);
-	VerifyMxGemmExact(192u, 768u, 1536u, stream);
-	VerifyMxGemmExact(256u, 1024u, 1024u, stream);
-	VerifyMxGemmExact(512u, 1024u, 1024u, stream);
-
 	VerifyCellMxExact(64u, 64u, 8u, 512u, 512u, false, stream);
-	VerifyCellMxExact(64u, 160u, 8u, 512u, 512u, false, stream);
+	VerifyCellMxExact(64u, 128u, 8u, 512u, 512u, false, stream);
 	VerifyCellMxExact(32u, 160u, 8u, 1024u, 512u, true, stream);
 	VerifyCellMxExact(32u, 256u, 8u, 1024u, 512u, false, stream);
+	VerifyCellMxExact(16u, 448u, 8u, 1024u, 512u, true, stream);
 
-	VerifyAndBenchCellMma<LmMxfp4>("mxfp4", stream);
-	VerifyAndBenchCellMma<LmMxfp8>("mxfp8", stream);
-	BenchMxGemmShapes(stream);
+	VerifyBf16GemmExact(1u, 64u, 1024u, 1024u, stream);
+	VerifyBf16GemmExact(1u, 192u, 768u, 1536u, stream);
+	VerifyBf16GemmExact(1u, 512u, 1024u, 1024u, stream);
+	VerifyBf16GemmExact(8u, 320u, 1024u, 1024u, stream);
+
 	BenchCellMxShapes(stream);
+	BenchBf16GemmShapes(stream);
+	VerifyAndBenchExpandedPrefill(stream);
 
 	CHECK_CUDA(cudaStreamDestroy(stream));
 	printf("%s shared_prefill_gemm_bench failures=%d sms=%u\n", g_failures == 0 ? "PASS" : "FAIL", g_failures, g_sms);
