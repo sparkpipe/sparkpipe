@@ -127,6 +127,7 @@ Classes:
 
 | File | Sites | Buffers and class |
 | --- | --- | --- |
+| `inference/runner/mesh_fast_kernels.cuh` | 2 | Protocol cells: `SparkTpMeshFastHybridMapShm` registers weightd's shared-memory `mlx5` hybrid SQ and `dbrec` slab (`SparkGpuHostRegister`) and takes its device alias (`SparkGpuHostGetDevicePointer`) outside CUDA graph capture. Kernels write WQEs and `dbrec` words and publish them to weightd's doorbell shipper via Dekker acquire/release flags, `grant_gen`, `gpu_req_seq`, and system-scope fences rather than stream ordering. |
 | `inference/runner/stage_runner.cu` | 13 | See below. |
 | `inference/runner/pass_prefill.cuh` | 5 | See below. |
 | `model-families/dsv41_flash/source/dsv41_flash_stage.cuh` | 15 | See below. |
