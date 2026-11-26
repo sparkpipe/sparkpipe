@@ -1,0 +1,5 @@
++61
+Wave-9 1x-gb10 Zero-NVIDIA NVRM + SKL optimizations for Qwen3.8-27B BF16 (RAIS v1.1 87.64 -> 90.12 VALID):
+- Single-stage batch scheduler prefill coalescing, cache-publish decode lockstep, and 1-gram recency fallback for slow memory-bound single-stream decode
+- Generalized fused GateUp SwiGLU MMA kernel (96 KB dynamic smem, 0 spills) for all rows>64 prefill waves, plus stream_gemm routing/tiling refinements and certified FP8 LM head small-row threshold
+- Chunked head/distribution scratch buffers and TP1 lane_arena elision reclaiming 1,200 MB (+1.12 GiB usable KV)

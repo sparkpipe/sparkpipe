@@ -3262,8 +3262,8 @@ static void QwenBf16DenseMmaKernel(const uint16_t *__restrict__ weight, const ui
 	LmDependentRelease();
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES>
-__global__ __launch_bounds__(THREADS, 2)
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES, uint32_t MIN_BLOCKS = 2u, bool DYN_SMEM = false>
+__global__ __launch_bounds__(THREADS, MIN_BLOCKS)
 static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_gate_up, const uint16_t *__restrict__ activation,
 	uint16_t *__restrict__ output, uint32_t rows, uint32_t K, uint32_t ffn_rows)
 {
@@ -3275,9 +3275,10 @@ static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_ga
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = B_ROWS * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
 	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (B_ROWS * ROW_CHUNKS) / THREADS;
 	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
-	static_assert(NF == 2u && WARPS_M * WARPS_N == WARPS && STAGES >= 2u, "valid fused gate_up SwiGLU MMA geometry");
-	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
+	static_assert((NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS && STAGES >= 2u, "valid fused gate_up SwiGLU MMA geometry");
+	__shared__ __align__(128) uint8_t static_smem[DYN_SMEM ? 16u : STAGES * STAGE_BYTES];
+	extern __shared__ uint8_t dynamic_smem[];
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(DYN_SMEM ? dynamic_smem : static_smem);
 	const uint32_t m_blocks = (rows + TILE_M - 1u) / TILE_M;
 	const uint32_t n_block = blockIdx.x / m_blocks, m_block = blockIdx.x % m_blocks;
 	const uint32_t row0 = m_block * TILE_M, col0 = n_block * TILE_N;
@@ -3339,12 +3340,12 @@ static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_ga
 				off = 0u;
 		}
 	};
-	uint32_t a_reg[2][MF][4], bg_reg[2][2][2], bu_reg[2][2][2];
-	float acc_g[MF][2][4], acc_u[MF][2][4];
+	uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
+	float acc_g[MF][NF][4], acc_u[MF][NF][4];
 	#pragma unroll
 	for ( uint32_t i = 0u; i < MF; ++i )
 		#pragma unroll
-		for ( uint32_t j = 0u; j < 2u; ++j )
+		for ( uint32_t j = 0u; j < NF; ++j )
 			acc_g[i][j][0] = acc_g[i][j][1] = acc_g[i][j][2] = acc_g[i][j][3] = acc_u[i][j][0] = acc_u[i][j][1] = acc_u[i][j][2] = acc_u[i][j][3] = 0.0f;
 	auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s) {
 		#pragma unroll
@@ -3355,15 +3356,19 @@ static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_ga
 			LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
 		}
 		const uint32_t bc = ks * 2u + ((lane >> 3u) & 1u);
-		const uint32_t rg = warp_n * WARP_N + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
-		const uint32_t ru = TILE_N + rg;
-		uint32_t tg[4], tu[4];
-		LmStreamLdMatrix4(tg, stage_s + A_BYTES + rg * ROW_BYTES + LmStreamSwizzle8(rg, bc) * 16u);
-		LmStreamLdMatrix4(tu, stage_s + A_BYTES + ru * ROW_BYTES + LmStreamSwizzle8(ru, bc) * 16u);
-		bg_reg[buf][0][0] = tg[0]; bg_reg[buf][0][1] = tg[1];
-		bg_reg[buf][1][0] = tg[2]; bg_reg[buf][1][1] = tg[3];
-		bu_reg[buf][0][0] = tu[0]; bu_reg[buf][0][1] = tu[1];
-		bu_reg[buf][1][0] = tu[2]; bu_reg[buf][1][1] = tu[3];
+		#pragma unroll
+		for ( uint32_t jj = 0u; jj < NF; jj += 2u )
+		{
+			const uint32_t rg = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
+			const uint32_t ru = TILE_N + rg;
+			uint32_t tg[4], tu[4];
+			LmStreamLdMatrix4(tg, stage_s + A_BYTES + rg * ROW_BYTES + LmStreamSwizzle8(rg, bc) * 16u);
+			LmStreamLdMatrix4(tu, stage_s + A_BYTES + ru * ROW_BYTES + LmStreamSwizzle8(ru, bc) * 16u);
+			bg_reg[buf][jj][0] = tg[0]; bg_reg[buf][jj][1] = tg[1];
+			bg_reg[buf][jj + 1u][0] = tg[2]; bg_reg[buf][jj + 1u][1] = tg[3];
+			bu_reg[buf][jj][0] = tu[0]; bu_reg[buf][jj][1] = tu[1];
+			bu_reg[buf][jj + 1u][0] = tu[2]; bu_reg[buf][jj + 1u][1] = tu[3];
+		}
 	};
 	uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
 	#pragma unroll
@@ -3409,7 +3414,7 @@ static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_ga
 				#pragma unroll
 				for ( uint32_t i = 0u; i < MF; ++i )
 					#pragma unroll
-					for ( uint32_t j = 0u; j < 2u; ++j )
+					for ( uint32_t j = 0u; j < NF; ++j )
 					{
 						LmMmaBf16(acc_g[i][j], a_reg[cur][i], bg_reg[cur][j]);
 						LmMmaBf16(acc_u[i][j], a_reg[cur][i], bu_reg[cur][j]);
@@ -3441,7 +3446,7 @@ static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_ga
 				#pragma unroll
 				for ( uint32_t i = 0u; i < MF; ++i )
 					#pragma unroll
-					for ( uint32_t j = 0u; j < 2u; ++j )
+					for ( uint32_t j = 0u; j < NF; ++j )
 					{
 						LmMmaBf16(acc_g[i][j], a_reg[cur][i], bg_reg[cur][j]);
 						LmMmaBf16(acc_u[i][j], a_reg[cur][i], bu_reg[cur][j]);
@@ -3454,7 +3459,7 @@ static void QwenBf16FusedGateUpSwigluMmaKernel(const uint16_t *__restrict__ w_ga
 	#pragma unroll
 	for ( uint32_t i = 0u; i < MF; ++i )
 		#pragma unroll
-		for ( uint32_t j = 0u; j < 2u; ++j )
+		for ( uint32_t j = 0u; j < NF; ++j )
 		{
 			const uint32_t r0_out = row0 + warp_m * WARP_M + i * 16u + quad_row, r1_out = r0_out + 8u;
 			const uint32_t col = col0 + warp_n * WARP_N + j * 8u + quad * 2u;
@@ -7496,7 +7501,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	using Kv = typename std::conditional<S::kIndexer, CudaStageKv<KvViews, IndexViews>, CudaStageKv<KvViews>>::type;
 	using LaneShared = CudaStageFields<&State::gdn_state, &State::gdn_window, &State::ple_window, &State::ple_history, &State::index_tail, &State::kv_error>;
 
-	static constexpr bool kLanes = true;
+	static constexpr bool kLanes = G::kTpDegree > 1u;
 	static constexpr bool kKeepRows = G::kVerifyRows != 0u;
 	static constexpr bool kTreeVerify = !S::kPle && !S::kIndexer && G::kVerifyRows != 0u;
 	static constexpr bool kTapPlan = true;
@@ -7587,7 +7592,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 					weight, source, destination, rows, input_dimension, output_dimension);
 			return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 		}
-		if ( output_dimension < 512u || rows > 128u )
+		if ( output_dimension < 512u || rows > 128u || (rows > 16u && (output_dimension >= 8192u || rows >= 32u)) )
 			return LM_LAUNCH_ERR_SHAPE;
 		const uint32_t nb = (output_dimension + 63u) / 64u;
 		if ( rows <= 16u )
@@ -7630,8 +7635,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const bool use_mma = (force_stream || (exact == 0u && rows > LM_SKINNY_ROWS_WIDE)) && (input_dimension % 64u) == 0u;
 		if ( use_mma )
 		{
-			if ( rows > 512u )
-				return LM_LAUNCH_ERR_SHAPE;
 			if ( rows <= 16u )
 				(void)LM_LAUNCH_DEPENDENT((QwenBf16FusedGateUpSwigluMmaKernel<16u, 64u, 128u, 1u, 2u>),
 					((rows + 15u) / 16u) * ((ffn_rows + 63u) / 64u), 128u, 0, stream, weight, source, destination, rows, input_dimension, ffn_rows);
@@ -7642,8 +7645,19 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				(void)LM_LAUNCH_DEPENDENT((QwenBf16FusedGateUpSwigluMmaKernel<64u, 32u, 256u, 4u, 3u>),
 					((rows + 63u) / 64u) * ((ffn_rows + 31u) / 32u), 256u, 0, stream, weight, source, destination, rows, input_dimension, ffn_rows);
 			else
-				(void)LM_LAUNCH_DEPENDENT((QwenBf16FusedGateUpSwigluMmaKernel<128u, 32u, 256u, 4u, 2u>),
-					((rows + 127u) / 128u) * ((ffn_rows + 31u) / 32u), 256u, 0, stream, weight, source, destination, rows, input_dimension, ffn_rows);
+			{
+				constexpr uint32_t smem = 3u * (128u + 128u) * 128u;
+				static bool granted_big = false;
+				if ( !granted_big )
+				{
+					if ( SparkGpuFuncSetAttribute((const void *)QwenBf16FusedGateUpSwigluMmaKernel<128u, 64u, 256u, 4u, 3u, 1u, true>,
+						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
+						return LM_LAUNCH_ERR_LAUNCH;
+					granted_big = true;
+				}
+				(void)LM_LAUNCH_DEPENDENT((QwenBf16FusedGateUpSwigluMmaKernel<128u, 64u, 256u, 4u, 3u, 1u, true>),
+					((rows + 127u) / 128u) * ((ffn_rows + 63u) / 64u), 256u, smem, stream, weight, source, destination, rows, input_dimension, ffn_rows);
+			}
 			return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 		}
 		if ( rows == 1u || rows > 32u )

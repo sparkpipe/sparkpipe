@@ -1179,7 +1179,7 @@ static int32_t LmStreamGemmDenseBf16Launch(const LmStreamGemmArguments *args, ui
 		const uint64_t wide = ((uint64_t)args->output_dimension + 255u) / 256u;
 		if ( args->output_dimension <= 768u && ((uint64_t)args->rows + 63u) / 64u * n128 >= 2u * (uint64_t)multiprocessors )
 			return(LmStreamGemmLaunchTile<Format,64u,128u,64u,32u>(args,0u,multiprocessors,stream));
-		if ( args->rows >= 1024u && args->output_dimension >= 1024u && args->input_dimension >= 2048u )
+		if ( args->rows >= 1024u && args->output_dimension >= 1024u && args->input_dimension >= 8192u )
 		{
 			const uint64_t tiles_128x256 = ((uint64_t)args->rows + 127u) / 128u * wide;
 			const uint64_t tiles_256x128 = ((uint64_t)args->rows + 255u) / 256u * n128;

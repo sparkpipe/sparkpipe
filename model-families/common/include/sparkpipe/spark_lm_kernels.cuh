@@ -1012,7 +1012,7 @@ static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 	LM_LAUNCH((SparkLmHeadCertifiedHiddenNormBatchedKernel), dim3(norm_blocks,row_count),SPARK_LM_CTA_THREADS,0u,
 			stream, hidden_bf16,view.hidden_norms,row_floats,hidden_dimension,row_count)
 	));
-	if ( row_count >= 4u && (hidden_dimension % 64u) == 0u )
+	if ( row_count > SPARK_LM_HEAD_CERTIFIED_FP8_ROWS && (hidden_dimension % 64u) == 0u )
 	{
 		uint32_t nb = (vocabulary_count + 63u) / 64u;
 		if ( row_count <= 16u )
