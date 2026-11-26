@@ -317,10 +317,9 @@ static void HyHcPostDotTileKernel(uint16_t *__restrict__ streams, const float *_
 {
 	constexpr uint32_t FLAT = STREAMS * WIDTH, VECS = WIDTH >> 3u, FLAT_VECS = STREAMS * VECS;
 	constexpr uint32_t STEPS = (FLAT_VECS + LM_HC_MIX_LANES - 1u) / LM_HC_MIX_LANES;
-	constexpr uint32_t LOAD_ITERS = TILE_ROWS / 8u;
-	static_assert((WIDTH & 7u) == 0u && MIXES == 8u && (TILE_ROWS == 8u || TILE_ROWS == 16u),
-		"multi-row HC dot kernel reuses fn loads across 8 or 16 rows with exact lane order");
-	__shared__ uint4 s_x[TILE_ROWS][16];
+	static_assert((WIDTH & 7u) == 0u && MIXES == 8u && TILE_ROWS == 8u,
+		"multi-row HC dot kernel reuses fn loads across 8 rows with exact lane order");
+	__shared__ uint4 s_x[8][16];
 	__shared__ float s_p[TILE_ROWS][STREAMS];
 	const uint32_t row_base = blockIdx.x * TILE_ROWS, slice = blockIdx.y;
 	const uint32_t mix = threadIdx.x >> 4u, lane16 = threadIdx.x & 15u;
@@ -357,34 +356,26 @@ static void HyHcPostDotTileKernel(uint16_t *__restrict__ streams, const float *_
 			f0 = __ldg((const float4 *)(fn + (uint64_t)mix * FLAT + k_elem));
 			f1 = __ldg((const float4 *)(fn + (uint64_t)mix * FLAT + k_elem + 4u));
 		}
-		if ( valid_kv )
+		if ( valid_kv && mix < cnt )
 		{
-			#pragma unroll
-			for ( uint32_t li = 0u; li < LOAD_ITERS; ++li )
+			const uint32_t row = row_base + mix;
+			uint4 *st4 = (uint4 *)(streams + (uint64_t)row * FLAT);
+			uint4 raw4 = st4[kv];
+			if constexpr ( HAS_POST )
 			{
-				const uint32_t lr = li * 8u + mix;
-				if ( lr < cnt )
-				{
-					const uint32_t row = row_base + lr;
-					uint4 *st4 = (uint4 *)(streams + (uint64_t)row * FLAT);
-					uint4 raw4 = st4[kv];
-					if constexpr ( HAS_POST )
-					{
-						const uint32_t st = kv / VECS, v = kv % VECS;
-						const uint4 *part4 = (const uint4 *)(partial_in + (uint64_t)row * WIDTH);
-						float xv[8], pv[8];
-						LmLoadBf16x8AsFloat(raw4, xv);
-						LmLoadBf16x8AsFloat(__ldg(part4 + v), pv);
-						const float sp = s_p[lr][st];
-						#pragma unroll
-						for ( uint32_t e = 0u; e < 8u; ++e )
-							xv[e] = fmaf(sp, pv[e], xv[e]);
-						raw4 = LmPackUint4FloatToBf16(xv);
-						st4[kv] = raw4;
-					}
-					s_x[lr][lane16] = raw4;
-				}
+				const uint32_t st = kv / VECS, v = kv % VECS;
+				const uint4 *part4 = (const uint4 *)(partial_in + (uint64_t)row * WIDTH);
+				float xv[8], pv[8];
+				LmLoadBf16x8AsFloat(raw4, xv);
+				LmLoadBf16x8AsFloat(__ldg(part4 + v), pv);
+				const float sp = s_p[mix][st];
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 8u; ++e )
+					xv[e] = fmaf(sp, pv[e], xv[e]);
+				raw4 = LmPackUint4FloatToBf16(xv);
+				st4[kv] = raw4;
 			}
+			s_x[mix][lane16] = raw4;
 		}
 		__syncthreads();
 		if ( valid_kv )
@@ -2121,26 +2112,32 @@ static void HyMoeSwigluPackedKernel(const uint16_t *__restrict__ gate, const uin
 }
 
 template<uint32_t RG>
-static __device__ __forceinline__ void HyFp8AccumUnpacked(uint4 weight, float scale, const float (*af)[16], uint32_t cnt, float *acc)
+static __device__ __forceinline__ void HyFp8AccumIndexedRows(uint4 weight, float scale, const uint16_t *activation, const uint32_t *src_row,
+	uint32_t stride, uint32_t c_off, uint32_t cnt, float *acc)
 {
 	const LmSkinnyFormat<LmFp8>::Decoded dec = LmSkinnyFormat<LmFp8>::Decode(weight);
-	#pragma unroll
-	for ( uint32_t r = 0u; r < RG; ++r )
-		if ( r < cnt )
-			acc[r] = fmaf(scale, LmSkinnyFormat<LmFp8>::ChunkDecodedUnpacked(dec, af[r]), acc[r]);
-}
-
-template<uint32_t RG>
-static __device__ __forceinline__ void HyLoadUnpackRows16(const uint16_t *const *act_ptr, uint32_t c_off, uint32_t cnt, float (*af)[16])
-{
 	#pragma unroll
 	for ( uint32_t r = 0u; r < RG; ++r )
 	{
 		if ( r < cnt )
 		{
-			const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(act_ptr[r] + c_off);
-			LmSkinnyUnpackBf16x8(act.low, af[r]);
-			LmSkinnyUnpackBf16x8(act.high, af[r] + 8);
+			const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(activation + (uint64_t)src_row[r] * stride + c_off);
+			acc[r] = fmaf(scale, LmSkinnyFormat<LmFp8>::ChunkDecoded(dec, act), acc[r]);
+		}
+	}
+}
+
+template<uint32_t RG>
+static __device__ __forceinline__ void HyFp8AccumContigRows(uint4 weight, float scale, const uint16_t *base, uint32_t stride, uint32_t cnt, float *acc)
+{
+	const LmSkinnyFormat<LmFp8>::Decoded dec = LmSkinnyFormat<LmFp8>::Decode(weight);
+	#pragma unroll
+	for ( uint32_t r = 0u; r < RG; ++r )
+	{
+		if ( r < cnt )
+		{
+			const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(base + (uint64_t)r * stride);
+			acc[r] = fmaf(scale, LmSkinnyFormat<LmFp8>::ChunkDecoded(dec, act), acc[r]);
 		}
 	}
 }
@@ -2156,7 +2153,7 @@ static void HySharedGateUpSiluKernel(const void *__restrict__ weight, const void
 	constexpr uint32_t SC_GROUP = CODEC == HY_CODEC_FP8_BLOCK128 ? HY_FP8_BLOCK : HY_SCALE_GROUP;
 	constexpr uint32_t SC_SHIFT = CODEC == HY_CODEC_FP8_BLOCK128 ? 3u : 1u;
 	constexpr uint32_t SC_STRIDE = K / SC_GROUP;
-	constexpr uint32_t RG = 8u;
+	constexpr uint32_t RG = 4u;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t col = blockIdx.x * 2u + warp;
 	LmDependentWait();
@@ -2169,28 +2166,24 @@ static void HySharedGateUpSiluKernel(const void *__restrict__ weight, const void
 		for ( uint32_t r_base = 0u; r_base < rows; r_base += RG )
 		{
 			const uint32_t cnt = rows - r_base < RG ? rows - r_base : RG;
-			const uint16_t *act_ptr[RG];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				act_ptr[r] = activation + (uint64_t)(r < cnt ? r_base + r : 0u) * K;
 			float ag[RG], au[RG];
 			#pragma unroll
 			for ( uint32_t r = 0u; r < RG; ++r )
 				ag[r] = au[r] = 0.0f;
 			for ( uint32_t c = lane; c < CHUNKS; c += 32u )
 			{
-				const uint4 vwg = __ldcs(wg + c);
-				const uint4 vwu = __ldcs(wu + c);
 				if constexpr ( CODEC == HY_CODEC_BF16 )
 				{
-					const uint32_t c_off = c * 8u;
+					const uint4 vwg = __ldcs(wg + c);
+					const uint4 vwu = __ldcs(wu + c);
+					const uint16_t *base = activation + (uint64_t)r_base * K + c * 8u;
 					#pragma unroll
 					for ( uint32_t r = 0u; r < RG; ++r )
 					{
 						if ( r < cnt )
 						{
 							float af[8];
-							LmSkinnyUnpackBf16x8(__ldg((const uint4 *)(act_ptr[r] + c_off)), af);
+							LmSkinnyUnpackBf16x8(__ldg((const uint4 *)(base + (uint64_t)r * K)), af);
 							ag[r] = LmSkinnyBf16ChunkUnpacked(vwg, af, ag[r]);
 							au[r] = LmSkinnyBf16ChunkUnpacked(vwu, af, au[r]);
 						}
@@ -2199,24 +2192,10 @@ static void HySharedGateUpSiluKernel(const void *__restrict__ weight, const void
 				else
 				{
 					constexpr bool FP8_F32 = CODEC == HY_CODEC_FP8_BLOCK128;
-					const uint32_t c_off = c * 16u, sc_idx = c >> SC_SHIFT;
-					const float scg = HyLoadScale<FP8_F32>(scales, scg_base + sc_idx);
-					const float scu = HyLoadScale<FP8_F32>(scales, scu_base + sc_idx);
-					const LmSkinnyFormat<LmFp8>::Decoded dg = LmSkinnyFormat<LmFp8>::Decode(vwg);
-					const LmSkinnyFormat<LmFp8>::Decoded du = LmSkinnyFormat<LmFp8>::Decode(vwu);
-					#pragma unroll
-					for ( uint32_t r = 0u; r < RG; ++r )
-					{
-						if ( r < cnt )
-						{
-							const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(act_ptr[r] + c_off);
-							float af[16];
-							LmSkinnyUnpackBf16x8(act.low, af);
-							LmSkinnyUnpackBf16x8(act.high, af + 8);
-							ag[r] = fmaf(scg, LmSkinnyFormat<LmFp8>::ChunkDecodedUnpacked(dg, af), ag[r]);
-							au[r] = fmaf(scu, LmSkinnyFormat<LmFp8>::ChunkDecodedUnpacked(du, af), au[r]);
-						}
-					}
+					const uint32_t sc_idx = c >> SC_SHIFT;
+					const uint16_t *base = activation + (uint64_t)r_base * K + c * 16u;
+					HyFp8AccumContigRows<RG>(__ldcs(wg + c), HyLoadScale<FP8_F32>(scales, scg_base + sc_idx), base, K, cnt, ag);
+					HyFp8AccumContigRows<RG>(__ldcs(wu + c), HyLoadScale<FP8_F32>(scales, scu_base + sc_idx), base, K, cnt, au);
 				}
 			}
 			#pragma unroll
@@ -2297,55 +2276,29 @@ static void HyMoeFastW1W3SwigluKernel(const uint8_t *__restrict__ w1, const void
 			const uint32_t exp_end = __ldg(group_row_offset + exp + 1u);
 			const uint32_t r0 = exp_first + (chunk_id - s_prefix[exp]) * RG;
 			const uint32_t cnt = exp_end - r0 < RG ? exp_end - r0 : RG;
-			const uint16_t *act_ptr[RG];
+			uint32_t src_row[RG];
 			#pragma unroll
 			for ( uint32_t r = 0u; r < RG; ++r )
-			{
-				const uint32_t src_row = (r < cnt && rows > 1u) ? __ldg(route_source_token + r0 + r) : 0u;
-				act_ptr[r] = activation + (uint64_t)src_row * G::kHidden;
-			}
+				src_row[r] = (r < cnt && rows > 1u) ? __ldg(route_source_token + r0 + r) : 0u;
 			const bool has1 = col0 + 1u < N;
 			const uint64_t row_base = (uint64_t)exp * N + col0;
 			const uint4 *w1_0 = (const uint4 *)w1 + row_base * CHUNKS;
 			const uint4 *w3_0 = (const uint4 *)w3 + row_base * CHUNKS;
-			const uint4 *w1_1 = has1 ? w1_0 + CHUNKS : w1_0;
-			const uint4 *w3_1 = has1 ? w3_0 + CHUNKS : w3_0;
+			const uint64_t w_off1 = has1 ? CHUNKS : 0u;
 			const uint64_t sc_base0 = row_base * SC_STRIDE;
 			const uint64_t sc_base1 = has1 ? sc_base0 + SC_STRIDE : sc_base0;
 			if ( cnt == 1u )
 			{
-				const uint16_t *act0 = act_ptr[0];
+				const uint16_t *act0 = activation + (uint64_t)src_row[0] * G::kHidden;
 				float lg0 = 0.0f, lu0 = 0.0f, lg1 = 0.0f, lu1 = 0.0f;
-				uint32_t c = sub;
-				for ( ; c + LANES < CHUNKS; c += 2u * LANES )
-				{
-					const uint32_t c1 = c + LANES;
-					const LmSkinnyWide act_a = LmSkinnyFormat<LmFp8>::Load(act0 + c * 16u);
-					const LmSkinnyWide act_b = LmSkinnyFormat<LmFp8>::Load(act0 + c1 * 16u);
-					const uint4 vw1_0a = __ldcs(w1_0 + c), vw3_0a = __ldcs(w3_0 + c);
-					const uint4 vw1_1a = __ldcs(w1_1 + c), vw3_1a = __ldcs(w3_1 + c);
-					const uint4 vw1_0b = __ldcs(w1_0 + c1), vw3_0b = __ldcs(w3_0 + c1);
-					const uint4 vw1_1b = __ldcs(w1_1 + c1), vw3_1b = __ldcs(w3_1 + c1);
-					const uint32_t sc_a = c >> SC_SHIFT, sc_b = c1 >> SC_SHIFT;
-					lg0 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base0 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw1_0a, act_a), lg0);
-					lu0 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base0 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw3_0a, act_a), lu0);
-					lg1 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base1 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw1_1a, act_a), lg1);
-					lu1 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base1 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw3_1a, act_a), lu1);
-					lg0 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base0 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw1_0b, act_b), lg0);
-					lu0 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base0 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw3_0b, act_b), lu0);
-					lg1 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base1 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw1_1b, act_b), lg1);
-					lu1 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base1 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw3_1b, act_b), lu1);
-				}
-				if ( c < CHUNKS )
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(act0 + c * 16u);
 					const uint32_t sc_idx = c >> SC_SHIFT;
-					const uint4 vw1_0 = __ldcs(w1_0 + c), vw3_0 = __ldcs(w3_0 + c);
-					const uint4 vw1_1 = __ldcs(w1_1 + c), vw3_1 = __ldcs(w3_1 + c);
-					lg0 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw1_0, act), lg0);
-					lu0 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw3_0, act), lu0);
-					lg1 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw1_1, act), lg1);
-					lu1 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw3_1, act), lu1);
+					lg0 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w1_0 + c), act), lg0);
+					lu0 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w3_0 + c), act), lu0);
+					lg1 = fmaf(HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w1_0 + w_off1 + c), act), lg1);
+					lu1 = fmaf(HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w3_0 + w_off1 + c), act), lu1);
 				}
 				#pragma unroll
 				for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
@@ -2376,15 +2329,11 @@ static void HyMoeFastW1W3SwigluKernel(const uint8_t *__restrict__ w1, const void
 					g0[r] = u0[r] = g1[r] = u1[r] = 0.0f;
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
-					const uint32_t sc_idx = c >> SC_SHIFT;
-					float af[RG][16];
-					HyLoadUnpackRows16<RG>(act_ptr, c * 16u, cnt, af);
-					const uint4 vw1_0 = __ldcs(w1_0 + c), vw3_0 = __ldcs(w3_0 + c);
-					const uint4 vw1_1 = __ldcs(w1_1 + c), vw3_1 = __ldcs(w3_1 + c);
-					HyFp8AccumUnpacked<RG>(vw1_0, HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx), af, cnt, g0);
-					HyFp8AccumUnpacked<RG>(vw3_0, HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx), af, cnt, u0);
-					HyFp8AccumUnpacked<RG>(vw1_1, HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx), af, cnt, g1);
-					HyFp8AccumUnpacked<RG>(vw3_1, HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx), af, cnt, u1);
+					const uint32_t c_off = c * 16u, sc_idx = c >> SC_SHIFT;
+					HyFp8AccumIndexedRows<RG>(__ldcs(w1_0 + c), HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, g0);
+					HyFp8AccumIndexedRows<RG>(__ldcs(w3_0 + c), HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, u0);
+					HyFp8AccumIndexedRows<RG>(__ldcs(w1_0 + w_off1 + c), HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, g1);
+					HyFp8AccumIndexedRows<RG>(__ldcs(w3_0 + w_off1 + c), HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, u1);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -2473,54 +2422,28 @@ static void HyMoeFastW2Kernel(const uint8_t *__restrict__ w2, const void *__rest
 			const uint32_t exp_end = __ldg(group_row_offset + exp + 1u);
 			const uint32_t r0 = exp_first + (chunk_id - s_prefix[exp]) * RG;
 			const uint32_t cnt = exp_end - r0 < RG ? exp_end - r0 : RG;
-			const uint16_t *act_ptr[RG];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				act_ptr[r] = expert_act + (uint64_t)(r0 + (r < cnt ? r : 0u)) * K;
+			const uint16_t *act_base = expert_act + (uint64_t)r0 * K;
 			const bool has1 = col0 + 1u < N, has2 = col0 + 2u < N, has3 = col0 + 3u < N;
 			const uint64_t row_base = (uint64_t)exp * N + col0;
 			const uint4 *w0 = (const uint4 *)w2 + row_base * CHUNKS;
-			const uint4 *w1p = has1 ? w0 + CHUNKS : w0;
-			const uint4 *w2p = has2 ? w0 + 2u * CHUNKS : w0;
-			const uint4 *w3p = has3 ? w0 + 3u * CHUNKS : w0;
+			const uint64_t wo1 = has1 ? CHUNKS : 0u;
+			const uint64_t wo2 = has2 ? 2u * CHUNKS : 0u;
+			const uint64_t wo3 = has3 ? 3u * CHUNKS : 0u;
 			const uint64_t sc_base0 = row_base * SC_STRIDE;
 			const uint64_t sc_base1 = has1 ? sc_base0 + SC_STRIDE : sc_base0;
 			const uint64_t sc_base2 = has2 ? sc_base0 + 2u * SC_STRIDE : sc_base0;
 			const uint64_t sc_base3 = has3 ? sc_base0 + 3u * SC_STRIDE : sc_base0;
 			if ( cnt == 1u )
 			{
-				const uint16_t *act0 = act_ptr[0];
 				float la0 = 0.0f, la1 = 0.0f, la2 = 0.0f, la3 = 0.0f;
-				uint32_t c = sub;
-				for ( ; c + LANES < CHUNKS; c += 2u * LANES )
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
-					const uint32_t c1 = c + LANES;
-					const LmSkinnyWide act_a = LmSkinnyFormat<LmFp8>::Load(act0 + c * 16u);
-					const LmSkinnyWide act_b = LmSkinnyFormat<LmFp8>::Load(act0 + c1 * 16u);
-					const uint4 vw0a = __ldcs(w0 + c), vw1a = __ldcs(w1p + c);
-					const uint4 vw2a = __ldcs(w2p + c), vw3a = __ldcs(w3p + c);
-					const uint4 vw0b = __ldcs(w0 + c1), vw1b = __ldcs(w1p + c1);
-					const uint4 vw2b = __ldcs(w2p + c1), vw3b = __ldcs(w3p + c1);
-					const uint32_t sc_a = c >> SC_SHIFT, sc_b = c1 >> SC_SHIFT;
-					la0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw0a, act_a), la0);
-					la1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw1a, act_a), la1);
-					la2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw2a, act_a), la2);
-					la3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw3a, act_a), la3);
-					la0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw0b, act_b), la0);
-					la1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw1b, act_b), la1);
-					la2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw2b, act_b), la2);
-					la3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw3b, act_b), la3);
-				}
-				if ( c < CHUNKS )
-				{
-					const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(act0 + c * 16u);
+					const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(act_base + c * 16u);
 					const uint32_t sc_idx = c >> SC_SHIFT;
-					const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1p + c);
-					const uint4 vw2 = __ldcs(w2p + c), vw3 = __ldcs(w3p + c);
-					la0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw0, act), la0);
-					la1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw1, act), la1);
-					la2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw2, act), la2);
-					la3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw3, act), la3);
+					la0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + c), act), la0);
+					la1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + wo1 + c), act), la1);
+					la2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + wo2 + c), act), la2);
+					la3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + wo3 + c), act), la3);
 				}
 				#pragma unroll
 				for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
@@ -2552,14 +2475,11 @@ static void HyMoeFastW2Kernel(const uint8_t *__restrict__ w2, const void *__rest
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const uint32_t sc_idx = c >> SC_SHIFT;
-					float af[RG][16];
-					HyLoadUnpackRows16<RG>(act_ptr, c * 16u, cnt, af);
-					const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1p + c);
-					const uint4 vw2 = __ldcs(w2p + c), vw3 = __ldcs(w3p + c);
-					HyFp8AccumUnpacked<RG>(vw0, HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), af, cnt, a0);
-					HyFp8AccumUnpacked<RG>(vw1, HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), af, cnt, a1);
-					HyFp8AccumUnpacked<RG>(vw2, HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), af, cnt, a2);
-					HyFp8AccumUnpacked<RG>(vw3, HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), af, cnt, a3);
+					const uint16_t *cb = act_base + c * 16u;
+					HyFp8AccumContigRows<RG>(__ldcs(w0 + c), HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), cb, K, cnt, a0);
+					HyFp8AccumContigRows<RG>(__ldcs(w0 + wo1 + c), HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), cb, K, cnt, a1);
+					HyFp8AccumContigRows<RG>(__ldcs(w0 + wo2 + c), HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), cb, K, cnt, a2);
+					HyFp8AccumContigRows<RG>(__ldcs(w0 + wo3 + c), HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), cb, K, cnt, a3);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -2667,36 +2587,14 @@ static void HyMoeSmallW2FinalizeKernel(const uint8_t *__restrict__ w2, const voi
 				const uint64_t sc_base2 = has2 ? sc_base0 + 2u * SC_STRIDE : sc_base0;
 				const uint64_t sc_base3 = has3 ? sc_base0 + 3u * SC_STRIDE : sc_base0;
 				float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-				uint32_t c = sub;
-				for ( ; c + LANES < CHUNKS; c += 2u * LANES )
-				{
-					const uint32_t c1 = c + LANES;
-					const LmSkinnyWide act_a = LmSkinnyFormat<LmFp8>::Load(a_row + c * 16u);
-					const LmSkinnyWide act_b = LmSkinnyFormat<LmFp8>::Load(a_row + c1 * 16u);
-					const uint4 vw0a = __ldcs(w0 + c), vw1a = __ldcs(w1 + c);
-					const uint4 vw2a = __ldcs(w2p + c), vw3a = __ldcs(w3p + c);
-					const uint4 vw0b = __ldcs(w0 + c1), vw1b = __ldcs(w1 + c1);
-					const uint4 vw2b = __ldcs(w2p + c1), vw3b = __ldcs(w3p + c1);
-					const uint32_t sc_a = c >> SC_SHIFT, sc_b = c1 >> SC_SHIFT;
-					acc0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw0a, act_a), acc0);
-					acc1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw1a, act_a), acc1);
-					acc2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw2a, act_a), acc2);
-					acc3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_a), LmSkinnyFormat<LmFp8>::Chunk(vw3a, act_a), acc3);
-					acc0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw0b, act_b), acc0);
-					acc1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw1b, act_b), acc1);
-					acc2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw2b, act_b), acc2);
-					acc3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_b), LmSkinnyFormat<LmFp8>::Chunk(vw3b, act_b), acc3);
-				}
-				if ( c < CHUNKS )
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const LmSkinnyWide act = LmSkinnyFormat<LmFp8>::Load(a_row + c * 16u);
 					const uint32_t sc_idx = c >> SC_SHIFT;
-					const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1 + c);
-					const uint4 vw2 = __ldcs(w2p + c), vw3 = __ldcs(w3p + c);
-					acc0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw0, act), acc0);
-					acc1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw1, act), acc1);
-					acc2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw2, act), acc2);
-					acc3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(vw3, act), acc3);
+					acc0 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w0 + c), act), acc0);
+					acc1 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w1 + c), act), acc1);
+					acc2 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w2p + c), act), acc2);
+					acc3 = fmaf(HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), LmSkinnyFormat<LmFp8>::Chunk(__ldcs(w3p + c), act), acc3);
 				}
 				#pragma unroll
 				for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
@@ -2745,110 +2643,14 @@ static void HyMoeFinalizeKernel(const uint16_t *__restrict__ packed, const uint3
 	LmMoeLocalFinalizeBody<false>(packed, route_packed_row, route_expert, (const float *)0, shared, output, top_k, local_experts, width);
 }
 
-template<class Format, uint32_t A_ROW_BYTES, uint32_t B_ROW_BYTES>
-static __device__ __forceinline__ void HyMoeMmaComputeTile(uint32_t stage_a, uint32_t stage_w1, uint32_t stage_w3, const LmScaleTensor &s1,
-	const LmScaleTensor &s3, uint32_t exp, uint32_t col, uint32_t kt, uint32_t warp_n, uint32_t ldm_a_row, uint32_t ldm_a_col, uint32_t lane,
-	float g_tot[2][4], float u_tot[2][4])
-{
-	using Weight = LmStreamWeight<Format>;
-	constexpr uint32_t SCALE_K = LmStreamScaleK<Format>();
-	constexpr uint32_t SCALE_BLOCKS = 128u / SCALE_K;
-	constexpr bool PACK4_UE8M0 = LmStreamPack4Ue8m0<Format>();
-	if constexpr ( PACK4_UE8M0 )
-	{
-		uint32_t sp1[2][2], sp3[2][2];
-		#pragma unroll
-		for ( uint32_t j = 0u; j < 2u; ++j )
-		{
-			sp1[j][0] = LmStreamScalePack4(s1, exp, col + j * 8u, kt * SCALE_BLOCKS);
-			sp1[j][1] = LmStreamScalePack4(s1, exp, col + j * 8u + 1u, kt * SCALE_BLOCKS);
-			sp3[j][0] = LmStreamScalePack4(s3, exp, col + j * 8u, kt * SCALE_BLOCKS);
-			sp3[j][1] = LmStreamScalePack4(s3, exp, col + j * 8u + 1u, kt * SCALE_BLOCKS);
-		}
-		#pragma unroll
-		for ( uint32_t step = 0u; step < 4u; ++step )
-		{
-			uint32_t b1[2][4], b3[2][4], a0[4], a1[4];
-			Weight::template FragmentPair<B_ROW_BYTES>(stage_w1, warp_n * 16u, step, lane, b1[0], b1[1]);
-			Weight::template FragmentPair<B_ROW_BYTES>(stage_w3, warp_n * 16u, step, lane, b3[0], b3[1]);
-			LmStreamLdMatrix4(a0, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
-			LmStreamLdMatrix4(a1, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + 2u + ldm_a_col) * 16u);
-			#pragma unroll
-			for ( uint32_t j = 0u; j < 2u; ++j )
-			{
-				const float sc1_0 = LmUe8m0ToFloat((uint8_t)(sp1[j][0] & 0xffu));
-				const float sc1_1 = LmUe8m0ToFloat((uint8_t)(sp1[j][1] & 0xffu));
-				const float sc3_0 = LmUe8m0ToFloat((uint8_t)(sp3[j][0] & 0xffu));
-				const float sc3_1 = LmUe8m0ToFloat((uint8_t)(sp3[j][1] & 0xffu));
-				sp1[j][0] >>= 8u; sp1[j][1] >>= 8u;
-				sp3[j][0] >>= 8u; sp3[j][1] >>= 8u;
-				uint32_t b1_0[2] = { b1[j][0], b1[j][1] }, b1_1[2] = { b1[j][2], b1[j][3] };
-				uint32_t b3_0[2] = { b3[j][0], b3[j][1] }, b3_1[2] = { b3[j][2], b3[j][3] };
-				float pg[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, pu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-				LmMmaBf16(pg, a0, b1_0);
-				LmMmaBf16(pg, a1, b1_1);
-				LmMmaBf16(pu, a0, b3_0);
-				LmMmaBf16(pu, a1, b3_1);
-				g_tot[j][0] = fmaf(pg[0], sc1_0, g_tot[j][0]);
-				g_tot[j][1] = fmaf(pg[1], sc1_1, g_tot[j][1]);
-				g_tot[j][2] = fmaf(pg[2], sc1_0, g_tot[j][2]);
-				g_tot[j][3] = fmaf(pg[3], sc1_1, g_tot[j][3]);
-				u_tot[j][0] = fmaf(pu[0], sc3_0, u_tot[j][0]);
-				u_tot[j][1] = fmaf(pu[1], sc3_1, u_tot[j][1]);
-				u_tot[j][2] = fmaf(pu[2], sc3_0, u_tot[j][2]);
-				u_tot[j][3] = fmaf(pu[3], sc3_1, u_tot[j][3]);
-			}
-		}
-	}
-	else
-	{
-		float pg[2][4] = {}, pu[2][4] = {};
-		#pragma unroll
-		for ( uint32_t step = 0u; step < 4u; ++step )
-		{
-			uint32_t b1[2][4], b3[2][4], a0[4], a1[4];
-			Weight::template FragmentPair<B_ROW_BYTES>(stage_w1, warp_n * 16u, step, lane, b1[0], b1[1]);
-			Weight::template FragmentPair<B_ROW_BYTES>(stage_w3, warp_n * 16u, step, lane, b3[0], b3[1]);
-			LmStreamLdMatrix4(a0, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
-			LmStreamLdMatrix4(a1, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + 2u + ldm_a_col) * 16u);
-			#pragma unroll
-			for ( uint32_t j = 0u; j < 2u; ++j )
-			{
-				uint32_t b1_0[2] = { b1[j][0], b1[j][1] }, b1_1[2] = { b1[j][2], b1[j][3] };
-				uint32_t b3_0[2] = { b3[j][0], b3[j][1] }, b3_1[2] = { b3[j][2], b3[j][3] };
-				LmMmaBf16(pg[j], a0, b1_0);
-				LmMmaBf16(pg[j], a1, b1_1);
-				LmMmaBf16(pu[j], a0, b3_0);
-				LmMmaBf16(pu[j], a1, b3_1);
-			}
-		}
-		#pragma unroll
-		for ( uint32_t j = 0u; j < 2u; ++j )
-		{
-			const float sc1_0 = LmStreamScaleLoad<Format>(s1, exp, col + j * 8u, kt);
-			const float sc1_1 = LmStreamScaleLoad<Format>(s1, exp, col + j * 8u + 1u, kt);
-			const float sc3_0 = LmStreamScaleLoad<Format>(s3, exp, col + j * 8u, kt);
-			const float sc3_1 = LmStreamScaleLoad<Format>(s3, exp, col + j * 8u + 1u, kt);
-			g_tot[j][0] = fmaf(pg[j][0], sc1_0, g_tot[j][0]);
-			g_tot[j][1] = fmaf(pg[j][1], sc1_1, g_tot[j][1]);
-			g_tot[j][2] = fmaf(pg[j][2], sc1_0, g_tot[j][2]);
-			g_tot[j][3] = fmaf(pg[j][3], sc1_1, g_tot[j][3]);
-			u_tot[j][0] = fmaf(pu[j][0], sc3_0, u_tot[j][0]);
-			u_tot[j][1] = fmaf(pu[j][1], sc3_1, u_tot[j][1]);
-			u_tot[j][2] = fmaf(pu[j][2], sc3_0, u_tot[j][2]);
-			u_tot[j][3] = fmaf(pu[j][3], sc3_1, u_tot[j][3]);
-		}
-	}
-}
-
 template<class G, class Format, uint32_t TILE_M, uint32_t STAGES>
-__global__ __launch_bounds__((TILE_M / 16u) * 128u, TILE_M == 16u && STAGES == 2u ? 2 : 1)
+__global__ __launch_bounds__((TILE_M / 16u) * 128u, 1)
 static void HyFp8MoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleTensor s1, const uint8_t *__restrict__ w3, LmScaleTensor s3,
 	const uint16_t *__restrict__ activation, const float *__restrict__ packed_weight, const uint32_t *__restrict__ route_source_token,
 	const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output)
 {
 	using Weight = LmStreamWeight<Format>;
-	constexpr uint32_t TILE_N = 64u, TILE_K = 128u;
+	constexpr uint32_t TILE_N = 32u, TILE_K = 256u;
 	constexpr uint32_t WARPS_M = TILE_M / 16u, WARPS_N = 4u;
 	constexpr uint32_t THREADS = WARPS_M * WARPS_N * 32u;
 	constexpr uint32_t K = G::kHidden, N = G::kMoeInter;
@@ -2861,6 +2663,9 @@ static void HyFp8MoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleT
 	constexpr uint32_t A_PER_THREAD = A_CHUNKS / THREADS;
 	constexpr uint32_t B_CHUNKS = TILE_N * B_ROW_CHUNKS;
 	constexpr uint32_t B_PER_THREAD = B_CHUNKS / THREADS;
+	constexpr uint32_t SCALE_K = LmStreamScaleK<Format>();
+	constexpr uint32_t SCALE_BLOCKS = TILE_K / SCALE_K;
+	constexpr bool PACK4_UE8M0 = LmStreamPack4Ue8m0<Format>();
 	static_assert(Weight::kScaled && Weight::kElementBytes == 1u && K % TILE_K == 0u && N % TILE_N == 0u &&
 		A_CHUNKS % THREADS == 0u && B_CHUNKS % THREADS == 0u && STAGES >= 2u,
 		"fused FP8/MXFP8 MoE MMA kernel matches expert geometry");
@@ -2958,7 +2763,7 @@ static void HyFp8MoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleT
 			b1_base += TILE_K;
 			b3_base += TILE_K;
 		};
-		float g_tot[2][4] = {}, u_tot[2][4] = {};
+		float g_tot[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, u_tot[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
 		#pragma unroll
 		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
@@ -2969,7 +2774,7 @@ static void HyFp8MoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleT
 			kp++;
 			advance_stage(sp_off);
 		}
-		const uint32_t col = neuron_base + warp_n * 16u + quad * 2u;
+		const uint32_t col = neuron_base + warp_n * 8u + quad * 2u;
 		for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
 		{
 			if constexpr ( STAGES > 2u )
@@ -2987,8 +2792,84 @@ static void HyFp8MoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleT
 			const uint32_t stage_a = shared_base + sc_off;
 			const uint32_t stage_w1 = stage_a + A_BYTES;
 			const uint32_t stage_w3 = stage_w1 + B_BYTES;
-			HyMoeMmaComputeTile<Format, A_ROW_BYTES, B_ROW_BYTES>(stage_a, stage_w1, stage_w3, s1, s3, exp, col, kt, warp_n, ldm_a_row,
-				ldm_a_col, lane, g_tot, u_tot);
+			if constexpr ( PACK4_UE8M0 )
+			{
+				#pragma unroll
+				for ( uint32_t blk = 0u; blk < 2u; ++blk )
+				{
+					uint32_t sp1_0 = LmStreamScalePack4(s1, exp, col, kt * SCALE_BLOCKS + blk * 4u);
+					uint32_t sp1_1 = LmStreamScalePack4(s1, exp, col + 1u, kt * SCALE_BLOCKS + blk * 4u);
+					uint32_t sp3_0 = LmStreamScalePack4(s3, exp, col, kt * SCALE_BLOCKS + blk * 4u);
+					uint32_t sp3_1 = LmStreamScalePack4(s3, exp, col + 1u, kt * SCALE_BLOCKS + blk * 4u);
+					#pragma unroll
+					for ( uint32_t s = 0u; s < 4u; ++s )
+					{
+						const uint32_t step = blk * 4u + s;
+						const float sc1_0 = LmUe8m0ToFloat((uint8_t)(sp1_0 & 0xffu));
+						const float sc1_1 = LmUe8m0ToFloat((uint8_t)(sp1_1 & 0xffu));
+						const float sc3_0 = LmUe8m0ToFloat((uint8_t)(sp3_0 & 0xffu));
+						const float sc3_1 = LmUe8m0ToFloat((uint8_t)(sp3_1 & 0xffu));
+						sp1_0 >>= 8u; sp1_1 >>= 8u;
+						sp3_0 >>= 8u; sp3_1 >>= 8u;
+						uint32_t b1[4], b3[4], a0[4], a1[4];
+						Weight::template Fragment<B_ROW_BYTES>(stage_w1, warp_n * 8u, step, lane, b1);
+						Weight::template Fragment<B_ROW_BYTES>(stage_w3, warp_n * 8u, step, lane, b3);
+						LmStreamLdMatrix4(a0, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
+						LmStreamLdMatrix4(a1, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + 2u + ldm_a_col) * 16u);
+						uint32_t b1_0[2] = { b1[0], b1[1] }, b1_1[2] = { b1[2], b1[3] };
+						uint32_t b3_0[2] = { b3[0], b3[1] }, b3_1[2] = { b3[2], b3[3] };
+						float pg[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, pu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+						LmMmaBf16(pg, a0, b1_0);
+						LmMmaBf16(pg, a1, b1_1);
+						LmMmaBf16(pu, a0, b3_0);
+						LmMmaBf16(pu, a1, b3_1);
+						g_tot[0] = fmaf(pg[0], sc1_0, g_tot[0]);
+						g_tot[1] = fmaf(pg[1], sc1_1, g_tot[1]);
+						g_tot[2] = fmaf(pg[2], sc1_0, g_tot[2]);
+						g_tot[3] = fmaf(pg[3], sc1_1, g_tot[3]);
+						u_tot[0] = fmaf(pu[0], sc3_0, u_tot[0]);
+						u_tot[1] = fmaf(pu[1], sc3_1, u_tot[1]);
+						u_tot[2] = fmaf(pu[2], sc3_0, u_tot[2]);
+						u_tot[3] = fmaf(pu[3], sc3_1, u_tot[3]);
+					}
+				}
+			}
+			else
+			{
+				#pragma unroll
+				for ( uint32_t blk = 0u; blk < 2u; ++blk )
+				{
+					float pg[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, pu[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+					#pragma unroll
+					for ( uint32_t s = 0u; s < 4u; ++s )
+					{
+						const uint32_t step = blk * 4u + s;
+						uint32_t b1[4], b3[4], a0[4], a1[4];
+						Weight::template Fragment<B_ROW_BYTES>(stage_w1, warp_n * 8u, step, lane, b1);
+						Weight::template Fragment<B_ROW_BYTES>(stage_w3, warp_n * 8u, step, lane, b3);
+						LmStreamLdMatrix4(a0, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
+						LmStreamLdMatrix4(a1, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + 2u + ldm_a_col) * 16u);
+						uint32_t b1_0[2] = { b1[0], b1[1] }, b1_1[2] = { b1[2], b1[3] };
+						uint32_t b3_0[2] = { b3[0], b3[1] }, b3_1[2] = { b3[2], b3[3] };
+						LmMmaBf16(pg, a0, b1_0);
+						LmMmaBf16(pg, a1, b1_1);
+						LmMmaBf16(pu, a0, b3_0);
+						LmMmaBf16(pu, a1, b3_1);
+					}
+					const float sc1_0 = LmStreamScaleLoad<Format>(s1, exp, col, kt * 2u + blk);
+					const float sc1_1 = LmStreamScaleLoad<Format>(s1, exp, col + 1u, kt * 2u + blk);
+					const float sc3_0 = LmStreamScaleLoad<Format>(s3, exp, col, kt * 2u + blk);
+					const float sc3_1 = LmStreamScaleLoad<Format>(s3, exp, col + 1u, kt * 2u + blk);
+					g_tot[0] = fmaf(pg[0], sc1_0, g_tot[0]);
+					g_tot[1] = fmaf(pg[1], sc1_1, g_tot[1]);
+					g_tot[2] = fmaf(pg[2], sc1_0, g_tot[2]);
+					g_tot[3] = fmaf(pg[3], sc1_1, g_tot[3]);
+					u_tot[0] = fmaf(pu[0], sc3_0, u_tot[0]);
+					u_tot[1] = fmaf(pu[1], sc3_1, u_tot[1]);
+					u_tot[2] = fmaf(pu[2], sc3_0, u_tot[2]);
+					u_tot[3] = fmaf(pu[3], sc3_1, u_tot[3]);
+				}
+			}
 			advance_stage(sc_off);
 		}
 		LmStreamWait<0u>();
@@ -2999,13 +2880,9 @@ static void HyFp8MoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleT
 			if ( row < exp_limit )
 			{
 				const float wt = __ldg(packed_weight + row);
-				#pragma unroll
-				for ( uint32_t j = 0u; j < 2u; ++j )
-				{
-					const float v0 = SparkMathGateLimitedGlu(SparkMathRoundBf16(g_tot[j][e]), SparkMathRoundBf16(u_tot[j][e]), G::kSwigluLimit) * wt;
-					const float v1 = SparkMathGateLimitedGlu(SparkMathRoundBf16(g_tot[j][e + 1u]), SparkMathRoundBf16(u_tot[j][e + 1u]), G::kSwigluLimit) * wt;
-					*(uint32_t *)(output + (uint64_t)row * N + col + j * 8u) = LmPackBf16Pair(v0, v1);
-				}
+				const float v0 = SparkMathGateLimitedGlu(SparkMathRoundBf16(g_tot[e]), SparkMathRoundBf16(u_tot[e]), G::kSwigluLimit) * wt;
+				const float v1 = SparkMathGateLimitedGlu(SparkMathRoundBf16(g_tot[e + 1u]), SparkMathRoundBf16(u_tot[e + 1u]), G::kSwigluLimit) * wt;
+				*(uint32_t *)(output + (uint64_t)row * N + col) = LmPackBf16Pair(v0, v1);
 			}
 		}
 		if ( tile + gridDim.x < total_tiles )
@@ -3367,7 +3244,10 @@ struct HyModel : CudaStage<HyModel<G>>
 		}
 		const uint32_t gather_ctx = step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context : 0u;
 		const uint32_t old_ctx = gather_ctx > rows ? gather_ctx - rows : 0u;
-		const uint64_t send_cap_bytes = (uint64_t)degree * state->partial_stride * sizeof(float);
+		const uint64_t select_rows_max = (((uint64_t)state->max_rows + degree - 1u) / degree) * degree;
+		const uint64_t comm_min = (uint64_t)degree * state->partial_stride * sizeof(float);
+		const uint64_t cand_min = select_rows_max * G::kIndexTopk * sizeof(uint2);
+		const uint64_t send_cap_bytes = comm_min > cand_min ? comm_min : cand_min;
 		const uint32_t sparse_blocks = (rows + 3u) / 4u;
 		const uint32_t union_cap = 4u * G::kIndexTopk;
 		const uint64_t union_entries = (uint64_t)sparse_blocks * union_cap;
@@ -3675,29 +3555,23 @@ struct HyModel : CudaStage<HyModel<G>>
 	static SparkStatus LaunchFusedMoeMma(const State *state, const HyLayer *layer, const uint16_t *normed, uint32_t sms, SparkGpuStream stream)
 	{
 		constexpr uint32_t THREADS = (TILE_M / 16u) * 128u;
-		constexpr uint32_t STAGE_BYTES = TILE_M * 128u * 2u + 2u * 64u * 128u;
+		constexpr uint32_t STAGE_BYTES = TILE_M * 256u * 2u + 2u * 32u * 256u;
 		constexpr uint32_t SMEM_BYTES = STAGES * STAGE_BYTES + (G::kLocalExperts + 1u) * (uint32_t)sizeof(uint32_t);
-		static std::atomic<uint64_t> granted(0u);
-		static std::atomic<int32_t> resident(1);
-		int dev = 0, per_sm = 1;
-		if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( (granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
+		if constexpr ( SMEM_BYTES > 49152u )
 		{
-			if constexpr ( SMEM_BYTES > 49152u )
+			static std::atomic<uint64_t> granted(0u);
+			int dev = 0;
+			if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			if ( (granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
 			{
 				if ( SparkGpuFuncSetAttribute((const void *)HyFp8MoeMmaW1W3SwigluKernel<G, Format, TILE_M, STAGES>,
 						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)SMEM_BYTES) != SPARK_GPU_SUCCESS )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
 			}
-			if ( SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, HyFp8MoeMmaW1W3SwigluKernel<G, Format, TILE_M, STAGES>, THREADS,
-					(int)SMEM_BYTES) != SPARK_GPU_SUCCESS || per_sm < 1 )
-				per_sm = 1;
-			resident.store(per_sm);
-			granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
 		}
-		const uint32_t blocks = sms * (uint32_t)resident.load();
-		(void)LM_LAUNCH_DEPENDENT((HyFp8MoeMmaW1W3SwigluKernel<G, Format, TILE_M, STAGES>), blocks, THREADS, SMEM_BYTES, stream,
+		(void)LM_LAUNCH_DEPENDENT((HyFp8MoeMmaW1W3SwigluKernel<G, Format, TILE_M, STAGES>), sms, THREADS, SMEM_BYTES, stream,
 			(const uint8_t *)layer->moe_w1.weight, Scales(layer->moe_w1, G::kLocalExperts, G::kMoeInter, G::kHidden),
 			(const uint8_t *)layer->moe_w3.weight, Scales(layer->moe_w3, G::kLocalExperts, G::kMoeInter, G::kHidden),
 			normed, state->packed_weight, state->route_source_token, state->group_row_offset, state->expert_act);
@@ -3778,7 +3652,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		const uint32_t force_stream = PrefillUnified(step) ? 1u : 0u;
 		const uint32_t sms = step->multiprocessors != 0u ? step->multiprocessors : 48u;
 		const uint32_t expected_local = (uint32_t)(((uint64_t)routes * G::kLocalExperts + G::kExperts - 1u) / G::kExperts);
-		if ( force_stream == 0u && (exact != 0u || rows <= 64u || expected_local <= 4u * G::kLocalExperts) &&
+		if ( force_stream == 0u && (exact != 0u || rows <= 8u) &&
 			layer->moe_w1.codec != HY_CODEC_BF16 && layer->moe_w1.codec == layer->moe_w3.codec && layer->moe_w1.codec == layer->moe_w2.codec )
 		{
 			const uint32_t persistent_blocks = sms * 4u;
@@ -3829,7 +3703,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		expert_routes.top_k = G::kTopK;
 		expert_routes.local_experts = G::kLocalExperts;
 		expert_routes.multiprocessors = step->multiprocessors;
-		if ( exact == 0u && (force_stream != 0u || rows > 64u) && layer->moe_w1.codec != HY_CODEC_BF16 &&
+		if ( exact == 0u && (force_stream != 0u || rows > 8u) && layer->moe_w1.codec != HY_CODEC_BF16 &&
 			layer->moe_w1.codec == layer->moe_w3.codec )
 		{
 			SparkStatus mma_status;
@@ -3839,8 +3713,8 @@ struct HyModel : CudaStage<HyModel<G>>
 					LaunchFusedMoeMma<LmMxfp8, 32u, 3u>(state, layer, normed, sms, stream);
 			else
 				mma_status = layer->moe_w1.codec == HY_CODEC_FP8_BLOCK128 ?
-					LaunchFusedMoeMma<LmFp8, 16u, 2u>(state, layer, normed, sms, stream) :
-					LaunchFusedMoeMma<LmMxfp8, 16u, 2u>(state, layer, normed, sms, stream);
+					LaunchFusedMoeMma<LmFp8, 16u, 3u>(state, layer, normed, sms, stream) :
+					LaunchFusedMoeMma<LmMxfp8, 16u, 3u>(state, layer, normed, sms, stream);
 			if ( mma_status != SPARK_STATUS_OK )
 				return mma_status;
 			if ( ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, exact, stream, 1u) != LM_LAUNCH_OK )
@@ -3885,11 +3759,8 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( rows <= 16u )
 			(void)LM_LAUNCH_DEPENDENT((HyHcPostDotSmallKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST>), dim3(rows, 16u), 128u, 0,
 				frame.stream, state->streams, state->hc_post, state->partial, fn, hc_buf);
-		else if ( rows <= 64u )
-			(void)LM_LAUNCH_DEPENDENT((HyHcPostDotTileKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST, 8u>), dim3((rows + 7u) / 8u, 16u),
-				128u, 0, frame.stream, state->streams, state->hc_post, state->partial, fn, hc_buf, rows);
 		else
-			(void)LM_LAUNCH_DEPENDENT((HyHcPostDotTileKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST, 16u>), dim3((rows + 15u) / 16u, 16u),
+			(void)LM_LAUNCH_DEPENDENT((HyHcPostDotTileKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST, 8u>), dim3((rows + 7u) / 8u, 16u),
 				128u, 0, frame.stream, state->streams, state->hc_post, state->partial, fn, hc_buf, rows);
 		(void)LM_LAUNCH_DEPENDENT((HyHcMixNormSmallKernel<G::kStreams, 2u * G::kStreams, G::kHidden>), rows, HY_THREADS, 0, frame.stream,
 			state->streams, hc_buf, hc_base, hc_scale, state->hc_post, norm_w, state->normed, G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude);
@@ -3962,6 +3833,9 @@ struct HyModel : CudaStage<HyModel<G>>
 		const uint64_t unit_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
 		const uint64_t width = rows * unit_bytes, chunk = rows < HY_SELECT_CHUNK ? rows : HY_SELECT_CHUNK;
 		const uint64_t select_rows = ((rows + state->tp_degree - 1u) / state->tp_degree) * state->tp_degree;
+		const uint64_t comm_min = (uint64_t)state->tp_degree * state->partial_stride * sizeof(float);
+		const uint64_t cand_min = select_rows * G::kIndexTopk * sizeof(uint2);
+		const uint64_t comm_bytes = comm_min > cand_min ? comm_min : cand_min;
 		const CudaStageSlice plan[] =
 		{
 			{ (void **)&state->streams, rows * S::kResidual * sizeof(uint16_t) },
@@ -3974,8 +3848,8 @@ struct HyModel : CudaStage<HyModel<G>>
 			{ (void **)&state->query, (uint64_t)state->indexing_units_max * unit_bytes },
 			{ (void **)&state->kv, rows * S::kSlot * sizeof(uint16_t) },
 			{ (void **)&state->gathered, (uint64_t)state->tp_degree * state->indexing_units_max * unit_bytes },
-			{ (void **)&state->send, (uint64_t)state->tp_degree * state->partial_stride * sizeof(float) },
-			{ (void **)&state->received, (uint64_t)state->tp_degree * state->partial_stride * sizeof(float) },
+			{ (void **)&state->send, comm_bytes },
+			{ (void **)&state->received, comm_bytes },
 			{ (void **)&state->latent, rows * S::kRankHeads * G::kLatent * sizeof(uint16_t) },
 			{ (void **)&state->value, rows * S::kRankHeads * G::kValueDim * sizeof(uint16_t) },
 			{ (void **)&state->gate, rows * S::kRankHeads * G::kValueDim * sizeof(uint16_t) },

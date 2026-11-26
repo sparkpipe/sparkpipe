@@ -925,192 +925,6 @@ static void MimoGqaDecodeKernel(LmKvShardView cache, const uint16_t *__restrict_
 	LmDependentRelease();
 }
 
-template<class Kv, uint32_t KVH, uint32_t HD, uint32_t VD, uint32_t HEADS, uint32_t SPLITS, bool TREE>
-__global__ __launch_bounds__((HEADS / KVH) * 32u, 2)
-static void MimoGqaFullSplitDecodeKernel(LmKvShardView cache, const uint16_t *__restrict__ query_bf16, const uint32_t *__restrict__ sequence_of_row,
-	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, float qk_scale, float *__restrict__ split_buf,
-	uint32_t row_first, uint32_t chunk_rows, const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets)
-{
-	constexpr uint32_t GRP = HEADS / KVH;
-	constexpr uint32_t KEYS = HD / 32u;
-	constexpr uint32_t VALS = VD / 32u;
-	constexpr uint32_t SPLIT_STRIDE = VD + 4u;
-	static_assert(HD == 192u && VD == 128u && (HEADS % KVH) == 0u, "supported MiMo full GQA split-KV geometry");
-	const uint32_t r_local = blockIdx.x, kv_head = blockIdx.y, split = blockIdx.z;
-	const uint32_t row = row_first + r_local;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t head = kv_head * GRP + warp;
-	LmDependentWait();
-	if ( r_local >= chunk_rows || warp >= GRP || split >= SPLITS )
-	{
-		LmDependentRelease();
-		return;
-	}
-	float *dst = split_buf + (((uint64_t)r_local * HEADS + head) * SPLITS + split) * SPLIT_STRIDE;
-	const uint32_t sequence = __ldg(sequence_of_row + row);
-	if ( !LmKvCheckSequence(cache.pages, row, sequence) )
-	{
-		if ( lane == 0u )
-		{
-			dst[VD] = -INFINITY;
-			dst[VD + 1u] = 0.0f;
-		}
-		LmDependentRelease();
-		return;
-	}
-	uint32_t limit = __ldg(context_length + sequence);
-	if ( row_position != 0 )
-	{
-		const uint32_t rp = __ldg(row_position + row);
-		if ( rp != LM_KV_POSITION_UNUSED && rp + 1u < limit )
-			limit = rp + 1u;
-	}
-	const uint32_t fork = TREE && fork_positions != 0 && __ldg(fork_positions + row) < limit ? __ldg(fork_positions + row) : limit;
-	const uint32_t offset = TREE && slot_offsets != 0 ? __ldg(slot_offsets + row) : 0u;
-	const uint32_t l0_begin = 0u;
-	const uint32_t l0_end = SparkKvShardLocalKeys(cache.shard, fork);
-	const uint32_t l1_begin = (TREE && fork < limit) ? SparkKvShardLocalKeys(cache.shard, fork + offset) : 0u;
-	const uint32_t l1_end = (TREE && fork < limit) ? SparkKvShardLocalKeys(cache.shard, limit + offset) : 0u;
-	const uint32_t l0_len = l0_end > l0_begin ? l0_end - l0_begin : 0u;
-	const uint32_t l1_len = l1_end > l1_begin ? l1_end - l1_begin : 0u;
-	const uint32_t total_local = l0_len + l1_len;
-	const uint32_t raw_chunk = (total_local + SPLITS - 1u) / SPLITS;
-	const uint32_t chunk_k = raw_chunk > 32u ? raw_chunk : 32u;
-	const uint32_t s_begin = split * chunk_k;
-	if ( s_begin >= total_local )
-	{
-		if ( lane == 0u )
-		{
-			dst[VD] = -INFINITY;
-			dst[VD + 1u] = 0.0f;
-		}
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t s_end = s_begin + chunk_k < total_local ? s_begin + chunk_k : total_local;
-	float query[KEYS], acc[VALS];
-	{
-		const uint32_t *qs = (const uint32_t *)(query_bf16 + ((uint64_t)row * HEADS + head) * HD + lane * KEYS);
-		#pragma unroll
-		for ( uint32_t i = 0u; i < 3u; ++i )
-		{
-			const uint32_t w = __ldg(qs + i);
-			query[2u * i] = __uint_as_float(w << 16u);
-			query[2u * i + 1u] = __uint_as_float(w & 0xffff0000u);
-		}
-	}
-	#pragma unroll
-	for ( uint32_t i = 0u; i < VALS; ++i )
-		acc[i] = 0.0f;
-	const float log2e = 1.4426950408889634f;
-	float running_max = -INFINITY, running_sum = 0.0f;
-	for ( uint32_t idx = s_begin; idx < s_end; ++idx )
-	{
-		const uint32_t local = idx < l0_len ? (l0_begin + idx) : (l1_begin + (idx - l0_len));
-		const uint32_t position = SparkKvShardLocalPosition(cache.shard, local);
-		const uint8_t *slot = LmKvShardSlotRequired<Kv>(cache, sequence, position, row, LM_KV_ACCESS_READ);
-		if ( slot == 0 )
-		{
-			LmDependentRelease();
-			return;
-		}
-		const uint32_t *ks = (const uint32_t *)((const uint16_t *)slot + kv_head * HD + lane * KEYS);
-		const uint2 vw = __ldg((const uint2 *)((const uint16_t *)slot + KVH * HD + kv_head * VD) + lane);
-		const uint32_t k0 = __ldg(ks + 0u), k1 = __ldg(ks + 1u), k2 = __ldg(ks + 2u);
-		float score = query[0] * __uint_as_float(k0 << 16u);
-		score = fmaf(query[1], __uint_as_float(k0 & 0xffff0000u), score);
-		score = fmaf(query[2], __uint_as_float(k1 << 16u), score);
-		score = fmaf(query[3], __uint_as_float(k1 & 0xffff0000u), score);
-		score = fmaf(query[4], __uint_as_float(k2 << 16u), score);
-		score = fmaf(query[5], __uint_as_float(k2 & 0xffff0000u), score);
-		#pragma unroll
-		for ( uint32_t off = 16u; off > 0u; off >>= 1u )
-			score += __shfl_xor_sync(0xffffffffu, score, off);
-		const float scaled = score * qk_scale;
-		const float prev = running_max;
-		running_max = fmaxf(prev, scaled);
-		const float rescale = prev == -INFINITY ? 0.0f : SparkMathExp2Fast((prev - running_max) * log2e);
-		const float wt = SparkMathExp2Fast((scaled - running_max) * log2e);
-		running_sum = fmaf(running_sum, rescale, wt);
-		const float vwt = SparkMathAttentionValueWeight(wt);
-		acc[0] = fmaf(acc[0], rescale, vwt * __uint_as_float(vw.x << 16u));
-		acc[1] = fmaf(acc[1], rescale, vwt * __uint_as_float(vw.x & 0xffff0000u));
-		acc[2] = fmaf(acc[2], rescale, vwt * __uint_as_float(vw.y << 16u));
-		acc[3] = fmaf(acc[3], rescale, vwt * __uint_as_float(vw.y & 0xffff0000u));
-	}
-	if ( lane == 0u )
-	{
-		dst[VD] = running_max;
-		dst[VD + 1u] = running_sum;
-	}
-	float2 *dst2 = (float2 *)(dst + lane * 4u);
-	dst2[0] = make_float2(acc[0], acc[1]);
-	dst2[1] = make_float2(acc[2], acc[3]);
-	LmDependentRelease();
-}
-
-template<uint32_t HEADS, uint32_t VD, uint32_t TP_DEGREE, uint32_t SPLITS>
-__global__ __launch_bounds__(128u, 4)
-static void MimoGqaFullSplitReduceKernel(const float *__restrict__ split_buf, float *__restrict__ send, uint64_t destination_stride,
-	uint32_t row_first, uint32_t chunk_rows)
-{
-	constexpr uint32_t RANK_HEADS = HEADS / TP_DEGREE;
-	constexpr uint32_t WIDTH = RANK_HEADS * VD;
-	constexpr uint32_t RECORD = WIDTH + 2u * (RANK_HEADS + 1u);
-	constexpr uint32_t SPLIT_STRIDE = VD + 4u;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t r_local = blockIdx.x, head = blockIdx.y * 4u + warp;
-	LmDependentWait();
-	if ( r_local < chunk_rows && head < HEADS )
-	{
-		const float *h_base = split_buf + ((uint64_t)r_local * HEADS + head) * SPLITS * SPLIT_STRIDE;
-		float m_arr[SPLITS], l_arr[SPLITS];
-		float gm = -INFINITY;
-		#pragma unroll
-		for ( uint32_t s = 0u; s < SPLITS; ++s )
-		{
-			const float ms = __ldg(h_base + (uint64_t)s * SPLIT_STRIDE + VD);
-			const float ls = __ldg(h_base + (uint64_t)s * SPLIT_STRIDE + VD + 1u);
-			m_arr[s] = ms;
-			l_arr[s] = ls;
-			gm = fmaxf(gm, ms);
-		}
-		float tot_sum = 0.0f, acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-		if ( gm != -INFINITY )
-		{
-			#pragma unroll
-			for ( uint32_t s = 0u; s < SPLITS; ++s )
-			{
-				if ( m_arr[s] != -INFINITY )
-				{
-					const float sc = __expf(m_arr[s] - gm);
-					tot_sum = fmaf(l_arr[s], sc, tot_sum);
-					const float2 *src2 = (const float2 *)(h_base + (uint64_t)s * SPLIT_STRIDE + lane * 4u);
-					const float2 v0 = __ldg(src2);
-					const float2 v1 = __ldg(src2 + 1u);
-					acc0 = fmaf(v0.x, sc, acc0);
-					acc1 = fmaf(v0.y, sc, acc1);
-					acc2 = fmaf(v1.x, sc, acc2);
-					acc3 = fmaf(v1.y, sc, acc3);
-				}
-			}
-		}
-		const uint32_t row = row_first + r_local;
-		const uint32_t destination = head / RANK_HEADS;
-		const uint32_t slot_index = head - destination * RANK_HEADS;
-		float *base = send + (uint64_t)destination * destination_stride + (uint64_t)row * RECORD;
-		if ( lane == 0u )
-		{
-			base[WIDTH + 2u * slot_index] = gm;
-			base[WIDTH + 2u * slot_index + 1u] = tot_sum;
-		}
-		float2 *dst2 = (float2 *)(base + slot_index * VD + lane * 4u);
-		dst2[0] = make_float2(acc0, acc1);
-		dst2[1] = make_float2(acc2, acc3);
-	}
-	LmDependentRelease();
-}
-
 template<class G>
 __global__ __launch_bounds__((G::kHeads / G::kTpDegree) * 32u, 4)
 static void MimoGqaShardMergeKernel(const float *__restrict__ received, uint64_t source_stride, uint32_t rank, uint16_t *__restrict__ output_bf16,
@@ -1326,51 +1140,34 @@ static void MimoMoeSiluPackedKernel(const uint16_t *__restrict__ gate, const uin
 }
 
 template<uint32_t RG>
-static __device__ __forceinline__ void MimoMxfp4Accum4Rows(uint4 w0, uint4 w1, uint4 w2, uint4 w3, float s0, float s1, float s2, float s3,
-	const uint16_t *const *act_ptr, uint32_t c_off, uint32_t cnt, float *a0, float *a1, float *a2, float *a3)
+static __device__ __forceinline__ void MimoMxfp4AccumRows(uint4 weight, float scale, const uint16_t *const *act_ptr, uint32_t c_off,
+	uint32_t cnt, float *acc)
 {
-	float p0[RG], p1[RG], p2[RG], p3[RG];
+	float lo_dot[RG];
 	{
-		const LmSkinnyE2m1HalfDecoded d0 = LmSkinnyDecodeE2m1Half(w0.x, w0.y);
-		const LmSkinnyE2m1HalfDecoded d1 = LmSkinnyDecodeE2m1Half(w1.x, w1.y);
-		const LmSkinnyE2m1HalfDecoded d2 = LmSkinnyDecodeE2m1Half(w2.x, w2.y);
-		const LmSkinnyE2m1HalfDecoded d3 = LmSkinnyDecodeE2m1Half(w3.x, w3.y);
+		const LmSkinnyE2m1HalfDecoded low = LmSkinnyDecodeE2m1Half(weight.x, weight.y);
 		#pragma unroll
 		for ( uint32_t r = 0u; r < RG; ++r )
 		{
 			if ( r < cnt )
 			{
-				const uint4 *src4 = (const uint4 *)(act_ptr[r] + c_off);
-				float af[16];
-				LmSkinnyUnpackBf16x8(__ldg(src4), af);
-				LmSkinnyUnpackBf16x8(__ldg(src4 + 1u), af + 8);
-				p0[r] = LmSkinnyDotPairs16(d0.pair, af);
-				p1[r] = LmSkinnyDotPairs16(d1.pair, af);
-				p2[r] = LmSkinnyDotPairs16(d2.pair, af);
-				p3[r] = LmSkinnyDotPairs16(d3.pair, af);
+				const uint4 *a4 = (const uint4 *)(act_ptr[r] + c_off);
+				lo_dot[r] = LmSkinnyAccumE2m1Half(low, __ldg(a4), __ldg(a4 + 1u));
 			}
 			else
-				p0[r] = p1[r] = p2[r] = p3[r] = 0.0f;
+				lo_dot[r] = 0.0f;
 		}
 	}
 	{
-		const LmSkinnyE2m1HalfDecoded d0 = LmSkinnyDecodeE2m1Half(w0.z, w0.w);
-		const LmSkinnyE2m1HalfDecoded d1 = LmSkinnyDecodeE2m1Half(w1.z, w1.w);
-		const LmSkinnyE2m1HalfDecoded d2 = LmSkinnyDecodeE2m1Half(w2.z, w2.w);
-		const LmSkinnyE2m1HalfDecoded d3 = LmSkinnyDecodeE2m1Half(w3.z, w3.w);
+		const LmSkinnyE2m1HalfDecoded high = LmSkinnyDecodeE2m1Half(weight.z, weight.w);
 		#pragma unroll
 		for ( uint32_t r = 0u; r < RG; ++r )
 		{
 			if ( r < cnt )
 			{
-				const uint4 *src4 = (const uint4 *)(act_ptr[r] + c_off);
-				float af[16];
-				LmSkinnyUnpackBf16x8(__ldg(src4 + 2u), af);
-				LmSkinnyUnpackBf16x8(__ldg(src4 + 3u), af + 8);
-				a0[r] = fmaf(s0, p0[r] + LmSkinnyDotPairs16(d0.pair, af), a0[r]);
-				a1[r] = fmaf(s1, p1[r] + LmSkinnyDotPairs16(d1.pair, af), a1[r]);
-				a2[r] = fmaf(s2, p2[r] + LmSkinnyDotPairs16(d2.pair, af), a2[r]);
-				a3[r] = fmaf(s3, p3[r] + LmSkinnyDotPairs16(d3.pair, af), a3[r]);
+				const uint4 *a4 = (const uint4 *)(act_ptr[r] + c_off);
+				const float d = lo_dot[r] + LmSkinnyAccumE2m1Half(high, __ldg(a4 + 2u), __ldg(a4 + 3u));
+				acc[r] = fmaf(scale, d, acc[r]);
 			}
 		}
 	}
@@ -1448,30 +1245,13 @@ static void MimoMoeFastW1W3SiluKernel(const uint8_t *__restrict__ w1, const uint
 			{
 				const uint16_t *act0 = act_ptr[0];
 				float lg0 = 0.0f, lu0 = 0.0f, lg1 = 0.0f, lu1 = 0.0f;
-				uint32_t c = sub;
-				for ( ; c + LANES < CHUNKS; c += 2u * LANES )
-				{
-					const uint32_t c1 = c + LANES;
-					const LmSkinnyQuad act_a = LmSkinnyFormat<LmMxfp4>::Load(act0 + c * 32u);
-					const LmSkinnyQuad act_b = LmSkinnyFormat<LmMxfp4>::Load(act0 + c1 * 32u);
-					const uint4 vw1_0a = __ldcs(w1_0 + c), vw3_0a = __ldcs(w3_0 + c);
-					const uint4 vw1_1a = __ldcs(w1_1 + c), vw3_1a = __ldcs(w3_1 + c);
-					const uint4 vw1_0b = __ldcs(w1_0 + c1), vw3_0b = __ldcs(w3_0 + c1);
-					const uint4 vw1_1b = __ldcs(w1_1 + c1), vw3_1b = __ldcs(w3_1 + c1);
-					lg0 = fmaf(LmUe8m0ToFloat(__ldg(sc1_0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1_0a, act_a), lg0);
-					lu0 = fmaf(LmUe8m0ToFloat(__ldg(sc3_0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3_0a, act_a), lu0);
-					lg1 = fmaf(LmUe8m0ToFloat(__ldg(sc1_1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1_1a, act_a), lg1);
-					lu1 = fmaf(LmUe8m0ToFloat(__ldg(sc3_1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3_1a, act_a), lu1);
-					lg0 = fmaf(LmUe8m0ToFloat(__ldg(sc1_0 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1_0b, act_b), lg0);
-					lu0 = fmaf(LmUe8m0ToFloat(__ldg(sc3_0 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3_0b, act_b), lu0);
-					lg1 = fmaf(LmUe8m0ToFloat(__ldg(sc1_1 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1_1b, act_b), lg1);
-					lu1 = fmaf(LmUe8m0ToFloat(__ldg(sc3_1 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3_1b, act_b), lu1);
-				}
-				if ( c < CHUNKS )
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(act0 + c * 32u);
-					const uint4 vw1_0 = __ldcs(w1_0 + c), vw3_0 = __ldcs(w3_0 + c);
-					const uint4 vw1_1 = __ldcs(w1_1 + c), vw3_1 = __ldcs(w3_1 + c);
+					const uint4 vw1_0 = __ldcs(w1_0 + c);
+					const uint4 vw3_0 = __ldcs(w3_0 + c);
+					const uint4 vw1_1 = __ldcs(w1_1 + c);
+					const uint4 vw3_1 = __ldcs(w3_1 + c);
 					lg0 = fmaf(LmUe8m0ToFloat(__ldg(sc1_0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1_0, act), lg0);
 					lu0 = fmaf(LmUe8m0ToFloat(__ldg(sc3_0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3_0, act), lu0);
 					lg1 = fmaf(LmUe8m0ToFloat(__ldg(sc1_1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1_1, act), lg1);
@@ -1505,10 +1285,11 @@ static void MimoMoeFastW1W3SiluKernel(const uint8_t *__restrict__ w1, const uint
 					g0[r] = u0[r] = g1[r] = u1[r] = 0.0f;
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
-					const uint4 vw1_0 = __ldcs(w1_0 + c), vw3_0 = __ldcs(w3_0 + c);
-					const uint4 vw1_1 = __ldcs(w1_1 + c), vw3_1 = __ldcs(w3_1 + c);
-					MimoMxfp4Accum4Rows<RG>(vw1_0, vw3_0, vw1_1, vw3_1, LmUe8m0ToFloat(__ldg(sc1_0 + c)), LmUe8m0ToFloat(__ldg(sc3_0 + c)),
-						LmUe8m0ToFloat(__ldg(sc1_1 + c)), LmUe8m0ToFloat(__ldg(sc3_1 + c)), act_ptr, c * 32u, cnt, g0, u0, g1, u1);
+					const uint32_t c_off = c * 32u;
+					MimoMxfp4AccumRows<RG>(__ldcs(w1_0 + c), LmUe8m0ToFloat(__ldg(sc1_0 + c)), act_ptr, c_off, cnt, g0);
+					MimoMxfp4AccumRows<RG>(__ldcs(w3_0 + c), LmUe8m0ToFloat(__ldg(sc3_0 + c)), act_ptr, c_off, cnt, u0);
+					MimoMxfp4AccumRows<RG>(__ldcs(w1_1 + c), LmUe8m0ToFloat(__ldg(sc1_1 + c)), act_ptr, c_off, cnt, g1);
+					MimoMxfp4AccumRows<RG>(__ldcs(w3_1 + c), LmUe8m0ToFloat(__ldg(sc3_1 + c)), act_ptr, c_off, cnt, u1);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -1611,30 +1392,13 @@ static void MimoMoeFastW2Kernel(const uint8_t *__restrict__ w2, const uint8_t *_
 			{
 				const uint16_t *act0 = act_ptr[0];
 				float la0 = 0.0f, la1 = 0.0f, la2 = 0.0f, la3 = 0.0f;
-				uint32_t c = sub;
-				for ( ; c + LANES < CHUNKS; c += 2u * LANES )
-				{
-					const uint32_t c1 = c + LANES;
-					const LmSkinnyQuad act_a = LmSkinnyFormat<LmMxfp4>::Load(act0 + c * 32u);
-					const LmSkinnyQuad act_b = LmSkinnyFormat<LmMxfp4>::Load(act0 + c1 * 32u);
-					const uint4 vw0a = __ldcs(w0 + c), vw1a = __ldcs(w1p + c);
-					const uint4 vw2a = __ldcs(w2p + c), vw3a = __ldcs(w3p + c);
-					const uint4 vw0b = __ldcs(w0 + c1), vw1b = __ldcs(w1p + c1);
-					const uint4 vw2b = __ldcs(w2p + c1), vw3b = __ldcs(w3p + c1);
-					la0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0a, act_a), la0);
-					la1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1a, act_a), la1);
-					la2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2a, act_a), la2);
-					la3 = fmaf(LmUe8m0ToFloat(__ldg(sc3 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3a, act_a), la3);
-					la0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0b, act_b), la0);
-					la1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1b, act_b), la1);
-					la2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2b, act_b), la2);
-					la3 = fmaf(LmUe8m0ToFloat(__ldg(sc3 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3b, act_b), la3);
-				}
-				if ( c < CHUNKS )
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(act0 + c * 32u);
-					const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1p + c);
-					const uint4 vw2 = __ldcs(w2p + c), vw3 = __ldcs(w3p + c);
+					const uint4 vw0 = __ldcs(w0 + c);
+					const uint4 vw1 = __ldcs(w1p + c);
+					const uint4 vw2 = __ldcs(w2p + c);
+					const uint4 vw3 = __ldcs(w3p + c);
 					la0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0, act), la0);
 					la1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1, act), la1);
 					la2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2, act), la2);
@@ -1669,10 +1433,11 @@ static void MimoMoeFastW2Kernel(const uint8_t *__restrict__ w2, const uint8_t *_
 					a0[r] = a1[r] = a2[r] = a3[r] = 0.0f;
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
-					const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1p + c);
-					const uint4 vw2 = __ldcs(w2p + c), vw3 = __ldcs(w3p + c);
-					MimoMxfp4Accum4Rows<RG>(vw0, vw1, vw2, vw3, LmUe8m0ToFloat(__ldg(sc0 + c)), LmUe8m0ToFloat(__ldg(sc1 + c)),
-						LmUe8m0ToFloat(__ldg(sc2 + c)), LmUe8m0ToFloat(__ldg(sc3 + c)), act_ptr, c * 32u, cnt, a0, a1, a2, a3);
+					const uint32_t c_off = c * 32u;
+					MimoMxfp4AccumRows<RG>(__ldcs(w0 + c), LmUe8m0ToFloat(__ldg(sc0 + c)), act_ptr, c_off, cnt, a0);
+					MimoMxfp4AccumRows<RG>(__ldcs(w1p + c), LmUe8m0ToFloat(__ldg(sc1 + c)), act_ptr, c_off, cnt, a1);
+					MimoMxfp4AccumRows<RG>(__ldcs(w2p + c), LmUe8m0ToFloat(__ldg(sc2 + c)), act_ptr, c_off, cnt, a2);
+					MimoMxfp4AccumRows<RG>(__ldcs(w3p + c), LmUe8m0ToFloat(__ldg(sc3 + c)), act_ptr, c_off, cnt, a3);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -1778,30 +1543,13 @@ static void MimoMoeSmallW2FinalizeKernel(const uint8_t *__restrict__ w2, const u
 				const uint8_t *sc2 = has2 ? sc0 + 2u * CHUNKS : sc0;
 				const uint8_t *sc3 = has3 ? sc0 + 3u * CHUNKS : sc0;
 				float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-				uint32_t c = sub;
-				for ( ; c + LANES < CHUNKS; c += 2u * LANES )
-				{
-					const uint32_t c1 = c + LANES;
-					const LmSkinnyQuad act_a = LmSkinnyFormat<LmMxfp4>::Load(a_row + c * 32u);
-					const LmSkinnyQuad act_b = LmSkinnyFormat<LmMxfp4>::Load(a_row + c1 * 32u);
-					const uint4 vw0a = __ldcs(w0 + c), vw1a = __ldcs(w1 + c);
-					const uint4 vw2a = __ldcs(w2p + c), vw3a = __ldcs(w3p + c);
-					const uint4 vw0b = __ldcs(w0 + c1), vw1b = __ldcs(w1 + c1);
-					const uint4 vw2b = __ldcs(w2p + c1), vw3b = __ldcs(w3p + c1);
-					acc0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0a, act_a), acc0);
-					acc1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1a, act_a), acc1);
-					acc2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2a, act_a), acc2);
-					acc3 = fmaf(LmUe8m0ToFloat(__ldg(sc3 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3a, act_a), acc3);
-					acc0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0b, act_b), acc0);
-					acc1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1b, act_b), acc1);
-					acc2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2b, act_b), acc2);
-					acc3 = fmaf(LmUe8m0ToFloat(__ldg(sc3 + c1)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3b, act_b), acc3);
-				}
-				if ( c < CHUNKS )
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(a_row + c * 32u);
-					const uint4 vw0 = __ldcs(w0 + c), vw1 = __ldcs(w1 + c);
-					const uint4 vw2 = __ldcs(w2p + c), vw3 = __ldcs(w3p + c);
+					const uint4 vw0 = __ldcs(w0 + c);
+					const uint4 vw1 = __ldcs(w1 + c);
+					const uint4 vw2 = __ldcs(w2p + c);
+					const uint4 vw3 = __ldcs(w3p + c);
 					acc0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0, act), acc0);
 					acc1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1, act), acc1);
 					acc2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2, act), acc2);
@@ -2345,54 +2093,25 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			bool fast_gqa = false;
-			if constexpr ( G::kHeadDim == 192u && G::kValueDim == 128u && (G::kHeads % KVH) == 0u && (G::kHeads % G::kTpDegree) == 0u &&
+			if constexpr ( !FULL && G::kHeadDim == 192u && G::kValueDim == 128u && (G::kHeads % KVH) == 0u && (G::kHeads % G::kTpDegree) == 0u &&
 				(G::kHeads / KVH) <= 32u )
 			{
 				if ( degree == G::kTpDegree )
 				{
 					constexpr uint32_t DEC_THREADS = (G::kHeads / KVH) * 32u;
-					if constexpr ( !FULL )
-					{
-						if ( step->tree != 0u )
-							(void)LM_LAUNCH_DEPENDENT((MimoGqaDecodeKernel<Kv, KVH, G::kHeadDim, G::kValueDim, G::kHeads, G::kTpDegree, true>),
-								dim3(rows, KVH), DEC_THREADS, 0, stream, *view, state->query, step->sequence_of_row, step->context_length,
-								step->positions, G::kAttentionScale, state->send, stride, rows, G::kWindow, step->fork_positions, step->slot_offsets);
-						else
-							(void)LM_LAUNCH_DEPENDENT((MimoGqaDecodeKernel<Kv, KVH, G::kHeadDim, G::kValueDim, G::kHeads, G::kTpDegree, false>),
-								dim3(rows, KVH), DEC_THREADS, 0, stream, *view, state->query, step->sequence_of_row, step->context_length,
-								step->positions, G::kAttentionScale, state->send, stride, rows, G::kWindow, (const uint32_t *)0, (const uint32_t *)0);
-						if ( CudaStageLaunched() != SPARK_STATUS_OK )
-							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-						fast_gqa = true;
-					}
+					if ( step->tree != 0u )
+						(void)LM_LAUNCH_DEPENDENT((MimoGqaDecodeKernel<Kv, KVH, G::kHeadDim, G::kValueDim, G::kHeads, G::kTpDegree, true>),
+							dim3(rows, KVH), DEC_THREADS, 0, stream, *view, state->query, step->sequence_of_row, step->context_length,
+							step->positions, G::kAttentionScale, state->send, stride, rows, FULL ? 0u : G::kWindow, step->fork_positions,
+							step->slot_offsets);
 					else
-					{
-						constexpr uint32_t SPLITS = KVH <= 4u ? 12u : 6u;
-						constexpr uint64_t PER_ROW_BYTES = (uint64_t)G::kHeads * SPLITS * (G::kValueDim + 4u) * sizeof(float);
-						const uint32_t row_chunk = (uint32_t)(buf_cap_bytes / PER_ROW_BYTES);
-						if ( row_chunk >= 1u )
-						{
-							for ( uint32_t r_first = 0u; r_first < rows; r_first += row_chunk )
-							{
-								const uint32_t r_cnt = rows - r_first < row_chunk ? rows - r_first : row_chunk;
-								if ( step->tree != 0u )
-									(void)LM_LAUNCH_DEPENDENT((MimoGqaFullSplitDecodeKernel<Kv, KVH, G::kHeadDim, G::kValueDim, G::kHeads, SPLITS, true>),
-										dim3(r_cnt, KVH, SPLITS), DEC_THREADS, 0, stream, *view, state->query, step->sequence_of_row,
-										step->context_length, step->positions, G::kAttentionScale, state->received, r_first, r_cnt,
-										step->fork_positions, step->slot_offsets);
-								else
-									(void)LM_LAUNCH_DEPENDENT((MimoGqaFullSplitDecodeKernel<Kv, KVH, G::kHeadDim, G::kValueDim, G::kHeads, SPLITS, false>),
-										dim3(r_cnt, KVH, SPLITS), DEC_THREADS, 0, stream, *view, state->query, step->sequence_of_row,
-										step->context_length, step->positions, G::kAttentionScale, state->received, r_first, r_cnt,
-										(const uint32_t *)0, (const uint32_t *)0);
-								(void)LM_LAUNCH_DEPENDENT((MimoGqaFullSplitReduceKernel<G::kHeads, G::kValueDim, G::kTpDegree, SPLITS>),
-									dim3(r_cnt, (G::kHeads + 3u) / 4u), 128u, 0, stream, state->received, state->send, stride, r_first, r_cnt);
-							}
-							if ( CudaStageLaunched() != SPARK_STATUS_OK )
-								SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-							fast_gqa = true;
-						}
-					}
+						(void)LM_LAUNCH_DEPENDENT((MimoGqaDecodeKernel<Kv, KVH, G::kHeadDim, G::kValueDim, G::kHeads, G::kTpDegree, false>),
+							dim3(rows, KVH), DEC_THREADS, 0, stream, *view, state->query, step->sequence_of_row, step->context_length,
+							step->positions, G::kAttentionScale, state->send, stride, rows, FULL ? 0u : G::kWindow, (const uint32_t *)0,
+							(const uint32_t *)0);
+					if ( CudaStageLaunched() != SPARK_STATUS_OK )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					fast_gqa = true;
 				}
 			}
 			if ( !fast_gqa &&
@@ -2537,7 +2256,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			{
 				const uint32_t mean_rows = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
 				int32_t st_up, st_dn;
-				if ( mean_rows > 16u )
+				if ( mean_rows > 32u )
 				{
 					st_up = Mxfp4Launch<4u, 3u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
 						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
@@ -2546,12 +2265,21 @@ struct MimoModel : CudaStage<MimoModel<G>>
 						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
 						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
 				}
-				else
+				else if ( mean_rows > 16u )
 				{
-					st_up = Mxfp4Launch<1u, 3u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+					st_up = Mxfp4Launch<2u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
 						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
 						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
-					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<1u, 3u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<2u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
+						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
+				}
+				else
+				{
+					st_up = Mxfp4Launch<1u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
+						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
+					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<1u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
 						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
 						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
 				}

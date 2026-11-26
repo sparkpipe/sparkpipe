@@ -16,10 +16,11 @@
 
 #define GB_MAX_ROWS 512u
 #define GB_SLOTS 2u
-#define GB_PAGES 64u
+#define GB_PAGES 96u
 #define GB_SHORT_CTX 128u
 #define GB_LONG_CTX 2560u
 #define GB_WARM_CTX 2048u
+#define GB_SPARSE_CTX 4096u
 #define GB_FILL_BF16 0u
 #define GB_FILL_F32 1u
 #define GB_FILL_FP8 2u
@@ -775,14 +776,15 @@ static void VerifyAndBench(const char *name, uint32_t prefix_cached, uint32_t pr
 		}
 	}
 	rig.ResetKv(true);
-	float ms_b1s = 0.0f, ms_b1l = 0.0f, ms_v8 = 0.0f, ms_v64 = 0.0f, ms_b8 = 0.0f, ms_b64 = 0.0f, ms_pf_c = 0.0f, ms_pf_w = 0.0f;
-	std::vector<GbRow> r64(64u), r512_c(GB_MAX_ROWS), r512_w(GB_MAX_ROWS);
+	float ms_b1s = 0.0f, ms_b1l = 0.0f, ms_v8 = 0.0f, ms_v64 = 0.0f, ms_b8 = 0.0f, ms_b64 = 0.0f, ms_pf_c = 0.0f, ms_pf_w = 0.0f, ms_pf_s = 0.0f;
+	std::vector<GbRow> r64(64u), r512_c(GB_MAX_ROWS), r512_w(GB_MAX_ROWS), r512_s(GB_MAX_ROWS);
 	for ( uint32_t i = 0u; i < 64u; ++i )
 		r64[i] = { i & 1u, (i & 1u) == 0u ? (GB_LONG_CTX + (i >> 1u)) : (GB_SHORT_CTX + (i >> 1u)), i };
 	for ( uint32_t i = 0u; i < GB_MAX_ROWS; ++i )
 	{
 		r512_c[i] = { 0u, i, 0u };
 		r512_w[i] = { 0u, GB_WARM_CTX + i, 0u };
+		r512_s[i] = { 0u, GB_SPARSE_CTX + i, 0u };
 	}
 	GbRow b1s = { 0u, GB_SHORT_CTX, 1u }, b1l = { 0u, GB_LONG_CTX, 2u };
 	GbCheck(rig.Run(&b1s, 1u, GB_SHORT_CTX + 1u, GB_SHORT_CTX, 1u, 0u, 0u, 0, &ms_b1s) != 0, name, "bench B1s", 0u, 0u);
@@ -794,9 +796,11 @@ static void VerifyAndBench(const char *name, uint32_t prefix_cached, uint32_t pr
 	GbCheck(rig.Run(r512_c.data(), GB_MAX_ROWS, GB_MAX_ROWS, 0u, 1u, 1u, GB_MAX_ROWS, 0, &ms_pf_c) != 0, name, "bench PF512 cold", 0u, 0u);
 	GbCheck(rig.Run(r512_w.data(), GB_MAX_ROWS, GB_WARM_CTX + GB_MAX_ROWS, 0u, 1u, 1u, GB_WARM_CTX + GB_MAX_ROWS, 0, &ms_pf_w) != 0, name,
 		"bench PF512 warm", 0u, 0u);
+	GbCheck(rig.Run(r512_s.data(), GB_MAX_ROWS, GB_SPARSE_CTX + GB_MAX_ROWS, 0u, 1u, 1u, GB_SPARSE_CTX + GB_MAX_ROWS, 0, &ms_pf_s) != 0, name,
+		"bench PF512 sparse", 0u, 0u);
 	GbCheck(rig.KvClean() != 0u, name, "no KV access errors", 0u, 0u);
 	const float scale = (float)prod_layers / (float)G::kLayers;
-	printf("BENCH %-16s (3L->%uL scaled): B1s=%.2fms (%.1f tok/s) B1l=%.2fms (%.1f tok/s) ver8=%.2fms ver64=%.2fms B8=%.2fms (%.1f tok/s) B64=%.2fms (%.1f tok/s) PF512c=%.2fms (%.0f tok/s) PF512w=%.2fms (%.0f tok/s)\n",
+	printf("BENCH %-16s (3L->%uL scaled): B1s=%.2fms (%.1f tok/s) B1l=%.2fms (%.1f tok/s) ver8=%.2fms ver64=%.2fms B8=%.2fms (%.1f tok/s) B64=%.2fms (%.1f tok/s) PF512c=%.2fms (%.0f tok/s) PF512w=%.2fms (%.0f tok/s) PF512s=%.2fms (%.0f tok/s)\n",
 		name, prod_layers,
 		ms_b1s * scale, 1000.0f / (ms_b1s * scale),
 		ms_b1l * scale, 1000.0f / (ms_b1l * scale),
@@ -804,7 +808,8 @@ static void VerifyAndBench(const char *name, uint32_t prefix_cached, uint32_t pr
 		ms_b8 * scale, 8000.0f / (ms_b8 * scale),
 		ms_b64 * scale, 64000.0f / (ms_b64 * scale),
 		ms_pf_c * scale, (float)GB_MAX_ROWS * 1000.0f / (ms_pf_c * scale),
-		ms_pf_w * scale, (float)GB_MAX_ROWS * 1000.0f / (ms_pf_w * scale));
+		ms_pf_w * scale, (float)GB_MAX_ROWS * 1000.0f / (ms_pf_w * scale),
+		ms_pf_s * scale, (float)GB_MAX_ROWS * 1000.0f / (ms_pf_s * scale));
 	rig.Close();
 }
 
