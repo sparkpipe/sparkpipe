@@ -30,12 +30,12 @@ typedef struct QmdBuilder
 	const char *refused;
 } QmdBuilder;
 
-static uint64_t QmdMask(uint32_t width)
+static inline uint64_t QmdMask(uint32_t width)
 {
 	return(width >= 64u ? UINT64_MAX : ((uint64_t)1 << width) - 1u);
 }
 
-static void QmdStore(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, uint64_t value)
+static inline void QmdStore(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, uint64_t value)
 {
 	const uint32_t first = low >> 5u,last = high >> 5u,shift = low & 31u,width = high - low + 1u;
 	if ( first == last )
@@ -65,7 +65,7 @@ static void QmdStore(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, uint64_t va
 	}
 }
 
-static void QmdPut(QmdBuilder *builder, uint32_t high, uint32_t low, uint64_t value, const char *field)
+static inline void QmdPut(QmdBuilder *builder, uint32_t high, uint32_t low, uint64_t value, const char *field)
 {
 	if ( builder->refused != 0 )
 		return;
@@ -303,6 +303,93 @@ SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *q
 	return(SPARK_STATUS_OK);
 }
 
+static const char *QmdStampProblem(const SparkNvrmLaunchShape *shape)
+{
+	if ( shape->grid[0] == 0u || shape->grid[1] == 0u || shape->grid[2] == 0u )
+		return("a launch needs at least one group of one thread");
+	if ( shape->grid[0] > QMD_GRID_WIDTH_MAX || shape->grid[1] > QMD_GRID_EXTENT_MAX || shape->grid[2] > QMD_GRID_EXTENT_MAX )
+		return("the grid is larger than a launch allows");
+	if ( (shape->bank_mask & 1u) == 0u || (shape->bank_address[0] & 0x3fu) != 0u || shape->bank_address[0] == 0u )
+		return("a constant bank address is not 64-byte aligned");
+	if ( shape->release_address != 0u && (shape->release_address & (shape->release_timestamp != 0u ? 0xfu : 0x7u)) != 0u )
+		return("the release semaphore is not aligned to its structure");
+	if ( shape->cluster[0] != 0u && (shape->cluster[1] == 0u || shape->cluster[2] == 0u || shape->grid[0] % shape->cluster[0] != 0u ||
+		shape->grid[1] % shape->cluster[1] != 0u || shape->grid[2] % shape->cluster[2] != 0u) )
+		return("a cluster launch's grid is a whole number of clusters on every axis");
+	if ( shape->next_qmd_address != 0u && ((shape->next_qmd_address & (SPARK_NVRM_QMD_ALIGN - 1u)) != 0u || (shape->next_qmd_address >> 40) != 0u) )
+		return("a dependent launch descriptor address is 256-byte aligned and below 2^40");
+	return(0);
+}
+
+SparkStatus SparkNvrmQmdStamp(const SparkNvrmQmd *template_qmd, const SparkNvrmLaunchShape *shape, SparkNvrmQmd *qmd, const char *owner)
+{
+	QmdBuilder builder = {qmd,0};
+	const char *problem;
+	uint64_t shifted;
+	uint32_t clustered;
+	if ( template_qmd == 0 || shape == 0 || qmd == 0 )
+	{
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,"needs a launch shape and a descriptor");
+		SPARK_FAIL(status);
+	}
+	problem = QmdStampProblem(shape);
+	if ( problem != 0 )
+	{
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,problem);
+		SPARK_FAIL(status);
+	}
+	memcpy(qmd->word,template_qmd->word,sizeof(qmd->word));
+	clustered = shape->cluster[0] != 0u ? 1u : 0u;
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_GRID_WIDTH,clustered != 0u ? shape->grid[0] / shape->cluster[0] : shape->grid[0]);
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_GRID_HEIGHT,clustered != 0u ? shape->grid[1] / shape->cluster[1] : shape->grid[1]);
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_GRID_DEPTH,clustered != 0u ? shape->grid[2] / shape->cluster[2] : shape->grid[2]);
+	shifted = shape->bank_address[0] >> 6;
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_CONSTANT_BUFFER_ADDR_LOWER_SHIFTED6(0),shifted & 0xffffffffu);
+	QMD_PUT(&builder,NVCEC0_QMDV05_00_CONSTANT_BUFFER_ADDR_UPPER_SHIFTED6(0),shifted >> 32);
+	if ( shape->release_address == 0u )
+	{
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_ADDR_LOWER,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_ADDR_UPPER,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_PAYLOAD_LOWER,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_SEMAPHORE0_PAYLOAD_UPPER,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_ENABLE(0),0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_MEMBAR_TYPE(0),0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_PAYLOAD64B(0),0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE(0),0u);
+	}
+	else
+		QmdRelease(&builder,shape);
+	if ( shape->latch_arrive == 0u )
+	{
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID,0u);
+	}
+	if ( shape->next_qmd_address == 0u )
+	{
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ENABLE,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_ACTION,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_PREFETCH,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_DEPENDENT_QMD0_POINTER,0u);
+	}
+	if ( shape->latch_wait == 0u )
+	{
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE,0u);
+		QMD_PUT(&builder,NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE,0u);
+	}
+	QmdLatch(&builder,shape);
+	if ( builder.refused != 0 )
+	{
+		char text[128];
+		snprintf(text,sizeof(text),"the launch value for %s does not fit its field",builder.refused + strlen("NVCEC0_QMDV05_00_"));
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,text);
+		SPARK_FAIL(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static uint32_t Bank0Reciprocal(uint32_t size)
 {
 	const float reciprocal = 1.0f / (float)size;
@@ -376,7 +463,7 @@ SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t sha
 		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,problem);
 		SPARK_FAIL(status);
 	}
-	memset(bank,0,bank_bytes);
+	memset(bank,0,kernel->parameter_offset);
 	Bank0Word(bank,BANK0_WINDOW_WORD_SHARED,(uint32_t)shared_window);
 	Bank0Word(bank,BANK0_WINDOW_WORD_SHARED + 1u,(uint32_t)(shared_window >> 32));
 	Bank0Word(bank,BANK0_WINDOW_WORD_LOCAL,(uint32_t)local_window);
@@ -411,5 +498,7 @@ SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t sha
 	}
 	if ( argument_bytes != 0u )
 		memcpy(bank + kernel->parameter_offset,arguments,argument_bytes);
+	if ( kernel->parameter_offset + argument_bytes < bank_bytes )
+		memset(bank + kernel->parameter_offset + argument_bytes,0,bank_bytes - kernel->parameter_offset - argument_bytes);
 	return(SPARK_STATUS_OK);
 }

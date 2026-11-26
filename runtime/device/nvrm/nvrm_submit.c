@@ -123,6 +123,8 @@ static uint32_t SubmitFree(const SparkNvrmChannel *channel, uint64_t start, uint
 
 static SparkStatus SubmitRoom(SparkNvrmChannel *channel, uint64_t start, uint64_t end, const char *owner)
 {
+	if ( SubmitFree(channel,start,end) != 0u )
+		return(SPARK_STATUS_OK);
 	SubmitRetire(channel);
 	while ( SubmitFree(channel,start,end) == 0u )
 		SUBMIT_TRY(SubmitRetireOldest(channel,owner));
@@ -324,6 +326,8 @@ static void SubmitRing(SparkNvrmGpu *gpu, SparkNvrmChannel *channel)
 
 static SparkStatus SubmitEntries(SparkNvrmChannel *channel, uint32_t entries, const char *owner)
 {
+	if ( channel->segment_count + entries >= channel->entries || channel->segment_count + entries >= SPARK_NVRM_CHANNEL_ENTRIES )
+		SubmitRetire(channel);
 	while ( channel->segment_count + entries >= channel->entries || channel->segment_count + entries >= SPARK_NVRM_CHANNEL_ENTRIES )
 		SUBMIT_TRY(SubmitRetireOldest(channel,owner));
 	return(SPARK_STATUS_OK);
@@ -354,12 +358,16 @@ SparkStatus SparkNvrmSubmitSegment(SparkNvrmGpu *gpu, SparkNvrmChannel *channel,
 	uint64_t done_value, const char *owner)
 {
 	const uint64_t value = channel->fence_value + 1u,head_bytes = channel->push_used - channel->push_submitted;
+	uint32_t tail[2u * SPARK_NVRM_SEMAPHORE_METHOD_WORDS];
 	uint64_t head_end,tail_end;
 	if ( words == 0u || words > SPARK_NVRM_SEGMENT_WORDS_MAX || (address & 3u) != 0u || ((address + words * sizeof(uint32_t) - 1u) >> 40) != 0u )
 		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a prebuilt segment holds 1 to 2^21 - 1 word-aligned words below 2^40");
+	if ( (done_address & 7u) != 0u || (channel->fence.address & 7u) != 0u )
+		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a semaphore is not aligned to its payload");
 	SUBMIT_TRY(SubmitPushReachable(channel,owner));
-	SUBMIT_TRY(SparkNvrmSemaphoreAcquire(channel,done_address,done_value,owner));
-	SUBMIT_TRY(SparkNvrmSemaphoreRelease(channel,channel->fence.address,value,0u,owner));
+	SparkNvrmSemaphoreWords(tail,done_address,done_value,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+	SparkNvrmSemaphoreWords(tail + SPARK_NVRM_SEMAPHORE_METHOD_WORDS,channel->fence.address,value,SPARK_NVRM_SEMAPHORE_RELEASE);
+	SUBMIT_TRY(SparkNvrmPushWords(channel,tail,2u * SPARK_NVRM_SEMAPHORE_METHOD_WORDS,owner));
 	SUBMIT_TRY(SubmitEntries(channel,head_bytes != 0u ? 3u : 2u,owner));
 	tail_end = channel->push_used;
 	head_end = channel->push_submitted + head_bytes;

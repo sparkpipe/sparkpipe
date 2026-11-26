@@ -450,6 +450,12 @@ def encode_f2fp_e2m1_unpack(rd, rb, stall=1, wait=0):
     return (lo, hi)
 
 
+def encode_f2fp_e4m3_unpack(rd, rb, hi_half=False, stall=1, wait=0):
+    lo = 0x723E | ((rd & 0xFF) << 16) | (0xFF << 24) | ((rb & 0xFF) << 32)
+    hi = (0x030006FF if hi_half else 0x020006FF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    return (lo, hi)
+
+
 def encode_hadd2_f32_half(rd, rb, hi_half=False, stall=1, wait=0):
     lo = 0x7230 | ((rd & 0xFF) << 16) | (0xFF << 24) | ((rb & 0xFF) << 32) | ((0x30 if hi_half else 0x20) << 56)
     hi = 0x00004100 | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
@@ -525,7 +531,11 @@ STG_W_64 = 0x1B00
 STG_W_128 = 0x1D00
 
 
-def encode_stg(raddr, rval, ur_desc, width_bits=STG_W_128, offset=0, pred=PT, neg=False, rd=7, stall=1, wait=0):
+STG_CACHE_DEFAULT = 0x0C100000
+STG_CACHE_EF = 0x0C000000
+
+
+def encode_stg(raddr, rval, ur_desc, width_bits=STG_W_128, cache=STG_CACHE_DEFAULT, offset=0, pred=PT, neg=False, rd=7, stall=1, wait=0):
     lo = (
         0x986
         | (pred_bits(pred, neg) << 12)
@@ -533,7 +543,7 @@ def encode_stg(raddr, rval, ur_desc, width_bits=STG_W_128, offset=0, pred=PT, ne
         | ((rval & 0xFF) << 32)
         | ((offset & 0xFFFFFF) << 40)
     )
-    hi = 0x0C100000 | width_bits | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd, wait=wait)
+    hi = cache | width_bits | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd, wait=wait)
     return (lo, hi)
 
 
@@ -559,6 +569,18 @@ def encode_lds(rd, raddr, ur_base=URZ, offset=0, wr=0, rd_bar=7, stall=1, wait=0
         | ((offset & 0xFFFFFF) << 40)
     )
     hi = 0x08000800 | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait)
+    return (lo, hi)
+
+
+def encode_lds128(rd, raddr, ur_base=URZ, offset=0, wr=0, rd_bar=7, stall=1, wait=0):
+    lo = (
+        0x7984
+        | ((rd & 0xFF) << 16)
+        | ((raddr & 0xFF) << 24)
+        | ((ur_base & 0xFF) << 32)
+        | ((offset & 0xFFFFFF) << 40)
+    )
+    hi = 0x08000C00 | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait)
     return (lo, hi)
 
 

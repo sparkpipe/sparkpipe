@@ -115,6 +115,12 @@ static uint32_t register_capacity;
 static uint32_t register_count;
 static RegisterOverlay register_overlay;
 static uint32_t register_overlay_atexit;
+static uint64_t register_generation = 1u;
+
+uint64_t SparkNvrmRegisteredGeneration(void)
+{
+	return(__atomic_load_n(&register_generation,__ATOMIC_ACQUIRE));
+}
 
 static SparkStatus RegisterRefuse(SparkStatus code, const char *operation, const char *owner, const char *text)
 {
@@ -920,6 +926,7 @@ SparkStatus SparkNvrmOverlayReload(void)
 		}
 	RegisterOverlayClear();
 	status = RegisterOverlayEnsure();
+	(void)__atomic_add_fetch(&register_generation,1u,__ATOMIC_RELEASE);
 	pthread_mutex_unlock(&register_mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
@@ -1041,6 +1048,7 @@ SparkStatus SparkNvrmRegisteredRelease(void)
 			else
 				register_overlay.cubins[index].library = 0;
 		}
+	(void)__atomic_add_fetch(&register_generation,1u,__ATOMIC_RELEASE);
 	pthread_mutex_unlock(&register_mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
@@ -1064,6 +1072,7 @@ static void RegisterForget(SparkNvrmModule *module)
 				fprintf(stderr,"nvrm: out of host memory keeping the kernel registry while a module unloads\n");
 		}
 	free(kept);
+	(void)__atomic_add_fetch(&register_generation,1u,__ATOMIC_RELEASE);
 }
 
 #if defined(__linux__)
