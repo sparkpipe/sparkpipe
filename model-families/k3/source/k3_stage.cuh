@@ -1172,6 +1172,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	geometry->lease_tensor_base = (uint32_t)(state->dispatch.buffers->routed_down_rows % K3_LAYER_TILE_N != 0u);
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_published = K3ModelPublished;
+	state->dispatch.slice_state->fuse_shared_out = 1u;
 	state->lanes[0].state = state;
 	state->lanes[0].index = 0u;
 	state->lanes[1].state = state;
@@ -1204,6 +1205,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		state->dispatch.slice_state->collective_context = state->layer_collective_context;
 		state->dispatch.slice_state->collective_pair_context = 0;
 		state->dispatch.slice_state->collective_published = 0;
+		state->dispatch.slice_state->fuse_shared_out = 0u;
 	}
 	if ( state->has_collective != 0u )
 	{

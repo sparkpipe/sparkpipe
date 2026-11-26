@@ -47,6 +47,7 @@ struct K3SliceState
 	void *lazy_context;
 	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers, void *stream);
 	void (*lazy_release)(void *context, uint32_t layer);
+	uint32_t fuse_shared_out;
 };
 
 static_assert(K3_KDA_LAYER_COUNT + K3_MLA_LAYER_COUNT == K3_LAYERS,
@@ -533,7 +534,7 @@ struct K3Cuda
 	{
 		K3LayerBuffers *b = Lane(c, lane);
 		if ( phase == 2u )
-			b->fuse_shared_out = K3_EXPERT_CELLS(b) && b->tp_sharded != 0u && c.state->layer_collective != 0 ? 1u : 0u;
+			b->fuse_shared_out = K3_EXPERT_CELLS(b) && b->tp_sharded != 0u && c.state->layer_collective != 0 && c.state->fuse_shared_out != 0u ? 1u : 0u;
 		const int32_t status = K3LayerLatentMoe<Format>(b, rows, packed_rows, c.multiprocessors, Stream(c, stream), phase);
 		if ( phase == 0u )
 			b->normed_ready = 0u;

@@ -1,2 +1,2 @@
-+1719
++1722
 k3 Blackwell P4+P3+P1 optimization: L2::256B weight prefetch and A-tile prefetch across MXFP4 W1/W2, single-CTA-per-token 3584-wide K3MoeFinalizeToken224Kernel, 224-CTA B1 W2 finalize, Tensor-Core sparse indexer skip GEMMs (K3IndexHeadMmaSkipKernel for rows>64, K3IndexQMmaWideSkipKernel for rows>16), fused prefill BF16 MMA kernels (K3KdaProjPrefillMmaKernel, K3MoeDownRoutePrefillMmaKernel, K3SharedW1SituPrefillMmaKernel, K3RoutedUpAddPrefillMmaKernel with epilogue shared-out add skipping K3RunnerFusedPackKernel), direct-gather expanded-V dense MLA prefill, 6-head sparse MLA prefill (K3MlaGatherPrefill6HeadKernel), fused K3PartialAddAttnResSliceKernel, and 0-ULP vectorized KDA prep/norm-gate and zero-SMEM RMSNorm/KV-store kernels.
