@@ -1,4 +1,5 @@
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -761,6 +762,416 @@ static void Prefill(Probe *probe, Frame *frame, uint32_t first, uint32_t end)
 	}
 }
 
+struct Tp16Barrier
+{
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+	uint32_t parties, waiting, phase, failed;
+};
+
+static uint32_t Tp16Wait(Tp16Barrier *b)
+{
+	pthread_mutex_lock(&b->lock);
+	const uint32_t phase = b->phase;
+	if ( ++b->waiting == b->parties )
+	{
+		b->waiting = 0u;
+		b->phase++;
+		pthread_cond_broadcast(&b->cond);
+	}
+	else
+		while ( b->phase == phase && b->failed == 0u )
+			pthread_cond_wait(&b->cond, &b->lock);
+	const uint32_t ok = b->failed == 0u ? 1u : 0u;
+	pthread_mutex_unlock(&b->lock);
+	return ok;
+}
+
+__global__ void Tp16SumBf16Kernel(const uint8_t *staging, uint64_t stride, uint32_t ranks, uint16_t *out, uint64_t count)
+{
+	for ( uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; i < count; i += (uint64_t)gridDim.x * blockDim.x )
+	{
+		float total = 0.0f;
+		for ( uint32_t r = 0u; r < ranks; ++r )
+			total += LmBf16ToFloat(((const uint16_t *)(staging + (uint64_t)r * stride))[i]);
+		out[i] = LmFloatToBf16(total);
+	}
+}
+
+struct Tp16Rig
+{
+	static constexpr uint32_t kRanks = PROBE_DEGREE;
+	struct Rank
+	{
+		Tp16Rig *rig;
+		uint32_t index;
+		Glm5NextModelState *state;
+		SparkStageRunnerServices services;
+		cudaStream_t stream;
+		uint8_t *latent_pool;
+		uint8_t *index_pool;
+		uint16_t *hidden;
+		uint32_t *metadata;
+		uint32_t *route_fault;
+		SparkStageRunnerStep step;
+		uint32_t single_dsa;
+		SparkStatus status;
+	};
+	Rank ranks[kRanks];
+	Tp16Barrier barrier;
+	uint8_t *staging;
+	uint64_t staging_bytes;
+	uint64_t latent_bytes;
+	uint64_t index_bytes;
+	uint32_t *page_table;
+	const void *expert_w1;
+	const void *expert_w2;
+	uint32_t sms;
+
+	static SparkStatus Round(void *context, void *stream_ptr, uint32_t op, uint32_t stage, uint32_t rows, uint32_t row_elements,
+		const void *local, void *full)
+	{
+		Rank *rank = (Rank *)context;
+		Tp16Rig *rig = rank->rig;
+		cudaStream_t stream = (cudaStream_t)stream_ptr;
+		const uint64_t block = (uint64_t)rows * (row_elements != 0u ? row_elements : G5N_HIDDEN) * sizeof(uint16_t);
+		uint8_t *slot = rig->staging + (uint64_t)rank->index * rig->staging_bytes;
+		const uint64_t copy = op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? (uint64_t)kRanks * block : block;
+		if ( stage != SPARK_STAGE_RUNNER_ROUND_ALL )
+			return SPARK_STATUS_UNSUPPORTED;
+		if ( copy > rig->staging_bytes || cudaMemcpyAsync(slot, local, copy, cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+			cudaStreamSynchronize(stream) != cudaSuccess )
+			return SPARK_STATUS_IO_ERROR;
+		if ( Tp16Wait(&rig->barrier) == 0u )
+			return SPARK_STATUS_IO_ERROR;
+		if ( op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER )
+		{
+			for ( uint32_t s = 0u; s < kRanks; ++s )
+				if ( cudaMemcpyAsync((uint8_t *)full + (uint64_t)s * block, rig->staging + (uint64_t)s * rig->staging_bytes, block,
+						cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+					return SPARK_STATUS_IO_ERROR;
+		}
+		else if ( op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
+		{
+			for ( uint32_t s = 0u; s < kRanks; ++s )
+				if ( cudaMemcpyAsync((uint8_t *)full + (uint64_t)s * block,
+						rig->staging + (uint64_t)s * rig->staging_bytes + (uint64_t)rank->index * block, block,
+						cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+					return SPARK_STATUS_IO_ERROR;
+		}
+		else if ( op == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 )
+		{
+			const uint64_t elems = block / sizeof(uint16_t);
+			Tp16SumBf16Kernel<<<(uint32_t)((elems + 255u) / 256u), 256u, 0, stream>>>(rig->staging, rig->staging_bytes, kRanks, (uint16_t *)full, elems);
+		}
+		else
+			return SPARK_STATUS_UNSUPPORTED;
+		if ( cudaStreamSynchronize(stream) != cudaSuccess || Tp16Wait(&rig->barrier) == 0u )
+			return SPARK_STATUS_IO_ERROR;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Experts(void *context, uint32_t layer, const uint32_t *offsets, uint32_t routed_rows, const void **w1, const void **w2)
+	{
+		const Rank *rank = (const Rank *)context;
+		(void)layer;
+		(void)offsets;
+		(void)routed_rows;
+		*w1 = rank->rig->expert_w1;
+		*w2 = rank->rig->expert_w2;
+		return SPARK_STATUS_OK;
+	}
+
+	static void *Thread(void *arg)
+	{
+		Rank *rank = (Rank *)arg;
+		SparkStatus st;
+		if ( rank->single_dsa != 0u )
+		{
+			Stage::Frame frame;
+			st = Stage::Begin(rank->state, &rank->step, rank->stream, &frame);
+			if ( st == SPARK_STATUS_OK )
+			{
+				Stage::BindLayer(rank->state, frame, 3u);
+				frame.b.prenormed = 1u;
+				if ( cudaMemcpyAsync(frame.b.normed_bf16, rank->step.hidden_bf16, (uint64_t)rank->step.rows * G5N_HIDDEN * 2u,
+						cudaMemcpyDeviceToDevice, rank->stream) != cudaSuccess )
+					st = SPARK_STATUS_IO_ERROR;
+			}
+			if ( st == SPARK_STATUS_OK )
+				st = Stage::Attention(rank->state, frame, 3u);
+			if ( st == SPARK_STATUS_OK )
+				st = Stage::AllReduce(rank->state, frame);
+			if ( st == SPARK_STATUS_OK && cudaMemcpyAsync(rank->step.hidden_bf16, frame.b.attention_out_bf16,
+					(uint64_t)rank->step.rows * G5N_HIDDEN * 2u, cudaMemcpyDeviceToDevice, rank->stream) != cudaSuccess )
+				st = SPARK_STATUS_IO_ERROR;
+		}
+		else
+			st = Stage::Step(rank->state, &rank->step, rank->stream);
+		if ( st == SPARK_STATUS_OK && cudaStreamSynchronize(rank->stream) != cudaSuccess )
+			st = SPARK_STATUS_IO_ERROR;
+		if ( st != SPARK_STATUS_OK )
+		{
+			pthread_mutex_lock(&rank->rig->barrier.lock);
+			rank->rig->barrier.failed = 1u;
+			pthread_cond_broadcast(&rank->rig->barrier.cond);
+			pthread_mutex_unlock(&rank->rig->barrier.lock);
+		}
+		rank->status = st;
+		return 0;
+	}
+
+	void Open(const Probe *probe)
+	{
+		memset(this, 0, sizeof(*this));
+		barrier.parties = kRanks;
+		pthread_mutex_init(&barrier.lock, 0);
+		pthread_cond_init(&barrier.cond, 0);
+		sms = probe->sms;
+		expert_w1 = probe->expert_w1;
+		expert_w2 = probe->expert_w2;
+		latent_bytes = probe->latent_bytes;
+		index_bytes = probe->index_bytes;
+		std::vector<uint32_t> pages(PROBE_SEQUENCES * PROBE_PAGES);
+		for ( uint32_t page = 0u; page < pages.size(); ++page )
+			pages[page] = page;
+		page_table = (uint32_t *)Device(pages.size() * sizeof(uint32_t));
+		CUDA(cudaMemcpy(page_table, pages.data(), pages.size() * sizeof(uint32_t), cudaMemcpyHostToDevice));
+		const uint64_t partial_bytes = (uint64_t)kRanks * SparkGlm5NextKvShardPartialStrideCapacity(kRanks, PROBE_ROWS) * sizeof(float);
+		const uint64_t query_bytes = (uint64_t)kRanks * (SparkGlm5NextKvShardQueryStride(PROBE_ROWS, kRanks) +
+			(uint64_t)SparkGlm5NextIndexCpGatherSequences(PROBE_ROWS, Glm5NextLocalStride(probe->state, PROBE_CONTEXT)) *
+			SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS * 2u) * sizeof(uint16_t);
+		staging_bytes = partial_bytes > query_bytes ? partial_bytes : query_bytes;
+		staging = (uint8_t *)Device((uint64_t)kRanks * staging_bytes);
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			Rank *rank = &ranks[r];
+			Glm5NextModelState *st = (Glm5NextModelState *)calloc(1u, sizeof(Glm5NextModelState));
+			SparkStageRunnerKv kv;
+			REQUIRE(st != 0);
+			rank->rig = this;
+			rank->index = r;
+			rank->state = st;
+			rank->services.context = rank;
+			rank->services.round = Round;
+			rank->services.fail = ProbeFail;
+			rank->services.expert_weights = Experts;
+			rank->services.layer_done = ProbeLayerDone;
+			CUDA(cudaStreamCreateWithFlags(&rank->stream, cudaStreamNonBlocking));
+			st->services = &rank->services;
+			st->tp_degree = kRanks;
+			st->tp_rank = r;
+			st->max_rows = PROBE_ROWS;
+			st->slots = PROBE_SEQUENCES;
+			st->context_capacity = PROBE_CONTEXT;
+			st->collective_capacity = 2u * PROBE_ROWS + 1u;
+			st->kda_state_slot_bytes = probe->state->kda_state_slot_bytes;
+			st->kda_window_slot_bytes = probe->state->kda_window_slot_bytes;
+			st->verify_rows = ProbeGeometry::kVerifyRows;
+			memcpy(st->layers, probe->state->layers, sizeof(st->layers));
+			st->final_norm = probe->state->final_norm;
+			REQUIRE(Glm5NextAllocate(st, 0u) == SPARK_STATUS_OK);
+			rank->latent_pool = (uint8_t *)Device(latent_bytes * G5N_DSA_LAYERS);
+			rank->index_pool = (uint8_t *)Device(index_bytes * G5N_DSA_LAYERS);
+			memset(&kv, 0, sizeof(kv));
+			kv.pool = rank->latent_pool;
+			kv.layer_stride_bytes = latent_bytes;
+			kv.layer_page_bytes = Glm5NextKv::kPageBytes;
+			kv.layer_count = G5N_DSA_LAYERS;
+			kv.page_table = page_table;
+			kv.page_table_stride = PROBE_PAGES;
+			kv.pool_page_count = PROBE_SEQUENCES * PROBE_PAGES;
+			kv.sequence_count = PROBE_SEQUENCES;
+			kv.context_shard = SparkGlm5NextKvShardLatent(r, kRanks);
+			kv.second_pool = rank->index_pool;
+			kv.second_layer_stride_bytes = index_bytes;
+			kv.second_layer_page_bytes = Glm5NextIndexKv::kPageBytes;
+			kv.second_layer_count = G5N_DSA_LAYERS;
+			REQUIRE(Stage::AttachKv(st, &kv) == SPARK_STATUS_OK);
+			rank->metadata = (uint32_t *)Device((4u * PROBE_ROWS + 8u) * sizeof(uint32_t));
+			rank->hidden = (uint16_t *)Device((uint64_t)PROBE_ROWS * G5N_HIDDEN * 2u);
+			rank->route_fault = (uint32_t *)Device(sizeof(uint32_t));
+		}
+	}
+
+	void Reset(void)
+	{
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			CUDA(cudaMemsetAsync(ranks[r].latent_pool, 0, latent_bytes * G5N_DSA_LAYERS, ranks[r].stream));
+			CUDA(cudaMemsetAsync(ranks[r].index_pool, 0, index_bytes * G5N_DSA_LAYERS, ranks[r].stream));
+			CUDA(cudaMemsetAsync(ranks[r].state->kda_state, 0, (uint64_t)G5N_KDA_LAYERS * PROBE_SEQUENCES * ranks[r].state->kda_state_slot_bytes, ranks[r].stream));
+			CUDA(cudaMemsetAsync(ranks[r].state->kda_windows, 0, 3u * (uint64_t)G5N_KDA_LAYERS * PROBE_SEQUENCES * ranks[r].state->kda_window_slot_bytes, ranks[r].stream));
+			CUDA(cudaStreamSynchronize(ranks[r].stream));
+		}
+		CUDA(cudaDeviceSynchronize());
+	}
+
+	void RunAll(const uint16_t *inputs, uint32_t first, uint32_t rows, uint32_t gather_context, uint32_t last_only, uint32_t single_dsa)
+	{
+		std::vector<uint32_t> meta(4u * PROBE_ROWS + 8u, 0u);
+		pthread_t threads[kRanks];
+		for ( uint32_t row = 0u; row < rows; ++row )
+		{
+			meta[row] = first + row;
+			meta[2u * PROBE_ROWS + row] = row;
+		}
+		meta[3u * PROBE_ROWS] = first + rows;
+		meta[3u * PROBE_ROWS + 3u] = rows;
+		meta[3u * PROBE_ROWS + 4u] = PROBE_SLOT;
+		barrier.failed = 0u;
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			Rank *rank = &ranks[r];
+			CUDA(cudaMemcpyAsync(rank->metadata, meta.data(), meta.size() * sizeof(uint32_t), cudaMemcpyHostToDevice, rank->stream));
+			CUDA(cudaMemcpyAsync(rank->hidden, inputs + (uint64_t)first * G5N_HIDDEN, (uint64_t)rows * G5N_HIDDEN * 2u,
+				cudaMemcpyDeviceToDevice, rank->stream));
+			memset(&rank->step, 0, sizeof(rank->step));
+			rank->step.hidden_bf16 = rank->hidden;
+			rank->step.positions = rank->metadata;
+			rank->step.sequence_of_row = rank->metadata + PROBE_ROWS;
+			rank->step.sequence_row_indices = rank->metadata + 2u * PROBE_ROWS;
+			rank->step.context_length = rank->metadata + 3u * PROBE_ROWS;
+			rank->step.sequence_row_begin = rank->metadata + 3u * PROBE_ROWS + 2u;
+			rank->step.recurrent_index = rank->metadata + 3u * PROBE_ROWS + 4u;
+			rank->step.rows = rows;
+			rank->step.sequences = 1u;
+			rank->step.commit = 1u;
+			rank->step.last_rows_only = last_only;
+			rank->step.every_row_hidden = 1u;
+			rank->step.context = PROBE_CONTEXT;
+			rank->step.gather_context = gather_context;
+			rank->step.multiprocessors = sms;
+			rank->step.route_fault = rank->route_fault;
+			rank->single_dsa = single_dsa;
+			CUDA(cudaStreamSynchronize(rank->stream));
+		}
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+			REQUIRE(pthread_create(&threads[r], 0, Thread, &ranks[r]) == 0);
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			REQUIRE(pthread_join(threads[r], 0) == 0);
+			REQUIRE(ranks[r].status == SPARK_STATUS_OK);
+		}
+		REQUIRE(Finite(Host(ranks[0].hidden, (uint64_t)rows * G5N_HIDDEN * 2u)) != 0u);
+	}
+
+	void Close(void)
+	{
+		for ( uint32_t r = 0u; r < kRanks; ++r )
+		{
+			Glm5NextFree(ranks[r].state);
+			free(ranks[r].state);
+			CUDA(cudaFree(ranks[r].latent_pool));
+			CUDA(cudaFree(ranks[r].index_pool));
+			CUDA(cudaFree(ranks[r].metadata));
+			CUDA(cudaFree(ranks[r].hidden));
+			CUDA(cudaFree(ranks[r].route_fault));
+			CUDA(cudaStreamDestroy(ranks[r].stream));
+		}
+		CUDA(cudaFree(staging));
+		CUDA(cudaFree(page_table));
+		pthread_mutex_destroy(&barrier.lock);
+		pthread_cond_destroy(&barrier.cond);
+	}
+};
+
+static void Tp16GateGxAndParityCheck(const Probe *probe)
+{
+	static const uint32_t kDeltas[] = { 1u, 4u, 8u, 12u, 16u, 23u, 64u, 128u };
+	static constexpr uint32_t kCached = 128u;
+	const uint64_t row_bytes = (uint64_t)G5N_HIDDEN * 2u;
+	Tp16Rig rig;
+	rig.Open(probe);
+	rig.Reset();
+	rig.RunAll(probe->inputs, 0u, kCached, kCached, 1u, 0u);
+	std::vector<std::vector<uint8_t>> cached_lat(Tp16Rig::kRanks), cached_idx(Tp16Rig::kRanks), cached_kda(Tp16Rig::kRanks), cached_win(Tp16Rig::kRanks);
+	const uint64_t kda_bytes = (uint64_t)G5N_KDA_LAYERS * PROBE_SEQUENCES * rig.ranks[0].state->kda_state_slot_bytes;
+	const uint64_t win_bytes = 3u * (uint64_t)G5N_KDA_LAYERS * PROBE_SEQUENCES * rig.ranks[0].state->kda_window_slot_bytes;
+	for ( uint32_t r = 0u; r < Tp16Rig::kRanks; ++r )
+	{
+		cached_lat[r] = Host(rig.ranks[r].latent_pool, rig.latent_bytes * G5N_DSA_LAYERS);
+		cached_idx[r] = Host(rig.ranks[r].index_pool, rig.index_bytes * G5N_DSA_LAYERS);
+		cached_kda[r] = Host(rig.ranks[r].state->kda_state, kda_bytes);
+		cached_win[r] = Host(rig.ranks[r].state->kda_windows, win_bytes);
+	}
+	for ( uint32_t delta : kDeltas )
+	{
+		const uint32_t total = kCached + delta;
+		rig.Reset();
+		rig.RunAll(probe->inputs, 0u, total, total, 1u, 0u);
+		const std::vector<uint8_t> cold_all = Host(rig.ranks[0].hidden, (uint64_t)total * row_bytes);
+		const std::vector<uint8_t> cold_tail(cold_all.begin() + (ptrdiff_t)((uint64_t)kCached * row_bytes), cold_all.end());
+		const std::vector<uint8_t> cold_lat0 = Host(rig.ranks[0].latent_pool, rig.latent_bytes * G5N_DSA_LAYERS);
+		const std::vector<uint8_t> cold_kda0 = Host(rig.ranks[0].state->kda_state, kda_bytes);
+		for ( uint32_t r = 0u; r < Tp16Rig::kRanks; ++r )
+		{
+			CUDA(cudaMemcpyAsync(rig.ranks[r].latent_pool, cached_lat[r].data(), cached_lat[r].size(), cudaMemcpyHostToDevice, rig.ranks[r].stream));
+			CUDA(cudaMemcpyAsync(rig.ranks[r].index_pool, cached_idx[r].data(), cached_idx[r].size(), cudaMemcpyHostToDevice, rig.ranks[r].stream));
+			CUDA(cudaMemcpyAsync(rig.ranks[r].state->kda_state, cached_kda[r].data(), kda_bytes, cudaMemcpyHostToDevice, rig.ranks[r].stream));
+			CUDA(cudaMemcpyAsync(rig.ranks[r].state->kda_windows, cached_win[r].data(), win_bytes, cudaMemcpyHostToDevice, rig.ranks[r].stream));
+			CUDA(cudaStreamSynchronize(rig.ranks[r].stream));
+		}
+		rig.RunAll(probe->inputs, kCached, delta, total, 1u, 0u);
+		const std::vector<uint8_t> warm_tail = Host(rig.ranks[0].hidden, (uint64_t)delta * row_bytes);
+		Mismatch(Differ(warm_tail, cold_tail), "TP16 Gate GX warm delta prefill differs from cold prefill", delta, kCached, total);
+		Mismatch(Differ(Host(rig.ranks[0].latent_pool, rig.latent_bytes * G5N_DSA_LAYERS), cold_lat0), "TP16 Gate GX warm KV differs from cold", delta, kCached, total);
+		Mismatch(Differ(Host(rig.ranks[0].state->kda_state, kda_bytes), cold_kda0), "TP16 Gate GX warm KDA state differs from cold", delta, kCached, total);
+	}
+	printf("TP16 Gate GX prefix-exact: 16 ranks, 45 layers, cached=%u vs warm deltas 1..128 bit-exact (0 diffs in hidden, KV, and KDA state)\n", kCached);
+	const auto compare_rows = [&](const std::vector<uint8_t> &a, const std::vector<uint8_t> &b, uint32_t check_rows, const char *label)
+	{
+		double dot = 0.0, na = 0.0, nb = 0.0, max_abs = 0.0;
+		const uint16_t *pa = (const uint16_t *)a.data(), *pb = (const uint16_t *)b.data();
+		const uint64_t count = (uint64_t)check_rows * G5N_HIDDEN;
+		for ( uint64_t i = 0u; i < count; ++i )
+		{
+			const uint32_t ua = (uint32_t)pa[i] << 16u, ub = (uint32_t)pb[i] << 16u;
+			float fa = 0.0f, fb = 0.0f;
+			memcpy(&fa, &ua, sizeof(fa));
+			memcpy(&fb, &ub, sizeof(fb));
+			const double va = fa, vb = fb, d = fabs(va - vb);
+			if ( d > max_abs )
+				max_abs = d;
+			dot += va * vb;
+			na += va * va;
+			nb += vb * vb;
+		}
+		const double cos_sim = dot / sqrt(na * nb);
+		printf("TP16 gather parity (%s): cos=%.6f max_abs=%.4f\n", label, cos_sim, max_abs);
+		REQUIRE(cos_sim > 0.9995);
+	};
+	rig.Reset();
+	rig.RunAll(probe->inputs, 0u, 64u, 64u, 0u, 1u);
+	const std::vector<uint8_t> dense_scatter = Host(rig.ranks[0].hidden, 64u * row_bytes);
+	rig.Reset();
+	rig.RunAll(probe->inputs, 0u, 64u, 64u, 1u, 1u);
+	const std::vector<uint8_t> dense_gather = Host(rig.ranks[0].hidden, 64u * row_bytes);
+	compare_rows(dense_gather, dense_scatter, 64u, "dense_cold_64");
+	for ( uint32_t pos = 64u; pos < PROBE_PREFIX; pos += PROBE_ROWS )
+	{
+		const uint32_t chunk = PROBE_PREFIX - pos < PROBE_ROWS ? PROBE_PREFIX - pos : PROBE_ROWS;
+		rig.RunAll(probe->inputs, pos, chunk, pos + chunk, 1u, 1u);
+	}
+	for ( uint32_t r = 0u; r < Tp16Rig::kRanks; ++r )
+	{
+		cached_lat[r] = Host(rig.ranks[r].latent_pool, rig.latent_bytes * G5N_DSA_LAYERS);
+		cached_idx[r] = Host(rig.ranks[r].index_pool, rig.index_bytes * G5N_DSA_LAYERS);
+	}
+	rig.RunAll(probe->inputs, PROBE_PREFIX, 64u, PROBE_PREFIX + 64u, 0u, 1u);
+	const std::vector<uint8_t> sparse_scatter = Host(rig.ranks[0].hidden, 64u * row_bytes);
+	for ( uint32_t r = 0u; r < Tp16Rig::kRanks; ++r )
+	{
+		CUDA(cudaMemcpyAsync(rig.ranks[r].latent_pool, cached_lat[r].data(), cached_lat[r].size(), cudaMemcpyHostToDevice, rig.ranks[r].stream));
+		CUDA(cudaMemcpyAsync(rig.ranks[r].index_pool, cached_idx[r].data(), cached_idx[r].size(), cudaMemcpyHostToDevice, rig.ranks[r].stream));
+		CUDA(cudaStreamSynchronize(rig.ranks[r].stream));
+	}
+	rig.RunAll(probe->inputs, PROBE_PREFIX, 64u, PROBE_PREFIX + 64u, 1u, 1u);
+	const std::vector<uint8_t> sparse_gather = Host(rig.ranks[0].hidden, 64u * row_bytes);
+	compare_rows(sparse_gather, sparse_scatter, 64u, "sparse_warm_2304+64");
+	rig.Close();
+}
+
 int main(void)
 {
 	static const uint32_t kFrames[] = {1u, 2u, 7u, 16u, PROBE_ROWS};
@@ -771,6 +1182,7 @@ int main(void)
 	FrameOpen(&verify, &probe);
 	FrameOpen(&decode, &probe);
 	void *start = Device(probe.recurrent_bytes), *scratch = Device(probe.recurrent_bytes), *current = Device(probe.recurrent_bytes);
+	Tp16GateGxAndParityCheck(&probe);
 	Prefill(&probe, &decode, 0u, PROBE_BOUNDARY);
 	Sweep(&probe, &verify, &decode, start, scratch, current, PROBE_BOUNDARY, 16u);
 	Prefill(&probe, &decode, PROBE_BOUNDARY, PROBE_PREFIX);

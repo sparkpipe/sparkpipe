@@ -99,14 +99,18 @@ struct K3Schedule
 
 	static int32_t MlaGather(Context &c, uint32_t layer, uint32_t accumulate)
 	{
+		const uint32_t has_keys = B::GatherWindows(c, K3_LANE_A) != 0u ? 1u : 0u;
 		uint32_t window, first_selected = 0u;
 		int32_t status = B::MlaQuery(c, K3_LANE_A, K3_STREAM_MAIN);
-		if ( status == B::kOk )
+		if ( status == B::kOk && has_keys != 0u )
 			status = B::MlaGatherPack(c, K3_LANE_A, K3_STREAM_MAIN);
 		if ( status != B::kOk )
 			return status;
-		B::SetGatherWindow(c, K3_LANE_A, 0u);
-		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_KEYS);
+		if ( has_keys != 0u )
+		{
+			B::SetGatherWindow(c, K3_LANE_A, 0u);
+			B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_KEYS);
+		}
 		status = B::MlaGate(c, K3_LANE_A, K3_STREAM_MAIN);
 		if ( status == B::kOk )
 			status = B::MlaIndex(c, K3_LANE_A, K3_STREAM_MAIN);
@@ -116,7 +120,8 @@ struct K3Schedule
 			status = B::MlaIndexSelect(c, K3_LANE_A, K3_STREAM_MAIN);
 			first_selected = 1u;
 		}
-		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
+		if ( has_keys != 0u )
+			B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_KEYS | K3_COLLECTIVE_FINISH);
 		if ( status == B::kOk )
 			status = MlaSelect(c, layer, first_selected);
 		if ( status != B::kOk )
@@ -476,17 +481,22 @@ struct K3Schedule
 				K3_PAIR_DO(B::MlaQuery(c, K3_LANE_B, K3_STREAM_B));
 				K3_PAIR_DO(B::MlaGatherPack(c, K3_LANE_A, K3_STREAM_B));
 				B::SetGatherWindow(c, K3_LANE_A, 0u);
-				if ( B::GatherPrefetched(c, K3_LANE_A) != 0u )
-					K3_PAIR_DO(B::Fence(c, K3_STREAM_MAIN, K3_STREAM_B));
-				else
-					K3_PAIR_DO(B::PairRound(c, K3_LANE_A, K3_STREAM_B, K3_STREAM_NONE, layer, K3_COLLECTIVE_MLA_KEYS, 1u));
+				if ( B::GatherWindows(c, K3_LANE_A) != 0u )
+				{
+					if ( B::GatherPrefetched(c, K3_LANE_A) != 0u )
+						K3_PAIR_DO(B::Fence(c, K3_STREAM_MAIN, K3_STREAM_B));
+					else
+						K3_PAIR_DO(B::PairRound(c, K3_LANE_A, K3_STREAM_B, K3_STREAM_NONE, layer, K3_COLLECTIVE_MLA_KEYS, 1u));
+				}
 				B::SetGatherPrefetched(c, K3_LANE_A, 0u);
 				K3_PAIR_DO(B::MlaGate(c, K3_LANE_A, K3_STREAM_A));
-				K3_PAIR_DO(B::Fence(c, K3_STREAM_A, K3_STREAM_MAIN));
+				if ( B::GatherWindows(c, K3_LANE_A) != 0u )
+					K3_PAIR_DO(B::Fence(c, K3_STREAM_A, K3_STREAM_MAIN));
 				K3_PAIR_DO(B::MlaGate(c, K3_LANE_B, K3_STREAM_B));
 				if ( B::MlaPasses(c, K3_LANE_A) <= 1u )
 				{
-					K3_PAIR_DO(B::Fence(c, K3_STREAM_B, K3_STREAM_MAIN));
+					if ( B::GatherWindows(c, K3_LANE_A) != 0u )
+						K3_PAIR_DO(B::Fence(c, K3_STREAM_B, K3_STREAM_MAIN));
 					if ( B::GatherExpanded(c, K3_LANE_A) != 0u )
 						K3_PAIR_DO(B::MlaExpandValues(c, K3_LANE_A, 0u, K3_STREAM_A));
 					K3_PAIR_DO(B::MlaGatherPartials(c, K3_LANE_A, 0u, K3_STREAM_A));

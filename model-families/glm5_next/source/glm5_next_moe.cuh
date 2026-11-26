@@ -1283,6 +1283,14 @@ static int32_t Glm5NextMoeMmaW2K128Launch(const Glm5NextLayerBuffers *b, uint32_
 			LM_LAUNCH_DEPENDENT((Glm5NextMoeMmaW2K128Bf16Kernel<32u, 2u>), blocks, 256u, sh, stream,
 				(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2, b->expert_out_bf16);
 		}
+		else if ( b->prefill_unified != 0u )
+		{
+			constexpr uint32_t sh = 2u * (16u * 128u + 128u * 128u);
+			if ( Glm5NextMoeMmaSetup<16u>(Glm5NextMoeMmaW2K128Bf16Kernel<16u, 1u>, sh, sms, &blocks) != LM_LAUNCH_OK )
+				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+			LM_LAUNCH_DEPENDENT((Glm5NextMoeMmaW2K128Bf16Kernel<16u, 1u>), blocks, 256u, sh, stream,
+				(const uint16_t *)b->expert_w2_weight, b->intermediate_bf16, b->group_row_offset, b->group_tile_prefix_w2, b->expert_out_bf16);
+		}
 		else
 		{
 			return LmStreamGemmGrouped<LmBf16Format>(b->expert_w2_weight, LmScaleTensorNone(), b->intermediate_bf16, b->expert_out_bf16,

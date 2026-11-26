@@ -1,6 +1,8 @@
 #include "modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu"
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
+#include <algorithm>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1136,6 +1138,127 @@ static void XrTreeGraphVerify(void)
 	cudaFree(d_parent); cudaFree(d_loads); cudaFree(d_saves); cudaFree(d_ctx); cudaFree(d_err);
 }
 
+static float XrBf16ToF32(uint16_t bits)
+{
+	uint32_t u = (uint32_t)bits << 16u;
+	float f = 0.0f;
+	memcpy(&f, &u, sizeof(f));
+	return f;
+}
+
+static uint16_t XrF32ToBf16(float value)
+{
+	uint32_t u = 0u;
+	memcpy(&u, &value, sizeof(u));
+	u += 0x7fffu + ((u >> 16u) & 1u);
+	return (uint16_t)(u >> 16u);
+}
+
+static void XrDirectGatherSparseParityVerify(void)
+{
+	const uint32_t rows = 32u, heads = K3_MLA_HEADS / XR_RANKS, total_ctx = 2080u;
+	const uint32_t blocks = (rows + 7u) / 8u;
+	constexpr uint32_t UCAP = 8u * K3_INDEX_TOPK;
+	constexpr uint32_t SHARED_BYTES = LmPrefillAttnSharedBytes<K3_MLA_KV_A_DIM, LM_PREFILL_ATTN_QUERIES>();
+	cudaStream_t stream = 0;
+	XrCheck(cudaStreamCreate(&stream) == cudaSuccess, "direct gather parity stream");
+	std::vector<uint16_t> q_h((size_t)rows * heads * K3_MLA_KV_A_DIM);
+	std::vector<uint16_t> kv_h((size_t)total_ctx * K3_MLA_KV_A_DIM);
+	for ( size_t i = 0; i < q_h.size(); ++i )
+	{
+		uint32_t x = (uint32_t)(i * 2654435761u) ^ 0x13579bdfu;
+		x ^= x >> 13u; x *= 0x5bd1e995u; x ^= x >> 15u;
+		q_h[i] = XrF32ToBf16(0.12f * (((float)(x & 0xffffu) - 32768.0f) / 32768.0f));
+	}
+	for ( size_t i = 0; i < kv_h.size(); ++i )
+	{
+		uint32_t x = (uint32_t)(i * 2246822519u) ^ 0x2468ace0u;
+		x ^= x >> 13u; x *= 0x5bd1e995u; x ^= x >> 15u;
+		kv_h[i] = XrF32ToBf16(0.12f * (((float)(x & 0xffffu) - 32768.0f) / 32768.0f));
+	}
+	std::vector<uint32_t> pos_h(rows), sel_h((size_t)rows * K3_INDEX_TOPK, LM_INDEX_SHARD_NO_POSITION);
+	for ( uint32_t r = 0u; r < rows; ++r )
+	{
+		pos_h[r] = total_ctx - rows + r;
+		std::vector<uint8_t> seen(total_ctx, 0u);
+		uint32_t w = 0u;
+		for ( uint32_t k = 0u; k < K3_INDEX_TOPK; ++k )
+		{
+			const uint32_t v = (k + r * 7u) % (pos_h[r] + 1u);
+			if ( seen[v] == 0u ) { seen[v] = 1u; sel_h[(size_t)r * K3_INDEX_TOPK + w++] = v; }
+		}
+		std::sort(sel_h.begin() + (size_t)r * K3_INDEX_TOPK, sel_h.begin() + (size_t)r * K3_INDEX_TOPK + w);
+	}
+	uint16_t *q_d = (uint16_t *)XrDevice(q_h.size() * 2u);
+	uint16_t *kv_d = (uint16_t *)XrDevice(kv_h.size() * 2u);
+	uint16_t *out_d = (uint16_t *)XrDevice((size_t)rows * heads * K3_KV_LORA_RANK * 2u);
+	uint32_t *seq_d = (uint32_t *)XrDevice(rows * 4u);
+	uint32_t *ctx_d = (uint32_t *)XrDevice(4u);
+	uint32_t *pos_d = (uint32_t *)XrDevice(rows * 4u);
+	uint32_t *sel_d = (uint32_t *)XrDevice(sel_h.size() * 4u);
+	uint32_t *upos_d = (uint32_t *)XrDevice((size_t)blocks * UCAP * 4u);
+	uint8_t *umask_d = (uint8_t *)XrDevice((size_t)blocks * UCAP);
+	uint32_t *ucnt_d = (uint32_t *)XrDevice(blocks * 4u);
+	cudaMemcpy(q_d, q_h.data(), q_h.size() * 2u, cudaMemcpyHostToDevice);
+	cudaMemcpy(kv_d, kv_h.data(), kv_h.size() * 2u, cudaMemcpyHostToDevice);
+	cudaMemcpy(pos_d, pos_h.data(), rows * 4u, cudaMemcpyHostToDevice);
+	cudaMemcpy(ctx_d, &total_ctx, 4u, cudaMemcpyHostToDevice);
+	cudaMemcpy(sel_d, sel_h.data(), sel_h.size() * 4u, cudaMemcpyHostToDevice);
+	XrCheck(cudaFuncSetAttribute((const void *)K3MlaGatherPrefillKernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SHARED_BYTES) == cudaSuccess,
+		"direct gather sparse smem attribute");
+	LmPrefillSparseUnionKernel<8u, K3_INDEX_TOPK><<<blocks, LM_PREFILL_UNION_THREADS, 0, stream>>>(
+		sel_d, pos_d, rows, (const uint32_t *)0, UCAP, upos_d, umask_d, ucnt_d);
+	K3MlaGatherPrefillKernel<true><<<dim3(blocks, heads / 2u), LM_PREFILL_ATTN_THREADS, SHARED_BYTES, stream>>>(
+		q_d, kv_d, seq_d, ctx_d, pos_d, K3_MLA_QK_SCALE, out_d, rows, heads, total_ctx, upos_d, umask_d, ucnt_d, UCAP);
+	XrCheck(cudaStreamSynchronize(stream) == cudaSuccess, "direct gather sparse sync");
+	std::vector<uint16_t> out_h((size_t)rows * heads * K3_KV_LORA_RANK);
+	cudaMemcpy(out_h.data(), out_d, out_h.size() * 2u, cudaMemcpyDeviceToHost);
+	double dot = 0.0, na = 0.0, nb = 0.0;
+	const uint32_t check_rows[] = {0u, 7u, 15u, 31u};
+	for ( uint32_t ci = 0u; ci < 4u; ++ci )
+	{
+		const uint32_t r = check_rows[ci], lim = pos_h[r];
+		std::vector<uint32_t> keys;
+		for ( uint32_t k = 0u; k < K3_INDEX_TOPK; ++k )
+		{
+			const uint32_t p = sel_h[(size_t)r * K3_INDEX_TOPK + k];
+			if ( p <= lim && p < total_ctx ) keys.push_back(p);
+		}
+		for ( uint32_t h = 0u; h < heads; ++h )
+		{
+			const uint16_t *qp = q_h.data() + ((size_t)r * heads + h) * K3_MLA_KV_A_DIM;
+			std::vector<float> sc(keys.size());
+			float mx = -1e30f;
+			for ( size_t i = 0; i < keys.size(); ++i )
+			{
+				const uint16_t *kp = kv_h.data() + (size_t)keys[i] * K3_MLA_KV_A_DIM;
+				float s = 0.0f;
+				for ( uint32_t d = 0u; d < K3_MLA_KV_A_DIM; ++d ) s += XrBf16ToF32(qp[d]) * XrBf16ToF32(kp[d]);
+				s *= K3_MLA_QK_SCALE;
+				sc[i] = s;
+				if ( s > mx ) mx = s;
+			}
+			float sum = 0.0f;
+			for ( size_t i = 0; i < keys.size(); ++i ) { sc[i] = expf(sc[i] - mx); sum += sc[i]; }
+			const uint16_t *got = out_h.data() + ((size_t)r * heads + h) * K3_KV_LORA_RANK;
+			for ( uint32_t d = 0u; d < K3_KV_LORA_RANK; ++d )
+			{
+				float ref = 0.0f;
+				for ( size_t i = 0; i < keys.size(); ++i ) ref += sc[i] * XrBf16ToF32(kv_h[(size_t)keys[i] * K3_MLA_KV_A_DIM + d]);
+				ref /= sum;
+				const float g = XrBf16ToF32(got[d]);
+				dot += (double)ref * g; na += (double)ref * ref; nb += (double)g * g;
+			}
+		}
+	}
+	const double cos = dot / sqrt(na * nb);
+	printf("DIRECT-GATHER-SPARSE: cos=%.6f\n", cos);
+	XrCheck(cos >= 0.9999, "K3MlaGatherPrefillKernel<true> matches FP32 sparse reference");
+	cudaStreamDestroy(stream);
+	cudaFree(q_d); cudaFree(kv_d); cudaFree(out_d); cudaFree(seq_d); cudaFree(ctx_d);
+	cudaFree(pos_d); cudaFree(sel_d); cudaFree(upos_d); cudaFree(umask_d); cudaFree(ucnt_d);
+}
+
 int main(void)
 {
 	XrCase(600u, 600u, 1u);
@@ -1150,6 +1273,7 @@ int main(void)
 	XrTreeMlaDsaVerify(2400u, 1u);
 	XrTreeMlaTp1Verify();
 	XrTreeGraphVerify();
+	XrDirectGatherSparseParityVerify();
 	if ( xr_failures != 0 )
 	{
 		printf("FAIL k3_index_exchange_cuda: %d failures\n", xr_failures);
