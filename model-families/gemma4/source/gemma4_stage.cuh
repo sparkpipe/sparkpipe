@@ -2679,7 +2679,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static int32_t MoeDownMma(const State *state, const GemmaLayer *layer, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 	{
 		const uint32_t local_mean = (rows * G::kTopK + G::kExperts - 1u) / G::kExperts;
-		const uint32_t tile_m = (G::kMoeInter != 128u && (G::kHidden & 127u) == 0u && local_mean >= 50u) ? 128u :
+		const uint32_t tile_m = (G::kMoeInter != 128u && (G::kHidden & 127u) == 0u && local_mean >= 96u) ? 128u :
 			local_mean >= 22u ? 64u : local_mean >= 10u ? 32u : 16u;
 		uint32_t blocks = sms * 2u;
 		if constexpr ( G::kMoeInter == 128u && (G::kHidden & 127u) == 0u )
@@ -3398,7 +3398,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			if ( 2u * ffn_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kHidden >= 256u && rows <= 16u )
 				return LaunchExactGateUp<ACT_MODE>(state, layer, rows, ffn_rows, stream);
 		}
-		if ( !fused_router && prefill_wave && ffn_rows <= 256u && (ffn_rows & 15u) == 0u && (G::kHidden & 63u) == 0u )
+		if ( !fused_router && prefill_wave && rows <= 1024u && ffn_rows <= 256u && (ffn_rows & 15u) == 0u && (G::kHidden & 63u) == 0u )
 		{
 			if ( DenseGateUpActMma<ACT_MODE>(layer->gate_up, state->normed, state->intermediate, rows, G::kHidden, ffn_rows, layer->swiglu_limit, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -3512,13 +3512,6 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		else if ( ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		constexpr bool kAllLocal = G::kLocalExperts == G::kExperts;
-		if ( rows >= 32u && G::kTopK <= 32u )
-		{
-			(void)LM_LAUNCH_DEPENDENT((GemmaMoeLocalFinalizeWarpKernel<HAS_SHARED, kAllLocal, G::kTopK>), (rows + 3u) / 4u, 128u, 0, stream,
-				state->expert_out, state->route_packed_row, state->route_expert, HAS_SHARED ? state->partial : (const uint16_t *)0, output,
-				rows, G::kLocalExperts, G::kHidden);
-			return CudaStageLaunched();
-		}
 		const uint32_t fin_x = rows >= step->multiprocessors ? 1u : LmVecBlocks<GM_THREADS>(G::kHidden);
 		(void)LM_LAUNCH_DEPENDENT((GemmaMoeLocalFinalizeKernel<HAS_SHARED, kAllLocal, G::kTopK>), dim3(fin_x, rows), GM_THREADS, 0, stream,
 			state->expert_out, state->route_packed_row, state->route_expert, HAS_SHARED ? state->partial : (const uint16_t *)0, output,

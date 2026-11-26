@@ -223,6 +223,7 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	constexpr uint32_t LOCAL_E = G::kLocalExperts;
 	constexpr uint32_t TOPK = G::kTopK;
 	const uint32_t routes = rows * TOPK;
+	char label[96];
 
 	const uint16_t *d_act = Tensor<uint16_t>((uint64_t)rows * K, 0.5f, 0.0f);
 	const uint16_t *d_gu_w = Matrix(2u * FFN, K);
@@ -231,28 +232,30 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	BENCH_CHECK(cudaMalloc(&d_inter_base, (uint64_t)rows * FFN * sizeof(uint16_t)));
 	BENCH_CHECK(cudaMalloc(&d_inter_new, (uint64_t)rows * FFN * sizeof(uint16_t)));
 
-	auto run_gu_base = [&]()
+	if ( rows <= 1024u )
 	{
-		GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false><<<((rows + 63u) / 64u) * ((2u * FFN + 31u) / 32u), 128u, 0, stream>>>(
-			d_gu_w, (const uint16_t *)0, d_act, d_gu_tmp, (uint16_t *)0, rows, K, 2u * FFN, 0u);
-		GemmaGeluTanhMulKernel<GM_THREADS><<<dim3(LmVecBlocks<GM_THREADS>(FFN), rows), GM_THREADS, 0, stream>>>(
-			d_gu_tmp, d_inter_base, FFN);
-	};
-	auto run_gu_new = [&]()
-	{
-		constexpr uint32_t smem = 3u * (64u + 32u) * 128u;
-		GemmaDenseGateUpActMmaKernel<64u, 16u, 128u, 2u, 0u, false, false, 3u><<<dim3(FFN / 16u, (rows + 63u) / 64u), 128u, smem, stream>>>(
-			d_gu_w, (const uint16_t *)0, d_act, d_inter_new, (uint16_t *)0, (float *)0, rows, K, FFN, 0u, INFINITY);
-	};
-	run_gu_base();
-	run_gu_new();
-	BENCH_CHECK(cudaStreamSynchronize(stream));
-	char label[96];
-	snprintf(label, sizeof(label), "26B dense gate_up+GELU rows=%u", rows);
-	const float ms_gu_b = TimeMs(stream, run_gu_base);
-	const float ms_gu_n = TimeMs(stream, run_gu_new);
-	printf("[gemma4 ffn ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_gu_b, ms_gu_n, ms_gu_b / ms_gu_n);
-	CheckBf16(label, d_inter_base, d_inter_new, (uint64_t)rows * FFN, 0u, 0.0f);
+		auto run_gu_base = [&]()
+		{
+			GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false><<<((rows + 63u) / 64u) * ((2u * FFN + 31u) / 32u), 128u, 0, stream>>>(
+				d_gu_w, (const uint16_t *)0, d_act, d_gu_tmp, (uint16_t *)0, rows, K, 2u * FFN, 0u);
+			GemmaGeluTanhMulKernel<GM_THREADS><<<dim3(LmVecBlocks<GM_THREADS>(FFN), rows), GM_THREADS, 0, stream>>>(
+				d_gu_tmp, d_inter_base, FFN);
+		};
+		auto run_gu_new = [&]()
+		{
+			constexpr uint32_t smem = 3u * (64u + 32u) * 128u;
+			GemmaDenseGateUpActMmaKernel<64u, 16u, 128u, 2u, 0u, false, false, 3u><<<dim3(FFN / 16u, (rows + 63u) / 64u), 128u, smem, stream>>>(
+				d_gu_w, (const uint16_t *)0, d_act, d_inter_new, (uint16_t *)0, (float *)0, rows, K, FFN, 0u, INFINITY);
+		};
+		run_gu_base();
+		run_gu_new();
+		BENCH_CHECK(cudaStreamSynchronize(stream));
+		snprintf(label, sizeof(label), "26B dense gate_up+GELU rows=%u", rows);
+		const float ms_gu_b = TimeMs(stream, run_gu_base);
+		const float ms_gu_n = TimeMs(stream, run_gu_new);
+		printf("[gemma4 ffn ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_gu_b, ms_gu_n, ms_gu_b / ms_gu_n);
+		CheckBf16(label, d_inter_base, d_inter_new, (uint64_t)rows * FFN, 0u, 0.0f);
+	}
 
 	std::vector<uint32_t> h_re(routes), h_gro(LOCAL_E + 2u, 0u), h_rpr(routes), h_src(routes);
 	std::vector<float> h_pw(routes);
@@ -293,16 +296,15 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	const uint16_t *d_w1 = Matrix((uint64_t)LOCAL_E * MOE_N, K);
 	const uint16_t *d_w3 = Matrix((uint64_t)LOCAL_E * MOE_N, K);
 	const uint16_t *d_w2 = Matrix((uint64_t)LOCAL_E * K, MOE_N);
-	uint16_t *d_ea_b = 0, *d_ea_n = 0, *d_eo_b = 0, *d_eo_n = 0, *d_fin_b = 0, *d_fin_n = 0;
+	uint16_t *d_ea_b = 0, *d_ea_n = 0, *d_eo_b = 0, *d_eo_n = 0;
 	BENCH_CHECK(cudaMalloc(&d_ea_b, (uint64_t)routes * MOE_N * sizeof(uint16_t)));
 	BENCH_CHECK(cudaMalloc(&d_ea_n, (uint64_t)routes * MOE_N * sizeof(uint16_t)));
 	BENCH_CHECK(cudaMalloc(&d_eo_b, (uint64_t)routes * K * sizeof(uint16_t)));
 	BENCH_CHECK(cudaMalloc(&d_eo_n, (uint64_t)routes * K * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_fin_b, (uint64_t)rows * K * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_fin_n, (uint64_t)rows * K * sizeof(uint16_t)));
 
 	const uint32_t local_mean = (routes + G::kExperts - 1u) / G::kExperts;
-	const bool use128 = local_mean >= 50u;
+	const bool use128_w1 = local_mean >= 50u;
+	const bool use128_w2 = local_mean >= 96u;
 	constexpr uint32_t smem_w1_b = 2u * (64u + 128u) * 128u;
 	constexpr uint32_t smem_w1_n64 = 4u * (64u + 128u) * 128u;
 	constexpr uint32_t smem_w1_n128 = 3u * (128u + 128u) * 128u;
@@ -317,7 +319,7 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	};
 	auto run_w1_new = [&]()
 	{
-		if ( use128 )
+		if ( use128_w1 )
 		{
 			GemmaBuildTilePrefixKernel<<<1u, 32u, 0, stream>>>(d_gro, d_pfx_n, LOCAL_E, 128u, MOE_N / 64u);
 			GemmaMoeMmaW1ActLdcsKernel<128u, 4u, 3u, false, 3u><<<sms, 256u, smem_w1_n128, stream>>>(
@@ -333,7 +335,7 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	run_w1_base();
 	run_w1_new();
 	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "26B MoE W1W3+GELU rows=%u (%s)", rows, use128 ? "M128-S3" : "M64-S4");
+	snprintf(label, sizeof(label), "26B MoE W1W3+GELU rows=%u (%s)", rows, use128_w1 ? "M128-S3" : "M64-S4");
 	const float ms_w1_b = TimeMs(stream, run_w1_base);
 	const float ms_w1_n = TimeMs(stream, run_w1_new);
 	printf("[gemma4 moe ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_w1_b, ms_w1_n, ms_w1_b / ms_w1_n);
@@ -353,7 +355,7 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	};
 	auto run_w2_new = [&]()
 	{
-		if ( use128 )
+		if ( use128_w2 )
 		{
 			GemmaBuildTilePrefixKernel<<<1u, 32u, 0, stream>>>(d_gro, d_pfx_n, LOCAL_E, 128u, K / 128u);
 			GemmaMoeMmaW2GeneralKernel<128u, 128u, 4u, 256u, 3u><<<sms, 256u, smem_w2_n128, stream>>>(
@@ -369,30 +371,11 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	run_w2_base();
 	run_w2_new();
 	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "26B MoE W2 rows=%u (%s)", rows, use128 ? "M128-S3" : "M64-S4");
+	snprintf(label, sizeof(label), "26B MoE W2 rows=%u (%s)", rows, use128_w2 ? "M128-S3" : "M64-S4");
 	const float ms_w2_b = TimeMs(stream, run_w2_base);
 	const float ms_w2_n = TimeMs(stream, run_w2_new);
 	printf("[gemma4 moe ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_w2_b, ms_w2_n, ms_w2_b / ms_w2_n);
 	CheckBf16(label, d_eo_b, d_eo_n, (uint64_t)local_rows * K, 0u, 0.0f);
-
-	auto run_fin_base = [&]()
-	{
-		GemmaMoeLocalFinalizeKernel<false, false, TOPK><<<dim3(1u, rows), GM_THREADS, 0, stream>>>(
-			d_eo_b, d_rpr, d_re, (const uint16_t *)0, d_fin_b, TOPK, LOCAL_E, K);
-	};
-	auto run_fin_new = [&]()
-	{
-		GemmaMoeLocalFinalizeWarpKernel<false, false, TOPK><<<(rows + 3u) / 4u, 128u, 0, stream>>>(
-			d_eo_n, d_rpr, d_re, (const uint16_t *)0, d_fin_n, rows, LOCAL_E, K);
-	};
-	run_fin_base();
-	run_fin_new();
-	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "26B MoE Finalize rows=%u", rows);
-	const float ms_fin_b = TimeMs(stream, run_fin_base);
-	const float ms_fin_n = TimeMs(stream, run_fin_new);
-	printf("[gemma4 moe ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_fin_b, ms_fin_n, ms_fin_b / ms_fin_n);
-	CheckBf16(label, d_fin_b, d_fin_n, (uint64_t)rows * K, 0u, 0.0f);
 
 	BENCH_CHECK(cudaFree((void *)d_act));
 	BENCH_CHECK(cudaFree((void *)d_gu_w));
@@ -413,8 +396,6 @@ static void BenchGemma26bFfnAndMoe(uint32_t rows, uint32_t sms, cudaStream_t str
 	BENCH_CHECK(cudaFree(d_ea_n));
 	BENCH_CHECK(cudaFree(d_eo_b));
 	BENCH_CHECK(cudaFree(d_eo_n));
-	BENCH_CHECK(cudaFree(d_fin_b));
-	BENCH_CHECK(cudaFree(d_fin_n));
 }
 
 static void BenchLing3Prefill(uint32_t rows, uint32_t sms, cudaStream_t stream)
@@ -425,10 +406,8 @@ static void BenchLing3Prefill(uint32_t rows, uint32_t sms, cudaStream_t stream)
 	constexpr uint32_t CH = S::kKdaChannels;
 	constexpr uint32_t W = S::kKdaWidth;
 	constexpr uint32_t H = S::kKdaRankHeads;
-	constexpr uint32_t SH = G::kSharedRows;
-	constexpr uint32_t MOE_N = G::kMoeInter;
-	constexpr uint32_t LOCAL_E = G::kLocalExperts;
-	constexpr uint32_t TOPK = G::kTopK;
+	constexpr uint32_t MH = S::kMlaRankHeads;
+	constexpr uint32_t VD = G::kValueDim;
 	char label[96];
 
 	const uint16_t *d_normed = Tensor<uint16_t>((uint64_t)rows * K, 0.5f, 0.0f);
@@ -550,161 +529,25 @@ static void BenchLing3Prefill(uint32_t rows, uint32_t sms, cudaStream_t stream)
 	});
 	printf("[ling3 kda  ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_hn_b, ms_hn_n, ms_hn_b / ms_hn_n);
 
-	const uint16_t *d_sh_gu = Tensor<uint16_t>((uint64_t)rows * 2u * SH, 0.5f, 0.0f);
-	const uint16_t *d_sh_dn = Matrix(K, SH);
-	uint16_t *d_sh_act = 0, *d_sh_out_b = 0, *d_sh_out_n = 0;
-	BENCH_CHECK(cudaMalloc(&d_sh_act, (uint64_t)rows * SH * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_sh_out_b, (uint64_t)rows * K * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_sh_out_n, (uint64_t)rows * K * sizeof(uint16_t)));
-	auto run_sh_b = [&]()
-	{
-		LingSiluMulLimitKernel<G::kFfnSiluRounded><<<rows, LG_THREADS, 0, stream>>>(d_sh_gu, d_sh_act, SH, INFINITY);
-		LmStreamGemmDense<LmBf16Format>(d_sh_dn, LmScaleTensorNone(), d_sh_act, d_sh_out_b, (float *)0, rows, SH, K, 0u, 0u, sms, (SparkGpuStream)stream);
-	};
-	auto run_sh_n = [&]()
-	{
-		LingSharedActDownMmaKernel<G><<<dim3(K / 64u, (rows + 63u) / 64u), 128u, 0, stream>>>(d_sh_gu, d_sh_dn, d_sh_out_n, rows, INFINITY);
-	};
-	run_sh_b();
-	run_sh_n();
+	const uint16_t *d_mla_gate = Tensor<uint16_t>((uint64_t)rows * MH, 0.5f, 0.0f);
+	const uint16_t *d_mla_init = Tensor<uint16_t>((uint64_t)rows * MH * VD, 0.5f, 0.0f);
+	uint16_t *d_mla_b = 0, *d_mla_n = 0;
+	BENCH_CHECK(cudaMalloc(&d_mla_b, (uint64_t)rows * MH * VD * sizeof(uint16_t)));
+	BENCH_CHECK(cudaMalloc(&d_mla_n, (uint64_t)rows * MH * VD * sizeof(uint16_t)));
+	BENCH_CHECK(cudaMemcpy(d_mla_b, d_mla_init, (uint64_t)rows * MH * VD * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+	BENCH_CHECK(cudaMemcpy(d_mla_n, d_mla_init, (uint64_t)rows * MH * VD * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+	LingMlaHeadGateKernel<VD><<<dim3(rows, MH), 128u, 0, stream>>>(d_mla_b, d_mla_gate, MH);
+	LingMlaHeadGateFastKernel<VD><<<(rows * MH + 7u) / 8u, 128u, 0, stream>>>(d_mla_n, d_mla_gate, rows * MH);
 	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "Ling3 Shared Act+Down rows=%u", rows);
-	const float ms_sh_b = TimeMs(stream, run_sh_b);
-	const float ms_sh_n = TimeMs(stream, run_sh_n);
-	printf("[ling3 moe  ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_sh_b, ms_sh_n, ms_sh_b / ms_sh_n);
-	CheckBf16(label, d_sh_out_b, d_sh_out_n, (uint64_t)rows * K, 0u, 0.0f);
-
-	const uint32_t routes = rows * TOPK;
-	std::vector<uint32_t> h_re(routes), h_gro(LOCAL_E + 2u, 0u), h_rpr(routes), h_src(routes);
-	std::vector<float> h_rw(routes), h_pw(routes);
-	std::vector<uint32_t> cnt(LOCAL_E + 1u, 0u);
-	for ( uint32_t i = 0u; i < routes; ++i )
-	{
-		const uint32_t ge = Mix(5000u + i) % G::kExperts;
-		const uint32_t le = ge < LOCAL_E ? ge : LOCAL_E;
-		h_re[i] = le;
-		h_rw[i] = le < LOCAL_E ? (0.1f + 0.3f * ((float)(i & 7u) / 7.0f)) : 0.0f;
-		cnt[le]++;
-	}
-	for ( uint32_t e = 0u; e <= LOCAL_E; ++e )
-		h_gro[e + 1u] = h_gro[e] + cnt[e];
-	std::vector<uint32_t> cur = h_gro;
-	for ( uint32_t i = 0u; i < routes; ++i )
-	{
-		const uint32_t p = cur[h_re[i]]++;
-		h_rpr[i] = p;
-		h_src[p] = i / TOPK;
-		h_pw[p] = h_rw[i];
-	}
-	const uint32_t local_rows = h_gro[LOCAL_E];
-	uint32_t *d_re = 0, *d_gro = 0, *d_rpr = 0, *d_src = 0, *d_pfx_b = 0, *d_pfx_n = 0;
-	float *d_rw = 0, *d_pw = 0;
-	BENCH_CHECK(cudaMalloc(&d_re, routes * sizeof(uint32_t)));
-	BENCH_CHECK(cudaMalloc(&d_gro, (LOCAL_E + 2u) * sizeof(uint32_t)));
-	BENCH_CHECK(cudaMalloc(&d_rpr, routes * sizeof(uint32_t)));
-	BENCH_CHECK(cudaMalloc(&d_src, routes * sizeof(uint32_t)));
-	BENCH_CHECK(cudaMalloc(&d_pfx_b, (LOCAL_E + 2u) * sizeof(uint32_t)));
-	BENCH_CHECK(cudaMalloc(&d_pfx_n, (LOCAL_E + 2u) * sizeof(uint32_t)));
-	BENCH_CHECK(cudaMalloc(&d_rw, routes * sizeof(float)));
-	BENCH_CHECK(cudaMalloc(&d_pw, routes * sizeof(float)));
-	BENCH_CHECK(cudaMemcpy(d_re, h_re.data(), routes * sizeof(uint32_t), cudaMemcpyHostToDevice));
-	BENCH_CHECK(cudaMemcpy(d_gro, h_gro.data(), (LOCAL_E + 2u) * sizeof(uint32_t), cudaMemcpyHostToDevice));
-	BENCH_CHECK(cudaMemcpy(d_rpr, h_rpr.data(), routes * sizeof(uint32_t), cudaMemcpyHostToDevice));
-	BENCH_CHECK(cudaMemcpy(d_src, h_src.data(), routes * sizeof(uint32_t), cudaMemcpyHostToDevice));
-	BENCH_CHECK(cudaMemcpy(d_rw, h_rw.data(), routes * sizeof(float), cudaMemcpyHostToDevice));
-	BENCH_CHECK(cudaMemcpy(d_pw, h_pw.data(), routes * sizeof(float), cudaMemcpyHostToDevice));
-
-	const uint16_t *d_w1 = Matrix((uint64_t)LOCAL_E * MOE_N, K);
-	const uint16_t *d_w3 = Matrix((uint64_t)LOCAL_E * MOE_N, K);
-	const uint16_t *d_w2 = Matrix((uint64_t)LOCAL_E * K, MOE_N);
-	uint16_t *d_ea_b = 0, *d_ea_n = 0, *d_eo_b = 0, *d_eo_n = 0, *d_fin_b = 0, *d_fin_n = 0;
-	BENCH_CHECK(cudaMalloc(&d_ea_b, (uint64_t)routes * MOE_N * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_ea_n, (uint64_t)routes * MOE_N * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_eo_b, (uint64_t)routes * K * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_eo_n, (uint64_t)routes * K * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_fin_b, (uint64_t)rows * K * sizeof(uint16_t)));
-	BENCH_CHECK(cudaMalloc(&d_fin_n, (uint64_t)rows * K * sizeof(uint16_t)));
-
-	const uint32_t expected_local = (uint32_t)(((uint64_t)routes * LOCAL_E + G::kExperts - 1u) / G::kExperts);
-	const uint32_t mean = (expected_local + LOCAL_E - 1u) / LOCAL_E;
-	const uint32_t base_tm = mean > 32u ? 64u : (mean > 16u ? 32u : 16u);
-	const uint32_t new_tm = mean >= 50u ? 128u : mean >= 22u ? 64u : mean >= 10u ? 32u : 16u;
-	constexpr uint32_t sh_w1_16 = 4u * (16u + 128u) * 128u;
-	constexpr uint32_t sh_w1_32 = 4u * (32u + 128u) * 128u;
-	constexpr uint32_t sh_w1_64 = 4u * (64u + 128u) * 128u;
-	constexpr uint32_t sh_w2_16 = 4u * (16u + 128u) * 128u;
-	constexpr uint32_t sh_w2_32 = 4u * (32u + 128u) * 128u;
-	constexpr uint32_t sh_w2_64 = 4u * (64u + 128u) * 128u;
-	BENCH_CHECK(cudaFuncSetAttribute(LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, sh_w1_16));
-	BENCH_CHECK(cudaFuncSetAttribute(LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, sh_w1_32));
-	BENCH_CHECK(cudaFuncSetAttribute(LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, sh_w1_64));
-	BENCH_CHECK(cudaFuncSetAttribute(LingMoeMmaW2Bf16Kernel<G, 16u, 128u, 1u, 4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, sh_w2_16));
-	BENCH_CHECK(cudaFuncSetAttribute(LingMoeMmaW2Bf16Kernel<G, 32u, 128u, 2u, 4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, sh_w2_32));
-	BENCH_CHECK(cudaFuncSetAttribute(LingMoeMmaW2Bf16Kernel<G, 64u, 128u, 2u, 4u>, cudaFuncAttributeMaxDynamicSharedMemorySize, sh_w2_64));
-
-	auto launch_w1_tm = [&](uint32_t tm, uint32_t *pfx, uint16_t *out)
-	{
-		LingBuildTilePrefixKernel<<<1u, 32u, 0, stream>>>(d_gro, pfx, LOCAL_E, tm, MOE_N / 64u);
-		if ( tm == 64u )
-			LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u><<<sms, 256u, sh_w1_64, stream>>>(d_w1, d_w3, d_normed, d_pw, d_gro, pfx, d_src, out, INFINITY);
-		else if ( tm == 32u )
-			LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u><<<sms, 256u, sh_w1_32, stream>>>(d_w1, d_w3, d_normed, d_pw, d_gro, pfx, d_src, out, INFINITY);
-		else
-			LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u><<<sms, 256u, sh_w1_16, stream>>>(d_w1, d_w3, d_normed, d_pw, d_gro, pfx, d_src, out, INFINITY);
-	};
-	auto run_moe_w1_b = [&]() { launch_w1_tm(base_tm, d_pfx_b, d_ea_b); };
-	auto run_moe_w1_n = [&]() { launch_w1_tm(new_tm, d_pfx_n, d_ea_n); };
-	run_moe_w1_b();
-	run_moe_w1_n();
-	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "Ling3 MoE W1W3 rows=%u (M%u->M%u)", rows, base_tm, new_tm);
-	const float ms_lw1_b = TimeMs(stream, run_moe_w1_b);
-	const float ms_lw1_n = TimeMs(stream, run_moe_w1_n);
-	printf("[ling3 moe  ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_lw1_b, ms_lw1_n, ms_lw1_b / ms_lw1_n);
-	CheckBf16(label, d_ea_b, d_ea_n, (uint64_t)local_rows * MOE_N, 0u, 0.0f);
-
-	auto run_moe_w2_b = [&]()
-	{
-		LmStreamGemmGrouped<LmBf16Format>(d_w2, LmScaleTensorNone(), d_ea_b, d_eo_b, d_gro, (const uint32_t *)0,
-			LOCAL_E, expected_local, MOE_N, K, sms, (SparkGpuStream)stream);
-	};
-	auto run_moe_w2_n = [&]()
-	{
-		LingBuildTilePrefixKernel<<<1u, 32u, 0, stream>>>(d_gro, d_pfx_n, LOCAL_E, new_tm, K / 128u);
-		if ( new_tm == 64u )
-			LingMoeMmaW2Bf16Kernel<G, 64u, 128u, 2u, 4u><<<sms, 256u, sh_w2_64, stream>>>(d_w2, d_ea_n, d_gro, d_pfx_n, d_eo_n);
-		else if ( new_tm == 32u )
-			LingMoeMmaW2Bf16Kernel<G, 32u, 128u, 2u, 4u><<<sms, 256u, sh_w2_32, stream>>>(d_w2, d_ea_n, d_gro, d_pfx_n, d_eo_n);
-		else
-			LingMoeMmaW2Bf16Kernel<G, 16u, 128u, 1u, 4u><<<sms, 256u, sh_w2_16, stream>>>(d_w2, d_ea_n, d_gro, d_pfx_n, d_eo_n);
-	};
-	run_moe_w2_b();
-	run_moe_w2_n();
-	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "Ling3 MoE W2 rows=%u (M%u)", rows, new_tm);
-	const float ms_lw2_b = TimeMs(stream, run_moe_w2_b);
-	const float ms_lw2_n = TimeMs(stream, run_moe_w2_n);
-	printf("[ling3 moe  ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_lw2_b, ms_lw2_n, ms_lw2_b / ms_lw2_n);
-	CheckBf16(label, d_eo_b, d_eo_n, (uint64_t)local_rows * K, 0u, 0.0f);
-
-	auto run_lfin_b = [&]()
-	{
-		LingMoeLocalFinalizeKernel<G::kExpertWeightAfterDown><<<dim3(LmVecBlocks<LG_THREADS>(K), rows), LG_THREADS, 0, stream>>>(
-			d_eo_b, d_rpr, d_re, d_rw, d_sh_out_b, d_fin_b, TOPK, LOCAL_E, K);
-	};
-	auto run_lfin_n = [&]()
-	{
-		LingMoeFinalizeWarpSliceKernel<G::kExpertWeightAfterDown, TOPK><<<(rows + 3u) / 4u, 128u, 0, stream>>>(
-			d_eo_n, d_rpr, d_re, d_rw, d_sh_out_n, d_fin_n, rows, LOCAL_E, 0u, K, K);
-	};
-	run_lfin_b();
-	run_lfin_n();
-	BENCH_CHECK(cudaStreamSynchronize(stream));
-	snprintf(label, sizeof(label), "Ling3 MoE Finalize rows=%u", rows);
-	const float ms_lf_b = TimeMs(stream, run_lfin_b);
-	const float ms_lf_n = TimeMs(stream, run_lfin_n);
-	printf("[ling3 moe  ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_lf_b, ms_lf_n, ms_lf_b / ms_lf_n);
-	CheckBf16(label, d_fin_b, d_fin_n, (uint64_t)rows * K, 0u, 0.0f);
+	CheckBf16("Ling3 MLA HeadGate 0-ULP", d_mla_b, d_mla_n, (uint64_t)rows * MH * VD, 0u, 0.0f);
+	snprintf(label, sizeof(label), "Ling3 MLA HeadGate rows=%u", rows);
+	const float ms_mg_b = TimeMs(stream, [&]() {
+		LingMlaHeadGateKernel<VD><<<dim3(rows, MH), 128u, 0, stream>>>(d_mla_b, d_mla_gate, MH);
+	});
+	const float ms_mg_n = TimeMs(stream, [&]() {
+		LingMlaHeadGateFastKernel<VD><<<(rows * MH + 7u) / 8u, 128u, 0, stream>>>(d_mla_n, d_mla_gate, rows * MH);
+	});
+	printf("[ling3 mla  ] %-38s BASE=%.3f ms NEW=%.3f ms speedup=%.2fx\n", label, ms_mg_b, ms_mg_n, ms_mg_b / ms_mg_n);
 
 	BENCH_CHECK(cudaFree((void *)d_normed));
 	BENCH_CHECK(cudaFree((void *)d_w_qkv));
@@ -738,28 +581,10 @@ static void BenchLing3Prefill(uint32_t rows, uint32_t sms, cudaStream_t stream)
 	BENCH_CHECK(cudaFree((void *)d_knorm_w));
 	BENCH_CHECK(cudaFree(d_mix_b));
 	BENCH_CHECK(cudaFree(d_mix_n));
-	BENCH_CHECK(cudaFree((void *)d_sh_gu));
-	BENCH_CHECK(cudaFree((void *)d_sh_dn));
-	BENCH_CHECK(cudaFree(d_sh_act));
-	BENCH_CHECK(cudaFree(d_sh_out_b));
-	BENCH_CHECK(cudaFree(d_sh_out_n));
-	BENCH_CHECK(cudaFree(d_re));
-	BENCH_CHECK(cudaFree(d_gro));
-	BENCH_CHECK(cudaFree(d_rpr));
-	BENCH_CHECK(cudaFree(d_src));
-	BENCH_CHECK(cudaFree(d_pfx_b));
-	BENCH_CHECK(cudaFree(d_pfx_n));
-	BENCH_CHECK(cudaFree(d_rw));
-	BENCH_CHECK(cudaFree(d_pw));
-	BENCH_CHECK(cudaFree((void *)d_w1));
-	BENCH_CHECK(cudaFree((void *)d_w3));
-	BENCH_CHECK(cudaFree((void *)d_w2));
-	BENCH_CHECK(cudaFree(d_ea_b));
-	BENCH_CHECK(cudaFree(d_ea_n));
-	BENCH_CHECK(cudaFree(d_eo_b));
-	BENCH_CHECK(cudaFree(d_eo_n));
-	BENCH_CHECK(cudaFree(d_fin_b));
-	BENCH_CHECK(cudaFree(d_fin_n));
+	BENCH_CHECK(cudaFree((void *)d_mla_gate));
+	BENCH_CHECK(cudaFree((void *)d_mla_init));
+	BENCH_CHECK(cudaFree(d_mla_b));
+	BENCH_CHECK(cudaFree(d_mla_n));
 }
 
 int main(void)
@@ -786,7 +611,7 @@ int main(void)
 	BenchGemma26bFfnAndMoe(1024u, sms, stream);
 	BenchGemma26bFfnAndMoe(2048u, sms, stream);
 
-	printf("\n=== LING-3.0-FLASH KDA + MOE (BASE vs NEW + 0-ULP) ===\n");
+	printf("\n=== LING-3.0-FLASH KDA + MLA (BASE vs NEW + 0-ULP) ===\n");
 	BenchLing3Prefill(512u, sms, stream);
 	BenchLing3Prefill(1024u, sms, stream);
 	BenchLing3Prefill(2048u, sms, stream);

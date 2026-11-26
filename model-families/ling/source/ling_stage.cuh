@@ -2453,16 +2453,15 @@ struct LingModel : CudaStage<LingModel<G>>
 	static bool LaunchMmaW1W3(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t expected_local, uint32_t sms, float rlim, SparkGpuStream stream)
 	{
 		const uint32_t mean = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
-		const uint32_t tile_m_64 = mean >= 22u ? 64u : (mean >= 10u ? 32u : 16u);
-		const uint32_t tile_m_128 = mean >= 50u ? 128u : tile_m_64;
+		const uint32_t tile_m = mean > 32u ? 64u : (mean > 16u ? 32u : 16u);
 		uint32_t blocks = sms;
 		if ( layer->moe_w1.scale != 0 )
 		{
 			if constexpr ( (G::kHidden % 128u) == 0u && (G::kMoeInter % 64u) == 0u && G::kMoeInter <= 768u )
 			{
 				LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
-					state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m_64, G::kMoeInter / 64u);
-				if ( tile_m_64 == 64u )
+					state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, G::kMoeInter / 64u);
+				if ( tile_m == 64u )
 				{
 					constexpr uint32_t sh = 3u * (64u * 256u + 2u * 64u * 128u);
 					if ( LingMoeMmaSetup<G, 1u>(LingMoeMmaW1W3SiluFp8Kernel<G, 64u, 4u, 3u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
@@ -2471,7 +2470,7 @@ struct LingModel : CudaStage<LingModel<G>>
 						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
 						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
 				}
-				else if ( tile_m_64 == 32u )
+				else if ( tile_m == 32u )
 				{
 					constexpr uint32_t sh = 4u * (32u * 256u + 2u * 64u * 128u);
 					if ( LingMoeMmaSetup<G, 2u>(LingMoeMmaW1W3SiluFp8Kernel<G, 32u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
@@ -2496,8 +2495,8 @@ struct LingModel : CudaStage<LingModel<G>>
 		if constexpr ( G::kMoeInter == 80u && (G::kHidden % 64u) == 0u )
 		{
 			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
-				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m_64, 1u);
-			if ( tile_m_64 == 64u )
+				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, 1u);
+			if ( tile_m == 64u )
 			{
 				constexpr uint32_t sh = 2u * (64u * 128u + 2u * 80u * 128u);
 				if ( LingMoeMmaSetup<G, 11u>(LingMoeMmaW1W3SiluN80Kernel<G, 64u, 2u, 2u>, 320u, sh, sms, &blocks) != LM_LAUNCH_OK )
@@ -2506,7 +2505,7 @@ struct LingModel : CudaStage<LingModel<G>>
 					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
 					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
 			}
-			else if ( tile_m_64 == 32u )
+			else if ( tile_m == 32u )
 			{
 				constexpr uint32_t sh = 2u * (32u * 128u + 2u * 80u * 128u);
 				if ( LingMoeMmaSetup<G, 12u>(LingMoeMmaW1W3SiluN80Kernel<G, 32u, 1u, 2u>, 160u, sh, sms, &blocks) != LM_LAUNCH_OK )
@@ -2529,17 +2528,8 @@ struct LingModel : CudaStage<LingModel<G>>
 		else if constexpr ( (G::kHidden % 64u) == 0u && (G::kMoeInter % 64u) == 0u )
 		{
 			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
-				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m_128, G::kMoeInter / 64u);
-			if ( tile_m_128 == 128u )
-			{
-				constexpr uint32_t sh = 3u * (128u * 128u + 2u * 64u * 128u);
-				if ( LingMoeMmaSetup<G, 24u>(LingMoeMmaW1W3SiluBf16Kernel<G, 128u, 4u, 3u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 128u, 4u, 3u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			else if ( tile_m_128 == 64u )
+				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, G::kMoeInter / 64u);
+			if ( tile_m == 64u )
 			{
 				constexpr uint32_t sh = 4u * (64u * 128u + 2u * 64u * 128u);
 				if ( LingMoeMmaSetup<G, 21u>(LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
@@ -2548,7 +2538,7 @@ struct LingModel : CudaStage<LingModel<G>>
 					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
 					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
 			}
-			else if ( tile_m_128 == 32u )
+			else if ( tile_m == 32u )
 			{
 				constexpr uint32_t sh = 4u * (32u * 128u + 2u * 64u * 128u);
 				if ( LingMoeMmaSetup<G, 22u>(LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
@@ -2565,52 +2555,6 @@ struct LingModel : CudaStage<LingModel<G>>
 				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u>), blocks, 256u, sh, stream,
 					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
 					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			return true;
-		}
-		return false;
-	}
-
-	static bool LaunchMmaW2Bf16(State *state, const LingLayer *layer, uint32_t expected_local, uint32_t sms, SparkGpuStream stream)
-	{
-		if constexpr ( (G::kMoeInter % 64u) == 0u && (G::kHidden % 128u) == 0u )
-		{
-			const uint32_t mean = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
-			const uint32_t tile_m = mean >= 50u ? 128u : mean >= 22u ? 64u : mean >= 10u ? 32u : 16u;
-			uint32_t blocks = sms;
-			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
-				state->group_row_offset, state->tile_prefix_down, G::kLocalExperts, tile_m, G::kHidden / 128u);
-			if ( tile_m == 128u )
-			{
-				constexpr uint32_t sh = 3u * (128u + 128u) * 128u;
-				if ( LingMoeMmaSetup<G, 44u>(LingMoeMmaW2Bf16Kernel<G, 128u, 128u, 4u, 3u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW2Bf16Kernel<G, 128u, 128u, 4u, 3u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out);
-			}
-			else if ( tile_m == 64u )
-			{
-				constexpr uint32_t sh = 4u * (64u + 128u) * 128u;
-				if ( LingMoeMmaSetup<G, 43u>(LingMoeMmaW2Bf16Kernel<G, 64u, 128u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW2Bf16Kernel<G, 64u, 128u, 2u, 4u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out);
-			}
-			else if ( tile_m == 32u )
-			{
-				constexpr uint32_t sh = 4u * (32u + 128u) * 128u;
-				if ( LingMoeMmaSetup<G, 42u>(LingMoeMmaW2Bf16Kernel<G, 32u, 128u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW2Bf16Kernel<G, 32u, 128u, 2u, 4u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out);
-			}
-			else
-			{
-				constexpr uint32_t sh = 4u * (16u + 128u) * 128u;
-				if ( LingMoeMmaSetup<G, 41u>(LingMoeMmaW2Bf16Kernel<G, 16u, 128u, 1u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW2Bf16Kernel<G, 16u, 128u, 1u, 4u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out);
 			}
 			return true;
 		}
@@ -2765,32 +2709,11 @@ struct LingModel : CudaStage<LingModel<G>>
 				return CudaStageLaunched();
 			}
 		}
-		if constexpr ( G::kSharedRows == 64u && (G::kHidden % 64u) == 0u )
-		{
-			if ( prefill_unified )
-			{
-				(void)LM_LAUNCH_DEPENDENT((LingSharedActDownMmaKernel<G>), dim3(G::kHidden / 64u, (rows + 63u) / 64u), 128u, 0, stream,
-					state->shared_gate_up, layer->shared_down, state->shared_out, rows, slim);
-				if ( CudaStageLaunched() != SPARK_STATUS_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			}
-			else
-			{
-				(void)LM_LAUNCH_DEPENDENT((LingSiluMulLimitKernel<G::kFfnSiluRounded>), rows, LG_THREADS, 0, stream, state->shared_gate_up,
-					state->shared_act, G::kSharedRows, slim);
-				if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-					Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			}
-		}
-		else
-		{
-			(void)LM_LAUNCH_DEPENDENT((LingSiluMulLimitKernel<G::kFfnSiluRounded>), rows, LG_THREADS, 0, stream, state->shared_gate_up,
-				state->shared_act, G::kSharedRows, slim);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-				Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
+		(void)LM_LAUNCH_DEPENDENT((LingSiluMulLimitKernel<G::kFfnSiluRounded>), rows, LG_THREADS, 0, stream, state->shared_gate_up,
+			state->shared_act, G::kSharedRows, slim);
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
+			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmLocalExpertRoutes expert_routes;
 		expert_routes.group_row_offset = state->group_row_offset;
 		expert_routes.route_source_token = state->route_source_token;
@@ -2830,15 +2753,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		if ( use_solar_mma && layer->moe_w2.scale == 0 &&
 			LaunchSolarW2AndFinalize(state, layer, rows, routes, step->multiprocessors, stream) )
 			return CudaStageLaunched();
-		bool mma_w2_done = false;
-		if ( !use_exact_moe && layer->moe_w2.scale == 0 )
-			mma_w2_done = LaunchMmaW2Bf16(state, layer, expected_local, step->multiprocessors, stream);
-		if ( mma_w2_done )
-		{
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
-		else if ( use_exact_moe && (layer->moe_w2.scale == 0 || (G::kMoeInter % LG_FP8_BLOCK) == 0u) )
+		if ( use_exact_moe && (layer->moe_w2.scale == 0 || (G::kMoeInter % LG_FP8_BLOCK) == 0u) )
 		{
 			LaunchExactW2(state, layer, routes, stream);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
@@ -2846,14 +2761,9 @@ struct LingModel : CudaStage<LingModel<G>>
 		}
 		else if ( ExpertDown(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden, exact, stream, prefill_unified) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( rows >= 32u && G::kTopK <= 32u )
-			(void)LM_LAUNCH_DEPENDENT((LingMoeFinalizeWarpSliceKernel<G::kExpertWeightAfterDown, G::kTopK>),
-				(rows + 3u) / 4u, 128u, 0, stream, state->expert_out, state->route_packed_row, state->route_expert,
-				state->route_weight, state->shared_out, state->partial, rows, G::kLocalExperts, 0u, G::kHidden, G::kHidden);
-		else
-			(void)LM_LAUNCH_DEPENDENT((LingMoeLocalFinalizeKernel<G::kExpertWeightAfterDown>), dim3(LmVecBlocks<LG_THREADS>(G::kHidden), rows),
-				LG_THREADS, 0, stream, state->expert_out, state->route_packed_row, state->route_expert, state->route_weight, state->shared_out,
-				state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
+		(void)LM_LAUNCH_DEPENDENT((LingMoeLocalFinalizeKernel<G::kExpertWeightAfterDown>), dim3(LmVecBlocks<LG_THREADS>(G::kHidden), rows),
+			LG_THREADS, 0, stream, state->expert_out, state->route_packed_row, state->route_expert, state->route_weight, state->shared_out,
+			state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
 
