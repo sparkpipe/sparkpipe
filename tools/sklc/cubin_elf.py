@@ -318,7 +318,7 @@ def build_cubin(kernels, arch="sm121"):
         for ordinal in range(len(m["layout"]) - 1, -1, -1):
             _, pkind, palign, pbytes, poff = m["layout"][ordinal]
             space = 5 if pkind == "ptr" else 0
-            flags_word = ((pbytes >> 2) << 20) | (0x1F << 12) | ((space & 0xF) << 8)
+            flags_word = ((pbytes & 0x3FFF) << 18) | (0x1F << 12) | ((space & 0xF) << 8)
             info_k.extend(nvinfo_attr_val(0x17, struct.pack("<IHHI", 0, ordinal, poff, flags_word)))
         info_k.extend(nvinfo_attr_hword(0x50, 0))
         info_k.extend(nvinfo_attr_hword(0x1B, 0x00FF))

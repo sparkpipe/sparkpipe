@@ -67,6 +67,36 @@ int main(void)
 	CHECK(SparkNvrmLaunchCluster((const void *)Unregistered,grid,block,2u,1u,0u,0,0,0,0u,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
 		strstr(SparkDeviceLastError()->text,"no module registered") != 0,"a cluster launch of a function no module registered is refused");
 	CHECK(SparkNvrmSharedMemoryOptIn((const void *)Unregistered,1024u) == SPARK_GPU_ERROR_INVALID_VALUE,"shared memory is granted only on an initialized device");
+	{
+		SparkGpuCaptureStatus status = SPARK_GPU_CAPTURE_STATUS_ACTIVE;
+		SparkGpuGraph graph = 0;
+		SparkGpuGraphExec exec = 0;
+		SparkGpuDeviceProperties properties;
+		size_t nodes = 99u;
+		int value = 0;
+		CHECK(SparkGpuStreamIsCapturing(0,&status) == SPARK_GPU_SUCCESS && status == SPARK_GPU_CAPTURE_STATUS_NONE,
+			"the default stream reports not capturing");
+		CHECK(SparkGpuStreamIsCapturing(0,0) == SPARK_GPU_ERROR_INVALID_VALUE,
+			"a capture query without an output is refused");
+		CHECK(SparkGpuStreamBeginCapture(0,SPARK_GPU_CAPTURE_MODE_GLOBAL) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
+			SparkGpuStreamEndCapture(0,&graph) == SPARK_GPU_ERROR_INVALID_VALUE,
+			"the legacy default stream refuses capture and end-capture without a stream is refused");
+		CHECK(SparkGpuGraphInstantiate(&exec,0,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGraphUpload(0,0) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGraphLaunch(0,0) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGraphGetNodes(0,0,&nodes) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGraphExecDestroy(0) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGraphDestroy(0) == SPARK_GPU_ERROR_INVALID_VALUE,
+			"null graph handles are refused across the graph API");
+		CHECK(SparkGpuGetDeviceCount(0) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGetDeviceProperties(0,0) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuGetDeviceProperties(&properties,1) == SPARK_GPU_ERROR_INVALID_DEVICE &&
+			SparkGpuDeviceGetAttribute(0,SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT,0) == SPARK_GPU_ERROR_INVALID_VALUE,
+			"device count, properties and attribute queries validate their arguments");
+		CHECK(SparkGpuHostRegister(0,4096u,SPARK_GPU_HOST_REGISTER_READ_ONLY) == SPARK_GPU_ERROR_INVALID_VALUE &&
+			SparkGpuHostRegister(&value,4096u,0x100u) == SPARK_GPU_ERROR_INVALID_VALUE,
+			"host registration refuses null pointers and unknown flags");
+	}
 	CHECK(strcmp(SparkGpuGetErrorString(SPARK_GPU_SUCCESS),"no error") == 0 && strcmp(SparkGpuGetErrorString(SPARK_GPU_ERROR_NOT_SUPPORTED),
 		"operation not supported") == 0 && strcmp(SparkGpuGetErrorString(12345),"unknown error") == 0,"every error has its string");
 	(void)SparkGpuGetLastError();

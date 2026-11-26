@@ -55,3 +55,68 @@ kernel[BLOCK, 96] device_program_copy_vec256(
     reg u32x8 v = ldg256_stream(ptr_add(src, idx, 32));
     stg256(ptr_add(dst, idx, 32), v);
 }
+
+kernel[BLOCK, 32] device_program_copy_exact(
+    global u32* destination, global u32* source, u64 bytes
+) {
+    reg u32 tid = ctaid_x() * ntid_x() + tid_x();
+    reg u32 stride = grid_x() * ntid_x();
+    reg u32 n = bytes[0];
+    reg u32 mis = (16 - (destination[0] & 15)) & 15;
+    reg u32 lead = mis;
+    if (n < lead) {
+        lead = n;
+    }
+    reg u32 rel = (destination[0] ^ source[0]) & 15;
+    if (rel == 0) {
+        for (reg u32 i = tid; i < lead; i += stride) {
+            reg u32 b = ldg8_stream(ptr_add(source, i, 1));
+            stg8(ptr_add(destination, i, 1), b);
+        }
+        reg u32 body = (n - lead) >> 4;
+        ureg u64 dst_vec = ptr_add(destination, lead, 1);
+        ureg u64 src_vec = ptr_add(source, lead, 1);
+        for (reg u32 v = tid; v < body; v += stride) {
+            reg u32x4 chunk = ldg128_stream(ptr_add(src_vec, v, 16));
+            stg128(ptr_add(dst_vec, v, 16), chunk);
+        }
+        reg u32 tail_base = lead + (body << 4);
+        for (reg u32 i = tail_base + tid; i < n; i += stride) {
+            reg u32 b = ldg8_stream(ptr_add(source, i, 1));
+            stg8(ptr_add(destination, i, 1), b);
+        }
+        return;
+    }
+    for (reg u32 i = tid; i < n; i += stride) {
+        reg u32 b = ldg8_stream(ptr_add(source, i, 1));
+        stg8(ptr_add(destination, i, 1), b);
+    }
+}
+
+kernel[BLOCK, 32] device_program_fill_exact(
+    global u32* destination, u32 value, u64 bytes
+) {
+    reg u32 tid = ctaid_x() * ntid_x() + tid_x();
+    reg u32 stride = grid_x() * ntid_x();
+    reg u32 n = bytes[0];
+    reg u32 mis = (16 - (destination[0] & 15)) & 15;
+    reg u32 lead = mis;
+    if (n < lead) {
+        lead = n;
+    }
+    reg u32 byte_val = value & 0xFF;
+    reg u32 word = byte_val * 0x01010101;
+    reg u32x4 pat = pack_u32x4(word, word, word, word);
+    for (reg u32 i = tid; i < lead; i += stride) {
+        stg8(ptr_add(destination, i, 1), byte_val);
+    }
+    reg u32 body = (n - lead) >> 4;
+    ureg u64 dst_vec = ptr_add(destination, lead, 1);
+    for (reg u32 v = tid; v < body; v += stride) {
+        stg128(ptr_add(dst_vec, v, 16), pat);
+    }
+    reg u32 tail_base = lead + (body << 4);
+    for (reg u32 i = tail_base + tid; i < n; i += stride) {
+        stg8(ptr_add(destination, i, 1), byte_val);
+    }
+}

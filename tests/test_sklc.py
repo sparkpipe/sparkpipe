@@ -30,21 +30,43 @@ EXPECTED_KERNELS = [
     "rmsnorm_pdl_exact_5120_bf16x8",
     "fused_residual_rmsnorm_pdl_exact_5120_bf16x8",
     "head_rmsnorm_silu_gate_pdl_exact_128_bf16",
+    "head_rmsnorm_sigmoid_gate_pdl_exact_128_bf16",
+    "fused_residual_rmsnorm_f32_generic_pdl_exact_bf16x8",
+    "lm_output_gate_pdl_exact_bf16x8",
+    "lm_sigmoid_rows_pdl_bf16x8",
+    "lm_add_rows_pdl_bf16x8",
+    "lm_copy_rows_pdl_bf16x8",
+    "lm_add_rows_strided_pdl_bf16x8",
+    "lm_copy_rows_strided_pdl_bf16x8",
+    "lm_widen_bf16_to_f32_pdl",
     "attn_tp1_merge_sigmoid_gate_pdl_exact_bf16",
     "add_elements_pdl_exact_bf16x8",
     "gqa_split_reduce_sigmoid_gate_pdl_exact_bf16",
     "head_certified_reduce_f32",
+    "head_commit_argmax_pdl_f32",
     "stage_embedding_lookup_pdl_bf16x8",
+    "stage_embedding_alias_pdl_bf16x8",
     "stage_store_outputs_u32_f32",
     "stage_chain_advance_u32",
     "stage_last_rows_gather_pdl_bf16x8",
     "stage_last_rows_scatter_pdl_u32_f32",
+    "stage_rows_gather_pdl_bf16x8",
+    "stage_head_rank_token_pdl_u32",
+    "stage_maxloc_pack_pdl_f32_u32",
+    "stage_maxloc_unpack_pdl_u64",
+    "stage_combine_pair_bf16",
+    "stage_combine_u64_max",
+    "stage_tap_copy_bf16",
+    "stage_row_lanes_u32",
+    "stage_row_dot_pdl_bf16x8",
     "latent_attn_decode_512_64",
     "router_softmax_256",
     "router_softmax_bf16_256",
     "tp_f32_to_bf16_vec16",
     "tp_bf16_to_f32_vec16",
     "device_program_copy_vec256",
+    "device_program_copy_exact",
+    "device_program_fill_exact",
 ]
 
 
@@ -134,6 +156,7 @@ def verify_codegen_invariants():
         text = (SKL_DIR / suite).read_text(encoding="utf-8")
         kernels = compile_program(parse_skl(text))
         for k in kernels:
+            assert k.stack_bytes == 0, f"unexpected stack usage in {k.name}: {k.stack_bytes}"
             if k.name == "latent_attn_decode_512_64":
                 assert k.registers <= 80, f"expected <=80 regs for {k.name}, got {k.registers}"
             for idx, (lo, hi) in enumerate(k.insns):
@@ -147,6 +170,40 @@ def verify_codegen_invariants():
                 if (lo & 0xFFFF) == 0x7B1D:
                     assert (hi & 0x10000) == 0, f"BAR.SYNC must not set DEFER_BLOCKING in {k.name}"
                     assert idx + 1 < len(k.insns) and (k.insns[idx + 1][0] & 0xFFFF) == 0x7918, f"BAR.SYNC must be followed by NOP in {k.name}"
+
+
+def verify_new_builtins():
+    src = """kernel[256, 32] builtin_smoke(global u32* out, u32 n, u8 flag) {
+    reg u32 gy = grid_y();
+    reg u32 bz = ctaid_z();
+    reg u32 ny = ntid_y();
+    reg u32 i = ctaid_x() * ntid_x() + tid_x();
+    if (i >= n) { return; }
+    reg f32 f = u32_to_f32(i + gy + bz + ny);
+    reg f32 u = shfl_up(f, 1);
+    reg u32 lo = f32_as_u32(u);
+    reg u32 hi = flag & 0xFF;
+    stg64(ptr_add(out, i, 8), pack_u32x2(lo, hi));
+}
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        skl_path = pathlib.Path(tmp) / "builtin.skl"
+        cubin_path = pathlib.Path(tmp) / "builtin.cubin"
+        manifest_path = pathlib.Path(tmp) / "builtin.manifest"
+        skl_path.write_text(src, encoding="utf-8")
+        res = subprocess.run(
+            [sys.executable, str(SKLC), "--arch", "sm121", str(skl_path), "-o", str(cubin_path), "--manifest", str(manifest_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert res.returncode == 0, f"builtin_smoke compile failed: {res.stderr}"
+        mtxt = manifest_path.read_text(encoding="utf-8")
+        assert "param builtin_smoke 0 ptr align 8 bytes 8 offset 0" in mtxt, mtxt
+        assert "param builtin_smoke 1 u32 align 4 bytes 4 offset 8" in mtxt, mtxt
+        assert "param builtin_smoke 2 u8 align 1 bytes 1 offset 12" in mtxt, mtxt
+        blob = cubin_path.read_bytes()
+        assert struct.pack("<IHHI", 0, 2, 12, (1 << 18) | (0x1F << 12)) in blob, "expected exact 1-byte EIATTR_KPARAM_INFO size encoding"
 
 
 def verify_rename_and_only():
@@ -196,6 +253,7 @@ def main():
     verify_long_name_manifest()
     verify_rename_and_only()
     verify_codegen_invariants()
+    verify_new_builtins()
     print(f"PASS sklc compiled {len(EXPECTED_KERNELS)} kernels cleanly for sm121 and sm120")
 
 
