@@ -749,6 +749,7 @@ PYTHON_TESTS := \
 	tests/test_arch_guards_cuda.py \
 	tests/test_mx_gemm_cuda.py \
 	tests/test_cell_mx_cuda.py \
+	tests/test_shared_prefill_gemm.py \
 	tests/test_attn_prefill_cuda.py \
 	tests/test_attn_prefill_sparse_cuda.py \
 	tests/test_score_merge.py \

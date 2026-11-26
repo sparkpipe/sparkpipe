@@ -62,7 +62,7 @@ static __device__ __forceinline__ uint32_t LmExpandedSource(void)
 
 static __device__ __forceinline__ void LmExpandedCopy16(uint32_t destination, const void *source)
 {
-	asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(destination), "l"(source) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16;\n" :: "r"(destination), "l"(source) : "memory");
 }
 
 template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
@@ -99,7 +99,7 @@ void LmLatentValueExpandKernel(
 	const uint8_t *source_keys = keys + (uint64_t)source * key_source_stride;
 	const uint16_t *head_weight = weight_bf16 + (uint64_t)head * VALUE * LATENT;
 	float output[FRAGS][4];
-	uint32_t round, step, frag, item, row, chunk, a[4], b[4];
+	uint32_t round, step, frag, item, row, chunk, a[4], b[2][4];
 
 	if (first_key >= keys_per_source || head >= heads)
 	{
@@ -149,15 +149,24 @@ void LmLatentValueExpandKernel(
 		for (step = 0u; step < STEPS; step++)
 		{
 			const uint32_t a_row = warp * 16u + (matrix & 1u) * 8u + within;
+			const uint32_t b_col = step * 2u + (matrix & 1u);
 			LmPrefillLoadX4(stage + a_row * (LM_LATENT_EXPAND_CHUNK * 2u) + LmLatentExpandSwizzle(a_row, step * 2u + (matrix >> 1u)) * 16u, a);
+			{
+				const uint32_t b_row0 = (matrix >> 1u) * 8u + within;
+				LmPrefillLoadX4(stage + A_BYTES + b_row0 * (LM_LATENT_EXPAND_CHUNK * 2u) + LmLatentExpandSwizzle(b_row0, b_col) * 16u, b[0]);
+			}
 #pragma unroll
 			for (frag = 0u; frag < FRAGS; frag += 2u)
 			{
-				const uint32_t b_row = frag * 8u + (matrix >> 1u) * 8u + within;
+				const uint32_t cur = (frag >> 1u) & 1u, nxt = cur ^ 1u;
 				uint32_t first[2], second[2];
-				LmPrefillLoadX4(stage + A_BYTES + b_row * (LM_LATENT_EXPAND_CHUNK * 2u) + LmLatentExpandSwizzle(b_row, step * 2u + (matrix & 1u)) * 16u, b);
-				first[0] = b[0]; first[1] = b[1];
-				second[0] = b[2]; second[1] = b[3];
+				if (frag + 2u < FRAGS)
+				{
+					const uint32_t b_row = (frag + 2u) * 8u + (matrix >> 1u) * 8u + within;
+					LmPrefillLoadX4(stage + A_BYTES + b_row * (LM_LATENT_EXPAND_CHUNK * 2u) + LmLatentExpandSwizzle(b_row, b_col) * 16u, b[nxt]);
+				}
+				first[0] = b[cur][0]; first[1] = b[cur][1];
+				second[0] = b[cur][2]; second[1] = b[cur][3];
 				LmMmaBf16(output[frag], a, first);
 				LmMmaBf16(output[frag + 1u], a, second);
 			}
@@ -590,18 +599,24 @@ void LmExpandedGatherPrefillKernel(
 			part[m][0][0] = part[m][0][1] = part[m][0][2] = part[m][0][3] = 0.0f;
 			part[m][1][0] = part[m][1][1] = part[m][1][2] = part[m][1][3] = 0.0f;
 		}
-#pragma unroll
-		for (uint32_t s = 0u; s < REG_STEPS; s++)
 		{
-			uint32_t b[4], first[2], second[2];
-			LmPrefillLoadX4(key_slot_base + b_key_row * KEY_PITCH + ((half * HALF_STEPS + s) * 2u + (matrix & 1u)) * 16u, b);
-			first[0] = b[0]; first[1] = b[1];
-			second[0] = b[2]; second[1] = b[3];
+			uint32_t b[2][4], first[2], second[2];
+			const uint32_t k_row_base = key_slot_base + b_key_row * KEY_PITCH;
+			LmPrefillLoadX4(k_row_base + ((half * HALF_STEPS) * 2u + (matrix & 1u)) * 16u, b[0]);
 #pragma unroll
-			for (uint32_t m = 0u; m < ROW_TILES; m++)
+			for (uint32_t s = 0u; s < REG_STEPS; s++)
 			{
-				LmMmaBf16(part[m][0], query_frag[m][s], first);
-				LmMmaBf16(part[m][1], query_frag[m][s], second);
+				const uint32_t cur = s & 1u, nxt = cur ^ 1u;
+				if (s + 1u < REG_STEPS)
+					LmPrefillLoadX4(k_row_base + ((half * HALF_STEPS + s + 1u) * 2u + (matrix & 1u)) * 16u, b[nxt]);
+				first[0] = b[cur][0]; first[1] = b[cur][1];
+				second[0] = b[cur][2]; second[1] = b[cur][3];
+#pragma unroll
+				for (uint32_t m = 0u; m < ROW_TILES; m++)
+				{
+					LmMmaBf16(part[m][0], query_frag[m][s], first);
+					LmMmaBf16(part[m][1], query_frag[m][s], second);
+				}
 			}
 		}
 		if constexpr (TAIL_STEPS > 0u)
@@ -633,7 +648,8 @@ void LmExpandedGatherPrefillKernel(
 			LmExpandedNamedBarrier(1u + tile_id, 64u);
 			const float4 other_low = *(const float4 *)theirs_ex;
 			const float4 other_high = *(const float4 *)(theirs_ex + 4u);
-			LmExpandedNamedBarrier(1u + tile_id, 64u);
+			if (m == 0u)
+				LmExpandedNamedBarrier(1u + tile_id, 64u);
 			score[0][0] = part[m][0][0] + other_low.x; score[0][1] = part[m][0][1] + other_low.y; score[0][2] = part[m][0][2] + other_low.z; score[0][3] = part[m][0][3] + other_low.w;
 			score[1][0] = part[m][1][0] + other_high.x; score[1][1] = part[m][1][1] + other_high.y; score[1][2] = part[m][1][2] + other_high.z; score[1][3] = part[m][1][3] + other_high.w;
 			const bool full_tile = tile_start >= window_begin && tile_start + TILE <= safe_end[m];
@@ -719,13 +735,17 @@ void LmExpandedGatherPrefillKernel(
 			weight_high[m][3] = LmPackBf16Pair(w12, w13);
 		}
 		{
-			uint32_t b[4], first[2], second[2];
+			uint32_t b[2][4], first[2], second[2];
+			const uint32_t v_row_base = val_slot_base + b_val_row * VALUE_PITCH;
+			LmPrefillLoadX4Trans(v_row_base + ((half * HALF_COLUMNS) / 8u + (matrix >> 1u)) * 16u, b[0]);
 #pragma unroll
 			for (frag = 0u; frag < FRAGS; frag += 2u)
 			{
-				LmPrefillLoadX4Trans(val_slot_base + b_val_row * VALUE_PITCH + ((half * HALF_COLUMNS + frag * 8u) / 8u + (matrix >> 1u)) * 16u, b);
-				first[0] = b[0]; first[1] = b[1];
-				second[0] = b[2]; second[1] = b[3];
+				const uint32_t cur = (frag >> 1u) & 1u, nxt = cur ^ 1u;
+				if (frag + 2u < FRAGS)
+					LmPrefillLoadX4Trans(v_row_base + ((half * HALF_COLUMNS + (frag + 2u) * 8u) / 8u + (matrix >> 1u)) * 16u, b[nxt]);
+				first[0] = b[cur][0]; first[1] = b[cur][1];
+				second[0] = b[cur][2]; second[1] = b[cur][3];
 #pragma unroll
 				for (uint32_t m = 0u; m < ROW_TILES; m++)
 				{

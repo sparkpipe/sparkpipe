@@ -169,6 +169,32 @@ static __device__ __forceinline__ void LmMxMmaBlockImm(float out[4], const uint3
 #endif
 }
 
+template<uint32_t MF, uint32_t NF, uint32_t BYTE>
+static __device__ __forceinline__ void LmMxMmaStep(float total[MF][NF][4], const uint32_t a_frag[MF][4], const uint32_t b_frag[NF][2],
+	const uint32_t scale_a[MF], const uint32_t scale_b[NF])
+{
+	constexpr uint32_t COUNT = MF * NF;
+	float partial[2][4];
+	uint32_t idx,e;
+	LmMxMmaBlockImm<BYTE,BYTE>(partial[0],a_frag[0],b_frag[0],scale_a[0],scale_b[0]);
+#pragma unroll
+	for (idx = 1u; idx < COUNT; idx++)
+	{
+		const uint32_t cur = idx & 1u,prev = cur ^ 1u;
+		const uint32_t pi = (idx - 1u) / NF,pj = (idx - 1u) % NF;
+		LmMxMmaBlockImm<BYTE,BYTE>(partial[cur],a_frag[idx / NF],b_frag[idx % NF],scale_a[idx / NF],scale_b[idx % NF]);
+#pragma unroll
+		for (e = 0u; e < 4u; e++)
+			total[pi][pj][e] += partial[prev][e];
+	}
+	{
+		const uint32_t last = (COUNT - 1u) & 1u;
+#pragma unroll
+		for (e = 0u; e < 4u; e++)
+			total[MF - 1u][NF - 1u][e] += partial[last][e];
+	}
+}
+
 static __device__ __forceinline__ void LmMxCopy16(uint32_t destination, const void *source, uint32_t bytes)
 {
 	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
@@ -199,13 +225,13 @@ static __host__ __device__ constexpr uint32_t LmMxStageBytes(void)
 template<uint32_t TILE_M, uint32_t TILE_N>
 static __host__ __device__ constexpr uint32_t LmMxStages(void)
 {
-	return(3u);
+	return((TILE_M + TILE_N == 192u || TILE_M + TILE_N == 160u) ? 2u : 3u);
 }
 
 template<uint32_t TILE_M, uint32_t TILE_N>
 static __host__ __device__ constexpr uint32_t LmMxSharedBytes(void)
 {
-	return(LmMxStages<TILE_M,TILE_N>() * LmMxStageBytes<TILE_M,TILE_N>() + (TILE_M + TILE_N) * 8u);
+	return(LmMxStages<TILE_M,TILE_N>() * LmMxStageBytes<TILE_M,TILE_N>());
 }
 
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N = LM_MX_WARPS / WARPS_M, uint32_t MIN_BLOCKS = 1u>
@@ -223,14 +249,12 @@ __global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGem
 	constexpr uint32_t A_BYTES = TILE_M * LM_MX_TILE_K;
 	constexpr uint32_t A_PER_THREAD = TILE_M * (LM_MX_TILE_K / 16u) / THREADS;
 	constexpr uint32_t B_PER_THREAD = TILE_N * (LM_MX_TILE_K / 16u) / THREADS;
-	static_assert(STAGES == 3u && LmMxSharedBytes<TILE_M,TILE_N>() <= LM_MX_SHARED_LIMIT,"three stages plus scale scratch fit in SM shared memory");
+	static_assert(STAGES >= 2u && STAGES <= LM_MX_MAX_STAGES && LmMxSharedBytes<TILE_M,TILE_N>() <= LM_MX_SHARED_LIMIT,"stages fit in SM shared memory");
 	static_assert(MF >= 1u && NF >= 1u && (NF == 1u || NF % 2u == 0u) && WARP_M % 16u == 0u && WARP_N % 8u == 0u,
 		"the tile is not a whole number of fragments per warp");
 	static_assert(TILE_M * (LM_MX_TILE_K / 16u) % THREADS == 0u && TILE_N * (LM_MX_TILE_K / 16u) % THREADS == 0u,"a stage must divide across the block");
-	static_assert(TILE_M + TILE_N <= THREADS,"scale scratch loads one word per thread");
 	extern __shared__ __align__(128) uint8_t lm_mx_shared[];
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(lm_mx_shared);
-	uint32_t *s_scratch = (uint32_t *)(lm_mx_shared + STAGES * STAGE_BYTES);
 	const uint32_t warp = threadIdx.x >> 5u,lane = threadIdx.x & 31u,group = lane >> 2u,quad = lane & 3u;
 	const uint32_t warp_m = warp / WARPS_N,warp_n = warp % WARPS_N;
 	const uint32_t scale_columns = args.input_dimension / LM_MX_BLOCK;
@@ -240,6 +264,8 @@ __global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGem
 	const uint32_t k_tiles = args.input_dimension / LM_MX_TILE_K;
 	const uint32_t col0 = threadIdx.x & 7u,row0 = threadIdx.x >> 3u;
 	const uint64_t rstride = (uint64_t)ROW_STEP * args.input_dimension;
+	const uint32_t sa_r0 = warp_m * WARP_M + group + ((lane & 1u) << 3u);
+	const uint32_t sb_r0 = warp_n * WARP_N + group;
 	LmDependentWait();
 	for (uint32_t whole = blockIdx.x; whole < total_tiles; whole += gridDim.x)
 	{
@@ -254,7 +280,10 @@ __global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGem
 		const uint8_t *a_group = groups.activation[member],*w_group = groups.weight[member];
 		const uint8_t *a_base = a_group + (uint64_t)(row_base + row0) * args.input_dimension + col0 * 16u;
 		const uint8_t *b_base = w_group + (uint64_t)(neuron_base + row0) * args.input_dimension + col0 * 16u;
-		const uint8_t *s_ptr = (const uint8_t *)0;
+		const uint8_t *a_scale_tile = groups.activation_scale[member] + (uint64_t)row_base * scale_columns;
+		const uint8_t *w_scale_tile = groups.weight_scale[member] + (uint64_t)neuron_base * scale_columns;
+		const uint32_t max_a_row = args.rows - 1u - row_base;
+		const uint32_t max_b_row = args.output_dimension - 1u - neuron_base;
 		uint32_t ab_mask = 0u,kp = 0u,sp_off = 0u,sc_off = 0u,i,j,e;
 		float total[MF][NF][4];
 		uint32_t a_reg[2][MF][4],b_reg[2][NF][2],scale_a[MF],scale_b[NF];
@@ -264,34 +293,20 @@ __global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGem
 #pragma unroll
 		for (uint32_t q = 0u; q < B_PER_THREAD; q++)
 			ab_mask |= (neuron_base + row0 + q * ROW_STEP < args.output_dimension ? 1u : 0u) << (q + 8u);
-		if ( threadIdx.x < TILE_M )
+		auto load_scales = [&](uint32_t k_idx)
 		{
-			const uint32_t src = row_base + threadIdx.x < args.rows ? row_base + threadIdx.x : args.rows - 1u;
-			s_ptr = groups.activation_scale[member] + (uint64_t)src * scale_columns;
-		}
-		else if ( threadIdx.x < TILE_M + TILE_N )
-		{
-			const uint32_t src = neuron_base + threadIdx.x - TILE_M < args.output_dimension ? neuron_base + threadIdx.x - TILE_M : args.output_dimension - 1u;
-			s_ptr = groups.weight_scale[member] + (uint64_t)src * scale_columns;
-		}
-		auto load_s4 = [&](uint32_t kt_block) -> uint4
-		{
-			uint4 v = make_uint4(0u,0u,0u,0u);
-			if ( s_ptr != 0 )
+#pragma unroll
+			for (i = 0u; i < MF; i++)
 			{
-				const uint32_t k_start = kt_block * 4u;
-				const uint8_t *p = s_ptr + (uint64_t)k_start * 4u;
-				if ( k_start + 4u <= k_tiles && (((uintptr_t)p & 15u) == 0u) )
-					v = __ldg((const uint4 *)p);
-				else
-				{
-					if ( k_start < k_tiles ) v.x = __ldg((const uint32_t *)p);
-					if ( k_start + 1u < k_tiles ) v.y = __ldg((const uint32_t *)(p + 4u));
-					if ( k_start + 2u < k_tiles ) v.z = __ldg((const uint32_t *)(p + 8u));
-					if ( k_start + 3u < k_tiles ) v.w = __ldg((const uint32_t *)(p + 12u));
-				}
+				const uint32_t r = sa_r0 + i * 16u;
+				scale_a[i] = __ldg((const uint32_t *)(a_scale_tile + (uint64_t)(r < max_a_row ? r : max_a_row) * scale_columns) + k_idx);
 			}
-			return(v);
+#pragma unroll
+			for (j = 0u; j < NF; j++)
+			{
+				const uint32_t r = sb_r0 + j * 8u;
+				scale_b[j] = __ldg((const uint32_t *)(w_scale_tile + (uint64_t)(r < max_b_row ? r : max_b_row) * scale_columns) + k_idx);
+			}
 		};
 		auto issue_a = [&](uint32_t st_off)
 		{
@@ -340,7 +355,6 @@ __global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGem
 #pragma unroll
 			for (j = 0u; j < NF; j++)
 				total[i][j][0] = total[i][j][1] = total[i][j][2] = total[i][j][3] = 0.0f;
-		uint4 s_cur = load_s4(0u);
 #pragma unroll
 		for (uint32_t s = 0u; s + 1u < STAGES; s++)
 		{
@@ -353,102 +367,61 @@ __global__ __launch_bounds__((WARPS_M * WARPS_N) * 32u, MIN_BLOCKS) void LmMxGem
 			kp++;
 			advance(sp_off);
 		}
-		if ( threadIdx.x < TILE_M + TILE_N )
-			s_scratch[threadIdx.x] = s_cur.x;
+		load_scales(0u);
 		LmMxWait<STAGES - 2u>();
 		__syncthreads();
-#pragma unroll
-		for (i = 0u; i < MF; i++)
-			scale_a[i] = s_scratch[warp_m * WARP_M + i * 16u + group + ((lane & 1u) << 3u)];
-#pragma unroll
-		for (j = 0u; j < NF; j++)
-			scale_b[j] = s_scratch[TILE_M + warp_n * WARP_N + j * 8u + group];
 		load_frag(0u,0u,shared_base + sc_off);
 		for (uint32_t kt = 0u; kt < k_tiles; kt++)
 		{
-			const uint32_t stage_s = shared_base + sc_off,next_kt = kt + 1u,next_sub = next_kt & 3u,ns_off = (next_kt & 1u) * (TILE_M + TILE_N);
-			if ( next_kt < k_tiles && next_sub == 0u )
-				s_cur = load_s4(next_kt >> 2u);
+			const uint32_t stage_s = shared_base + sc_off,next_kt = kt + 1u;
 			if ( kp < k_tiles )
 				issue_a(sp_off);
-#pragma unroll 1
-			for (uint32_t pair = 0u; pair < 2u; pair++)
+			load_frag(1u,1u,stage_s);
+			LmMxMmaStep<MF,NF,0u>(total,a_reg[0],b_reg[0],scale_a,scale_b);
+			if ( kp < k_tiles )
 			{
-				const uint32_t s0 = pair * 2u;
-				load_frag(1u,s0 + 1u,stage_s);
-#pragma unroll
-				for (i = 0u; i < MF; i++)
-#pragma unroll
-					for (j = 0u; j < NF; j++)
-					{
-						float partial[4];
-						LmMxMmaBlockImm<0u,0u>(partial,a_reg[0][i],b_reg[0][j],scale_a[i],scale_b[j]);
-#pragma unroll
-						for (e = 0u; e < 4u; e++)
-							total[i][j][e] += partial[e];
-					}
-				if ( pair == 0u )
-				{
-					if ( kp < k_tiles )
-					{
-						issue_b(sp_off);
-						kp++;
-						advance(sp_off);
-					}
-					LmMxCommit();
-					load_frag(0u,2u,stage_s);
-				}
-				else if ( next_kt < k_tiles )
-				{
-					if ( threadIdx.x < TILE_M + TILE_N )
-						s_scratch[ns_off + threadIdx.x] = next_sub == 0u ? s_cur.x : next_sub == 1u ? s_cur.y : next_sub == 2u ? s_cur.z : s_cur.w;
-					LmMxWait<STAGES - 2u>();
-					__syncthreads();
-					advance(sc_off);
-					load_frag(0u,0u,shared_base + sc_off);
-				}
-#pragma unroll
-				for (i = 0u; i < MF; i++)
-#pragma unroll
-					for (j = 0u; j < NF; j++)
-					{
-						float partial[4];
-						LmMxMmaBlockImm<1u,1u>(partial,a_reg[1][i],b_reg[1][j],scale_a[i],scale_b[j]);
-#pragma unroll
-						for (e = 0u; e < 4u; e++)
-							total[i][j][e] += partial[e];
-					}
-#pragma unroll
-				for (i = 0u; i < MF; i++)
-					scale_a[i] >>= 16u;
-#pragma unroll
-				for (j = 0u; j < NF; j++)
-					scale_b[j] >>= 16u;
+				issue_b(sp_off);
+				kp++;
+				advance(sp_off);
 			}
+			LmMxCommit();
+			load_frag(0u,2u,stage_s);
+			LmMxMmaStep<MF,NF,1u>(total,a_reg[1],b_reg[1],scale_a,scale_b);
+			load_frag(1u,3u,stage_s);
+			LmMxMmaStep<MF,NF,2u>(total,a_reg[0],b_reg[0],scale_a,scale_b);
 			if ( next_kt < k_tiles )
 			{
-#pragma unroll
-				for (i = 0u; i < MF; i++)
-					scale_a[i] = s_scratch[ns_off + warp_m * WARP_M + i * 16u + group + ((lane & 1u) << 3u)];
-#pragma unroll
-				for (j = 0u; j < NF; j++)
-					scale_b[j] = s_scratch[ns_off + TILE_M + warp_n * WARP_N + j * 8u + group];
+				LmMxWait<STAGES - 2u>();
+				__syncthreads();
+				advance(sc_off);
+				load_frag(0u,0u,shared_base + sc_off);
 			}
+			LmMxMmaStep<MF,NF,3u>(total,a_reg[1],b_reg[1],scale_a,scale_b);
+			if ( next_kt < k_tiles )
+				load_scales(next_kt);
 		}
 		LmMxWait<0u>();
+		{
+			const uint32_t col_base = neuron_base + warp_n * WARP_N + quad * 2u;
+			const uint32_t col_off = groups.output_column_offset[member];
 #pragma unroll
-		for (i = 0u; i < MF; i++)
-#pragma unroll
-			for (j = 0u; j < NF; j++)
+			for (i = 0u; i < MF; i++)
 #pragma unroll
 				for (e = 0u; e < 4u; e += 2u)
 				{
 					const uint32_t row = row_base + warp_m * WARP_M + i * 16u + group + (e >> 1u) * 8u;
-					const uint32_t column = neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					if ( row < args.rows && column < args.output_dimension )
-						*(uint32_t *)(args.output_bf16 + (uint64_t)row * args.output_row_stride + groups.output_column_offset[member] + column) =
-							LmPackBf16Pair(total[i][j][e],total[i][j][e + 1u]);
+					if ( row >= args.rows )
+						continue;
+					uint16_t *out_row = args.output_bf16 + (uint64_t)row * args.output_row_stride + col_off;
+#pragma unroll
+					for (j = 0u; j < NF; j++)
+					{
+						const uint32_t column = col_base + j * 8u;
+						if ( column < args.output_dimension )
+							*(uint32_t *)(out_row + column) = LmPackBf16Pair(total[i][j][e],total[i][j][e + 1u]);
+					}
 				}
+		}
 		if ( whole + gridDim.x < total_tiles )
 			__syncthreads();
 	}
@@ -532,7 +505,7 @@ static int32_t LmMxGemmDispatch(const LmMxGemmArguments *args, const LmMxGemmGro
 	if ( (uint64_t)((args->rows + 127u) / 128u) * n128 >= 2u * sms )
 		return(LmMxGemmLaunchGroups<128u,128u,2u,4u,1u>(args,groups,grid,stream));
 	if ( (uint64_t)((args->rows + 63u) / 64u) * n128 >= 2u * sms )
-		return(LmMxGemmLaunchGroups<64u,128u,2u,4u,1u>(args,groups,grid,stream));
+		return(LmMxGemmLaunchGroups<64u,128u,2u,4u,2u>(args,groups,grid,stream));
 	if ( (uint64_t)((args->rows + 63u) / 64u) * n64 >= sms )
 		return(LmMxGemmLaunchGroups<64u,64u,2u,4u,2u>(args,groups,grid,stream));
 	if ( args->rows <= 64u )

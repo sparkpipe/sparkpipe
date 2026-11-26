@@ -12,7 +12,7 @@
 #define LM_LATENT_SHARD_QUERIES 32u
 #define LM_LATENT_SHARD_ROW_PAD 16u
 #define LM_LATENT_SHARD_PREFILL_THREADS ((LM_PREFILL_ATTN_WARPS + 1u) * 32u)
-#define LM_LATENT_SHARD_REG_STEPS 11u
+#define LM_LATENT_SHARD_REG_STEPS 16u
 #define LM_LATENT_SHARD_SMEM_STEPS_SPARSE 2u
 #define LM_LATENT_SHARD_SMEM_BYTES_SPARSE (LM_LATENT_SHARD_SMEM_STEPS_SPARSE * 4u * 32u * 16u)
 #define LM_LATENT_SHARD_SMEM_STEP_BYTES (4u * 32u * 16u)
@@ -454,15 +454,18 @@ void LmLatentShardPrefillKernel(
 		LmMbarrierWait(&full[buffer], (used >> 1u) & 1u);
 		{
 			float score[2][4] = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
-			uint32_t b[4], first[2], second[2];
+			uint32_t b[2][4], first[2], second[2];
 			const uint32_t b_row = (qk_pair * 2u + (matrix >> 1u)) * 8u + within;
+			const uint32_t b_row_base = tile_base + b_row * PITCH;
+			LmPrefillLoadX4(b_row_base + ((qk_half * HALF_STEPS) * 2u + (matrix & 1u)) * 16u, b[0]);
 #pragma unroll
 			for (step = 0u; step < REG_STEPS; step++)
 			{
-				const uint32_t b_chunk = (qk_half * HALF_STEPS + step) * 2u + (matrix & 1u);
-				LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
-				first[0] = b[0]; first[1] = b[1];
-				second[0] = b[2]; second[1] = b[3];
+				const uint32_t cur = step & 1u, nxt = cur ^ 1u;
+				if (step + 1u < REG_STEPS)
+					LmPrefillLoadX4(b_row_base + ((qk_half * HALF_STEPS + step + 1u) * 2u + (matrix & 1u)) * 16u, b[nxt]);
+				first[0] = b[cur][0]; first[1] = b[cur][1];
+				second[0] = b[cur][2]; second[1] = b[cur][3];
 				LmMmaBf16(score[0], query_frag[step], first);
 				LmMmaBf16(score[1], query_frag[step], second);
 			}
@@ -471,14 +474,16 @@ void LmLatentShardPrefillKernel(
 				if (full_query_smem)
 				{
 					const uint4 *src = query_smem + (qk_tile * 2u + qk_half) * FULL_TAIL_STEPS * 32u + lane;
+					LmPrefillLoadX4(b_row_base + ((qk_half * HALF_STEPS + REG_STEPS) * 2u + (matrix & 1u)) * 16u, b[0]);
 #pragma unroll
 					for (step = 0u; step < FULL_TAIL_STEPS; step++)
 					{
-						const uint32_t b_chunk = (qk_half * HALF_STEPS + REG_STEPS + step) * 2u + (matrix & 1u);
+						const uint32_t cur = step & 1u, nxt = cur ^ 1u;
 						const uint4 qv = src[step * 32u];
 						uint32_t q_sm[4] = { qv.x, qv.y, qv.z, qv.w };
-						LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
-						first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
+						if (step + 1u < FULL_TAIL_STEPS)
+							LmPrefillLoadX4(b_row_base + ((qk_half * HALF_STEPS + REG_STEPS + step + 1u) * 2u + (matrix & 1u)) * 16u, b[nxt]);
+						first[0] = b[cur][0]; first[1] = b[cur][1]; second[0] = b[cur][2]; second[1] = b[cur][3];
 						LmMmaBf16(score[0], q_sm, first);
 						LmMmaBf16(score[1], q_sm, second);
 					}
@@ -486,14 +491,16 @@ void LmLatentShardPrefillKernel(
 				else
 				{
 					const uint4 *src = query_smem + (qk_tile * 2u + qk_half) * SPARSE_SMEM_STEPS * 32u + lane;
+					LmPrefillLoadX4(b_row_base + ((qk_half * HALF_STEPS + REG_STEPS) * 2u + (matrix & 1u)) * 16u, b[0]);
 #pragma unroll
 					for (step = 0u; step < SPARSE_SMEM_STEPS; step++)
 					{
-						const uint32_t b_chunk = (qk_half * HALF_STEPS + REG_STEPS + step) * 2u + (matrix & 1u);
+						const uint32_t cur = step & 1u, nxt = cur ^ 1u;
 						const uint4 qv = src[step * 32u];
 						uint32_t q_sm[4] = { qv.x, qv.y, qv.z, qv.w };
-						LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
-						first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
+						if (step + 1u < SPARSE_SMEM_STEPS)
+							LmPrefillLoadX4(b_row_base + ((qk_half * HALF_STEPS + REG_STEPS + step + 1u) * 2u + (matrix & 1u)) * 16u, b[nxt]);
+						first[0] = b[cur][0]; first[1] = b[cur][1]; second[0] = b[cur][2]; second[1] = b[cur][3];
 						LmMmaBf16(score[0], q_sm, first);
 						LmMmaBf16(score[1], q_sm, second);
 					}
@@ -505,8 +512,8 @@ void LmLatentShardPrefillKernel(
 							__ldg(low_query + step * 8u), __ldg(high_query + step * 8u),
 							__ldg(low_query + step * 8u + 4u), __ldg(high_query + step * 8u + 4u)
 						};
-						LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
-						first[0] = b[0]; first[1] = b[1]; second[0] = b[2]; second[1] = b[3];
+						LmPrefillLoadX4(b_row_base + b_chunk * 16u, b[0]);
+						first[0] = b[0][0]; first[1] = b[0][1]; second[0] = b[0][2]; second[1] = b[0][3];
 						LmMmaBf16(score[0], q_tail, first);
 						LmMmaBf16(score[1], q_tail, second);
 					}
@@ -537,11 +544,23 @@ void LmLatentShardPrefillKernel(
 			previous_max = running_max[own];
 			next_max = fmaxf(previous_max, peak);
 			scale = previous_max == -INFINITY ? 0.0f : __expf(previous_max - next_max);
-#pragma unroll
-			for (index = 0u; index < QUERY_KEYS; index++)
+			if (full_tile)
 			{
-				weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : __expf(value[index] - next_max);
-				weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
+#pragma unroll
+				for (index = 0u; index < QUERY_KEYS; index++)
+				{
+					weight[index] = __expf(value[index] - next_max);
+					weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
+				}
+			}
+			else
+			{
+#pragma unroll
+				for (index = 0u; index < QUERY_KEYS; index++)
+				{
+					weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : __expf(value[index] - next_max);
+					weight_high[own * LM_PREFILL_ATTN_WEIGHT_STRIDE + part + index * QUERY_THREADS] = LmFloatToBf16(weight[index]);
+				}
 			}
 			total = (weight[0] + weight[2]) + (weight[1] + weight[3]);
 #pragma unroll
@@ -558,7 +577,7 @@ void LmLatentShardPrefillKernel(
 		LmLatentShardGroupBarrier(1u + qk_tile);
 		{
 			const float low_scale = rescale[qk_tile * 16u + (lane >> 2u)], high_scale = rescale[qk_tile * 16u + (lane >> 2u) + 8u];
-			uint32_t a_high[4], b[4], first[2], second[2];
+			uint32_t a_high[4], b[2][4], first[2], second[2];
 			if (low_scale != 1.0f || high_scale != 1.0f)
 			{
 #pragma unroll
@@ -574,15 +593,18 @@ void LmLatentShardPrefillKernel(
 			for (step = 0u; step < TILE / 16u; step++)
 			{
 				const uint32_t a_row = qk_tile * 16u + (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
+				const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
+				const uint32_t b_row_base = tile_base + b_row * PITCH;
 				LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high);
+				LmPrefillLoadX4Trans(b_row_base + ((column_warp * WARP_COLUMNS) / 8u + (matrix >> 1u)) * 16u, b[0]);
 #pragma unroll
 				for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
 				{
-					const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
-					const uint32_t b_chunk = (column_warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
-					LmPrefillLoadX4Trans(tile_base + b_row * PITCH + b_chunk * 16u, b);
-					first[0] = b[0]; first[1] = b[1];
-					second[0] = b[2]; second[1] = b[3];
+					const uint32_t cur = (frag >> 1u) & 1u, nxt = cur ^ 1u;
+					if (frag + 2u < COLUMN_FRAGS)
+						LmPrefillLoadX4Trans(b_row_base + ((column_warp * WARP_COLUMNS + (frag + 2u) * 8u) / 8u + (matrix >> 1u)) * 16u, b[nxt]);
+					first[0] = b[cur][0]; first[1] = b[cur][1];
+					second[0] = b[cur][2]; second[1] = b[cur][3];
 					LmMmaBf16(output[frag], a_high, first);
 					LmMmaBf16(output[frag + 1u], a_high, second);
 				}

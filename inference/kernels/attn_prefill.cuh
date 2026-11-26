@@ -62,7 +62,7 @@ static __device__ __forceinline__ void LmPrefillLoadX2(uint32_t address, uint32_
 
 static __device__ __forceinline__ void LmPrefillCopy(uint32_t destination, const void *source, uint32_t bytes)
 {
-	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
 }
 
 #define LM_PREFILL_UNION_THREADS 256u
@@ -502,29 +502,38 @@ void LmLatentAttentionPrefillKernel(
 		__syncthreads();
 		{
 			float score[KEY_FRAGS][4];
-			uint32_t b[4];
+			uint32_t b[2][4];
 			const uint32_t b_row = (key_group * KEY_FRAGS + (KEY_FRAGS == 2u ? matrix >> 1u : 0u)) * 8u + within;
 #pragma unroll
 			for (frag = 0u; frag < KEY_FRAGS; frag++)
 				score[frag][0] = score[frag][1] = score[frag][2] = score[frag][3] = 0.0f;
+			{
+				const uint32_t b_chunk0 = (half * HALF_STEPS) * 2u + (matrix & 1u);
+				if constexpr (KEY_FRAGS == 2u)
+					LmPrefillLoadX4(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk0) * 16u, b[0]);
+				else
+					LmPrefillLoadX2(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk0) * 16u, b[0]);
+			}
 #pragma unroll
 			for (step = 0u; step < HALF_STEPS; step++)
 			{
-				const uint32_t b_chunk = (half * HALF_STEPS + step) * 2u + (matrix & 1u);
+				const uint32_t cur = step & 1u, nxt = cur ^ 1u;
+				if (step + 1u < HALF_STEPS)
+				{
+					const uint32_t b_chunk = (half * HALF_STEPS + step + 1u) * 2u + (matrix & 1u);
+					if constexpr (KEY_FRAGS == 2u)
+						LmPrefillLoadX4(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u, b[nxt]);
+					else
+						LmPrefillLoadX2(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u, b[nxt]);
+				}
 				if constexpr (KEY_FRAGS == 2u)
 				{
-					uint32_t first[2],second[2];
-					LmPrefillLoadX4(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u, b);
-					first[0] = b[0]; first[1] = b[1];
-					second[0] = b[2]; second[1] = b[3];
+					uint32_t first[2] = { b[cur][0], b[cur][1] }, second[2] = { b[cur][2], b[cur][3] };
 					LmMmaBf16(score[0], query_frag[step], first);
 					LmMmaBf16(score[1], query_frag[step], second);
 				}
 				else
-				{
-					LmPrefillLoadX2(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u, b);
-					LmMmaBf16(score[0], query_frag[step], b);
-				}
+					LmMmaBf16(score[0], query_frag[step], b[cur]);
 			}
 #pragma unroll
 			for (frag = 0u; frag < KEY_FRAGS; frag++)
@@ -611,7 +620,7 @@ void LmLatentAttentionPrefillKernel(
 		}
 		__syncthreads();
 		{
-			uint32_t a_high[QUERY_TILES][4],b[4],first[2],second[2];
+			uint32_t a_high[QUERY_TILES][4],b[2][4],first[2],second[2];
 #pragma unroll
 			for (m = 0u; m < QUERY_TILES; m++)
 			{
@@ -631,20 +640,25 @@ void LmLatentAttentionPrefillKernel(
 #pragma unroll
 			for (step = 0u; step < TILE / 16u; step++)
 			{
+				const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
 #pragma unroll
 				for (m = 0u; m < QUERY_TILES; m++)
 				{
 					const uint32_t a_row = m * 16u + (matrix & 1u) * 8u + within,a_column = step * 16u + (matrix >> 1u) * 8u;
 					LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high[m]);
 				}
+				LmPrefillLoadX4Trans(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,(warp * WARP_COLUMNS) / 8u + (matrix >> 1u)) * 16u, b[0]);
 #pragma unroll
 				for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
 				{
-					const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
-					const uint32_t b_chunk = (warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
-					LmPrefillLoadX4Trans(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u, b);
-					first[0] = b[0]; first[1] = b[1];
-					second[0] = b[2]; second[1] = b[3];
+					const uint32_t cur = (frag >> 1u) & 1u, nxt = cur ^ 1u;
+					if (frag + 2u < COLUMN_FRAGS)
+					{
+						const uint32_t b_chunk = (warp * WARP_COLUMNS + (frag + 2u) * 8u) / 8u + (matrix >> 1u);
+						LmPrefillLoadX4Trans(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u, b[nxt]);
+					}
+					first[0] = b[cur][0]; first[1] = b[cur][1];
+					second[0] = b[cur][2]; second[1] = b[cur][3];
 #pragma unroll
 					for (m = 0u; m < QUERY_TILES; m++)
 					{
