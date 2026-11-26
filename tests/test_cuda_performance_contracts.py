@@ -151,8 +151,12 @@ def validate_scale_abi() -> None:
     ):
         require(scale, field, "shared scale tensor")
     require(scale, "(uint64_t)group_index * scale->group_stride_entries", "expert scale indexing")
-    require(scale, "row_index / scale->row_group_size", "row-group scale indexing")
-    require(scale, "k_index / scale->k_group_size", "K-group scale indexing")
+    if "row_index / scale->row_group_size" not in scale:
+        require(scale, "rg = scale->row_group_size", "row-group scale indexing")
+        require(scale, "row_index / rg", "row-group scale fallback indexing")
+    if "k_index / scale->k_group_size" not in scale:
+        require(scale, "kg = scale->k_group_size", "K-group scale indexing")
+        require(scale, "k_index / kg", "K-group scale fallback indexing")
     require(gemm, "LmScaleTensor scale_a;", "GEMM activation scale descriptor")
     require(gemm, "LmScaleTensor scale_b;", "GEMM weight scale descriptor")
     require(runtime, "LmGemmValidateScaleTensor<FormatA>", "activation scale validation")
