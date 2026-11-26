@@ -37,6 +37,7 @@
 
 static uint32_t SparkTpMeshWireCodecState = UINT32_MAX;
 static thread_local uint32_t SparkTpMeshWireCodecAllowedTls = 1u;
+static thread_local uint32_t SparkTpMeshTwoDAllowedTls = 1u;
 
 static inline uint32_t SparkTpMeshParseWireCodecEnv(const char *val)
 {
@@ -83,6 +84,18 @@ static inline uint32_t SparkTpMeshFastSetWireCodecAllowed(uint32_t allowed)
 static inline uint32_t SparkTpMeshFastWireCodecAllowed(void)
 {
     return SparkTpMeshWireCodecAllowedTls;
+}
+
+static inline uint32_t SparkTpMeshFastSetTwoDAllowed(uint32_t allowed)
+{
+    uint32_t prev = SparkTpMeshTwoDAllowedTls;
+    SparkTpMeshTwoDAllowedTls = allowed != 0u ? 1u : 0u;
+    return prev;
+}
+
+static inline uint32_t SparkTpMeshFastTwoDAllowed(void)
+{
+    return SparkTpMeshTwoDAllowedTls;
 }
 
 static __device__ __forceinline__ uint64_t SparkTpFastTimerNs(void)
@@ -4801,7 +4814,8 @@ extern "C" SparkGpuError SparkTpLaunchMeshHardwareFast(SparkGpuStream stream,
                 request,control,rank,degree,(const uint8_t *)local,output,(uint8_t *)staging,elements,timeout_ns);
         if ( sm_ok != 0u )
         {
-            if ( degree == 16u && stage == SPARK_TP_MESH_STAGE_ALL && elements >= SPARK_TP_MESH_FAST_2D_MIN_ELEMENTS &&
+            if ( SparkTpMeshFastTwoDAllowed() != 0u && degree == 16u && stage == SPARK_TP_MESH_STAGE_ALL &&
+                 elements >= SPARK_TP_MESH_FAST_2D_MIN_ELEMENTS &&
                  (((uintptr_t)local | (uintptr_t)output | (uintptr_t)band | (uintptr_t)staging) & 15u) == 0u &&
                  (slot_bytes & 15u) == 0u )
             {

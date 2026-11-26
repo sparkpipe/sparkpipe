@@ -1305,24 +1305,42 @@ static void LingGqaPrepStoreLocalKernel(const uint16_t *__restrict__ gathered, c
 	LmDependentRelease();
 }
 
+#define LG_PREFILL_MAX_SEQS 64u
+
+typedef struct LingGqaPrefillSeqPlan
+{
+	uint32_t count;
+	uint32_t total_prior;
+	uint32_t total_peer;
+	uint32_t seq_id[LG_PREFILL_MAX_SEQS];
+	uint32_t row_begin[LG_PREFILL_MAX_SEQS];
+	uint32_t row_len[LG_PREFILL_MAX_SEQS];
+	uint32_t old_ctx[LG_PREFILL_MAX_SEQS];
+	uint32_t prior_off[LG_PREFILL_MAX_SEQS];
+	uint32_t peer_off[LG_PREFILL_MAX_SEQS];
+	uint32_t peer_keys[LG_PREFILL_MAX_SEQS];
+}
+LingGqaPrefillSeqPlan;
+
 template<class Kv, uint32_t KVH, uint32_t HD>
 __global__ __launch_bounds__(128u, 4)
 static void LingGqaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row,
-	uint32_t old_ctx, uint32_t kv_first, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
+	const __grid_constant__ LingGqaPrefillSeqPlan plan, uint32_t kv_first, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t HD_V = HD >> 3u, SLOT_V = 2u * HD_V, K_V = KVH * HD_V;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t k_idx = blockIdx.x * 4u + warp, lh = blockIdx.y;
+	const uint32_t k_idx = blockIdx.x * 4u + warp, lh = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
-	if ( k_idx < old_ctx && lh < local_kvh )
+	if ( s < plan.count && k_idx < plan.old_ctx[s] && lh < local_kvh )
 	{
-		const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, __ldg(sequence_of_row), k_idx, 0u, LM_KV_ACCESS_READ);
+		const uint32_t seq = plan.count == 1u ? __ldg(sequence_of_row) : plan.seq_id[s];
+		const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, seq, k_idx, 0u, LM_KV_ACCESS_READ);
 		if ( slot != 0 )
 		{
 			const uint32_t kh = kv_first + lh;
 			const uint4 *ks = (const uint4 *)slot + kh * HD_V;
 			const uint4 *vs = (const uint4 *)slot + K_V + kh * HD_V;
-			uint4 *kd = (uint4 *)kv_prior + ((uint64_t)lh * old_ctx + k_idx) * SLOT_V;
+			uint4 *kd = (uint4 *)kv_prior + ((uint64_t)lh * plan.total_prior + (plan.prior_off[s] + k_idx)) * SLOT_V;
 			uint4 *vd = kd + HD_V;
 			for ( uint32_t c = lane; c < HD_V; c += 32u )
 				kd[c] = __ldg(ks + c);
@@ -1336,17 +1354,18 @@ static void LingGqaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__
 template<class Kv, uint32_t KVH, uint32_t HD>
 __global__ __launch_bounds__(128u, 4)
 static void LingGqaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row,
-	uint32_t old_ctx, uint32_t max_peer_keys, uint32_t rank_heads, uint32_t group, uint32_t local_kvh,
+	const __grid_constant__ LingGqaPrefillSeqPlan plan, uint32_t rank_heads, uint32_t group, uint32_t local_kvh,
 	uint64_t a2a_stride_bytes, uint8_t *__restrict__ send_bytes)
 {
 	constexpr uint32_t HD_V = HD >> 3u, SLOT_V = 2u * HD_V, K_V = KVH * HD_V;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t idx = blockIdx.x * 4u + warp, peer = blockIdx.y;
+	const uint32_t idx = blockIdx.x * 4u + warp, peer = blockIdx.y, s = blockIdx.z;
 	const uint32_t pos = SparkKvShardLocalPosition(kv_view.shard, idx);
 	LmDependentWait();
-	if ( idx < max_peer_keys && peer < kv_view.shard.degree && pos < old_ctx )
+	if ( s < plan.count && idx < plan.peer_keys[s] && peer < kv_view.shard.degree && pos < plan.old_ctx[s] )
 	{
-		const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, __ldg(sequence_of_row), pos, 0u, LM_KV_ACCESS_READ);
+		const uint32_t seq = plan.count == 1u ? __ldg(sequence_of_row) : plan.seq_id[s];
+		const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, seq, pos, 0u, LM_KV_ACCESS_READ);
 		if ( slot != 0 )
 		{
 			const uint32_t peer_kv_first = (peer * rank_heads) / group;
@@ -1356,7 +1375,7 @@ static void LingGqaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__re
 				const uint32_t kh = peer_kv_first + lh;
 				const uint4 *ks = (const uint4 *)slot + kh * HD_V;
 				const uint4 *vs = (const uint4 *)slot + K_V + kh * HD_V;
-				uint4 *kd = peer_dst + ((uint64_t)lh * max_peer_keys + idx) * SLOT_V;
+				uint4 *kd = peer_dst + ((uint64_t)lh * plan.total_peer + (plan.peer_off[s] + idx)) * SLOT_V;
 				uint4 *vd = kd + HD_V;
 				for ( uint32_t c = lane; c < HD_V; c += 32u )
 					kd[c] = __ldg(ks + c);
@@ -1371,22 +1390,22 @@ static void LingGqaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__re
 template<uint32_t HD>
 __global__ __launch_bounds__(128u, 4)
 static void LingGqaPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restrict__ recv_bytes,
-	uint64_t a2a_stride_bytes, uint32_t old_ctx, uint32_t max_peer_keys, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
+	uint64_t a2a_stride_bytes, const __grid_constant__ LingGqaPrefillSeqPlan plan, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t SLOT_V = (2u * HD) >> 3u;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t idx = blockIdx.x * 4u + warp, src_rank = blockIdx.y;
+	const uint32_t idx = blockIdx.x * 4u + warp, src_rank = blockIdx.y, s = blockIdx.z;
 	SparkKvShard src_shard = shard;
 	src_shard.rank = src_rank;
 	const uint32_t pos = SparkKvShardLocalPosition(src_shard, idx);
 	LmDependentWait();
-	if ( idx < max_peer_keys && src_rank < shard.degree && pos < old_ctx )
+	if ( s < plan.count && idx < plan.peer_keys[s] && src_rank < shard.degree && pos < plan.old_ctx[s] )
 	{
 		const uint4 *src_base = (const uint4 *)(recv_bytes + (uint64_t)src_rank * a2a_stride_bytes);
 		for ( uint32_t lh = 0u; lh < local_kvh; ++lh )
 		{
-			const uint4 *s4 = src_base + ((uint64_t)lh * max_peer_keys + idx) * SLOT_V;
-			uint4 *d4 = (uint4 *)kv_prior + ((uint64_t)lh * old_ctx + pos) * SLOT_V;
+			const uint4 *s4 = src_base + ((uint64_t)lh * plan.total_peer + (plan.peer_off[s] + idx)) * SLOT_V;
+			uint4 *d4 = (uint4 *)kv_prior + ((uint64_t)lh * plan.total_prior + (plan.prior_off[s] + pos)) * SLOT_V;
 			for ( uint32_t c = lane; c < SLOT_V; c += 32u )
 				d4[c] = __ldg(s4 + c);
 		}
@@ -1398,8 +1417,8 @@ template<uint32_t HD, bool CHUNKED>
 __global__ __launch_bounds__(64u, 2)
 static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
 	const uint16_t *__restrict__ kv_cur, const uint32_t *__restrict__ positions, const uint16_t *__restrict__ gate_bf16,
-	uint32_t rows, uint32_t rank_heads, uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t prior_keys,
-	float qk_scale, uint16_t *__restrict__ merged_out, float *__restrict__ partials)
+	const __grid_constant__ LingGqaPrefillSeqPlan plan, uint32_t rows, uint32_t rank_heads, uint32_t q_first, uint32_t group,
+	uint32_t kv_first, uint32_t max_chunks, float qk_scale, uint16_t *__restrict__ merged_out, float *__restrict__ partials)
 {
 	constexpr uint32_t Q_TILE = 16u, KV_TILE = 64u, TILES_PER_CHUNK = 8u, THREADS = 64u;
 	constexpr uint32_t K_STEPS = HD / 16u, HALF_K_FRAGS = (KV_TILE / 2u) / 8u, HALF_V_FRAGS = (HD / 2u) / 8u, P_STEPS = KV_TILE / 16u;
@@ -1415,22 +1434,34 @@ static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf1
 	const uint32_t p_base = (uint32_t)__cvta_generic_to_shared(p_smem);
 	uint32_t *p_u32 = (uint32_t *)p_smem;
 	const uint32_t local_h = blockIdx.x, q_block = blockIdx.y;
+	const uint32_t seq_idx = CHUNKED ? (blockIdx.z / max_chunks) : blockIdx.z;
+	const uint32_t chunk_idx = CHUNKED ? (blockIdx.z % max_chunks) : 0u;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u, q_row_lo = lane >> 2u, q_row_hi = q_row_lo + 8u, quad = lane & 3u;
-	const uint32_t row_first = q_block * Q_TILE;
-	const uint32_t row_end = row_first + Q_TILE < rows ? row_first + Q_TILE : rows;
 	const uint32_t lkvh = ((q_first + local_h) / group) - kv_first;
-	const uint32_t total_kv = prior_keys + rows;
 	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	LmDependentWait();
-	if ( row_first >= rows )
+	if ( seq_idx >= plan.count )
 	{
 		LmDependentRelease();
 		return;
 	}
+	const uint32_t s_row_begin = plan.row_begin[seq_idx];
+	const uint32_t s_rows = plan.row_len[seq_idx];
+	const uint32_t s_prior_keys = plan.old_ctx[seq_idx];
+	const uint32_t s_prior_off = plan.prior_off[seq_idx];
+	const uint32_t local_first = q_block * Q_TILE;
+	if ( local_first >= s_rows )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t row_first = s_row_begin + local_first;
+	const uint32_t row_end = s_row_begin + (local_first + Q_TILE < s_rows ? local_first + Q_TILE : s_rows);
+	const uint32_t total_kv = s_prior_keys + s_rows;
 	const uint32_t max_pos = __ldg(positions + row_end - 1u);
 	const uint32_t max_tile_end = (max_pos + KV_TILE) / KV_TILE;
-	const uint32_t tile_begin = CHUNKED ? blockIdx.z * TILES_PER_CHUNK : 0u;
+	const uint32_t tile_begin = CHUNKED ? chunk_idx * TILES_PER_CHUNK : 0u;
 	const uint32_t tile_end = CHUNKED ? (tile_begin + TILES_PER_CHUNK < max_tile_end ? tile_begin + TILES_PER_CHUNK : max_tile_end) : max_tile_end;
 	if constexpr ( CHUNKED )
 	{
@@ -1469,9 +1500,9 @@ static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf1
 			const uint32_t k_idx = tile * KV_TILE + s;
 			const bool valid = k_idx < total_kv;
 			const uint16_t *src = valid ?
-				(k_idx < prior_keys ?
-					kv_prior + ((uint64_t)lkvh * prior_keys + k_idx) * SLOT_ELEMS + elem_off + c * 8u :
-					kv_cur + ((uint64_t)lkvh * rows + (k_idx - prior_keys)) * SLOT_ELEMS + elem_off + c * 8u) :
+				(k_idx < s_prior_keys ?
+					kv_prior + ((uint64_t)lkvh * plan.total_prior + (s_prior_off + k_idx)) * SLOT_ELEMS + elem_off + c * 8u :
+					kv_cur + ((uint64_t)lkvh * rows + (s_row_begin + (k_idx - s_prior_keys))) * SLOT_ELEMS + elem_off + c * 8u) :
 				query_bf16;
 			LmPrefillCopy(dst_base + s * K_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
 		}
@@ -1631,7 +1662,7 @@ static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf1
 	}
 	if constexpr ( CHUNKED )
 	{
-		const uint64_t chunk_off = (uint64_t)blockIdx.z * rows * rank_heads * (HD + 2u);
+		const uint64_t chunk_off = (uint64_t)chunk_idx * rows * rank_heads * (HD + 2u);
 		if ( valid_row[0] )
 		{
 			float *dst = partials + chunk_off + ((uint64_t)row_lo * rank_heads + local_h) * (HD + 2u);
