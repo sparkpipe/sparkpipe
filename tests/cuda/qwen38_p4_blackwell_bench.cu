@@ -291,6 +291,25 @@ static void BenchGdnPrefill(cudaStream_t stream, const char *label, uint32_t qk_
 	cudaFree(d_state_idx); cudaFree(d_seq_begin);
 }
 
+template<uint32_t TM, uint32_t WM, uint32_t WN>
+static void LaunchNvfp4BenchPair(cudaStream_t stream, uint32_t sms, const uint8_t *w1, const uint8_t *w1_sc,
+	const uint8_t *w3, const uint8_t *w3_sc, const uint8_t *w2, const uint8_t *w2_sc,
+	const uint16_t *normed, const float *d_wt, uint16_t *act_new, uint16_t *out_new,
+	const uint32_t *d_off, const uint32_t *d_src, uint32_t local_experts, uint32_t hidden, uint32_t inter)
+{
+	const uint32_t blks = TM <= 32u ? sms * 2u : sms;
+	constexpr uint32_t sm_up = QwenNvfp4PrefillSharedBytes<TM, WM, WN, false, true, 3u, 4u>();
+	constexpr uint32_t sm_dn = QwenNvfp4PrefillSharedBytes<TM, WM, WN, true, false, 3u, 4u>();
+	SparkGpuFuncSetAttribute((const void *)QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, false, true, 3u, 4u>,
+		SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sm_up);
+	SparkGpuFuncSetAttribute((const void *)QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, true, false, 3u, 4u>,
+		SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sm_dn);
+	(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, false, true, 3u, 4u>), blks, 256u, sm_up, stream,
+		w1, w1_sc, w3, w3_sc, normed, d_wt, act_new, d_off, d_src, local_experts, hidden, inter);
+	(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, true, false, 3u, 4u>), blks, 256u, sm_dn, stream,
+		w2, w2_sc, (const uint8_t *)0, (const uint8_t *)0, act_new, (const float *)0, out_new, d_off, (const uint32_t *)0, local_experts, inter, hidden);
+}
+
 static void BenchNvfp4Moe(cudaStream_t stream, const char *label, uint32_t local_experts, uint32_t hidden, uint32_t inter, uint32_t rows, uint32_t top_k, uint32_t total_experts, uint32_t sms)
 {
 	const uint32_t routes = rows * top_k;
@@ -361,32 +380,13 @@ static void BenchNvfp4Moe(cudaStream_t stream, const char *label, uint32_t local
 				w2, w2_sc, (const uint8_t *)0, (const uint8_t *)0, act_base, (const float *)0, out_base, d_off, (const uint32_t *)0, local_experts, inter, hidden);
 		}
 	};
-	auto launch_new_pair = [&](auto tile_tag) {
-		constexpr uint32_t TM = decltype(tile_tag)::tm;
-		constexpr uint32_t WM = decltype(tile_tag)::wm;
-		constexpr uint32_t WN = decltype(tile_tag)::wn;
-		const uint32_t blks = TM <= 32u ? sms * 2u : sms;
-		constexpr uint32_t sm_up = QwenNvfp4PrefillSharedBytes<TM, WM, WN, false, true, 3u, 4u>();
-		constexpr uint32_t sm_dn = QwenNvfp4PrefillSharedBytes<TM, WM, WN, true, false, 3u, 4u>();
-		SparkGpuFuncSetAttribute((const void *)QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, false, true, 3u, 4u>,
-			SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sm_up);
-		SparkGpuFuncSetAttribute((const void *)QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, true, false, 3u, 4u>,
-			SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sm_dn);
-		(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, false, true, 3u, 4u>), blks, 256u, sm_up, stream,
-			w1, w1_sc, w3, w3_sc, normed, d_wt, act_new, d_off, d_src, local_experts, hidden, inter);
-		(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsPrefillKernel<TM, WM, WN, true, false, 3u, 4u>), blks, 256u, sm_dn, stream,
-			w2, w2_sc, (const uint8_t *)0, (const uint8_t *)0, act_new, (const float *)0, out_new, d_off, (const uint32_t *)0, local_experts, inter, hidden);
-	};
-	struct T16 { static constexpr uint32_t tm = 16u, wm = 1u, wn = 8u; };
-	struct T32 { static constexpr uint32_t tm = 32u, wm = 2u, wn = 4u; };
-	struct T64 { static constexpr uint32_t tm = 64u, wm = 2u, wn = 4u; };
 	auto run_new = [&]() {
 		if ( local_mean <= 16u )
-			launch_new_pair(T16{});
+			LaunchNvfp4BenchPair<16u, 1u, 8u>(stream, sms, w1, w1_sc, w3, w3_sc, w2, w2_sc, normed, d_wt, act_new, out_new, d_off, d_src, local_experts, hidden, inter);
 		else if ( local_mean <= 40u )
-			launch_new_pair(T32{});
+			LaunchNvfp4BenchPair<32u, 2u, 4u>(stream, sms, w1, w1_sc, w3, w3_sc, w2, w2_sc, normed, d_wt, act_new, out_new, d_off, d_src, local_experts, hidden, inter);
 		else
-			launch_new_pair(T64{});
+			LaunchNvfp4BenchPair<64u, 2u, 4u>(stream, sms, w1, w1_sc, w3, w3_sc, w2, w2_sc, normed, d_wt, act_new, out_new, d_off, d_src, local_experts, hidden, inter);
 	};
 
 	run_base();

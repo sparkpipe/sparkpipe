@@ -657,7 +657,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 			{
 				const uint8_t *paged_base = LmKvShardSlotRequired<Kv>(kv_view, s_seq_id, t0, 0u, LM_KV_ACCESS_READ);
 				const uint32_t head_off = (is_v * KVH + kh_global) * HD;
-				#pragma unroll
+				#pragma unroll 4
 				for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
 				{
 					const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
@@ -669,7 +669,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 			else
 			{
 				const uint16_t *base_ptr = kv_prior + (((uint64_t)lkvh * plan.total_prior + (s_prior_off + t0)) * 2u + is_v) * HD;
-				#pragma unroll
+				#pragma unroll 4
 				for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
 				{
 					const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
@@ -680,7 +680,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 		else if ( t0 >= s_prior_keys && t0 + KV_TILE <= total_kv )
 		{
 			const uint16_t *base_ptr = kv_cur + (((uint64_t)lkvh * rows + (s_row_begin + t0 - s_prior_keys)) * 2u + is_v) * HD;
-			#pragma unroll
+			#pragma unroll 4
 			for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
 			{
 				const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
@@ -691,7 +691,7 @@ static void QwenLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 		{
 			const uint8_t *paged_base = (DIRECT_PAGED && t0 < s_prior_keys) ?
 				LmKvShardSlotRequired<Kv>(kv_view, s_seq_id, t0, 0u, LM_KV_ACCESS_READ) : (const uint8_t *)0;
-			#pragma unroll
+			#pragma unroll 4
 			for ( uint32_t idx = threadIdx.x; idx < KV_TILE * CHUNKS; idx += THREADS )
 			{
 				const uint32_t s = idx / CHUNKS, c = idx % CHUNKS;
@@ -1784,56 +1784,74 @@ static void QwenGdnConvWindowCommitKernel(uint16_t *__restrict__ window, const u
 		if ( count != 0u )
 		{
 			uint16_t *slot = window + (uint64_t)state_index[sequence] * channels * KERNEL;
-			uint16_t out[KERNEL];
-			if ( count >= KERNEL )
+			if constexpr ( KERNEL == 4u )
 			{
-				#pragma unroll
-				for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+				uint16_t o0, o1, o2, o3;
+				if ( count >= 4u )
 				{
-					const uint32_t ord = end - KERNEL + tap;
-					const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
-					out[tap] = __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+					const uint32_t r0 = sequence_row_indices != 0 ? sequence_row_indices[end - 4u] : (end - 4u);
+					const uint32_t r1 = sequence_row_indices != 0 ? sequence_row_indices[end - 3u] : (end - 3u);
+					const uint32_t r2 = sequence_row_indices != 0 ? sequence_row_indices[end - 2u] : (end - 2u);
+					const uint32_t r3 = sequence_row_indices != 0 ? sequence_row_indices[end - 1u] : (end - 1u);
+					o0 = __ldg(input_bf16 + (uint64_t)r0 * input_stride + channel);
+					o1 = __ldg(input_bf16 + (uint64_t)r1 * input_stride + channel);
+					o2 = __ldg(input_bf16 + (uint64_t)r2 * input_stride + channel);
+					o3 = __ldg(input_bf16 + (uint64_t)r3 * input_stride + channel);
 				}
+				else
+				{
+					const uint2 prev = *(const uint2 *)(slot + (uint64_t)channel * 4u);
+					const uint64_t p64 = (uint64_t)prev.x | ((uint64_t)prev.y << 32u);
+					auto pick = [&](uint32_t tap) -> uint16_t
+					{
+						if ( count + tap < 4u )
+							return (uint16_t)((p64 >> ((count + tap) * 16u)) & 0xffffu);
+						const uint32_t ord = begin + (count + tap - 4u);
+						const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
+						return __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+					};
+					o0 = pick(0u);
+					o1 = pick(1u);
+					o2 = pick(2u);
+					o3 = pick(3u);
+				}
+				uint2 w;
+				w.x = (uint32_t)o0 | ((uint32_t)o1 << 16u);
+				w.y = (uint32_t)o2 | ((uint32_t)o3 << 16u);
+				*(uint2 *)(slot + (uint64_t)channel * 4u) = w;
 			}
 			else
 			{
-				uint16_t old_t[KERNEL];
-				if constexpr ( KERNEL == 4u )
+				uint16_t out[KERNEL];
+				if ( count >= KERNEL )
 				{
-					const uint2 w = *(const uint2 *)(slot + (uint64_t)channel * 4u);
-					old_t[0] = (uint16_t)(w.x & 0xffffu);
-					old_t[1] = (uint16_t)(w.x >> 16u);
-					old_t[2] = (uint16_t)(w.y & 0xffffu);
-					old_t[3] = (uint16_t)(w.y >> 16u);
-				}
-				else
 					#pragma unroll
 					for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
-						old_t[tap] = slot[(uint64_t)channel * KERNEL + tap];
-				#pragma unroll
-				for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
-				{
-					if ( count + tap < KERNEL )
-						out[tap] = old_t[count + tap];
-					else
 					{
-						const uint32_t ord = begin + (count + tap - KERNEL);
+						const uint32_t ord = end - KERNEL + tap;
 						const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
 						out[tap] = __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
 					}
 				}
-			}
-			if constexpr ( KERNEL == 4u )
-			{
-				uint2 w;
-				w.x = (uint32_t)out[0] | ((uint32_t)out[1] << 16u);
-				w.y = (uint32_t)out[2] | ((uint32_t)out[3] << 16u);
-				*(uint2 *)(slot + (uint64_t)channel * 4u) = w;
-			}
-			else
+				else
+				{
+					#pragma unroll
+					for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+					{
+						if ( count + tap < KERNEL )
+							out[tap] = slot[(uint64_t)channel * KERNEL + count + tap];
+						else
+						{
+							const uint32_t ord = begin + (count + tap - KERNEL);
+							const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
+							out[tap] = __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+						}
+					}
+				}
 				#pragma unroll
 				for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
 					slot[(uint64_t)channel * KERNEL + tap] = out[tap];
+			}
 		}
 	}
 	LmDependentRelease();
@@ -2339,17 +2357,6 @@ static void QwenGdnScalarChunkKernel(uint8_t *__restrict__ state_pool, uint32_t 
 		if ( first + C >= count && commit == 0u )
 			break;
 		const float tail_sc = sh.tail_decay;
-		uint32_t auh_all[C_BLOCKS][4], aul_all[C_BLOCKS][4];
-		#pragma unroll
-		for ( uint32_t c_in = 0u; c_in < C_BLOCKS; ++c_in )
-		{
-			const float e0 = sh.exp_tail_diff[c_in * 8u + tg];
-			const float e1 = sh.exp_tail_diff[c_in * 8u + tg + 4u];
-			LmDeltaSplitTf32(u[c_in][0] * e0, auh_all[c_in][0], aul_all[c_in][0]);
-			LmDeltaSplitTf32(u[c_in][2] * e0, auh_all[c_in][1], aul_all[c_in][1]);
-			LmDeltaSplitTf32(u[c_in][1] * e1, auh_all[c_in][2], aul_all[c_in][2]);
-			LmDeltaSplitTf32(u[c_in][3] * e1, auh_all[c_in][3], aul_all[c_in][3]);
-		}
 		#pragma unroll
 		for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
 		{
@@ -2357,15 +2364,25 @@ static void QwenGdnScalarChunkKernel(uint8_t *__restrict__ state_pool, uint32_t 
 			s[kb][1] *= tail_sc;
 			s[kb][2] *= tail_sc;
 			s[kb][3] *= tail_sc;
-			const uint32_t k_col = k_base + kb * 8u + k_perm;
+		}
+		#pragma unroll
+		for ( uint32_t c_in = 0u; c_in < C_BLOCKS; ++c_in )
+		{
+			const uint32_t j0 = c_in * 8u + tg, j1 = j0 + 4u;
+			const float e0 = sh.exp_tail_diff[j0], e1 = sh.exp_tail_diff[j1];
+			uint32_t auh[4], aul[4];
+			LmDeltaSplitTf32(u[c_in][0] * e0, auh[0], aul[0]);
+			LmDeltaSplitTf32(u[c_in][2] * e0, auh[1], aul[1]);
+			LmDeltaSplitTf32(u[c_in][1] * e1, auh[2], aul[2]);
+			LmDeltaSplitTf32(u[c_in][3] * e1, auh[3], aul[3]);
 			#pragma unroll
-			for ( uint32_t c_in = 0u; c_in < C_BLOCKS; ++c_in )
+			for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
 			{
-				const uint32_t j0 = c_in * 8u + tg, j1 = j0 + 4u;
+				const uint32_t k_col = k_base + kb * 8u + k_perm;
 				uint32_t bch[2], bcl[2];
 				LmDeltaSplitTf32(sh.k_hat[j0][k_col], bch[0], bcl[0]);
 				LmDeltaSplitTf32(sh.k_hat[j1][k_col], bch[1], bcl[1]);
-				LmDeltaMmaFp32(s[kb], auh_all[c_in], aul_all[c_in], bch, bcl);
+				LmDeltaMmaFp32(s[kb], auh, aul, bch, bcl);
 			}
 		}
 	}
