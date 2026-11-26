@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_weightd_worker.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_device.h"
+#include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
@@ -46,6 +47,8 @@ static void *worker_main(void *argument)
 		job.function(job.context);
 		pthread_mutex_lock(&worker->mutex);
 		worker->active = 0u;
+		if ( worker->count == 0u )
+			pthread_cond_broadcast(&worker->changed);
 	}
 	pthread_mutex_unlock(&worker->mutex);
 	return(0);
@@ -125,30 +128,53 @@ SparkStatus SparkWeightdWorkerSubmit(SparkWeightdWorker *worker,SparkWeightdWork
 
 SparkStatus SparkWeightdWorkerWaitIdle(SparkWeightdWorker *worker,uint64_t timeout_nanoseconds)
 {
-	struct timespec now,pause;
-	uint64_t start,current,remaining;
-	uint32_t idle;
+	struct timespec now,wall,deadline;
+	uint64_t start,current,remaining,target_ns;
 	if ( worker == 0 || pthread_equal(pthread_self(),worker->thread) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	start = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
+	pthread_mutex_lock(&worker->mutex);
 	for (;;)
 	{
-		pthread_mutex_lock(&worker->mutex);
-		idle = worker->count == 0u && worker->active == 0u;
-		pthread_mutex_unlock(&worker->mutex);
-		if ( idle != 0u )
+		int wait_error;
+		if ( worker->count == 0u && worker->active == 0u )
+		{
+			pthread_mutex_unlock(&worker->mutex);
 			return(SPARK_STATUS_OK);
+		}
 		if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
+		{
+			pthread_mutex_unlock(&worker->mutex);
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
 		current = (((uint64_t)now.tv_sec * UINT64_C(1000000000)) + (uint64_t)now.tv_nsec);
 		if ( current < start || (current - start) >= timeout_nanoseconds )
+		{
+			pthread_mutex_unlock(&worker->mutex);
 			SPARK_FAIL(SPARK_STATUS_BUSY);
+		}
 		remaining = (timeout_nanoseconds - (current - start));
-		pause.tv_sec = 0;
-		pause.tv_nsec = remaining < UINT64_C(1000000) ? (long)remaining : 1000000L;
-		(void)nanosleep(&pause,0);
+		if ( clock_gettime(CLOCK_REALTIME,&wall) != 0 )
+		{
+			pthread_mutex_unlock(&worker->mutex);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+		target_ns = (uint64_t)wall.tv_nsec + (remaining % UINT64_C(1000000000));
+		deadline.tv_sec = wall.tv_sec + (time_t)(remaining / UINT64_C(1000000000)) + (time_t)(target_ns / UINT64_C(1000000000));
+		deadline.tv_nsec = (long)(target_ns % UINT64_C(1000000000));
+		wait_error = pthread_cond_timedwait(&worker->changed,&worker->mutex,&deadline);
+		if ( wait_error == ETIMEDOUT )
+		{
+			if ( worker->count == 0u && worker->active == 0u )
+			{
+				pthread_mutex_unlock(&worker->mutex);
+				return(SPARK_STATUS_OK);
+			}
+			pthread_mutex_unlock(&worker->mutex);
+			SPARK_FAIL(SPARK_STATUS_BUSY);
+		}
 	}
 }
 

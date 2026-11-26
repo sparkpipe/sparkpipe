@@ -2362,7 +2362,7 @@ static uint32_t SparkKvCacheSelectResidentEvictionVictim(
     const uint32_t *protected_logical_block_indices,
     uint32_t protected_logical_block_count)
 {
-    uint32_t logical_block_index;
+    uint32_t resident_slot_index;
     uint32_t victim_logical_block_index;
     const SparkKvCacheBlock *victim_block;
     int64_t victim_keepness;
@@ -2370,12 +2370,24 @@ static uint32_t SparkKvCacheSelectResidentEvictionVictim(
     victim_logical_block_index = SPARK_KV_CACHE_NO_BLOCK;
     victim_block = 0;
     victim_keepness = 0;
-    for (logical_block_index = 0u;
-         logical_block_index < arena->logical_block_count;
-         ++logical_block_index)
+    for (resident_slot_index = 0u;
+         resident_slot_index < arena->resident_block_capacity;
+         ++resident_slot_index)
     {
+        uint32_t logical_block_index;
         const SparkKvCacheBlock *block;
+        int64_t block_keepness;
 
+        logical_block_index =
+            arena->resident_slot_logical_block_indices[resident_slot_index];
+        if (logical_block_index == SPARK_KV_CACHE_NO_BLOCK)
+        {
+            continue;
+        }
+        if (logical_block_index >= arena->logical_block_count)
+        {
+            return SPARK_KV_CACHE_NO_BLOCK;
+        }
         block = &arena->blocks[logical_block_index];
         if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
             (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
@@ -2389,13 +2401,17 @@ static uint32_t SparkKvCacheSelectResidentEvictionVictim(
         {
             continue;
         }
+        block_keepness = SparkKvCacheReuseValueKeepness(arena, block);
         if (victim_block == 0 ||
             SparkKvCacheBlockIsBetterEvictionVictim(
-                arena, victim_block, victim_keepness, block))
+                arena, victim_block, victim_keepness, block) ||
+            (!SparkKvCacheBlockIsBetterEvictionVictim(
+                arena, block, block_keepness, victim_block) &&
+             logical_block_index < victim_logical_block_index))
         {
             victim_block = block;
             victim_logical_block_index = logical_block_index;
-            victim_keepness = SparkKvCacheReuseValueKeepness(arena, block);
+            victim_keepness = block_keepness;
         }
     }
     return victim_logical_block_index;

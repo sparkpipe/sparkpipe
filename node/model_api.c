@@ -682,19 +682,38 @@ static uint64_t api_per_page(uint64_t total,uint64_t pages)
 	return(pages != 0u ? total / pages : 0u);
 }
 
-static void api_log_status_reports(void)
+static void api_publish_health_and_status(void)
 {
 	static SparkModelResidentStatusReport logged[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	SparkModelBatchEngineView view;
 	SparkModelResidentStatusReport report;
 	const SparkModelDriverKvStoreCounters *kv;
-	uint32_t rank;
+	uint64_t pages = UINT64_MAX;
+	uint32_t rank,degraded = UINT32_MAX,write_alert = UINT32_MAX;
+	if ( S.engine == 0 || SparkModelBatchEngineGetView(S.engine,&view) != SPARK_STATUS_OK )
+		return;
 	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
 	{
 		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
 			break;
-		if ( report.generation == 0u || (memcmp(&report.adapter_snapshot.kv_store,&logged[rank].adapter_snapshot.kv_store,sizeof(report.adapter_snapshot.kv_store)) == 0 &&
-			report.residentd_pid == logged[rank].residentd_pid && report.client_generation == logged[rank].client_generation) )
+		if ( report.generation == 0u )
 			continue;
+		if ( report.adapter_snapshot.kv_store.pool_physical_pages < pages )
+			pages = report.adapter_snapshot.kv_store.pool_physical_pages;
+		if ( degraded == UINT32_MAX && (report.adapter_snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH) != 0u )
+			degraded = rank;
+		if ( write_alert == UINT32_MAX && report.adapter_snapshot.kv_store.write_alerting != 0u )
+			write_alert = rank;
+		if ( report.generation == logged[rank].generation &&
+			report.residentd_pid == logged[rank].residentd_pid &&
+			report.client_generation == logged[rank].client_generation )
+			continue;
+		if ( memcmp(&report.adapter_snapshot.kv_store,&logged[rank].adapter_snapshot.kv_store,sizeof(report.adapter_snapshot.kv_store)) == 0 &&
+			report.residentd_pid == logged[rank].residentd_pid && report.client_generation == logged[rank].client_generation )
+		{
+			logged[rank].generation = report.generation;
+			continue;
+		}
 		logged[rank] = report;
 		kv = &report.adapter_snapshot.kv_store;
 		fprintf(stderr,"{\"event\":\"kv_store_report\",\"boot_pid\":%d,\"rank\":%u,\"stage\":%u,\"residentd_pid\":%u,\"client_generation\":%llu,\"status\":%u,\"generation\":%llu,\"attached\":%u,\"save_count\":%llu,\"save_pages\":%llu,\"save_ns\":%llu,\"save_ns_per_page\":%llu,\"save_failures\":%llu,\"save_deferred\":%llu,\"restore_count\":%llu,\"restore_pages\":%llu,\"restore_ns\":%llu,\"restore_ns_per_page\":%llu,\"restore_misses\":%llu,\"restore_corrupt\":%llu,\"restore_read_errors\":%llu,\"restore_failures\":%llu,\"store_used_bytes\":%llu,\"store_maximum_bytes\":%llu,\"store_files\":%llu,\"store_foreign_layout_files\":%llu,\"store_checksum_failures\":%llu,\"store_removed_temporaries\":%llu,\"store_evictions\":%llu,\"store_write_failures\":%llu,\"store_queue_full\":%llu,\"store_queued\":%llu,\"store_failed_status\":%u,\"pool_resident_pages\":%llu,\"pool_physical_pages\":%llu,\"pool_logical_pages\":%llu,\"pool_retained_pages\":%llu,\"pool_evicted_entries\":%llu,\"pool_resident_evictions\":%llu,\"spill_write_bytes\":%llu,\"spill_read_bytes\":%llu,\"spill_digest_mismatches\":%llu,\"spill_read_errors\":%llu,\"pool_device_bytes\":%llu,\"pool_generation\":%llu,\"pool_reattached\":%llu,\"pool_adopted_pages\":%llu,\"write_bytes\":%llu,\"write_bytes_this_hour\":%llu,\"write_bytes_previous_hour\":%llu,\"write_alerts\":%llu,\"write_alerting\":%llu}\n",
@@ -712,65 +731,15 @@ static void api_log_status_reports(void)
 			(unsigned long long)kv->write_bytes,(unsigned long long)kv->write_bytes_this_hour,(unsigned long long)kv->write_bytes_previous_hour,
 			(unsigned long long)kv->write_alerts,(unsigned long long)kv->write_alerting);
 	}
-}
-
-static uint32_t api_degraded_rank(void)
-{
-	SparkModelResidentStatusReport report;
-	uint32_t rank;
-	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
-	{
-		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
-			break;
-		if ( report.generation != 0u && (report.adapter_snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH) != 0u )
-			return(rank);
-	}
-	return(UINT32_MAX);
-}
-
-static uint32_t api_write_alert_rank(void)
-{
-	SparkModelResidentStatusReport report;
-	uint32_t rank;
-	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
-	{
-		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
-			break;
-		if ( report.generation != 0u && report.adapter_snapshot.kv_store.write_alerting != 0u )
-			return(rank);
-	}
-	return(UINT32_MAX);
-}
-
-static uint64_t api_kv_capacity_pages(void)
-{
-	SparkModelResidentStatusReport report;
-	uint64_t pages = UINT64_MAX;
-	uint32_t rank;
-	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
-	{
-		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
-			break;
-		if ( report.generation != 0u && report.adapter_snapshot.kv_store.pool_physical_pages < pages )
-			pages = report.adapter_snapshot.kv_store.pool_physical_pages;
-	}
-	return(pages == UINT64_MAX ? 0u : pages);
-}
-
-static void api_publish_health(void)
-{
-	SparkModelBatchEngineView view;
-	if ( S.engine == 0 || SparkModelBatchEngineGetView(S.engine,&view) != SPARK_STATUS_OK )
-		return;
-	__atomic_store_n(&S.health_kv_capacity_tokens,api_kv_capacity_pages() * view.cache_block_token_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_kv_capacity_tokens,(pages == UINT64_MAX ? 0u : pages) * view.cache_block_token_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_kv_capacity_max_tokens,(uint64_t)view.kv_physical_page_capacity * view.cache_block_token_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_rank_count,view.pipeline.rank_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_connected_rank_count,view.pipeline.connected_rank_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_missing_rank,view.pipeline.first_disconnected_rank,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_failed_status,view.failed_status,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_live_requests,view.live_request_count,__ATOMIC_RELEASE);
-	__atomic_store_n(&S.health_degraded_rank,api_degraded_rank(),__ATOMIC_RELEASE);
-	__atomic_store_n(&S.health_write_alert_rank,api_write_alert_rank(),__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_degraded_rank,degraded,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_write_alert_rank,write_alert,__ATOMIC_RELEASE);
 	if ( view.context_limit != 0u && view.context_limit != __atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE) )
 	{
 		__atomic_store_n(&S.context_limit,view.context_limit,__ATOMIC_RELEASE);
@@ -851,9 +820,8 @@ static void *api_worker(void *arg)
 		busy = api_submit_pending();
 		(void)SparkModelBatchEngineProgress(S.engine,4u);
 		api_cache_probe_step();
-		api_publish_health();
+		api_publish_health_and_status();
 		api_log_engine_measurements();
-		api_log_status_reports();
 		api_save_sequence();
 		api_poll_engine(busy);
 	}
@@ -2263,7 +2231,7 @@ static void api_seed_submission_ids(void)
 
 static void *api_bringup(void *argument)
 {
-	unsigned attempt = 0u, waited = 0u, pause_ms = 50u;
+	unsigned attempt = 0u, waited = 0u, pause_ms = 10u;
 	uint64_t last_log_ms = 0u;
 	SparkStatus status;
 	(void)argument;
@@ -2288,18 +2256,18 @@ static void *api_bringup(void *argument)
 		nap.tv_sec = (time_t)(pause_ms / 1000u);
 		nap.tv_nsec = (long)((pause_ms % 1000u) * 1000000u);
 		(void)nanosleep(&nap, 0);
-		if (pause_ms < 200u)
+		if (pause_ms < 25u)
 		{
 			pause_ms *= 2u;
-			if (pause_ms > 200u)
-				pause_ms = 200u;
+			if (pause_ms > 25u)
+				pause_ms = 25u;
 		}
 	}
 	S.bringup_phase = "waiting_ranks";
 	while (SparkModelBatchEngineAllRanksReady(S.engine) == 0u)
 	{
-		struct timespec nap = {0, 50000000L};
-		if ((waited % 100u) == 0u)
+		struct timespec nap = {0, 5000000L};
+		if ((waited % 1000u) == 0u)
 			api_logf("engine_ranks_waiting elapsed_ms=%llu: not every rank is connected and helloed on one generation yet",
 				(unsigned long long)(api_now_ms() - S.bringup_started_ms));
 		waited++;

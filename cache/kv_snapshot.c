@@ -1015,15 +1015,31 @@ static void SparkKvSnapshotScanShard(SparkKvSnapshotScanWork *work,uint32_t shar
 	struct dirent *item;
 	struct stat info;
 	DIR *listing;
-	int descriptor;
+	int descriptor,dir_fd;
 	if ( (size_t)snprintf(directory,sizeof(directory),"%s/%02x",store->directory,shard) >= sizeof(directory) )
 	{
 		work->status = SPARK_STATUS_CAPACITY_EXCEEDED;
 		return;
 	}
-	listing = opendir(directory);
+	dir_fd = open(directory,O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if ( dir_fd < 0 && errno == ENOENT )
+	{
+		if ( mkdir(directory,0700) != 0 && errno != EEXIST )
+		{
+			work->status = errno == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR;
+			return;
+		}
+		dir_fd = open(directory,O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	}
+	if ( dir_fd < 0 )
+	{
+		work->status = SPARK_STATUS_IO_ERROR;
+		return;
+	}
+	listing = fdopendir(dir_fd);
 	if ( listing == 0 )
 	{
+		(void)close(dir_fd);
 		work->status = SPARK_STATUS_IO_ERROR;
 		return;
 	}
@@ -1060,23 +1076,6 @@ static void *SparkKvSnapshotScanShards(void *context)
 	for (shard=work->first; work->status == SPARK_STATUS_OK && shard<SPARK_KV_SNAPSHOT_SHARD_COUNT; shard+=SPARK_KV_SNAPSHOT_SCAN_THREADS)
 		SparkKvSnapshotScanShard(work,shard);
 	return(0);
-}
-
-static SparkStatus SparkKvSnapshotMakeShards(const char *directory)
-{
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	struct stat info;
-	uint32_t shard;
-	for (shard=0u; shard<SPARK_KV_SNAPSHOT_SHARD_COUNT; shard++)
-	{
-		if ( (size_t)snprintf(path,sizeof(path),"%s/%02x",directory,shard) >= sizeof(path) )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( mkdir(path,0700) != 0 && errno != EEXIST )
-			SPARK_FAIL(errno == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR);
-		if ( lstat(path,&info) != 0 || !S_ISDIR(info.st_mode) )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
@@ -1156,7 +1155,7 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 
 static uint32_t SparkKvSnapshotLockWithin(int descriptor,uint64_t wait_ns)
 {
-	const struct timespec pause = {0,50000000L};
+	const struct timespec pause = {0,5000000L};
 	uint64_t deadline = SparkMonotonicNs() + wait_ns;
 	while ( flock(descriptor,LOCK_EX | LOCK_NB) != 0 )
 	{
@@ -1216,7 +1215,7 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	store->failure_retry_ns = SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS;
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
-	status = pthread_mutex_init(&runtime->mutex,0) == 0 && pthread_mutex_init(&runtime->quota_mutex,0) == 0 ? SparkKvSnapshotMakeShards(directory) : SPARK_STATUS_INTERNAL_ERROR;
+	status = pthread_mutex_init(&runtime->mutex,0) == 0 && pthread_mutex_init(&runtime->quota_mutex,0) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotScan(store);
 	if ( status == SPARK_STATUS_OK )
@@ -1330,11 +1329,57 @@ SparkStatus SparkKvSnapshotCountLayout(SparkKvSnapshotStore *store,const uint8_t
 	return(SPARK_STATUS_OK);
 }
 
+typedef struct SparkKvSnapshotBinaryDigestCacheEntry
+{
+	uint64_t device;
+	uint64_t inode;
+	uint64_t size;
+	int64_t mtime_sec;
+	int64_t mtime_nsec;
+	int64_t ctime_sec;
+	int64_t ctime_nsec;
+	uint32_t valid;
+	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+} SparkKvSnapshotBinaryDigestCacheEntry;
+
+static pthread_mutex_t SparkKvSnapshotBinaryDigestMutex = PTHREAD_MUTEX_INITIALIZER;
+static SparkKvSnapshotBinaryDigestCacheEntry SparkKvSnapshotBinaryDigestCache[8];
+static uint32_t SparkKvSnapshotBinaryDigestNextSlot;
+
+static void SparkKvSnapshotStatMeta(const struct stat *info,SparkKvSnapshotBinaryDigestCacheEntry *meta)
+{
+	meta->device = (uint64_t)info->st_dev;
+	meta->inode = (uint64_t)info->st_ino;
+	meta->size = (uint64_t)info->st_size;
+#if defined(__APPLE__)
+	meta->mtime_sec = (int64_t)info->st_mtimespec.tv_sec;
+	meta->mtime_nsec = (int64_t)info->st_mtimespec.tv_nsec;
+	meta->ctime_sec = (int64_t)info->st_ctimespec.tv_sec;
+	meta->ctime_nsec = (int64_t)info->st_ctimespec.tv_nsec;
+#else
+	meta->mtime_sec = (int64_t)info->st_mtim.tv_sec;
+	meta->mtime_nsec = (int64_t)info->st_mtim.tv_nsec;
+	meta->ctime_sec = (int64_t)info->st_ctim.tv_sec;
+	meta->ctime_nsec = (int64_t)info->st_ctim.tv_nsec;
+#endif
+}
+
+static uint32_t SparkKvSnapshotMetaSame(const SparkKvSnapshotBinaryDigestCacheEntry *left,const SparkKvSnapshotBinaryDigestCacheEntry *right)
+{
+	return(left->device == right->device && left->inode == right->inode && left->size == right->size &&
+		left->mtime_sec == right->mtime_sec && left->mtime_nsec == right->mtime_nsec &&
+		left->ctime_sec == right->ctime_sec && left->ctime_nsec == right->ctime_nsec ? 1u : 0u);
+}
+
 SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_SHA256_DIGEST_BYTES],char *path,uint32_t path_capacity)
 {
 	char hex[SPARK_SHA256_HEX_BYTES];
 	Dl_info info;
+	struct stat before,after;
+	SparkKvSnapshotBinaryDigestCacheEntry meta,after_meta;
 	size_t length;
+	uint32_t index,have_stat;
 	SparkStatus status;
 	if ( symbol == 0 || digest == 0 || path == 0 || path_capacity == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1345,10 +1390,42 @@ SparkStatus SparkKvSnapshotBinaryDigest(const void *symbol,uint8_t digest[SPARK_
 	if ( length >= path_capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memcpy(path,info.dli_fname,length + 1u);
+	have_stat = length < sizeof(meta.path) && stat(path,&before) == 0 && S_ISREG(before.st_mode) ? 1u : 0u;
+	if ( have_stat != 0u )
+	{
+		SparkKvSnapshotStatMeta(&before,&meta);
+		pthread_mutex_lock(&SparkKvSnapshotBinaryDigestMutex);
+		for (index=0u; index<sizeof(SparkKvSnapshotBinaryDigestCache) / sizeof(SparkKvSnapshotBinaryDigestCache[0]); index++)
+		{
+			const SparkKvSnapshotBinaryDigestCacheEntry *slot = &SparkKvSnapshotBinaryDigestCache[index];
+			if ( slot->valid != 0u && strcmp(slot->path,path) == 0 && SparkKvSnapshotMetaSame(slot,&meta) != 0u )
+			{
+				memcpy(digest,slot->digest,SPARK_SHA256_DIGEST_BYTES);
+				pthread_mutex_unlock(&SparkKvSnapshotBinaryDigestMutex);
+				return(SPARK_STATUS_OK);
+			}
+		}
+		pthread_mutex_unlock(&SparkKvSnapshotBinaryDigestMutex);
+	}
 	status = SparkSha256File(path,hex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	return(SparkSha256HexToDigest(hex,digest));
+	status = SparkSha256HexToDigest(hex,digest);
+	if ( status == SPARK_STATUS_OK && have_stat != 0u && stat(path,&after) == 0 && S_ISREG(after.st_mode) )
+	{
+		SparkKvSnapshotStatMeta(&after,&after_meta);
+		if ( SparkKvSnapshotMetaSame(&meta,&after_meta) != 0u )
+		{
+			pthread_mutex_lock(&SparkKvSnapshotBinaryDigestMutex);
+			index = SparkKvSnapshotBinaryDigestNextSlot++ % (uint32_t)(sizeof(SparkKvSnapshotBinaryDigestCache) / sizeof(SparkKvSnapshotBinaryDigestCache[0]));
+			SparkKvSnapshotBinaryDigestCache[index] = meta;
+			SparkKvSnapshotBinaryDigestCache[index].valid = 1u;
+			memcpy(SparkKvSnapshotBinaryDigestCache[index].digest,digest,SPARK_SHA256_DIGEST_BYTES);
+			memcpy(SparkKvSnapshotBinaryDigestCache[index].path,path,length + 1u);
+			pthread_mutex_unlock(&SparkKvSnapshotBinaryDigestMutex);
+		}
+	}
+	SPARK_RETURN(status);
 }
 
 static void SparkKvSnapshotDiscard(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)

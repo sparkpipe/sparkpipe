@@ -2776,10 +2776,10 @@ static SparkStatus SparkWeightdRecordWorkingSet(SparkWeightdArena *arena,
 	const SparkWeightdExpertKey *keys,uint32_t count)
 {
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u],temporary[SPARK_WEIGHTD_PATH_BYTES + 16u] = {0};
-	FILE *out;
+	uint32_t *pairs = 0;
 	uint32_t i,index,original_count = arena->recorded_count;
 	SparkStatus status = SPARK_STATUS_IO_ERROR;
-	int fd;
+	int fd = -1;
 	for (i=0u; i<count; i++)
 	{
 		status = SparkWeightdRecordKey(arena,keys[i].layer,keys[i].expert);
@@ -2792,30 +2792,39 @@ static SparkStatus SparkWeightdRecordWorkingSet(SparkWeightdArena *arena,
 	if ( snprintf(path,sizeof(path),"%s.wset",arena->pack_path) >= (int)sizeof(path) ||
 		snprintf(temporary,sizeof(temporary),"%s.XXXXXX",path) >= (int)sizeof(temporary) )
 		goto failed;
-	fd = mkstemp(temporary);
-	if ( fd < 0 )
-		goto failed;
-	out = fdopen(fd,"wb");
-	if ( out == 0 )
+	pairs = malloc((size_t)arena->recorded_count * 2u * sizeof(*pairs));
+	if ( pairs == 0 )
 	{
-		(void)close(fd);
-		(void)unlink(temporary);
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 		goto failed;
 	}
 	for (index=0u; index<arena->recorded_count; index++)
 	{
-		uint32_t pair[2] = {(uint32_t)(arena->recorded_keys[index] >> 32u),
-			(uint32_t)arena->recorded_keys[index]};
-		if ( fwrite(pair,sizeof(pair),1u,out) != 1u )
-			break;
+		pairs[2u * index] = (uint32_t)(arena->recorded_keys[index] >> 32u);
+		pairs[2u * index + 1u] = (uint32_t)arena->recorded_keys[index];
 	}
-	if ( fclose(out) != 0 || index != arena->recorded_count || rename(temporary,path) != 0 )
+	fd = mkstemp(temporary);
+	if ( fd < 0 )
+		goto failed;
+	status = SparkIoWriteAll(fd,pairs,(size_t)arena->recorded_count * 2u * sizeof(*pairs));
+	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	fd = -1;
+	if ( status != SPARK_STATUS_OK || rename(temporary,path) != 0 )
 	{
 		(void)unlink(temporary);
+		status = SPARK_STATUS_IO_ERROR;
 		goto failed;
 	}
+	free(pairs);
 	return SPARK_STATUS_OK;
 failed:
+	if ( fd >= 0 )
+	{
+		(void)close(fd);
+		(void)unlink(temporary);
+	}
+	free(pairs);
 	SparkWeightdForgetKeys(arena,original_count);
 	fprintf(stderr,"weightd: recording failed pack=%s status=%d\n",arena->pack_path,(int)status);
 	return status;
@@ -2824,26 +2833,50 @@ failed:
 static SparkStatus SparkWeightdLoadRecordedWorkingSet(SparkWeightdArena *arena)
 {
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
-	FILE *in;
-	uint32_t pair[2];
-	size_t bytes;
+	uint32_t pairs[512];
+	int fd;
+	ssize_t got;
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( snprintf(path,sizeof(path),"%s.wset",arena->pack_path) >= (int)sizeof(path) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	in = fopen(path,"rb");
-	if ( in == 0 )
+	fd = open(path,O_RDONLY | O_CLOEXEC);
+	if ( fd < 0 )
 		return errno == ENOENT ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
-	while ( (bytes = fread(pair,1u,sizeof(pair),in)) != 0u )
+	while ( status == SPARK_STATUS_OK )
 	{
-		status = bytes != sizeof(pair) ? SPARK_STATUS_SCHEMA_ERROR : SparkWeightdRecordKey(arena,pair[0],pair[1]);
-		if ( status != SPARK_STATUS_OK )
+		size_t fill = 0u,index,count;
+		while ( fill < sizeof(pairs) )
+		{
+			got = read(fd,(uint8_t *)pairs + fill,sizeof(pairs) - fill);
+			if ( got < 0 && errno == EINTR )
+				continue;
+			if ( got < 0 )
+			{
+				status = SPARK_STATUS_IO_ERROR;
+				break;
+			}
+			if ( got == 0 )
+				break;
+			fill += (size_t)got;
+		}
+		if ( status != SPARK_STATUS_OK || fill == 0u )
 			break;
+		if ( (fill % (2u * sizeof(uint32_t))) != 0u )
+		{
+			status = SPARK_STATUS_SCHEMA_ERROR;
+			break;
+		}
+		count = fill / (2u * sizeof(uint32_t));
+		for (index=0u; index<count; index++)
+		{
+			status = SparkWeightdRecordKey(arena,pairs[2u * index],pairs[2u * index + 1u]);
+			if ( status != SPARK_STATUS_OK )
+				break;
+		}
 	}
 	if ( arena->recorded_count == 0u && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_SCHEMA_ERROR;
-	if ( ferror(in) )
-		status = SPARK_STATUS_IO_ERROR;
-	if ( fclose(in) != 0 )
+	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	fprintf(stderr,"WD-WSET loaded=%u status=%d path=%s\n",arena->recorded_count,(int)status,path);
 	return status;
@@ -4989,12 +5022,64 @@ static uint32_t SparkWeightdServerClosable(SparkWeightdServer *server, uint32_t 
         connection->mesh_active == 0u ? 1u : 0u;
 }
 
+static SparkStatus SparkWeightdServerFlushAndDispatch(SparkWeightdServer *server)
+{
+    uint32_t connection_index;
+    uint32_t dispatched = atomic_load_explicit(&server->dispatch_state,memory_order_acquire) != 0u ? 1u : 0u;
+    for (connection_index = 0u;
+        connection_index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
+        connection_index++)
+    {
+        SparkWeightdConnection *connection = &server->connections[connection_index];
+        if (connection->state == SPARK_WEIGHTD_CONNECTION_OPEN &&
+            !(dispatched != 0u && server->dispatch_connection == connection_index) &&
+            connection->response_bytes != 0u &&
+            SparkWeightdServerFlushResponse(connection) == SPARK_STATUS_IO_ERROR)
+        {
+            connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
+        }
+    }
+    for (connection_index = 0u;
+        connection_index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
+        connection_index++)
+    {
+        if (SparkWeightdServerClosable(server, connection_index) != 0u)
+        {
+            SparkWeightdServerCloseConnection(server, connection_index);
+        }
+    }
+    if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u)
+    {
+        SparkWeightdServerPublish(server);
+        for (uint32_t offset = 0u; offset < SPARK_WEIGHTD_CONNECTION_COUNT_MAX; offset++)
+        {
+            uint32_t index = (server->dispatch_next + offset) % SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
+            SparkWeightdConnection *connection = &server->connections[index];
+            if (connection->state != SPARK_WEIGHTD_CONNECTION_OPEN || connection->request_ready == 0u)
+                continue;
+            server->dispatch_connection = index;
+            server->dispatch_next = (index + 1u) % SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
+            atomic_store_explicit(&server->dispatch_state,1u,memory_order_release);
+            SparkStatus status = SparkWeightdWorkerSubmit(server->worker,SparkWeightdServerDispatchWork,server);
+            if (status != SPARK_STATUS_OK)
+            {
+                atomic_store_explicit(&server->dispatch_state,0u,memory_order_release);
+                SPARK_RETURN(status);
+            }
+            break;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
 {
     struct pollfd poll_fds[SPARK_WEIGHTD_CONNECTION_COUNT_MAX + 2u];
     uint32_t poll_count = 0u;
     uint32_t connection_index;
     uint32_t poll_index;
+    uint32_t dispatched;
+    SparkStatus status;
     int poll_result;
 
     if (server == 0)
@@ -5003,6 +5088,11 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
     }
 
     SparkWeightdServerCompleteWork(server);
+    status = SparkWeightdServerFlushAndDispatch(server);
+    if (status != SPARK_STATUS_OK)
+    {
+        SPARK_RETURN(status);
+    }
     SparkWeightdMeshPoll();
     if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u)
         (void)SparkWeightdServerExpireKv(server,SparkMonotonicNs());
@@ -5018,15 +5108,20 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
     poll_fds[poll_count].events = POLLIN;
     poll_fds[poll_count].revents = 0;
     poll_count++;
+    dispatched = atomic_load_explicit(&server->dispatch_state,memory_order_acquire) != 0u ? 1u : 0u;
     for (connection_index = 0u;
         connection_index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
         connection_index++)
     {
-        if (server->connections[connection_index].state ==
-            SPARK_WEIGHTD_CONNECTION_OPEN)
+        SparkWeightdConnection *connection = &server->connections[connection_index];
+        if (connection->state == SPARK_WEIGHTD_CONNECTION_OPEN)
         {
-            poll_fds[poll_count].fd = server->connections[connection_index].fd;
-            poll_fds[poll_count].events = server->connections[connection_index].request_ready != 0u ? 0 : POLLIN;
+            short events = connection->request_ready != 0u ? 0 : POLLIN;
+            if (connection->response_bytes != 0u &&
+                !(dispatched != 0u && server->dispatch_connection == connection_index))
+                events |= POLLOUT;
+            poll_fds[poll_count].fd = connection->fd;
+            poll_fds[poll_count].events = events;
             poll_fds[poll_count].revents = 0;
             poll_count++;
         }
@@ -5110,47 +5205,9 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
                 SparkWeightdServerHandleReadable(server, connection);
             }
         }
-        if (connection->state == SPARK_WEIGHTD_CONNECTION_OPEN &&
-            !(atomic_load_explicit(&server->dispatch_state,memory_order_acquire) != 0u &&
-                server->dispatch_connection == connection_index) &&
-            connection->response_bytes != 0u &&
-            SparkWeightdServerFlushResponse(connection) == SPARK_STATUS_IO_ERROR)
-        {
-            connection->state = SPARK_WEIGHTD_CONNECTION_CLOSED;
-        }
     }
 
-    for (connection_index = 0u;
-        connection_index < SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
-        connection_index++)
-    {
-        if (SparkWeightdServerClosable(server, connection_index) != 0u)
-        {
-            SparkWeightdServerCloseConnection(server, connection_index);
-        }
-    }
-    if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u)
-    {
-        SparkWeightdServerPublish(server);
-        for (uint32_t offset = 0u; offset < SPARK_WEIGHTD_CONNECTION_COUNT_MAX; offset++)
-        {
-            uint32_t index = (server->dispatch_next + offset) % SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
-            SparkWeightdConnection *connection = &server->connections[index];
-            if (connection->state != SPARK_WEIGHTD_CONNECTION_OPEN || connection->request_ready == 0u)
-                continue;
-            server->dispatch_connection = index;
-            server->dispatch_next = (index + 1u) % SPARK_WEIGHTD_CONNECTION_COUNT_MAX;
-            atomic_store_explicit(&server->dispatch_state,1u,memory_order_release);
-            SparkStatus status = SparkWeightdWorkerSubmit(server->worker,SparkWeightdServerDispatchWork,server);
-            if (status != SPARK_STATUS_OK)
-            {
-                atomic_store_explicit(&server->dispatch_state,0u,memory_order_release);
-                SPARK_RETURN(status);
-            }
-            break;
-        }
-    }
-    return SPARK_STATUS_OK;
+    return SparkWeightdServerFlushAndDispatch(server);
 }
 
 SparkStatus SparkWeightdServerRun(SparkWeightdServer *server,

@@ -3821,6 +3821,182 @@ static void SparkTestKvMemoryStoreParallelMapped(void)
 	printf("PASS kv memory page store parallel mapped: fused copy+digest round-trips, detects stripe corruption, and punches holes cleanly\n");
 }
 
+static void SparkTestPrefixCacheFastPathAndHighWater(void)
+{
+	const uint32_t entry_count = 65536u,block_tokens = 256u,blocks_committed = 32u,prompt_tokens = blocks_committed * block_tokens;
+	SparkPrefixCache cache,imported;
+	SparkPrefixCacheConfiguration config = {0};
+	SparkPrefixCacheEntry *entries = (SparkPrefixCacheEntry *)calloc(entry_count,sizeof(*entries));
+	SparkPrefixCacheEntry *imported_entries = (SparkPrefixCacheEntry *)calloc(entry_count,sizeof(*imported_entries));
+	SparkPrefixCacheSequenceBinding bindings[48],imported_bindings[48];
+	SparkPrefixCacheCommittedRecord records[64];
+	SparkPrefixCacheLookup lookup,probe;
+	uint32_t *entry_heads = (uint32_t *)malloc(entry_count * sizeof(*entry_heads));
+	uint32_t *imported_entry_heads = (uint32_t *)malloc(entry_count * sizeof(*imported_entry_heads));
+	uint32_t lookup_heads[64],sequence_heads[64],imported_lookup_heads[64],imported_sequence_heads[64];
+	uint32_t *tokens = (uint32_t *)malloc((prompt_tokens + 64u) * sizeof(*tokens));
+	uint32_t count = 0u,added = 0u,skipped = 0u,index,mid_resume = 31u * block_tokens + 127u;
+	struct timespec before,after;
+	double export_ms;
+	assert(entries != 0 && imported_entries != 0 && entry_heads != 0 && imported_entry_heads != 0 && tokens != 0);
+	for (index=0u; index<prompt_tokens + 64u; index++)
+		tokens[index] = 10000u + index * 3u;
+	config.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+	config.descriptor_bytes = SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	config.block_token_count = block_tokens;
+	config.entry_count = config.logical_block_count = entry_count;
+	config.sequence_binding_count = 48u;
+	config.entries = entries;
+	config.sequence_bindings = bindings;
+	config.entry_hash_bucket_count = entry_count;
+	config.binding_hash_bucket_count = 64u;
+	config.entry_hash_bucket_heads = entry_heads;
+	config.binding_lookup_hash_bucket_heads = lookup_heads;
+	config.binding_sequence_hash_bucket_heads = sequence_heads;
+	assert(SparkPrefixCacheInitialize(&cache,&config) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,mid_resume,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == mid_resume);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,mid_resume) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,prompt_tokens,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == prompt_tokens);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,16u * block_tokens) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheProbePrompt(&cache,2u,tokens,prompt_tokens + 64u,&probe) == SPARK_STATUS_OK && probe.matched_token_count == prompt_tokens && probe.matched_block_count == blocks_committed);
+	assert(SparkPrefixCacheLookupPrompt(&cache,2u,tokens,prompt_tokens + 64u,&lookup) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (index=0u; index<blocks_committed + 1u; index++)
+		assert(entries[index].reference_count == (entries[index].token_count == 127u ? 0u : 1u));
+	assert(SparkPrefixCacheReleaseSequence(&cache,1u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheLookupPrompt(&cache,2u,tokens,prompt_tokens + 64u,&lookup) == SPARK_STATUS_OK);
+	assert(lookup.matched_token_count == prompt_tokens && lookup.matched_block_count == blocks_committed && lookup.logical_block_index == probe.logical_block_index);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,prompt_tokens + 64u) == mid_resume);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,20u * block_tokens) == 16u * block_tokens);
+	assert(SparkPrefixCacheReleaseSequence(&cache,2u) == SPARK_STATUS_OK);
+	assert(clock_gettime(CLOCK_MONOTONIC,&before) == 0);
+	assert(SparkPrefixCacheExportCommitted(&cache,records,64u,&count) == SPARK_STATUS_OK && count == blocks_committed + 1u);
+	assert(clock_gettime(CLOCK_MONOTONIC,&after) == 0);
+	export_ms = ((double)(after.tv_sec - before.tv_sec) * 1000.0) + ((double)(after.tv_nsec - before.tv_nsec) / 1e6);
+	config.entries = imported_entries;
+	config.sequence_bindings = imported_bindings;
+	config.entry_hash_bucket_heads = imported_entry_heads;
+	config.binding_lookup_hash_bucket_heads = imported_lookup_heads;
+	config.binding_sequence_hash_bucket_heads = imported_sequence_heads;
+	assert(SparkPrefixCacheInitialize(&imported,&config) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,0u,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == 0u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	assert(SparkPrefixCacheLookupPrompt(&imported,3u,tokens,prompt_tokens + 64u,&lookup) == SPARK_STATUS_OK && lookup.matched_token_count == prompt_tokens);
+	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,prompt_tokens + 64u) == mid_resume);
+	assert(SparkPrefixCacheReleaseSequence(&imported,3u) == SPARK_STATUS_OK);
+	printf("PASS prefix cache fast path: 256-token 8K lookup+rollback, intra-block O(B) resume, 65536-entry high-water export in %.3f ms\n",export_ms);
+	free(tokens);
+	free(imported_entry_heads);
+	free(entry_heads);
+	free(imported_entries);
+	free(entries);
+}
+
+static void SparkTestKvPageCacheExportResidentOrder(void)
+{
+	const uint32_t capacity = 65536u,resident_capacity = 8u,block_tokens = 4u;
+	SparkKvCacheArena arena,adopted_arena;
+	SparkKvCacheConfiguration arena_config = {0};
+	SparkKvPageCache cache,adopted;
+	SparkKvPageCacheConfiguration cache_config = {0};
+	SparkKvCacheBlock *blocks = (SparkKvCacheBlock *)calloc(capacity,sizeof(*blocks));
+	SparkKvCacheBlock *adopted_blocks = (SparkKvCacheBlock *)calloc(capacity,sizeof(*adopted_blocks));
+	SparkKvPageCacheEntry *entries = (SparkKvPageCacheEntry *)calloc(capacity,sizeof(*entries));
+	SparkKvPageCacheEntry *adopted_entries = (SparkKvPageCacheEntry *)calloc(capacity,sizeof(*adopted_entries));
+	SparkKvPageCacheSequence sequences[4],adopted_sequences[4];
+	uint32_t *heads = (uint32_t *)malloc(capacity * sizeof(*heads));
+	uint32_t *adopted_heads = (uint32_t *)malloc(capacity * sizeof(*adopted_heads));
+	uint32_t *by_page = (uint32_t *)malloc(capacity * sizeof(*by_page));
+	uint32_t *adopted_by_page = (uint32_t *)malloc(capacity * sizeof(*adopted_by_page));
+	uint32_t resident_slots[8],adopted_resident_slots[8],count = 0u,adopted_count = 0u,page,child_a_rec = UINT32_MAX;
+	uint8_t device[8u * SPARK_TEST_BLOCK_BYTES];
+	SparkKvPageCacheResidentRecord records[8];
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverCacheIdentity id_root,id_a,id_a2,id_b,id_priv_child;
+	struct timespec before,after;
+	double export_ms;
+	assert(blocks != 0 && adopted_blocks != 0 && entries != 0 && adopted_entries != 0 && heads != 0 && adopted_heads != 0 && by_page != 0 && adopted_by_page != 0);
+	arena_config.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	arena_config.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	arena_config.logical_block_count = capacity;
+	arena_config.resident_block_capacity = resident_capacity;
+	arena_config.block_token_count = block_tokens;
+	arena_config.layer_count = arena_config.kv_head_count = arena_config.bytes_per_scalar = 1u;
+	arena_config.head_dim = SPARK_TEST_BLOCK_BYTES;
+	arena_config.key_block_stride_bytes = SPARK_TEST_BLOCK_BYTES;
+	arena_config.key_device_base = device;
+	arena_config.blocks = blocks;
+	arena_config.resident_slot_logical_block_indices = resident_slots;
+	assert(SparkKvCacheArenaInitialize(&arena,&arena_config) == SPARK_STATUS_OK);
+	cache_config.abi_version = SPARK_KV_PAGE_CACHE_ABI_VERSION;
+	cache_config.descriptor_bytes = SPARK_KV_PAGE_CACHE_CONFIGURATION_BYTES;
+	cache_config.sequence_capacity = 4u;
+	cache_config.entry_capacity = cache_config.hash_bucket_count = capacity;
+	cache_config.kv_cache_arena = &arena;
+	cache_config.entries = entries;
+	cache_config.sequences = sequences;
+	cache_config.hash_bucket_heads = heads;
+	cache_config.entry_indices_by_logical_page = by_page;
+	assert(SparkKvPageCacheInitialize(&cache,&cache_config) == SPARK_STATUS_OK);
+	SparkTestKvIdentity(&id_root,11u);
+	SparkTestKvIdentity(&id_a,22u);
+	SparkTestKvIdentity(&id_a2,33u);
+	SparkTestKvIdentity(&id_b,44u);
+	SparkTestKvIdentity(&id_priv_child,55u);
+	SparkTestKvPageLane(&lane,1u,0u,0u,4u);
+	SparkTestKvPagePublish(&lane,4u,11u);
+	assert(SparkKvPageCacheBeginLane(&cache,&lane,&page) == SPARK_STATUS_OK && SparkKvPageCacheCompleteLane(&cache,&lane) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,1u,0u,4u,8u);
+	SparkTestKvPagePublish(&lane,8u,22u);
+	assert(SparkKvPageCacheBeginLane(&cache,&lane,&page) == SPARK_STATUS_OK && SparkKvPageCacheCompleteLane(&cache,&lane) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,1u,0u,8u,12u);
+	SparkTestKvPagePublish(&lane,12u,33u);
+	assert(SparkKvPageCacheBeginLane(&cache,&lane,&page) == SPARK_STATUS_OK && SparkKvPageCacheCompleteLane(&cache,&lane) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&cache,0u,1u) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,2u,1u,4u,8u);
+	SparkTestKvPagePrefix(&lane,4u,11u);
+	SparkTestKvPagePublish(&lane,8u,44u);
+	assert(SparkKvPageCacheBeginLane(&cache,&lane,&page) == SPARK_STATUS_OK && SparkKvPageCacheCompleteLane(&cache,&lane) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&cache,1u,2u) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,3u,2u,0u,8u);
+	SparkTestKvPagePublish(&lane,8u,55u);
+	assert(SparkKvPageCacheBeginLane(&cache,&lane,&page) == SPARK_STATUS_OK && SparkKvPageCacheCompleteLane(&cache,&lane) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&cache,2u,3u) == SPARK_STATUS_OK);
+	assert(clock_gettime(CLOCK_MONOTONIC,&before) == 0);
+	assert(SparkKvPageCacheExportResident(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 4u);
+	assert(clock_gettime(CLOCK_MONOTONIC,&after) == 0);
+	export_ms = ((double)(after.tv_sec - before.tv_sec) * 1000.0) + ((double)(after.tv_nsec - before.tv_nsec) / 1e6);
+	assert(records[0].page_count == 1u && records[0].parent_record == SPARK_KV_PAGE_CACHE_NO_INDEX && memcmp(&records[0].identity,&id_root,sizeof(id_root)) == 0);
+	assert(records[1].page_count == 2u && records[1].parent_record == 0u && records[2].page_count == 2u && records[2].parent_record == 0u);
+	if ( memcmp(&records[1].identity,&id_a,sizeof(id_a)) == 0 )
+		child_a_rec = 1u;
+	else if ( memcmp(&records[2].identity,&id_a,sizeof(id_a)) == 0 )
+		child_a_rec = 2u;
+	assert(child_a_rec == 1u || child_a_rec == 2u);
+	assert(records[3].page_count == 3u && records[3].parent_record == child_a_rec && memcmp(&records[3].identity,&id_a2,sizeof(id_a2)) == 0);
+	arena_config.blocks = adopted_blocks;
+	arena_config.resident_slot_logical_block_indices = adopted_resident_slots;
+	assert(SparkKvCacheArenaInitialize(&adopted_arena,&arena_config) == SPARK_STATUS_OK);
+	cache_config.kv_cache_arena = &adopted_arena;
+	cache_config.entries = adopted_entries;
+	cache_config.sequences = adopted_sequences;
+	cache_config.hash_bucket_heads = adopted_heads;
+	cache_config.entry_indices_by_logical_page = adopted_by_page;
+	assert(SparkKvPageCacheInitialize(&adopted,&cache_config) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheAdoptResident(&adopted,records,count,&adopted_count) == SPARK_STATUS_OK && adopted_count == 4u);
+	assert(SparkKvPageCachePrefixReady(&adopted,&id_root,4u) == 1u && SparkKvPageCachePrefixReady(&adopted,&id_a,8u) == 1u &&
+		SparkKvPageCachePrefixReady(&adopted,&id_a2,12u) == 1u && SparkKvPageCachePrefixReady(&adopted,&id_b,8u) == 1u &&
+		SparkKvPageCachePrefixReady(&adopted,&id_priv_child,8u) == 0u);
+	printf("PASS kv page cache O(resident) export: 65536-entry sparse export+adopt preserved parent chains and skipped private ancestry in %.3f ms\n",export_ms);
+	free(adopted_by_page);
+	free(by_page);
+	free(adopted_heads);
+	free(heads);
+	free(adopted_entries);
+	free(entries);
+	free(adopted_blocks);
+	free(blocks);
+}
+
 int main(void)
 {
 	int32_t status;
@@ -3920,5 +4096,7 @@ int main(void)
 	SparkTestKvEmptyLaneRejectsWithoutBusy();
 	SparkTestKvMemoryStoreSparseAndPunchHole();
 	SparkTestKvMemoryStoreParallelMapped();
+	SparkTestPrefixCacheFastPathAndHighWater();
+	SparkTestKvPageCacheExportResidentOrder();
 	return(0);
 }

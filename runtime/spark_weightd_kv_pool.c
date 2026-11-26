@@ -119,7 +119,7 @@ static SparkStatus SparkWeightdKvPoolAwaitMinimum(const SparkWeightdKvPoolReques
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		pause.tv_sec = 0;
-		pause.tv_nsec = (long)SPARK_WEIGHTD_KV_POOL_MINIMUM_POLL_NS;
+		pause.tv_nsec = (long)(SPARK_WEIGHTD_KV_POOL_MINIMUM_POLL_NS < 5000000ull ? SPARK_WEIGHTD_KV_POOL_MINIMUM_POLL_NS : 5000000ull);
 		(void)nanosleep(&pause,0);
 		status = SparkWeightdClientKvPoolResize(mapping->client,mapping->pool_generation,(uint32_t)minimum,&state,timeout_nanoseconds);
 		if ( status != SPARK_STATUS_OK )
