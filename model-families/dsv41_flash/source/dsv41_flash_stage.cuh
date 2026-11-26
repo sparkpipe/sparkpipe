@@ -141,7 +141,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_SKINNY_EXPERT_ROWS 0u
 #define D41_MX_MIN_ROWS 1u
 #define D41_VERIFY_INVARIANT_SEQS 8u
-#define D41_SHARED_SPLIT_ROWS 64u
+#define D41_SHARED_SPLIT_ROWS 256u
 #define D41_ATTEND_TILES 2u
 #define D41_OWN_ROWS_MIN ((!D41_ROWS && D41_WHOLE) ? 512u : (D41_WHOLE ? 256u : UINT32_MAX))
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
@@ -446,7 +446,7 @@ static uint32_t D41AttentionSplitOwn(const D41ModelState *state, const SparkStag
 	const uint32_t rows = step->rows;
 	const uint32_t split = (rows + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
 	return D41_ROWS && state->own_rows == 0u && step->commit != 0u && state->dump == 0 && state->row_invariant == 0u &&
-		rows > SPARK_STAGE_RUNNER_GRAPH_ROWS && state->own_out != 0 && split * D41_TP <= state->max_rows &&
+		rows > 160u && state->own_out != 0 && split * D41_TP <= state->max_rows &&
 		D41MxReady(&state->mx, split, D41_QLORA, state->row_invariant) != 0u ? split : 0u;
 }
 
@@ -460,7 +460,7 @@ static uint32_t D41MxReady(const D41Mx *mx, uint32_t rows, uint32_t input_dimens
 static uint32_t D41MxSmallReady(const D41Mx *mx, const D41Fp8Linear *linear, const void *destination, uint32_t rows, uint32_t input_dimension,
 	uint32_t output_dimension)
 {
-	return rows != 0u && rows <= 128u && input_dimension % LM_MX_TILE_K == 0u && output_dimension != 0u && (output_dimension & 1u) == 0u &&
+	return rows != 0u && rows <= 256u && input_dimension % LM_MX_TILE_K == 0u && output_dimension != 0u && (output_dimension & 1u) == 0u &&
 		(((uintptr_t)mx->codes | (uintptr_t)linear->weight) & 15u) == 0u && (((uintptr_t)mx->scales | (uintptr_t)linear->scale | (uintptr_t)destination) & 3u) == 0u ? 1u : 0u;
 }
 
@@ -2499,9 +2499,10 @@ static void D41SharedSlice(uint32_t rank, uint32_t *first, uint32_t *width)
 static uint32_t D41SharedSplitStep(const D41ModelState *state, uint32_t rows)
 {
 	const uint32_t room = state->max_rows < D41_OWN_ROWS_MIN ? state->max_rows : D41_OWN_ROWS_MIN;
+	const uint32_t cap = D41_TP >= 8u && state->dump == 0 ? state->max_rows : room;
 	const uint32_t fit = state->row_invariant != 0u || (rows <= D41_SHARED_SPLIT_ROWS &&
 		(rows <= LM_SKINNY_ROWS_WIDE || (state->dump == 0 && D41MxReady(&state->mx, rows, D41_HIDDEN, state->row_invariant) != 0u))) ? 1u : 0u;
-	return D41_ROWS && state->own_rows == 0u && fit != 0u && 2u * rows <= room ? 1u : 0u;
+	return D41_ROWS && state->own_rows == 0u && fit != 0u && 2u * rows <= cap ? 1u : 0u;
 }
 
 static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint64_t stride, uint32_t sms, SparkGpuStream stream)
@@ -2603,7 +2604,7 @@ static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer
 
 static uint32_t D41Exchanges(const D41ModelState *state)
 {
-	return D41_ROWS && state->own_rows != 0u && state->dump == 0 && state->row_invariant == 0u && state->exchange_totals_host != 0 &&
+	return D41_ROWS && state->own_rows >= 64u && state->dump == 0 && state->row_invariant == 0u && state->exchange_totals_host != 0 &&
 		state->counts_ready != 0 && state->owner_host != 0 ? 1u : 0u;
 }
 

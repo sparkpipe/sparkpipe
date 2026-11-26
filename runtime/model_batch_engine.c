@@ -2661,7 +2661,9 @@ SparkStatus SparkModelBatchEngineSubmit(
 	for (uint32_t point=0u; point<request->cache_point_count && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
 		request->cache_points[point] < request->prompt_token_count; point++)
 	{
-		uint32_t aligned = request->cache_points[point] / engine->cache_block_token_count * engine->cache_block_token_count;
+		uint32_t aligned = request->cache_point_min_advance != 0u ?
+			(request->cache_points[point] >= engine->cache_block_token_count ? request->cache_points[point] : 0u) :
+			request->cache_points[point] / engine->cache_block_token_count * engine->cache_block_token_count;
 		if ( aligned != 0u && (state->cache_point_count == 0u || aligned > state->cache_points[state->cache_point_count - 1u]) )
 			state->cache_points[state->cache_point_count++] = aligned;
 	}
@@ -3541,7 +3543,8 @@ static void SparkModelBatchInitializeLane(
 	}
 	if ( work_kind != SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH && context_token_count % engine->cache_block_token_count != 0u &&
 		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (context_token_count == request->prompt_token_count ||
-			context_token_count == SparkModelBatchPromptCheckpoint(engine,request) || context_token_count == request->defer_end)) &&
+			context_token_count == SparkModelBatchPromptCheckpoint(engine,request) ||
+			SparkModelBatchIsCachePoint(request,context_token_count) != 0u || context_token_count == request->defer_end)) &&
 		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && request->generated_token_count + 1u == request->output_token_budget) )
 		return;
 	publish_token_count = context_token_count;

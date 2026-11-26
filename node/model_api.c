@@ -1585,12 +1585,13 @@ static void api_maybe_set_chat_cache_point(const char *prompt_text, uint32_t pro
 	const uint32_t exact_tail = memcmp(encoding->token_ids + body_end, suffix_ids, (size_t)suffix_encoding.token_count * sizeof(uint32_t)) == 0 ? 1u : 0u;
 	const uint32_t margin = exact_tail != 0u ? 1u : 2u;
 	const uint32_t min_body = 4u * adapter->cache_block_token_count;
+	const uint32_t granule = adapter->cache_block_token_count >= 32u ? 32u : 1u;
 	if (body_end >= min_body && body_end > margin)
 	{
-		const uint32_t aligned = ((body_end - margin) / adapter->cache_block_token_count) * adapter->cache_block_token_count;
-		if (aligned != 0u && aligned + prefix_count < encoding->token_count + prefix_count - 1u)
+		const uint32_t point = ((body_end - margin) / granule) * granule;
+		if (point >= adapter->cache_block_token_count && point + prefix_count < encoding->token_count + prefix_count - 1u)
 		{
-			options->cache_points[0] = aligned + prefix_count;
+			options->cache_points[0] = point + prefix_count;
 			options->cache_point_count = 1u;
 			if (S.prefix_checkpoint_interval == 0u)
 				options->cache_point_min_advance = min_body;

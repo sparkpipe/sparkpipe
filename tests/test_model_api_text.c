@@ -1718,7 +1718,7 @@ static void TestApiRecurrentChatWarmPrefix(void)
 	field = strstr(measurements,"\"cached_prompt_tokens\":");
 	assert(field != 0);
 	ext_cached = (uint32_t)strtoul(field + 23,0,10);
-	assert(ext_cached >= 20u && ext_cached > 12u);
+	assert(ext_cached >= 25u && ext_cached > 12u);
 	free(log_data);
 
 	TestApiStopStack(&stack);
