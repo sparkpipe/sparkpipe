@@ -40,6 +40,23 @@ Get main green and gate every rollout on exactness before more speed work lands.
 9. **Record the source, revision and licence** of every third-party drafter and checkpoint.
 10. **Keep wire compression off** until each lane passes a quality measurement and Gate GX with it on.
 
+## Status on 26 November
+
+Checked against main at `ededce093` (2026-11-26 00:30Z), after the replies on #2233.
+
+| Item | Status | PRs |
+| --- | --- | --- |
+| 1. Green main | Open. None of main's last 100 CI runs passed (24 Nov 23:45Z to 26 Nov 00:30Z: 66 cancelled by the next merge, 33 failed). The last finished run stopped at a timing-dependent test that #2304 fixes. Full runs took 59 to 101 minutes, so blocking every merge on one is costly; the replies propose a fully green run before every release instead, which needs a run that the next merge does not cancel. The compile gate still prints only the first 20 lines matching `error`; #2228 fixes that and now conflicts with main. | #2237, #2243, #2304, #2228 |
+| 2. Exactness before rollout | Agreed in the replies. No release receipt has been added since, so no rollout has used it yet. | |
+| 3. Memory plan | Done. The stage runner keeps a bounded cache of captured graphs (`SPARK_STAGE_RUNNER_MAX_GRAPHS`, default 12) and runs eagerly when a capture fails; a test checks each node's lanes against 128 GiB. | #2238 |
+| 4. Site copy | Internal repository paths are gone from the live pages, which match main at `a0a516392`. The copy itself is the owner's decision. | #2241, #2256 |
+| 5. sklc | Kept on main. [`SKLC_ENCODINGS.md`](SKLC_ENCODINGS.md) documents the instruction format and checks the output with `cuobjdump` and `nvdisasm`; it does not say where the encodings came from. The `skl-overlay` kernel provider runs only when `SPARKPIPE_KERNEL_PROVIDER` selects it, and no lane does. | #2240, #2285 |
+| 6. Engine drafter | Open. The five new drafters are staged outside the lanes. The lanes #2160 switched, and the FP8 lanes #2302 added, have not had the soak. | #2160, #2302 |
+| 7. Launch chain (#2167) | Tests added: `tests/nvrm/host_visibility.cu` and `tests/nvrm/launch_single_eval.cu`, with GB10 results in #2243. | #2240, #2243 |
+| 8. RDMA send queue | Done. A write waits for room by draining the completion queue and fails with BUSY after a deadline; `sq_full_waits` counts the waits. | #2238 |
+| 9. Provenance | Done. `deployment/drafter_provenance.json` records the repository, revision and licence of the drafter on twelve lanes. | #2238 |
+| 10. Wire compression | Unchanged: opt-in and off in every deployment. | |
+
 ## Kernels and runtime
 
 The kernel work changed outputs without proof that each change was intended, and one runtime change reopens a bug
