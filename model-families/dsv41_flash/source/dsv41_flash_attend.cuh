@@ -529,7 +529,13 @@ static __device__ __forceinline__ void D41AttendBody(
 			rescale[threadIdx.x] = kept;
 			denominator[threadIdx.x] = fmaf(running_sum[threadIdx.x], kept, 0.0f) + __expf(sink[threadIdx.x] - top);
 		}
+		if constexpr (WITH_CODES && USE_ROPE_TABLE)
+		{
+			if (codes != 0 && warp == 1u)
+				((float2 *)score_parts)[lane] = __ldg(rope_sc + (uint64_t)(row_base + row) * D41K_ROPE_PAIRS + lane);
+		}
 		D41AttendBarrier();
+		const uint32_t rope_smem_base = (uint32_t)__cvta_generic_to_shared(score_parts);
 #pragma unroll
 		for (uint32_t step = 0u; step < 2u * QTILES; step++)
 		{
@@ -557,11 +563,11 @@ static __device__ __forceinline__ void D41AttendBody(
 				uint8_t *group_scales = part_codes + (uint64_t)(QUERIES / group_heads) * rows * width + ((uint64_t)group * rows + row) * (width / 32u);
 				const uint32_t do_rope = warp * WARP_COLUMNS >= rope_offset ? 1u : 0u;
 				const uint32_t position = (!USE_ROPE_TABLE && do_rope != 0u) ? positions[row_base + row] : 0u;
-				const float2 *row_sc = USE_ROPE_TABLE ? rope_sc + (uint64_t)(row_base + row) * D41K_ROPE_PAIRS : (const float2 *)0;
 #pragma unroll
 				for (uint32_t block = 0u; block < COLUMN_FRAGS / 4u; block++)
 				{
-					float vals[4][2], amax = 0.0f;
+					uint32_t packed[4];
+					float amax = 0.0f;
 #pragma unroll
 					for (uint32_t f = 0u; f < 4u; f++)
 					{
@@ -575,9 +581,8 @@ static __device__ __forceinline__ void D41AttendBody(
 							float sine, cosine;
 							if constexpr (USE_ROPE_TABLE)
 							{
-								const float2 sc = __ldg(row_sc + pair);
-								sine = -sc.x;
-								cosine = sc.y;
+								asm volatile("ld.shared.v2.f32 {%0, %1}, [%2];\n" : "=f"(sine), "=f"(cosine) : "r"(rope_smem_base + pair * 8u));
+								sine = -sine;
 							}
 							else
 								D41RopeTurn(position, 0, frequency[pair], 1u, &sine, &cosine);
@@ -586,8 +591,7 @@ static __device__ __forceinline__ void D41AttendBody(
 							r0 = LmBf16ToFloat(b0);
 							r1 = LmBf16ToFloat(b1);
 						}
-						vals[f][0] = r0;
-						vals[f][1] = r1;
+						packed[f] = (uint32_t)b0 | ((uint32_t)b1 << 16u);
 						amax = fmaxf(amax, fmaxf(fabsf(r0), fabsf(r1)));
 					}
 					amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1u));
@@ -599,7 +603,9 @@ static __device__ __forceinline__ void D41AttendBody(
 					for (uint32_t f = 0u; f < 4u; f++)
 					{
 						const uint32_t column = base + (block * 4u + f) * 8u + (lane & 3u) * 2u;
-						*(uint16_t *)(group_codes + column) = LmFloatPairToE4m3(vals[f][0] * inv_scale, vals[f][1] * inv_scale);
+						const float v0 = __uint_as_float(packed[f] << 16u);
+						const float v1 = __uint_as_float(packed[f] & 0xffff0000u);
+						*(uint16_t *)(group_codes + column) = LmFloatPairToE4m3(v0 * inv_scale, v1 * inv_scale);
 					}
 					if ((lane & 3u) == 0u)
 						group_scales[(base + block * 32u) / 32u] = (uint8_t)((scale_bits >> 23u) & 0xffu);

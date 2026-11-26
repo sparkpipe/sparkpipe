@@ -62,30 +62,55 @@ static void *BenchAllocFilled(uint64_t bytes, uint32_t kind, uint64_t seed)
 	return p;
 }
 
-template<class Fn>
-static double BenchMedianUs(Fn &&fn, int warmup, int iters)
+template<class FnA, class FnB>
+static void BenchPairedMedianUs(FnA &&fn_a, FnB &&fn_b, int warmup, int iters, double *med_a, double *med_b)
 {
 	for ( int i = 0; i < warmup; ++i )
-		fn();
+	{
+		fn_a();
+		fn_b();
+	}
 	BENCH_CHECK(cudaDeviceSynchronize());
-	std::vector<double> samples((size_t)iters);
-	cudaEvent_t a, b;
-	BENCH_CHECK(cudaEventCreate(&a));
-	BENCH_CHECK(cudaEventCreate(&b));
+	std::vector<double> sa((size_t)iters), sb((size_t)iters);
+	cudaEvent_t e0, e1, e2;
+	BENCH_CHECK(cudaEventCreate(&e0));
+	BENCH_CHECK(cudaEventCreate(&e1));
+	BENCH_CHECK(cudaEventCreate(&e2));
 	for ( int i = 0; i < iters; ++i )
 	{
-		BENCH_CHECK(cudaEventRecord(a, 0));
-		fn();
-		BENCH_CHECK(cudaEventRecord(b, 0));
-		BENCH_CHECK(cudaEventSynchronize(b));
-		float ms = 0.0f;
-		BENCH_CHECK(cudaEventElapsedTime(&ms, a, b));
-		samples[(size_t)i] = (double)ms * 1000.0;
+		float ms_a = 0.0f, ms_b = 0.0f;
+		if ( (i & 1) == 0 )
+		{
+			BENCH_CHECK(cudaEventRecord(e0, 0));
+			fn_a();
+			BENCH_CHECK(cudaEventRecord(e1, 0));
+			fn_b();
+			BENCH_CHECK(cudaEventRecord(e2, 0));
+			BENCH_CHECK(cudaEventSynchronize(e2));
+			BENCH_CHECK(cudaEventElapsedTime(&ms_a, e0, e1));
+			BENCH_CHECK(cudaEventElapsedTime(&ms_b, e1, e2));
+		}
+		else
+		{
+			BENCH_CHECK(cudaEventRecord(e0, 0));
+			fn_b();
+			BENCH_CHECK(cudaEventRecord(e1, 0));
+			fn_a();
+			BENCH_CHECK(cudaEventRecord(e2, 0));
+			BENCH_CHECK(cudaEventSynchronize(e2));
+			BENCH_CHECK(cudaEventElapsedTime(&ms_b, e0, e1));
+			BENCH_CHECK(cudaEventElapsedTime(&ms_a, e1, e2));
+		}
+		sa[(size_t)i] = (double)ms_a * 1000.0;
+		sb[(size_t)i] = (double)ms_b * 1000.0;
 	}
-	BENCH_CHECK(cudaEventDestroy(a));
-	BENCH_CHECK(cudaEventDestroy(b));
-	std::sort(samples.begin(), samples.end());
-	return samples[(size_t)(iters / 2)];
+	BENCH_CHECK(cudaEventDestroy(e0));
+	BENCH_CHECK(cudaEventDestroy(e1));
+	BENCH_CHECK(cudaEventDestroy(e2));
+	std::sort(sa.begin(), sa.end());
+	std::sort(sb.begin(), sb.end());
+	*med_a = sa[(size_t)(iters / 2)];
+	*med_b = sb[(size_t)(iters / 2)];
 }
 
 static void BenchAttend(void)
@@ -195,8 +220,8 @@ static void BenchAttend(void)
 		uint64_t diffs = 0u;
 		for ( uint64_t i = 0u; i < bytes; ++i ) diffs += hb[i] != hn[i] ? 1u : 0u;
 		BENCH_REQ(diffs == 0u, "TP4 D41AttendKernel byte mismatch");
-		const double base_us = BenchMedianUs(run_base, 3, 15);
-		const double new_us = BenchMedianUs(run_new, 3, 15);
+		double base_us = 0.0, new_us = 0.0;
+		BenchPairedMedianUs(run_base, run_new, 3, 21, &base_us, &new_us);
 		printf("TP4 rows=%4u: BASE=%.1f us  NEW=%.1f us  speedup=%.3fx  diffs=%llu\n",
 			rows, base_us, new_us, base_us / new_us, (unsigned long long)diffs);
 	}
@@ -237,8 +262,8 @@ static void BenchAttend(void)
 		uint64_t diffs = 0u;
 		for ( uint64_t i = 0u; i < total_bytes; ++i ) diffs += hb[i] != hn[i] ? 1u : 0u;
 		BENCH_REQ(diffs == 0u, "ROWS16 D41AttendKernel byte mismatch");
-		const double base_us = BenchMedianUs(run_base, 3, 25);
-		const double new_us = BenchMedianUs(run_new, 3, 25);
+		double base_us = 0.0, new_us = 0.0;
+		BenchPairedMedianUs(run_base, run_new, 3, 25, &base_us, &new_us);
 		printf("ROWS16 live=%3u (wave~%4u): BASE=%.1f us  NEW=%.1f us  speedup=%.3fx  diffs=%llu\n",
 			live, live * 16u, base_us, new_us, base_us / new_us, (unsigned long long)diffs);
 	}
@@ -284,8 +309,8 @@ static void BenchTp4AndRows16Moe(void)
 		auto run_cellmx = [&]() {
 			BENCH_REQ(LmCellMxExperts(w_tp4, act_codes, act_scales, out_b, doff, dsrc, tp4_experts, routes, 0u, in_dim, tp4_w13_out, 0) == LM_LAUNCH_OK, "tp4 cellmx");
 		};
-		const double dir_us = BenchMedianUs(run_direct, 3, 20);
-		const double cmx_us = BenchMedianUs(run_cellmx, 3, 20);
+		double dir_us = 0.0, cmx_us = 0.0;
+		BenchPairedMedianUs(run_direct, run_cellmx, 3, 21, &dir_us, &cmx_us);
 		printf("TP4 W13 rows=%4u routes=%5u: Direct<2,2>=%.1f us  LmCellMxExperts=%.1f us  LmCellMx_gain=%.3fx\n",
 			rows, routes, dir_us, cmx_us, dir_us / cmx_us);
 	}
@@ -319,8 +344,8 @@ static void BenchTp4AndRows16Moe(void)
 		uint64_t diffs = 0u;
 		for ( size_t i = 0u; i < elems; ++i ) diffs += ha[i] != hb[i] ? 1u : 0u;
 		BENCH_REQ(diffs == 0u, "ROWS16 MoE wide vs standard mismatch");
-		const double base_us = BenchMedianUs(run_base, 3, 25);
-		const double new_us = BenchMedianUs(run_new, 3, 25);
+		double base_us = 0.0, new_us = 0.0;
+		BenchPairedMedianUs(run_base, run_new, 3, 25, &base_us, &new_us);
 		printf("ROWS16 W13 rows=%3u local_routes=%3u: BASE(routes=%4u)=%.1f us  NEW(local=%3u)=%.1f us  speedup=%.3fx  diffs=%llu\n",
 			rows, local_routes, total_routes, base_us, local_routes, new_us, base_us / new_us, (unsigned long long)diffs);
 	}
