@@ -553,7 +553,7 @@ static void MimoPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restric
 
 static __device__ __forceinline__ void MimoPrefillCopyL2(uint32_t destination, const void *source, uint32_t bytes)
 {
-	asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
 }
 
 template<uint32_t HD, uint32_t VD, bool HAS_SINKS>
@@ -1282,6 +1282,58 @@ static void MimoMoeFastW1W3SiluKernel(const uint8_t *__restrict__ w1, const uint
 						output[(uint64_t)r0 * N + col0] = LmFloatToBf16(v0);
 				}
 			}
+			else if ( cnt == 2u )
+			{
+				const uint16_t *a0 = act_ptr[0], *a1 = act_ptr[1];
+				float g00 = 0.0f, g01 = 0.0f, u00 = 0.0f, u01 = 0.0f, g10 = 0.0f, g11 = 0.0f, u10 = 0.0f, u11 = 0.0f;
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+				{
+					const LmSkinnyQuad q0 = LmSkinnyFormat<LmMxfp4>::Load(a0 + c * 32u);
+					const LmSkinnyQuad q1 = LmSkinnyFormat<LmMxfp4>::Load(a1 + c * 32u);
+					auto accum2 = [&](uint4 vw, float sc, float &r0a, float &r1a)
+					{
+						const LmSkinnyE2m1HalfDecoded lo = LmSkinnyDecodeE2m1Half(vw.x, vw.y);
+						const float l0 = LmSkinnyAccumE2m1Half(lo, q0.part[0], q0.part[1]);
+						const float l1 = LmSkinnyAccumE2m1Half(lo, q1.part[0], q1.part[1]);
+						const LmSkinnyE2m1HalfDecoded hi = LmSkinnyDecodeE2m1Half(vw.z, vw.w);
+						r0a = fmaf(sc, l0 + LmSkinnyAccumE2m1Half(hi, q0.part[2], q0.part[3]), r0a);
+						r1a = fmaf(sc, l1 + LmSkinnyAccumE2m1Half(hi, q1.part[2], q1.part[3]), r1a);
+					};
+					accum2(__ldcs(w1_0 + c), LmUe8m0ToFloat(__ldg(sc1_0 + c)), g00, g01);
+					accum2(__ldcs(w3_0 + c), LmUe8m0ToFloat(__ldg(sc3_0 + c)), u00, u01);
+					accum2(__ldcs(w1_1 + c), LmUe8m0ToFloat(__ldg(sc1_1 + c)), g10, g11);
+					accum2(__ldcs(w3_1 + c), LmUe8m0ToFloat(__ldg(sc3_1 + c)), u10, u11);
+				}
+				#pragma unroll
+				for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
+				{
+					g00 += __shfl_down_sync(0xffffffffu, g00, offset);
+					g01 += __shfl_down_sync(0xffffffffu, g01, offset);
+					u00 += __shfl_down_sync(0xffffffffu, u00, offset);
+					u01 += __shfl_down_sync(0xffffffffu, u01, offset);
+					g10 += __shfl_down_sync(0xffffffffu, g10, offset);
+					g11 += __shfl_down_sync(0xffffffffu, g11, offset);
+					u10 += __shfl_down_sync(0xffffffffu, u10, offset);
+					u11 += __shfl_down_sync(0xffffffffu, u11, offset);
+				}
+				if ( sub == 0u )
+				{
+					const float v00 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(g00))) * SparkMathRoundBf16(u00);
+					const float v01 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(g01))) * SparkMathRoundBf16(u01);
+					if ( has1 )
+					{
+						const float v10 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(g10))) * SparkMathRoundBf16(u10);
+						const float v11 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(g11))) * SparkMathRoundBf16(u11);
+						*(uint32_t *)(output + (uint64_t)r0 * N + col0) = LmPackBf16Pair(v00, v10);
+						*(uint32_t *)(output + (uint64_t)(r0 + 1u) * N + col0) = LmPackBf16Pair(v01, v11);
+					}
+					else
+					{
+						output[(uint64_t)r0 * N + col0] = LmFloatToBf16(v00);
+						output[(uint64_t)(r0 + 1u) * N + col0] = LmFloatToBf16(v01);
+					}
+				}
+			}
 			else
 			{
 				float g0[RG], u0[RG], g1[RG], u1[RG];
@@ -1427,6 +1479,58 @@ static void MimoMoeFastW2Kernel(const uint8_t *__restrict__ w2, const uint8_t *_
 						dst[0] = LmFloatToBf16(la0);
 						if ( has1 ) dst[1] = LmFloatToBf16(la1);
 						if ( has2 ) dst[2] = LmFloatToBf16(la2);
+					}
+				}
+			}
+			else if ( cnt == 2u )
+			{
+				const uint16_t *a0p = act_ptr[0], *a1p = act_ptr[1];
+				float a00 = 0.0f, a01 = 0.0f, a10 = 0.0f, a11 = 0.0f, a20 = 0.0f, a21 = 0.0f, a30 = 0.0f, a31 = 0.0f;
+				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
+				{
+					const LmSkinnyQuad q0 = LmSkinnyFormat<LmMxfp4>::Load(a0p + c * 32u);
+					const LmSkinnyQuad q1 = LmSkinnyFormat<LmMxfp4>::Load(a1p + c * 32u);
+					auto accum2 = [&](uint4 vw, float sc, float &r0a, float &r1a)
+					{
+						const LmSkinnyE2m1HalfDecoded lo = LmSkinnyDecodeE2m1Half(vw.x, vw.y);
+						const float l0 = LmSkinnyAccumE2m1Half(lo, q0.part[0], q0.part[1]);
+						const float l1 = LmSkinnyAccumE2m1Half(lo, q1.part[0], q1.part[1]);
+						const LmSkinnyE2m1HalfDecoded hi = LmSkinnyDecodeE2m1Half(vw.z, vw.w);
+						r0a = fmaf(sc, l0 + LmSkinnyAccumE2m1Half(hi, q0.part[2], q0.part[3]), r0a);
+						r1a = fmaf(sc, l1 + LmSkinnyAccumE2m1Half(hi, q1.part[2], q1.part[3]), r1a);
+					};
+					accum2(__ldcs(w0 + c), LmUe8m0ToFloat(__ldg(sc0 + c)), a00, a01);
+					accum2(__ldcs(w1p + c), LmUe8m0ToFloat(__ldg(sc1 + c)), a10, a11);
+					accum2(__ldcs(w2p + c), LmUe8m0ToFloat(__ldg(sc2 + c)), a20, a21);
+					accum2(__ldcs(w3p + c), LmUe8m0ToFloat(__ldg(sc3 + c)), a30, a31);
+				}
+				#pragma unroll
+				for ( uint32_t offset = LANES >> 1u; offset > 0u; offset >>= 1u )
+				{
+					a00 += __shfl_down_sync(0xffffffffu, a00, offset);
+					a01 += __shfl_down_sync(0xffffffffu, a01, offset);
+					a10 += __shfl_down_sync(0xffffffffu, a10, offset);
+					a11 += __shfl_down_sync(0xffffffffu, a11, offset);
+					a20 += __shfl_down_sync(0xffffffffu, a20, offset);
+					a21 += __shfl_down_sync(0xffffffffu, a21, offset);
+					a30 += __shfl_down_sync(0xffffffffu, a30, offset);
+					a31 += __shfl_down_sync(0xffffffffu, a31, offset);
+				}
+				if ( sub == 0u )
+				{
+					uint16_t *dst0 = output + (uint64_t)r0 * N + col0;
+					uint16_t *dst1 = output + (uint64_t)(r0 + 1u) * N + col0;
+					if ( has3 )
+					{
+						*(uint2 *)dst0 = make_uint2(LmPackBf16Pair(a00, a10), LmPackBf16Pair(a20, a30));
+						*(uint2 *)dst1 = make_uint2(LmPackBf16Pair(a01, a11), LmPackBf16Pair(a21, a31));
+					}
+					else
+					{
+						dst0[0] = LmFloatToBf16(a00);
+						dst1[0] = LmFloatToBf16(a01);
+						if ( has1 ) { dst0[1] = LmFloatToBf16(a10); dst1[1] = LmFloatToBf16(a11); }
+						if ( has2 ) { dst0[2] = LmFloatToBf16(a20); dst1[2] = LmFloatToBf16(a21); }
 					}
 				}
 			}
@@ -1644,7 +1748,7 @@ static __device__ __forceinline__ uint32_t MimoE2m1ByteFast(uint32_t shifted, ui
 
 static __device__ __forceinline__ void MimoE2m1Word4(uint32_t word, uint8_t sc, uint32_t scale_bf16x2, uint32_t lo[2], uint32_t hi[2])
 {
-	if ( scale_bf16x2 != 0u )
+	if ( __builtin_expect(scale_bf16x2 != 0u, 1) )
 	{
 		lo[0] = MimoE2m1ByteFast(word, scale_bf16x2);
 		lo[1] = MimoE2m1ByteFast(word >> 8u, scale_bf16x2);
@@ -1665,27 +1769,22 @@ static __device__ __forceinline__ void MimoE2m1Word4(uint32_t word, uint8_t sc, 
 	}
 }
 
-static __device__ __forceinline__ void MimoCpAsync16(void *dst, const void *src, uint32_t bytes)
+static __device__ __forceinline__ void MimoCpAsync16(uint32_t smem, const void *src, uint32_t bytes)
 {
-	const uint32_t smem = (uint32_t)__cvta_generic_to_shared(dst);
-	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
 }
 
 template<uint32_t MAX_M_TILES, uint32_t STAGES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
 static __host__ __device__ constexpr uint32_t MimoMxfp4SharedBytes(uint32_t groups)
 {
 	constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
-	constexpr uint32_t TILE_K = 128u;
-	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
-	constexpr uint32_t W_ROWS_TOTAL = (FUSED_GATE_UP ? 2u : 1u) * WARPS * N_PER_WARP;
-	constexpr uint32_t A_BYTES = STAGES * TILE_M * (TILE_K + 8u) * 2u;
-	constexpr uint32_t B_BYTES = STAGES * W_ROWS_TOTAL * (TILE_K / 2u);
-	constexpr uint32_t SC_BYTES = 2u * W_ROWS_TOTAL * 16u;
-	return A_BYTES + B_BYTES + SC_BYTES + (groups + 1u) * (uint32_t)sizeof(uint32_t);
+	constexpr uint32_t A_BYTES = STAGES * TILE_M * 256u;
+	constexpr uint32_t B_BYTES = STAGES * 128u * 64u;
+	return A_BYTES + B_BYTES + (groups + 1u) * (uint32_t)sizeof(uint32_t);
 }
 
 template<uint32_t MAX_M_TILES, uint32_t STAGES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
-__global__ __launch_bounds__(WARPS * 32u, MAX_M_TILES <= 2u ? 2 : 1)
+__global__ __launch_bounds__(WARPS * 32u, (STAGES * (MAX_M_TILES * 16u * 256u + 8192u) <= 49152u) ? 2 : 1)
 static void MimoMxfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ s1, const uint8_t *__restrict__ w3,
 	const uint8_t *__restrict__ s3, const uint16_t *__restrict__ activation, uint16_t *__restrict__ output,
 	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token, uint32_t groups, uint32_t input_dim,
@@ -1694,31 +1793,27 @@ static void MimoMxfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t
 	constexpr uint32_t THREADS = WARPS * 32u;
 	constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
 	constexpr uint32_t TILE_K = 128u;
-	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
-	constexpr uint32_t TILE_N = WARPS * N_PER_WARP;
-	constexpr uint32_t W_MATS = FUSED_GATE_UP ? 2u : 1u;
-	constexpr uint32_t W_ROWS_TOTAL = W_MATS * TILE_N;
-	constexpr uint32_t A_PITCH = TILE_K + 8u;
-	constexpr uint32_t B_ROW_BYTES = TILE_K / 2u;
-	constexpr uint32_t A_STAGE_BYTES = TILE_M * A_PITCH * 2u;
-	constexpr uint32_t B_STAGE_BYTES = W_ROWS_TOTAL * B_ROW_BYTES;
+	constexpr uint32_t TILE_N = FUSED_GATE_UP ? 64u : 128u;
+	constexpr uint32_t WARPS_M = MAX_M_TILES >= 2u ? 2u : 1u;
+	constexpr uint32_t WARPS_N = WARPS / WARPS_M;
+	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
+	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t A_ROW_BYTES = 256u, A_ROW_CHUNKS = 16u;
+	constexpr uint32_t B_ROW_BYTES = 64u, B_ROW_CHUNKS = 4u;
+	constexpr uint32_t A_BYTES = TILE_M * A_ROW_BYTES, B_BYTES = 128u * B_ROW_BYTES;
+	constexpr uint32_t STAGE_BYTES = A_BYTES + B_BYTES;
+	constexpr uint32_t A_PER_THREAD = (TILE_M * A_ROW_CHUNKS) / THREADS;
 	extern __shared__ __align__(128) uint8_t mimo_mx4_smem[];
-	uint16_t (*s_a)[TILE_M][A_PITCH] = (uint16_t (*)[TILE_M][A_PITCH])mimo_mx4_smem;
-	uint8_t (*s_b)[W_ROWS_TOTAL][B_ROW_BYTES] = (uint8_t (*)[W_ROWS_TOTAL][B_ROW_BYTES])(mimo_mx4_smem + STAGES * A_STAGE_BYTES);
-	uint8_t (*s_sc)[W_ROWS_TOTAL][16u] = (uint8_t (*)[W_ROWS_TOTAL][16u])(mimo_mx4_smem + STAGES * A_STAGE_BYTES + STAGES * B_STAGE_BYTES);
-	uint32_t *prefix = (uint32_t *)(mimo_mx4_smem + STAGES * A_STAGE_BYTES + STAGES * B_STAGE_BYTES + 2u * W_ROWS_TOTAL * 16u);
+	uint32_t *prefix = (uint32_t *)(mimo_mx4_smem + STAGES * STAGE_BYTES);
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(mimo_mx4_smem);
 	const uint32_t n_blocks = (output_dim + TILE_N - 1u) / TILE_N;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
+	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
 	const uint32_t k_tiles = input_dim / TILE_K;
 	const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u);
 	const uint64_t scale_pitch = (uint64_t)(input_dim >> 5u);
 	const uint64_t scale_group_stride = (uint64_t)output_dim * scale_pitch;
-	const uint32_t b_row0 = FUSED_GATE_UP ? (warp * 8u + g) : (warp * 16u + g);
-	const uint32_t b_row1 = FUSED_GATE_UP ? (TILE_N + warp * 8u + g) : (warp * 16u + 8u + g);
-	constexpr uint32_t A_VEC_THREADS = TILE_K / 8u;
-	constexpr uint32_t A_ROW_STEP = THREADS / A_VEC_THREADS;
-	constexpr uint32_t A_COPIES = (TILE_M + A_ROW_STEP - 1u) / A_ROW_STEP;
-	const uint32_t a_vec = threadIdx.x % A_VEC_THREADS, a_row0 = threadIdx.x / A_VEC_THREADS;
+	const uint32_t b_row0 = threadIdx.x / B_ROW_CHUNKS, b_col0 = threadIdx.x % B_ROW_CHUNKS;
 	LmStreamGemmArguments targs;
 	targs.group_row_offset = group_row_offset;
 	targs.groups = groups;
@@ -1730,165 +1825,243 @@ static void MimoMxfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t
 	{
 		const LmStreamTile work = LmStreamTileAt(targs, prefix, groups, TILE_M, TILE_N, n_blocks, tile);
 		const uint32_t group = work.group, first = work.row_base, row_end = work.row_limit, n_base = work.neuron_base;
-		const uint32_t count = row_end - first < TILE_M ? row_end - first : TILE_M;
-		const uint32_t m_tiles_live = (count + 15u) >> 4u;
-		const uint16_t *a_ptrs[A_COPIES];
+		const uint16_t *a_src[A_PER_THREAD];
+		uint32_t a_mask = 0u;
 		#pragma unroll
-		for ( uint32_t i = 0u; i < A_COPIES; ++i )
+		for ( uint32_t q = 0u; q < A_PER_THREAD; ++q )
 		{
-			const uint32_t lr = a_row0 + i * A_ROW_STEP;
-			if ( lr < count )
-			{
-				const uint32_t pr = first + lr;
-				a_ptrs[i] = activation + (uint64_t)(ACTIVATION_PACKED ? pr : route_source_token[pr]) * input_dim + (uint64_t)a_vec * 8u;
-			}
-			else
-				a_ptrs[i] = 0;
+			const uint32_t chunk = threadIdx.x + q * THREADS, r = chunk / A_ROW_CHUNKS, col = chunk % A_ROW_CHUNKS;
+			const uint32_t pr = first + r;
+			const uint32_t valid = pr < row_end ? 1u : 0u;
+			const uint32_t src_row = valid != 0u ? (ACTIVATION_PACKED ? pr : __ldg(route_source_token + pr)) : 0u;
+			a_src[q] = activation + (uint64_t)src_row * input_dim + (uint64_t)col * 8u;
+			a_mask |= valid << q;
 		}
-		auto stage_tile = [&](uint32_t st, uint32_t kt) {
+		const uint8_t *b_src[2];
+		uint32_t b_mask = 0u;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < 2u; ++q )
+		{
+			const uint32_t wr = b_row0 + q * 64u;
+			const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr & 63u) : wr);
+			const bool ok = neuron < output_dim;
+			const uint8_t *wb = (FUSED_GATE_UP && wr >= 64u) ? w3 : w1;
+			b_src[q] = ok ? wb + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)b_col0 * 16u : wb;
+			if ( ok )
+				b_mask |= 1u << q;
+		}
+		auto issue_k = [&](uint32_t st_off)
+		{
+			const uint32_t stage = shared_base + st_off;
 			#pragma unroll
-			for ( uint32_t i = 0u; i < A_COPIES; ++i )
+			for ( uint32_t q = 0u; q < A_PER_THREAD; ++q )
 			{
-				const uint32_t lr = a_row0 + i * A_ROW_STEP;
-				if ( lr < TILE_M && a_ptrs[i] != 0 )
-					MimoCpAsync16(&s_a[st][lr][a_vec * 8u], a_ptrs[i] + (uint64_t)kt * TILE_K, 16u);
+				const uint32_t chunk = threadIdx.x + q * THREADS, r = chunk / A_ROW_CHUNKS, col = chunk % A_ROW_CHUNKS;
+				const uint32_t sw_a = col ^ (((r & 1u) << 2u) | ((r >> 1u) & 3u));
+				MimoCpAsync16(stage + r * A_ROW_BYTES + sw_a * 16u, a_src[q], ((a_mask >> q) & 1u) << 4u);
+				a_src[q] += TILE_K;
 			}
-			constexpr uint32_t B_VECS_PER_ROW = B_ROW_BYTES / 16u;
-			constexpr uint32_t B_TOTAL_VECS = W_ROWS_TOTAL * B_VECS_PER_ROW;
 			#pragma unroll
-			for ( uint32_t idx = threadIdx.x; idx < B_TOTAL_VECS; idx += THREADS )
+			for ( uint32_t q = 0u; q < 2u; ++q )
 			{
-				const uint32_t wr = idx / B_VECS_PER_ROW, bv = idx % B_VECS_PER_ROW;
-				const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-				const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-				const bool ok = neuron < output_dim;
-				const uint8_t *wbase = (mat == 0u ? w1 : w3);
-				const uint8_t *src = ok ? wbase + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)kt * B_ROW_BYTES + (uint64_t)bv * 16u : wbase;
-				MimoCpAsync16(&s_b[st][wr][bv * 16u], src, ok ? 16u : 0u);
-			}
-			if ( (kt & 3u) == 0u )
-			{
-				const uint32_t sc_off = kt * 4u, avail = sc_off < scale_pitch ? (uint32_t)(scale_pitch - sc_off) : 0u;
-				const uint32_t sb_slot = (kt >> 2u) & 1u;
-				#pragma unroll
-				for ( uint32_t wr = threadIdx.x; wr < W_ROWS_TOTAL; wr += THREADS )
-				{
-					const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-					const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-					const uint32_t bytes = (neuron < output_dim && avail != 0u) ? (avail >= 16u ? 16u : avail) : 0u;
-					const uint8_t *sbase = (mat == 0u ? s1 : s3);
-					const uint8_t *src = bytes != 0u ? sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off : sbase;
-					MimoCpAsync16(&s_sc[sb_slot][wr][0], src, bytes);
-				}
+				const uint32_t wr = b_row0 + q * 64u;
+				const uint32_t sw = b_col0 ^ ((wr >> 1u) & 3u);
+				MimoCpAsync16(stage + A_BYTES + wr * B_ROW_BYTES + sw * 16u, b_src[q], ((b_mask >> q) & 1u) << 4u);
+				b_src[q] += B_ROW_BYTES;
 			}
 			asm volatile("cp.async.commit_group;\n" ::: "memory");
 		};
-		float acc0[MAX_M_TILES][4], acc1[MAX_M_TILES][4];
+		const uint8_t *sc1_ptr[NF];
+		const uint8_t *sc3_ptr[FUSED_GATE_UP ? NF : 1u];
+		uint32_t n_ok = 0u;
 		#pragma unroll
-		for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-			acc0[m][0] = acc0[m][1] = acc0[m][2] = acc0[m][3] = acc1[m][0] = acc1[m][1] = acc1[m][2] = acc1[m][3] = 0.0f;
-		uint32_t kp = 0u, sp = 0u, sc = 0u;
+		for ( uint32_t j = 0u; j < NF; ++j )
+		{
+			const uint32_t neuron = n_base + warp_n * WARP_N + j * 8u + g;
+			const bool ok = neuron < output_dim;
+			if ( ok )
+				n_ok |= 1u << j;
+			const uint64_t off = (uint64_t)group * scale_group_stride + (uint64_t)(ok ? neuron : 0u) * scale_pitch;
+			sc1_ptr[j] = s1 + off;
+			if constexpr ( FUSED_GATE_UP )
+				sc3_ptr[j] = s3 + off;
+		}
+		constexpr bool PREFETCH_SC4 = MAX_M_TILES <= 2u;
+		uint4 sc1_cur[PREFETCH_SC4 ? NF : 1u], sc1_nxt[PREFETCH_SC4 ? NF : 1u];
+		uint4 sc3_cur[(PREFETCH_SC4 && FUSED_GATE_UP) ? NF : 1u], sc3_nxt[(PREFETCH_SC4 && FUSED_GATE_UP) ? NF : 1u];
+		if constexpr ( PREFETCH_SC4 )
+		{
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+			{
+				const bool ok = ((n_ok >> j) & 1u) != 0u;
+				sc1_cur[j] = ok ? __ldg((const uint4 *)sc1_ptr[j]) : make_uint4(0u, 0u, 0u, 0u);
+				if constexpr ( FUSED_GATE_UP )
+					sc3_cur[j] = ok ? __ldg((const uint4 *)sc3_ptr[j]) : make_uint4(0u, 0u, 0u, 0u);
+			}
+		}
+		float acc0[MF][NF][4];
+		float acc1[MF][FUSED_GATE_UP ? NF : 1u][4];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+			{
+				acc0[i][j][0] = acc0[i][j][1] = acc0[i][j][2] = acc0[i][j][3] = 0.0f;
+				if constexpr ( FUSED_GATE_UP )
+					acc1[i][j][0] = acc1[i][j][1] = acc1[i][j][2] = acc1[i][j][3] = 0.0f;
+			}
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
 		#pragma unroll
 		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
 		{
 			if ( kp < k_tiles )
-			{
-				stage_tile(sp, kp);
-				kp++;
-				sp = (sp + 1u == STAGES) ? 0u : (sp + 1u);
-			}
+				issue_k(sp_off);
+			else
+				asm volatile("cp.async.commit_group;\n" ::: "memory");
+			kp++;
+			sp_off = (sp_off + STAGE_BYTES == STAGES * STAGE_BYTES) ? 0u : (sp_off + STAGE_BYTES);
 		}
+		const uint32_t a_sw_mask = ((g & 1u) << 2u) | ((g >> 1u) & 3u);
 		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 		{
-			if constexpr ( STAGES == 3u )
-			{
-				if ( kt + 1u < k_tiles )
-					asm volatile("cp.async.wait_group 1;\n" ::: "memory");
-				else
-					asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-			}
+			if constexpr ( STAGES == 4u )
+				asm volatile("cp.async.wait_group 2;\n" ::: "memory");
+			else if constexpr ( STAGES == 3u )
+				asm volatile("cp.async.wait_group 1;\n" ::: "memory");
 			else
 				asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 			__syncthreads();
 			if ( kp < k_tiles )
 			{
-				stage_tile(sp, kp);
+				issue_k(sp_off);
 				kp++;
-				sp = (sp + 1u == STAGES) ? 0u : (sp + 1u);
+				sp_off = (sp_off + STAGE_BYTES == STAGES * STAGE_BYTES) ? 0u : (sp_off + STAGE_BYTES);
 			}
-			const uint32_t sb_slot = (kt >> 2u) & 1u, sb_sub = (kt & 3u) * 4u;
-			const uint32_t sc0_all = *(const uint32_t *)&s_sc[sb_slot][b_row0][sb_sub];
-			const uint32_t sc1_all = *(const uint32_t *)&s_sc[sb_slot][b_row1][sb_sub];
-			#pragma unroll
-			for ( uint32_t sg = 0u; sg < 4u; ++sg )
+			else
+				asm volatile("cp.async.commit_group;\n" ::: "memory");
+			const uint32_t sub_k = kt & 3u;
+			if constexpr ( PREFETCH_SC4 )
 			{
-				const uint8_t raw0 = (uint8_t)(sc0_all >> (sg * 8u));
-				const uint8_t raw1 = (uint8_t)(sc1_all >> (sg * 8u));
-				const uint32_t s0_2 = MimoE8m0ToBf16x2(raw0);
-				const uint32_t s1_2 = MimoE8m0ToBf16x2(raw1);
-				const uint32_t w0 = *(const uint32_t *)&s_b[sc][b_row0][sg * 16u + c * 4u];
-				const uint32_t w1_w = *(const uint32_t *)&s_b[sc][b_row1][sg * 16u + c * 4u];
-				uint32_t b0_lo[2], b0_hi[2], b1_lo[2], b1_hi[2];
-				MimoE2m1Word4(w0, raw0, s0_2, b0_lo, b0_hi);
-				MimoE2m1Word4(w1_w, raw1, s1_2, b1_lo, b1_hi);
-				const uint32_t k_off = sg * 32u + c * 8u;
-				#pragma unroll
-				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+				if ( sub_k == 0u && kt + 4u < k_tiles )
 				{
-					if ( m < m_tiles_live )
+					const uint32_t off4 = (kt + 4u) * 4u;
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
 					{
-						const uint4 low = *(const uint4 *)&s_a[sc][m * 16u + g][k_off];
-						const uint4 high = *(const uint4 *)&s_a[sc][m * 16u + g + 8u][k_off];
-						const uint32_t a0[4] = { low.x, high.x, low.y, high.y };
-						const uint32_t a1[4] = { low.z, high.z, low.w, high.w };
-						LmMmaBf16(acc0[m], a0, b0_lo);
-						LmMmaBf16(acc0[m], a1, b0_hi);
-						LmMmaBf16(acc1[m], a0, b1_lo);
-						LmMmaBf16(acc1[m], a1, b1_hi);
+						const bool ok = ((n_ok >> j) & 1u) != 0u;
+						sc1_nxt[j] = ok ? __ldg((const uint4 *)(sc1_ptr[j] + off4)) : make_uint4(0u, 0u, 0u, 0u);
+						if constexpr ( FUSED_GATE_UP )
+							sc3_nxt[j] = ok ? __ldg((const uint4 *)(sc3_ptr[j] + off4)) : make_uint4(0u, 0u, 0u, 0u);
 					}
 				}
 			}
-			sc = (sc + 1u == STAGES) ? 0u : (sc + 1u);
+			const uint8_t *stage_a_ptr = mimo_mx4_smem + sc_off;
+			uint32_t sc1_all[NF];
+			uint32_t sc3_all[FUSED_GATE_UP ? NF : 1u];
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+			{
+				if constexpr ( PREFETCH_SC4 )
+				{
+					sc1_all[j] = sub_k == 0u ? sc1_cur[j].x : (sub_k == 1u ? sc1_cur[j].y : (sub_k == 2u ? sc1_cur[j].z : sc1_cur[j].w));
+					if constexpr ( FUSED_GATE_UP )
+						sc3_all[j] = sub_k == 0u ? sc3_cur[j].x : (sub_k == 1u ? sc3_cur[j].y : (sub_k == 2u ? sc3_cur[j].z : sc3_cur[j].w));
+				}
+				else
+				{
+					const bool ok = ((n_ok >> j) & 1u) != 0u;
+					sc1_all[j] = ok ? __ldg((const uint32_t *)(sc1_ptr[j] + kt * 4u)) : 0u;
+					if constexpr ( FUSED_GATE_UP )
+						sc3_all[j] = ok ? __ldg((const uint32_t *)(sc3_ptr[j] + kt * 4u)) : 0u;
+				}
+			}
+			#pragma unroll
+			for ( uint32_t sg = 0u; sg < 4u; ++sg )
+			{
+				uint32_t b0_lo[NF][2], b0_hi[NF][2];
+				uint32_t b1_lo[FUSED_GATE_UP ? NF : 1u][2], b1_hi[FUSED_GATE_UP ? NF : 1u][2];
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					const uint32_t wr0 = warp_n * WARP_N + j * 8u + g;
+					const uint32_t sw0 = sg ^ ((wr0 >> 1u) & 3u);
+					const uint32_t w0 = *(const uint32_t *)(stage_a_ptr + A_BYTES + wr0 * B_ROW_BYTES + sw0 * 16u + c * 4u);
+					const uint8_t raw0 = (uint8_t)(sc1_all[j] >> (sg * 8u));
+					MimoE2m1Word4(w0, raw0, MimoE8m0ToBf16x2(raw0), b0_lo[j], b0_hi[j]);
+					if constexpr ( FUSED_GATE_UP )
+					{
+						const uint32_t wr1 = 64u + wr0;
+						const uint32_t sw1 = sg ^ ((wr1 >> 1u) & 3u);
+						const uint32_t w1_w = *(const uint32_t *)(stage_a_ptr + A_BYTES + wr1 * B_ROW_BYTES + sw1 * 16u + c * 4u);
+						const uint8_t raw1 = (uint8_t)(sc3_all[j] >> (sg * 8u));
+						MimoE2m1Word4(w1_w, raw1, MimoE8m0ToBf16x2(raw1), b1_lo[j], b1_hi[j]);
+					}
+				}
+				const uint32_t a_col_off = ((sg * 4u + c) ^ a_sw_mask) * 16u;
+				#pragma unroll
+				for ( uint32_t i = 0u; i < MF; ++i )
+				{
+					const uint32_t r_lo = warp_m * WARP_M + i * 16u + g;
+					const uint4 low = *(const uint4 *)(stage_a_ptr + r_lo * A_ROW_BYTES + a_col_off);
+					const uint4 high = *(const uint4 *)(stage_a_ptr + (r_lo + 8u) * A_ROW_BYTES + a_col_off);
+					const uint32_t a0[4] = { low.x, high.x, low.y, high.y };
+					const uint32_t a1[4] = { low.z, high.z, low.w, high.w };
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+					{
+						LmMmaBf16(acc0[i][j], a0, b0_lo[j]);
+						LmMmaBf16(acc0[i][j], a1, b0_hi[j]);
+						if constexpr ( FUSED_GATE_UP )
+						{
+							LmMmaBf16(acc1[i][j], a0, b1_lo[j]);
+							LmMmaBf16(acc1[i][j], a1, b1_hi[j]);
+						}
+					}
+				}
+			}
+			if constexpr ( PREFETCH_SC4 )
+			{
+				if ( sub_k == 3u && kt + 1u < k_tiles )
+				{
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+					{
+						sc1_cur[j] = sc1_nxt[j];
+						if constexpr ( FUSED_GATE_UP )
+							sc3_cur[j] = sc3_nxt[j];
+					}
+				}
+			}
+			sc_off = (sc_off + STAGE_BYTES == STAGES * STAGE_BYTES) ? 0u : (sc_off + STAGE_BYTES);
 		}
 		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-		if constexpr ( FUSED_GATE_UP )
-		{
-			const uint32_t col = n_base + warp * 8u + c * 2u;
-			if ( col < output_dim )
-				#pragma unroll
-				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-					if ( m < m_tiles_live )
-						#pragma unroll
-						for ( uint32_t h = 0u; h < 2u; ++h )
-						{
-							const uint32_t pr = first + m * 16u + g + h * 8u;
-							if ( pr < row_end )
-							{
-								const float v0 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u]))) * SparkMathRoundBf16(acc1[m][h * 2u]);
-								const float v1 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u + 1u]))) * SparkMathRoundBf16(acc1[m][h * 2u + 1u]);
-								*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
-							}
-						}
-		}
-		else
-		{
-			const uint32_t col0 = n_base + warp * 16u + c * 2u, col1 = col0 + 8u;
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
 			#pragma unroll
-			for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-				if ( m < m_tiles_live )
+			for ( uint32_t j = 0u; j < NF; ++j )
+			{
+				const uint32_t col = n_base + warp_n * WARP_N + j * 8u + c * 2u;
+				if ( col < output_dim )
+				{
 					#pragma unroll
 					for ( uint32_t h = 0u; h < 2u; ++h )
 					{
-						const uint32_t pr = first + m * 16u + g + h * 8u;
+						const uint32_t pr = first + warp_m * WARP_M + i * 16u + g + h * 8u;
 						if ( pr < row_end )
 						{
-							if ( col0 < output_dim )
-								*(uint32_t *)(output + (uint64_t)pr * output_dim + col0) = LmPackBf16Pair(acc0[m][h * 2u], acc0[m][h * 2u + 1u]);
-							if ( col1 < output_dim )
-								*(uint32_t *)(output + (uint64_t)pr * output_dim + col1) = LmPackBf16Pair(acc1[m][h * 2u], acc1[m][h * 2u + 1u]);
+							if constexpr ( FUSED_GATE_UP )
+							{
+								const float v0 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[i][j][h * 2u]))) * SparkMathRoundBf16(acc1[i][j][h * 2u]);
+								const float v1 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[i][j][h * 2u + 1u]))) * SparkMathRoundBf16(acc1[i][j][h * 2u + 1u]);
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
+							}
+							else
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(acc0[i][j][h * 2u], acc0[i][j][h * 2u + 1u]);
 						}
 					}
-		}
+				}
+			}
 		if ( tile + gridDim.x < total_tiles )
 			__syncthreads();
 	}
@@ -2261,30 +2434,12 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			{
 				const uint32_t mean_rows = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
 				int32_t st_up, st_dn;
-				if ( mean_rows > 48u )
+				if ( mean_rows > 40u )
 				{
-					st_up = Mxfp4Launch<6u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+					st_up = Mxfp4Launch<4u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
 						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
 						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
-					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<6u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
-						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
-				}
-				else if ( mean_rows > 32u )
-				{
-					st_up = Mxfp4Launch<4u, 3u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
-						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
-						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
-					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<4u, 3u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
-						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
-				}
-				else if ( mean_rows > 16u )
-				{
-					st_up = Mxfp4Launch<2u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
-						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
-						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
-					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<2u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<4u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
 						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
 						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
 				}

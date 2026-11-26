@@ -530,6 +530,178 @@ static void HyHcMixNormSmallKernel(const uint16_t *__restrict__ streams, const f
 	LmDependentRelease();
 }
 
+template<uint32_t STREAMS, uint32_t MIXES, uint32_t WIDTH, bool HAS_POST>
+__global__ __launch_bounds__(HY_THREADS, 1)
+static void HyHcFusedSinglePassKernel(uint16_t *__restrict__ streams, const float *__restrict__ post_in, const uint16_t *__restrict__ partial_in,
+	const float *__restrict__ fn, const float *__restrict__ base, const float *__restrict__ scale, float *__restrict__ post_out,
+	const uint16_t *__restrict__ norm_weight, uint16_t *__restrict__ normed, float norm_epsilon, float hc_epsilon, float post_magnitude)
+{
+	constexpr uint32_t FLAT = STREAMS * WIDTH;
+	constexpr uint32_t VECS = WIDTH >> 3u;
+	constexpr uint32_t FLAT_VECS = STREAMS * VECS;
+	constexpr uint32_t STEPS = FLAT_VECS / HY_THREADS;
+	constexpr uint32_t WARPS = HY_THREADS / 32u;
+	constexpr uint32_t VEC_SLOTS = WIDTH / (HY_THREADS * 8u);
+	static_assert(HY_THREADS == 256u && STREAMS == 4u && MIXES == 8u && (WIDTH % (HY_THREADS * 8u)) == 0u, "fused HC matches HY4 4-stream width");
+	extern __shared__ __align__(128) uint8_t hc_fused_smem[];
+	uint4 *s_st = (uint4 *)hc_fused_smem;
+	__shared__ float s_red[MIXES + 1u][WARPS];
+	__shared__ float s_w[STREAMS];
+	__shared__ float s_p[STREAMS];
+	__shared__ float s_sq[HY_THREADS * 8u];
+	const uint32_t row = blockIdx.x, lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+	uint4 *st4 = (uint4 *)(streams + (uint64_t)row * FLAT);
+	const uint4 *part4 = HAS_POST ? (const uint4 *)(partial_in + (uint64_t)row * WIDTH) : (const uint4 *)0;
+	LmDependentWait();
+	if constexpr ( HAS_POST )
+	{
+		if ( threadIdx.x < STREAMS )
+			s_p[threadIdx.x] = post_in[(uint64_t)row * STREAMS + threadIdx.x];
+		__syncthreads();
+		const float p0 = s_p[0], p1 = s_p[1], p2 = s_p[2], p3 = s_p[3];
+		#pragma unroll
+		for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
+		{
+			const uint32_t v = slot * HY_THREADS + threadIdx.x;
+			float pv[8];
+			LmLoadBf16x8AsFloat(__ldcs(part4 + v), pv);
+			#pragma unroll
+			for ( uint32_t s = 0u; s < STREAMS; ++s )
+			{
+				const float sp = s == 0u ? p0 : (s == 1u ? p1 : (s == 2u ? p2 : p3));
+				const uint32_t kv = s * VECS + v;
+				float xv[8];
+				LmLoadBf16x8AsFloat(__ldcs(st4 + kv), xv);
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 8u; ++e )
+					xv[e] = fmaf(sp, pv[e], xv[e]);
+				const uint4 packed = LmPackUint4FloatToBf16(xv);
+				__stcs(st4 + kv, packed);
+				s_st[kv] = packed;
+			}
+		}
+	}
+	else
+	{
+		#pragma unroll
+		for ( uint32_t step = 0u; step < STEPS; ++step )
+		{
+			const uint32_t kv = step * HY_THREADS + threadIdx.x;
+			s_st[kv] = __ldcs(st4 + kv);
+		}
+	}
+	__syncthreads();
+	float dot[MIXES] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+	float sq = 0.0f;
+	for ( uint32_t step = 0u; step < STEPS; ++step )
+	{
+		const uint32_t kv = step * HY_THREADS + threadIdx.x;
+		float xv[8];
+		LmLoadBf16x8AsFloat(s_st[kv], xv);
+		#pragma unroll
+		for ( uint32_t e = 0u; e < 8u; ++e )
+			sq = fmaf(xv[e], xv[e], sq);
+		const uint64_t k_elem = (uint64_t)kv * 8u;
+		#pragma unroll
+		for ( uint32_t m = 0u; m < MIXES; ++m )
+		{
+			const float4 f0 = __ldg((const float4 *)(fn + (uint64_t)m * FLAT + k_elem));
+			const float4 f1 = __ldg((const float4 *)(fn + (uint64_t)m * FLAT + k_elem + 4u));
+			dot[m] = fmaf(xv[0], f0.x, dot[m]);
+			dot[m] = fmaf(xv[1], f0.y, dot[m]);
+			dot[m] = fmaf(xv[2], f0.z, dot[m]);
+			dot[m] = fmaf(xv[3], f0.w, dot[m]);
+			dot[m] = fmaf(xv[4], f1.x, dot[m]);
+			dot[m] = fmaf(xv[5], f1.y, dot[m]);
+			dot[m] = fmaf(xv[6], f1.z, dot[m]);
+			dot[m] = fmaf(xv[7], f1.w, dot[m]);
+		}
+	}
+	#pragma unroll
+	for ( uint32_t m = 0u; m < MIXES; ++m )
+	{
+		float val = dot[m];
+		#pragma unroll
+		for ( uint32_t off = 16u; off > 0u; off >>= 1u )
+			val += __shfl_xor_sync(0xffffffffu, val, off);
+		if ( lane == 0u )
+			s_red[m][warp] = val;
+	}
+	{
+		float val = sq;
+		#pragma unroll
+		for ( uint32_t off = 16u; off > 0u; off >>= 1u )
+			val += __shfl_xor_sync(0xffffffffu, val, off);
+		if ( lane == 0u )
+			s_red[MIXES][warp] = val;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		float total[MIXES + 1u];
+		#pragma unroll
+		for ( uint32_t m = 0u; m <= MIXES; ++m )
+		{
+			total[m] = 0.0f;
+			#pragma unroll
+			for ( uint32_t w = 0u; w < WARPS; ++w )
+				total[m] += s_red[m][w];
+		}
+		LmHcMixGates<STREAMS, MIXES>(total, FLAT, base, scale, norm_epsilon, hc_epsilon, post_magnitude, s_w, post_out + (uint64_t)row * STREAMS);
+	}
+	__syncthreads();
+	const float w0 = s_w[0], w1 = s_w[1], w2 = s_w[2], w3 = s_w[3];
+	uint4 staged[VEC_SLOTS];
+	float total_sq = 0.0f;
+	#pragma unroll
+	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
+	{
+		const uint32_t v = slot * HY_THREADS + threadIdx.x;
+		float acc[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+		float sv[8];
+		LmLoadBf16x8AsFloat(s_st[0u * VECS + v], sv);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k ) acc[k] = fmaf(w0, sv[k], acc[k]);
+		LmLoadBf16x8AsFloat(s_st[1u * VECS + v], sv);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k ) acc[k] = fmaf(w1, sv[k], acc[k]);
+		LmLoadBf16x8AsFloat(s_st[2u * VECS + v], sv);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k ) acc[k] = fmaf(w2, sv[k], acc[k]);
+		LmLoadBf16x8AsFloat(s_st[3u * VECS + v], sv);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k ) acc[k] = fmaf(w3, sv[k], acc[k]);
+		staged[slot] = LmPackUint4FloatToBf16(acc);
+		float vals[8], sqv[8];
+		LmLoadBf16x8AsFloat(staged[slot], vals);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k )
+			sqv[k] = vals[k] * vals[k];
+		LmStoreFloat8(s_sq + threadIdx.x * 8u, sqv);
+		__syncthreads();
+		#pragma unroll
+		for ( uint32_t s = 0u; s < 8u; ++s )
+			total_sq += s_sq[s * HY_THREADS + threadIdx.x];
+		if ( slot + 1u < VEC_SLOTS )
+			__syncthreads();
+	}
+	const float inv = SparkMathRmsScale(LmBlockSumOnce<HY_THREADS>(total_sq, s_red[0]), (float)WIDTH, norm_epsilon);
+	uint4 *out4 = (uint4 *)(normed + (uint64_t)row * WIDTH);
+	#pragma unroll
+	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
+	{
+		const uint32_t v = slot * HY_THREADS + threadIdx.x;
+		float x[8], w[8], out[8];
+		LmLoadBf16x8AsFloat(staged[slot], x);
+		LmLoadWeight8(norm_weight, v * 8u, w);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k )
+			out[k] = SparkMathNormGainRounded(x[k] * inv, w[k]);
+		__stcs(out4 + v, LmPackUint4FloatToBf16(out));
+	}
+	LmDependentRelease();
+}
+
 template<bool FP8_F32>
 static __device__ __forceinline__ float HyLoadScale(const void *scales, uint64_t index)
 {
@@ -1594,7 +1766,7 @@ static void HyIndexScoreSkipKernel(const uint16_t *__restrict__ index_query_bf16
 
 static __device__ __forceinline__ void HyPrefillCopyL2(uint32_t destination, const void *source, uint32_t bytes)
 {
-	asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(destination), "l"(source), "r"(bytes) : "memory");
 }
 
 template<class Geometry, uint32_t HEADS, uint32_t LATENT, uint32_t ROPE, bool SPARSE>
@@ -2128,6 +2300,18 @@ static void HyMoeSwigluPackedKernel(const uint16_t *__restrict__ gate, const uin
 }
 
 template<uint32_t RG>
+static __device__ __forceinline__ void HyFp8AccumLoadedRows(uint4 weight, float scale, const LmSkinnyWide *acts, uint32_t cnt, float *acc)
+{
+	const LmSkinnyFormat<LmFp8>::Decoded dec = LmSkinnyFormat<LmFp8>::Decode(weight);
+	#pragma unroll
+	for ( uint32_t r = 0u; r < RG; ++r )
+	{
+		if ( r < cnt )
+			acc[r] = fmaf(scale, LmSkinnyFormat<LmFp8>::ChunkDecoded(dec, acts[r]), acc[r]);
+	}
+}
+
+template<uint32_t RG>
 static __device__ __forceinline__ void HyFp8AccumIndexedRows(uint4 weight, float scale, const uint16_t *activation, const uint32_t *src_row,
 	uint32_t stride, uint32_t c_off, uint32_t cnt, float *acc)
 {
@@ -2210,8 +2394,13 @@ static void HySharedGateUpSiluKernel(const void *__restrict__ weight, const void
 					constexpr bool FP8_F32 = CODEC == HY_CODEC_FP8_BLOCK128;
 					const uint32_t sc_idx = c >> SC_SHIFT;
 					const uint16_t *base = activation + (uint64_t)r_base * K + c * 16u;
-					HyFp8AccumContigRows<RG>(__ldcs(wg + c), HyLoadScale<FP8_F32>(scales, scg_base + sc_idx), base, K, cnt, ag);
-					HyFp8AccumContigRows<RG>(__ldcs(wu + c), HyLoadScale<FP8_F32>(scales, scu_base + sc_idx), base, K, cnt, au);
+					LmSkinnyWide acts[RG];
+					#pragma unroll
+					for ( uint32_t r = 0u; r < RG; ++r )
+						if ( r < cnt )
+							acts[r] = LmSkinnyFormat<LmFp8>::Load(base + (uint64_t)r * K);
+					HyFp8AccumLoadedRows<RG>(__ldcs(wg + c), HyLoadScale<FP8_F32>(scales, scg_base + sc_idx), acts, cnt, ag);
+					HyFp8AccumLoadedRows<RG>(__ldcs(wu + c), HyLoadScale<FP8_F32>(scales, scu_base + sc_idx), acts, cnt, au);
 				}
 			}
 			#pragma unroll
@@ -2346,10 +2535,15 @@ static void HyMoeFastW1W3SwigluKernel(const uint8_t *__restrict__ w1, const void
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const uint32_t c_off = c * 16u, sc_idx = c >> SC_SHIFT;
-					HyFp8AccumIndexedRows<RG>(__ldcs(w1_0 + c), HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, g0);
-					HyFp8AccumIndexedRows<RG>(__ldcs(w3_0 + c), HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, u0);
-					HyFp8AccumIndexedRows<RG>(__ldcs(w1_0 + w_off1 + c), HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, g1);
-					HyFp8AccumIndexedRows<RG>(__ldcs(w3_0 + w_off1 + c), HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx), activation, src_row, G::kHidden, c_off, cnt, u1);
+					LmSkinnyWide acts[RG];
+					#pragma unroll
+					for ( uint32_t r = 0u; r < RG; ++r )
+						if ( r < cnt )
+							acts[r] = LmSkinnyFormat<LmFp8>::Load(activation + (uint64_t)src_row[r] * G::kHidden + c_off);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w1_0 + c), HyLoadScale<FP8_F32>(s1, sc_base0 + sc_idx), acts, cnt, g0);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w3_0 + c), HyLoadScale<FP8_F32>(s3, sc_base0 + sc_idx), acts, cnt, u0);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w1_0 + w_off1 + c), HyLoadScale<FP8_F32>(s1, sc_base1 + sc_idx), acts, cnt, g1);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w3_0 + w_off1 + c), HyLoadScale<FP8_F32>(s3, sc_base1 + sc_idx), acts, cnt, u1);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -2492,10 +2686,15 @@ static void HyMoeFastW2Kernel(const uint8_t *__restrict__ w2, const void *__rest
 				{
 					const uint32_t sc_idx = c >> SC_SHIFT;
 					const uint16_t *cb = act_base + c * 16u;
-					HyFp8AccumContigRows<RG>(__ldcs(w0 + c), HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), cb, K, cnt, a0);
-					HyFp8AccumContigRows<RG>(__ldcs(w0 + wo1 + c), HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), cb, K, cnt, a1);
-					HyFp8AccumContigRows<RG>(__ldcs(w0 + wo2 + c), HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), cb, K, cnt, a2);
-					HyFp8AccumContigRows<RG>(__ldcs(w0 + wo3 + c), HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), cb, K, cnt, a3);
+					LmSkinnyWide acts[RG];
+					#pragma unroll
+					for ( uint32_t r = 0u; r < RG; ++r )
+						if ( r < cnt )
+							acts[r] = LmSkinnyFormat<LmFp8>::Load(cb + (uint64_t)r * K);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w0 + c), HyLoadScale<FP8_F32>(s2, sc_base0 + sc_idx), acts, cnt, a0);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w0 + wo1 + c), HyLoadScale<FP8_F32>(s2, sc_base1 + sc_idx), acts, cnt, a1);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w0 + wo2 + c), HyLoadScale<FP8_F32>(s2, sc_base2 + sc_idx), acts, cnt, a2);
+					HyFp8AccumLoadedRows<RG>(__ldcs(w0 + wo3 + c), HyLoadScale<FP8_F32>(s2, sc_base3 + sc_idx), acts, cnt, a3);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -2724,6 +2923,11 @@ static __device__ __forceinline__ void HyAdvanceStage(uint32_t &offset)
 	}
 }
 
+static __device__ __forceinline__ void HyCopyL2_256(uint32_t dst, const void *src, uint32_t bytes)
+{
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(dst), "l"(src), "r"(bytes) : "memory");
+}
+
 template<class Format, uint32_t MF, uint32_t NF, uint32_t A_ROW_BYTES, uint32_t B_ROW_BYTES, uint32_t WARP_N>
 static __device__ __forceinline__ void HyScaledTileMma(uint32_t stage_a, uint32_t stage_b, uint32_t ldm_a_row, uint32_t ldm_a_col,
 	uint32_t warp_n, uint32_t lane, uint32_t group, uint32_t neuron_base, uint32_t output_dim, uint32_t kt, const LmScaleTensor &scale,
@@ -2858,6 +3062,168 @@ static __device__ __forceinline__ void HyScaledTileMma(uint32_t stage_a, uint32_
 	}
 }
 
+template<class Format, uint32_t MF, uint32_t NF, uint32_t A_ROW_BYTES, uint32_t B_ROW_BYTES, uint32_t WARP_N>
+static __device__ __forceinline__ void HyScaledTileMmaDual(uint32_t stage_a, uint32_t stage_b1, uint32_t stage_b3, uint32_t ldm_a_row,
+	uint32_t ldm_a_col, uint32_t warp_n, uint32_t lane, uint32_t group, uint32_t neuron_base, uint32_t output_dim, uint32_t kt,
+	const LmScaleTensor &s1, const LmScaleTensor &s3, float g_tot[MF][NF][4], float u_tot[MF][NF][4])
+{
+	using Weight = LmStreamWeight<Format>;
+	constexpr bool PACK4_UE8M0 = LmStreamPack4Ue8m0<Format>();
+	const uint32_t quad_row = lane >> 2u, quad = lane & 3u;
+	if constexpr ( PACK4_UE8M0 )
+	{
+		uint32_t sp1[NF], sp3[NF];
+		#pragma unroll
+		for ( uint32_t j = 0u; j < NF; ++j )
+		{
+			const uint32_t col_b = neuron_base + warp_n * WARP_N + j * 8u + quad_row;
+			sp1[j] = col_b < output_dim ? LmStreamScalePack4(s1, group, col_b, kt * 4u) : 0u;
+			sp3[j] = col_b < output_dim ? LmStreamScalePack4(s3, group, col_b, kt * 4u) : 0u;
+		}
+		#pragma unroll
+		for ( uint32_t step = 0u; step < 4u; ++step )
+		{
+			uint32_t b1[NF][4], b3[NF][4];
+			if constexpr ( (NF % 2u) == 0u )
+			{
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; j += 2u )
+				{
+					HyMxfp8FragmentPairScaled<B_ROW_BYTES>(stage_b1, warp_n * WARP_N + j * 8u, step, lane,
+						(uint8_t)(sp1[j] & 0xffu), (uint8_t)(sp1[j + 1u] & 0xffu), b1[j], b1[j + 1u]);
+					HyMxfp8FragmentPairScaled<B_ROW_BYTES>(stage_b3, warp_n * WARP_N + j * 8u, step, lane,
+						(uint8_t)(sp3[j] & 0xffu), (uint8_t)(sp3[j + 1u] & 0xffu), b3[j], b3[j + 1u]);
+					sp1[j] >>= 8u;
+					sp1[j + 1u] >>= 8u;
+					sp3[j] >>= 8u;
+					sp3[j + 1u] >>= 8u;
+				}
+			}
+			else
+			{
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					HyMxfp8FragmentScaled<B_ROW_BYTES>(stage_b1, warp_n * WARP_N + j * 8u, step, lane, (uint8_t)(sp1[j] & 0xffu), b1[j]);
+					HyMxfp8FragmentScaled<B_ROW_BYTES>(stage_b3, warp_n * WARP_N + j * 8u, step, lane, (uint8_t)(sp3[j] & 0xffu), b3[j]);
+					sp1[j] >>= 8u;
+					sp3[j] >>= 8u;
+				}
+			}
+			uint32_t a_cur[4], a_nxt[4];
+			LmStreamLdMatrix4(a_cur, stage_a + ldm_a_row * A_ROW_BYTES + LmStreamSwizzle8(ldm_a_row, step * 4u + ldm_a_col) * 16u);
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+			{
+				const uint32_t row = ldm_a_row + i * 16u;
+				LmStreamLdMatrix4(a_nxt, stage_a + row * A_ROW_BYTES + LmStreamSwizzle8(row, step * 4u + 2u + ldm_a_col) * 16u);
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					uint32_t b1_lo[2] = { b1[j][0], b1[j][1] };
+					uint32_t b3_lo[2] = { b3[j][0], b3[j][1] };
+					LmMmaBf16(g_tot[i][j], a_cur, b1_lo);
+					LmMmaBf16(u_tot[i][j], a_cur, b3_lo);
+				}
+				if constexpr ( MF > 1u )
+				{
+					if ( i + 1u < MF )
+					{
+						const uint32_t next_row = ldm_a_row + (i + 1u) * 16u;
+						LmStreamLdMatrix4(a_cur, stage_a + next_row * A_ROW_BYTES + LmStreamSwizzle8(next_row, step * 4u + ldm_a_col) * 16u);
+					}
+				}
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					uint32_t b1_hi[2] = { b1[j][2], b1[j][3] };
+					uint32_t b3_hi[2] = { b3[j][2], b3[j][3] };
+					LmMmaBf16(g_tot[i][j], a_nxt, b1_hi);
+					LmMmaBf16(u_tot[i][j], a_nxt, b3_hi);
+				}
+			}
+		}
+	}
+	else
+	{
+		float gp[MF][NF][4], up[MF][NF][4];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+				gp[i][j][0] = gp[i][j][1] = gp[i][j][2] = gp[i][j][3] =
+					up[i][j][0] = up[i][j][1] = up[i][j][2] = up[i][j][3] = 0.0f;
+		#pragma unroll
+		for ( uint32_t step = 0u; step < 4u; ++step )
+		{
+			uint32_t b1[NF][4], b3[NF][4];
+			if constexpr ( (NF % 2u) == 0u )
+			{
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; j += 2u )
+				{
+					Weight::template FragmentPair<B_ROW_BYTES>(stage_b1, warp_n * WARP_N + j * 8u, step, lane, b1[j], b1[j + 1u]);
+					Weight::template FragmentPair<B_ROW_BYTES>(stage_b3, warp_n * WARP_N + j * 8u, step, lane, b3[j], b3[j + 1u]);
+				}
+			}
+			else
+			{
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					Weight::template Fragment<B_ROW_BYTES>(stage_b1, warp_n * WARP_N + j * 8u, step, lane, b1[j]);
+					Weight::template Fragment<B_ROW_BYTES>(stage_b3, warp_n * WARP_N + j * 8u, step, lane, b3[j]);
+				}
+			}
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+			{
+				const uint32_t row = ldm_a_row + i * 16u;
+				uint32_t a_frag[4];
+				LmStreamLdMatrix4(a_frag, stage_a + row * A_ROW_BYTES + LmStreamSwizzle8(row, step * 4u + ldm_a_col) * 16u);
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					uint32_t b1_lo[2] = { b1[j][0], b1[j][1] };
+					uint32_t b3_lo[2] = { b3[j][0], b3[j][1] };
+					LmMmaBf16(gp[i][j], a_frag, b1_lo);
+					LmMmaBf16(up[i][j], a_frag, b3_lo);
+				}
+				LmStreamLdMatrix4(a_frag, stage_a + row * A_ROW_BYTES + LmStreamSwizzle8(row, step * 4u + 2u + ldm_a_col) * 16u);
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+				{
+					uint32_t b1_hi[2] = { b1[j][2], b1[j][3] };
+					uint32_t b3_hi[2] = { b3[j][2], b3[j][3] };
+					LmMmaBf16(gp[i][j], a_frag, b1_hi);
+					LmMmaBf16(up[i][j], a_frag, b3_hi);
+				}
+			}
+		}
+		#pragma unroll
+		for ( uint32_t j = 0u; j < NF; ++j )
+		{
+			const uint32_t col = neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
+			const float sc10 = col < output_dim ? LmStreamScaleLoad<Format>(s1, group, col, kt) : 0.0f;
+			const float sc11 = col + 1u < output_dim ? LmStreamScaleLoad<Format>(s1, group, col + 1u, kt) : 0.0f;
+			const float sc30 = col < output_dim ? LmStreamScaleLoad<Format>(s3, group, col, kt) : 0.0f;
+			const float sc31 = col + 1u < output_dim ? LmStreamScaleLoad<Format>(s3, group, col + 1u, kt) : 0.0f;
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+			{
+				g_tot[i][j][0] = fmaf(gp[i][j][0], sc10, g_tot[i][j][0]);
+				g_tot[i][j][1] = fmaf(gp[i][j][1], sc11, g_tot[i][j][1]);
+				g_tot[i][j][2] = fmaf(gp[i][j][2], sc10, g_tot[i][j][2]);
+				g_tot[i][j][3] = fmaf(gp[i][j][3], sc11, g_tot[i][j][3]);
+				u_tot[i][j][0] = fmaf(up[i][j][0], sc30, u_tot[i][j][0]);
+				u_tot[i][j][1] = fmaf(up[i][j][1], sc31, u_tot[i][j][1]);
+				u_tot[i][j][2] = fmaf(up[i][j][2], sc30, u_tot[i][j][2]);
+				u_tot[i][j][3] = fmaf(up[i][j][3], sc31, u_tot[i][j][3]);
+			}
+		}
+	}
+}
+
 template<class G, class Format, uint32_t TILE_M, uint32_t WARPS_M, uint32_t WARPS_N, uint32_t STAGES>
 __global__ __launch_bounds__(WARPS_M * WARPS_N * 32u, TILE_M <= 32u ? 2 : 1)
 static void HyMoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleTensor s1, const uint8_t *__restrict__ w3, LmScaleTensor s3,
@@ -2948,7 +3314,7 @@ static void HyMoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleTens
 			{
 				const uint32_t chunk = threadIdx.x + q * THREADS;
 				const uint32_t r = chunk / A_ROW_CHUNKS, c = chunk % A_ROW_CHUNKS;
-				LmStreamCopy(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], ((a_mask >> q) & 1u) << 4u);
+				HyCopyL2_256(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], ((a_mask >> q) & 1u) << 4u);
 				a_src[q] += TILE_K;
 			}
 			#pragma unroll
@@ -2956,8 +3322,8 @@ static void HyMoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleTens
 			{
 				const uint32_t r = b_row0 + q * b_row_step;
 				const uint32_t off = Weight::template Offset<B_ROW_BYTES>(r, b_col0);
-				LmStreamCopy(stage + A_BYTES + off, b1_base + q * b_ptr_step, 16u);
-				LmStreamCopy(stage + A_BYTES + B_BYTES + off, b3_base + q * b_ptr_step, 16u);
+				HyCopyL2_256(stage + A_BYTES + off, b1_base + q * b_ptr_step, 16u);
+				HyCopyL2_256(stage + A_BYTES + B_BYTES + off, b3_base + q * b_ptr_step, 16u);
 			}
 			b1_base += TILE_K;
 			b3_base += TILE_K;
@@ -2991,10 +3357,8 @@ static void HyMoeMmaW1W3SwigluKernel(const uint8_t *__restrict__ w1, LmScaleTens
 			}
 			LmStreamCommit();
 			const uint32_t stage_a = shared_base + sc_off;
-			HyScaledTileMma<Format, MF, NF, A_ROW_BYTES, B_ROW_BYTES, WARP_N>(stage_a, stage_a + A_BYTES, ldm_a_row, ldm_a_col, warp_n, lane, exp,
-				neuron_base, N, kt, s1, g_tot);
-			HyScaledTileMma<Format, MF, NF, A_ROW_BYTES, B_ROW_BYTES, WARP_N>(stage_a, stage_a + A_BYTES + B_BYTES, ldm_a_row, ldm_a_col, warp_n, lane,
-				exp, neuron_base, N, kt, s3, u_tot);
+			HyScaledTileMmaDual<Format, MF, NF, A_ROW_BYTES, B_ROW_BYTES, WARP_N>(stage_a, stage_a + A_BYTES, stage_a + A_BYTES + B_BYTES,
+				ldm_a_row, ldm_a_col, warp_n, lane, exp, neuron_base, N, kt, s1, s3, g_tot, u_tot);
 			HyAdvanceStage<STAGES, STAGE_BYTES>(sc_off);
 		}
 		LmStreamWait<0u>();
@@ -3107,14 +3471,14 @@ static void HyMoeMmaW2Kernel(const uint8_t *__restrict__ w2, LmScaleTensor s2, c
 			{
 				const uint32_t chunk = threadIdx.x + q * THREADS;
 				const uint32_t r = chunk / A_ROW_CHUNKS, c = chunk % A_ROW_CHUNKS;
-				LmStreamCopy(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], ((a_mask >> q) & 1u) << 4u);
+				HyCopyL2_256(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], ((a_mask >> q) & 1u) << 4u);
 				a_src[q] += TILE_K;
 			}
 			#pragma unroll
 			for ( uint32_t q = 0u; q < B_PER_THREAD; ++q )
 			{
 				const uint32_t r = b_row0 + q * b_row_step;
-				LmStreamCopy(stage + A_BYTES + Weight::template Offset<B_ROW_BYTES>(r, b_col0), b_base + q * b_ptr_step, 16u);
+				HyCopyL2_256(stage + A_BYTES + Weight::template Offset<B_ROW_BYTES>(r, b_col0), b_base + q * b_ptr_step, 16u);
 			}
 			b_base += TILE_K;
 		};
@@ -3168,6 +3532,132 @@ static void HyMoeMmaW2Kernel(const uint8_t *__restrict__ w2, LmScaleTensor s2, c
 		if ( tile + gridDim.x < total_tiles )
 			__syncthreads();
 	}
+	LmDependentRelease();
+}
+
+struct HyMultiLinearArgs
+{
+	const uint8_t *w[4];
+	LmScaleTensor sc[4];
+	uint16_t *out[4];
+	uint32_t n[4];
+	uint32_t tprefix[5];
+	uint32_t count;
+};
+
+template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N, uint32_t STAGES>
+__global__ __launch_bounds__(256u, (STAGES * (TILE_M * 256u + TILE_N * 128u) <= 49152u) ? 2 : 1)
+static void HyMultiLinearMmaKernel(HyMultiLinearArgs args, const uint16_t *__restrict__ activation, uint32_t rows, uint32_t K)
+{
+	using Weight = LmStreamWeight<Format>;
+	constexpr uint32_t TILE_K = 128u, THREADS = 256u;
+	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
+	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t A_ROW_BYTES = 256u, A_ROW_CHUNKS = 16u, B_ROW_BYTES = 128u, B_ROW_CHUNKS = 8u;
+	constexpr uint32_t A_BYTES = TILE_M * A_ROW_BYTES, B_BYTES = TILE_N * B_ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
+	constexpr uint32_t A_PER_THREAD = (TILE_M * A_ROW_CHUNKS) / THREADS, B_PER_THREAD = (TILE_N * B_ROW_CHUNKS) / THREADS;
+	extern __shared__ __align__(128) uint8_t hy_mlin_smem[];
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(hy_mlin_smem);
+	const uint32_t n_tile_global = blockIdx.x, row_base = blockIdx.y * TILE_M;
+	LmDependentWait();
+	if ( row_base >= rows )
+	{
+		LmDependentRelease();
+		return;
+	}
+	uint32_t tgt = 0u;
+	#pragma unroll
+	for ( uint32_t t = 1u; t < 4u; ++t )
+		if ( t < args.count && n_tile_global >= args.tprefix[t] )
+			tgt = t;
+	const uint32_t neuron_base = (n_tile_global - args.tprefix[tgt]) * TILE_N, N = args.n[tgt];
+	const uint8_t *weight = args.w[tgt];
+	const LmScaleTensor scale = args.sc[tgt];
+	uint16_t *output = args.out[tgt];
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
+	const uint32_t b_row0 = threadIdx.x / B_ROW_CHUNKS, b_col0 = threadIdx.x % B_ROW_CHUNKS, b_row_step = THREADS / B_ROW_CHUNKS;
+	const uint64_t b_ptr_step = (uint64_t)b_row_step * K;
+	const uint32_t ldm_a_row = warp_m * WARP_M + (lane & 15u), ldm_a_col = (lane >> 4u) & 1u, k_tiles = K / TILE_K;
+	const uint16_t *a_src[A_PER_THREAD];
+	uint32_t a_mask = 0u, b_mask = 0u;
+	#pragma unroll
+	for ( uint32_t q = 0u; q < A_PER_THREAD; ++q )
+	{
+		const uint32_t chunk = threadIdx.x + q * THREADS, r = chunk / A_ROW_CHUNKS, c = chunk % A_ROW_CHUNKS;
+		const uint32_t row = row_base + r, valid = row < rows ? 1u : 0u;
+		a_src[q] = activation + (uint64_t)(valid != 0u ? row : 0u) * K + c * 8u;
+		a_mask |= valid << q;
+	}
+	#pragma unroll
+	for ( uint32_t q = 0u; q < B_PER_THREAD; ++q )
+		if ( neuron_base + b_row0 + q * b_row_step < N )
+			b_mask |= 1u << q;
+	const uint8_t *b_base = weight + (uint64_t)(neuron_base + b_row0) * K + b_col0 * 16u;
+	auto issue_k = [&](uint32_t st_off)
+	{
+		const uint32_t stage = shared_base + st_off;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < A_PER_THREAD; ++q )
+		{
+			const uint32_t chunk = threadIdx.x + q * THREADS, r = chunk / A_ROW_CHUNKS, c = chunk % A_ROW_CHUNKS;
+			HyCopyL2_256(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], ((a_mask >> q) & 1u) << 4u);
+			a_src[q] += TILE_K;
+		}
+		#pragma unroll
+		for ( uint32_t q = 0u; q < B_PER_THREAD; ++q )
+		{
+			const uint32_t r = b_row0 + q * b_row_step;
+			const uint32_t bytes = ((b_mask >> q) & 1u) << 4u;
+			HyCopyL2_256(stage + A_BYTES + Weight::template Offset<B_ROW_BYTES>(r, b_col0), bytes != 0u ? b_base + q * b_ptr_step : weight, bytes);
+		}
+		b_base += TILE_K;
+	};
+	float total[MF][NF][4];
+	#pragma unroll
+	for ( uint32_t i = 0u; i < MF; ++i )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < NF; ++j )
+			total[i][j][0] = total[i][j][1] = total[i][j][2] = total[i][j][3] = 0.0f;
+	uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+	#pragma unroll
+	for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+	{
+		if ( kp < k_tiles )
+			issue_k(sp_off);
+		LmStreamCommit();
+		kp++;
+		HyAdvanceStage<STAGES, STAGE_BYTES>(sp_off);
+	}
+	for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+	{
+		LmStreamWait<STAGES - 2u>();
+		__syncthreads();
+		if ( kp < k_tiles )
+		{
+			issue_k(sp_off);
+			kp++;
+			HyAdvanceStage<STAGES, STAGE_BYTES>(sp_off);
+		}
+		LmStreamCommit();
+		const uint32_t stage_a = shared_base + sc_off;
+		HyScaledTileMma<Format, MF, NF, A_ROW_BYTES, B_ROW_BYTES, WARP_N>(stage_a, stage_a + A_BYTES, ldm_a_row, ldm_a_col, warp_n, lane, 0u,
+			neuron_base, N, kt, scale, total);
+		HyAdvanceStage<STAGES, STAGE_BYTES>(sc_off);
+	}
+	LmStreamWait<0u>();
+	#pragma unroll
+	for ( uint32_t i = 0u; i < MF; ++i )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < NF; ++j )
+			#pragma unroll
+			for ( uint32_t e = 0u; e < 4u; e += 2u )
+			{
+				const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
+				const uint32_t col = neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
+				if ( r < rows && col + 1u < N )
+					*(uint32_t *)(output + (uint64_t)r * N + col) = LmPackBf16Pair(total[i][j][e], total[i][j][e + 1u]);
+			}
 	LmDependentRelease();
 }
 
@@ -3229,6 +3719,62 @@ struct HyModel : CudaStage<HyModel<G>>
 		return step->commit != 0u && step->last_rows_only != 0u && step->sequences == 1u && step->tree == 0u;
 	}
 
+	template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N, uint32_t STAGES>
+	static int32_t LaunchMultiLinearMma(const HyMultiLinearArgs &args, const uint16_t *source, uint32_t rows, uint32_t K, SparkGpuStream stream)
+	{
+		static std::atomic<uint64_t> granted(0u);
+		constexpr uint32_t SMEM_BYTES = STAGES * (TILE_M * 256u + TILE_N * 128u);
+		int dev = 0;
+		if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+		if ( (granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
+		{
+			if constexpr ( SMEM_BYTES > 49152u )
+			{
+				if ( SparkGpuFuncSetAttribute((const void *)HyMultiLinearMmaKernel<Format, TILE_M, TILE_N, WARPS_M, WARPS_N, STAGES>,
+						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)SMEM_BYTES) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+			}
+			granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
+		}
+		const dim3 grid(args.tprefix[args.count], (rows + TILE_M - 1u) / TILE_M);
+		(void)LM_LAUNCH_DEPENDENT((HyMultiLinearMmaKernel<Format, TILE_M, TILE_N, WARPS_M, WARPS_N, STAGES>), grid, 256u, SMEM_BYTES, stream,
+			args, source, rows, K);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	template<class Format>
+	static int32_t DispatchMultiLinearMma(const HyScaled *weights, uint16_t *const *dests, const uint32_t *dims, uint32_t count,
+		const uint16_t *source, uint32_t rows, uint32_t K, SparkGpuStream stream)
+	{
+		uint32_t n64 = 0u, n128 = 0u;
+		for ( uint32_t t = 0u; t < count; ++t )
+		{
+			n64 += (dims[t] + 63u) / 64u;
+			n128 += (dims[t] + 127u) / 128u;
+		}
+		const bool use_128 = rows > 96u && n128 * ((rows + 127u) / 128u) >= 48u;
+		const uint32_t tile_n = use_128 ? 128u : 64u;
+		HyMultiLinearArgs args = {};
+		args.count = count;
+		args.tprefix[0] = 0u;
+		for ( uint32_t t = 0u; t < count; ++t )
+		{
+			args.w[t] = (const uint8_t *)weights[t].weight;
+			args.sc[t] = Scales(weights[t], 1u, dims[t], K);
+			args.out[t] = dests[t];
+			args.n[t] = dims[t];
+			args.tprefix[t + 1u] = args.tprefix[t] + (dims[t] + tile_n - 1u) / tile_n;
+		}
+		if ( use_128 )
+			return LaunchMultiLinearMma<Format, 128u, 128u, 2u, 4u, 2u>(args, source, rows, K, stream);
+		if ( rows <= 16u )
+			return LaunchMultiLinearMma<Format, 16u, 64u, 1u, 8u, 3u>(args, source, rows, K, stream);
+		if ( rows <= 48u || n64 * ((rows + 63u) / 64u) < 48u )
+			return LaunchMultiLinearMma<Format, 32u, 64u, 2u, 4u, 3u>(args, source, rows, K, stream);
+		return LaunchMultiLinearMma<Format, 64u, 64u, 2u, 4u, 2u>(args, source, rows, K, stream);
+	}
+
 	static int32_t Linear(const HyScaled &weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream, uint32_t skip_max_context = 0u)
 	{
@@ -3246,6 +3792,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		}
 		if ( force_stream )
 		{
+			if ( weight.codec == HY_CODEC_MXFP8 && input_dimension >= 2048u && (input_dimension % 128u) == 0u &&
+				output_dimension >= 1536u && (output_dimension & 1u) == 0u )
+			{
+				const HyScaled w1[1] = { weight };
+				uint16_t *d1[1] = { destination };
+				const uint32_t n1[1] = { output_dimension };
+				return DispatchMultiLinearMma<LmMxfp8>(w1, d1, n1, 1u, source, rows, input_dimension, stream);
+			}
 			int32_t status;
 			if ( weight.codec == HY_CODEC_BF16 )
 				status = LmStreamGemmDense<LmBf16Format>(weight.weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
@@ -3402,6 +3956,35 @@ struct HyModel : CudaStage<HyModel<G>>
 					idx_k_done = add_ik;
 				}
 			}
+		}
+		else if ( (prefill || (exact == 0u && rows > 8u)) && layer->q_a.codec != HY_CODEC_BF16 && layer->q_a.codec == layer->kv_a.codec &&
+			(G::kHidden % 128u) == 0u )
+		{
+			HyScaled ws[4];
+			uint16_t *ds[4];
+			uint32_t ns[4];
+			uint32_t count = 0u;
+			ws[count] = layer->q_a; ds[count] = state->q_resid; ns[count++] = G::kQLora;
+			ws[count] = layer->kv_a; ds[count] = state->kv; ns[count++] = S::kSlot;
+			const bool add_gate = layer->gate.codec == layer->q_a.codec;
+			if ( add_gate )
+			{
+				ws[count] = layer->gate; ds[count] = state->gate; ns[count++] = S::kRankHeads * G::kValueDim;
+			}
+			const bool add_ik = has_idx && layer->index_k.codec == layer->q_a.codec;
+			if ( add_ik )
+			{
+				ws[count] = layer->index_k; ds[count] = state->index_k; ns[count++] = G::kIndexDim;
+			}
+			const int32_t status = layer->q_a.codec == HY_CODEC_FP8_BLOCK128 ?
+				DispatchMultiLinearMma<LmFp8>(ws, ds, ns, count, state->normed, rows, G::kHidden, stream) :
+				DispatchMultiLinearMma<LmMxfp8>(ws, ds, ns, count, state->normed, rows, G::kHidden, stream);
+			if ( status != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			q_kv_done = true;
+			kv_done = true;
+			gate_done = add_gate;
+			idx_k_done = add_ik;
 		}
 		else if ( !prefill && exact == 0u && rows <= 16u && has_idx && layer->kv_a.codec == layer->index_k.codec )
 		{
@@ -4100,6 +4683,28 @@ struct HyModel : CudaStage<HyModel<G>>
 		const float *hc_scale = ffn ? layer.mlp_hc_scale : layer.attn_hc_scale;
 		const float *hc_base = ffn ? layer.mlp_hc_base : layer.attn_hc_base;
 		const uint16_t *norm_w = ffn ? layer.post_norm : layer.input_norm;
+		if constexpr ( G::kStreams == 4u && (G::kHidden % (HY_THREADS * 8u)) == 0u )
+		{
+			if ( rows > 512u )
+			{
+				static std::atomic<uint64_t> hc_granted(0u);
+				constexpr uint32_t HC_SMEM = G::kStreams * G::kHidden * (uint32_t)sizeof(uint16_t);
+				int dev = 0;
+				if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				if ( (hc_granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
+				{
+					if ( SparkGpuFuncSetAttribute((const void *)HyHcFusedSinglePassKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST>,
+							SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)HC_SMEM) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					hc_granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
+				}
+				(void)LM_LAUNCH_DEPENDENT((HyHcFusedSinglePassKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST>), rows, HY_THREADS, HC_SMEM,
+					frame.stream, state->streams, state->hc_post, state->partial, fn, hc_base, hc_scale, state->hc_post, norm_w, state->normed,
+					G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude);
+				return CudaStageLaunched();
+			}
+		}
 		float *hc_buf = rows <= LM_HC_MIX_SPLIT_ROWS ? state->hc_partial : (float *)state->expert_out;
 		if ( rows <= 16u )
 			(void)LM_LAUNCH_DEPENDENT((HyHcPostDotSmallKernel<G::kStreams, 2u * G::kStreams, G::kHidden, HAS_POST>), dim3(rows, 16u), 128u, 0,
