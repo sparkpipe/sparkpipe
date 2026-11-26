@@ -29,6 +29,7 @@
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_gemma4_family.h"
 #include "sparkpipe/spark_gpu.h"
+#include "gemma4_fast.cuh"
 
 #define GM_THREADS 256u
 
@@ -123,14 +124,6 @@ static __device__ __forceinline__ float GemmaWarpSum(float value)
 	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
 		value += __shfl_down_sync(0xffffffffu, value, offset);
 	return __shfl_sync(0xffffffffu, value, 0u);
-}
-
-static __device__ __forceinline__ float GemmaHalfWarpSum(float value)
-{
-	#pragma unroll
-	for ( uint32_t offset = 8u; offset > 0u; offset >>= 1u )
-		value += __shfl_down_sync(0xffffffffu, value, offset);
-	return value;
 }
 
 template<uint32_t LOCAL_V>
@@ -280,6 +273,7 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t task = blockIdx.x * WARPS + warp, row = blockIdx.y;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( task < TASKS && row < rows )
 	{
 		const uint4 *gathered4 = (const uint4 *)gathered;
@@ -364,7 +358,6 @@ static void GemmaAttnPrepStoreKernel(const uint16_t *__restrict__ gathered, cons
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<class G, bool FULL>
@@ -391,13 +384,21 @@ static void GemmaAttnPrepStoreLocalKernel(const uint16_t *__restrict__ gathered,
 	constexpr bool DO_ROPE = !FULL || G::kFullRope;
 	constexpr bool KEY_IS_VAL = FULL && G::kKeyIsValue;
 	constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
-	const uint32_t tasks = rank_heads + 2u * KVH;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t task = blockIdx.x * WARPS + warp, row = blockIdx.y;
+	const uint32_t row = blockIdx.x;
 	LmDependentWait();
-	if ( task < tasks && row < rows )
+	LmDependentRelease();
+	if ( row >= rows )
+		return;
+	const uint4 *gathered4 = (const uint4 *)gathered;
+	const float fpos = (float)__ldg(positions + row);
+	const uint32_t store_pos = __ldg(store_positions + row);
+	const bool owns = SparkKvShardOwns(kv_view.shard, store_pos) != 0u;
+	uint16_t *slot = owns ? (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, __ldg(sequence_of_row + row), store_pos, row, LM_KV_ACCESS_WRITE) : (uint16_t *)0;
+	const uint32_t active_kvh = owns ? KVH : local_kvh;
+	const uint32_t total_tasks = rank_heads + 2u * active_kvh;
+	for ( uint32_t task = warp; task < total_tasks; task += WARPS )
 	{
-		const uint4 *gathered4 = (const uint4 *)gathered;
 		if ( task < rank_heads )
 		{
 			const uint32_t h = q_first + task;
@@ -411,7 +412,7 @@ static void GemmaAttnPrepStoreLocalKernel(const uint16_t *__restrict__ gathered,
 			}
 			GemmaHeadNormVec<HD, G::kQkNormWeighted, G::kNormRoundFirst>(in_v, q_norm, out_v, lane, G::kNormEpsilon, G::kQueryMultiply);
 			if constexpr ( DO_ROPE )
-				GemmaRopeInReg<HD, ROPE_W, ROT_PAIRS, FULL>(out_v, inv_freq, (float)__ldg(positions + row), FULL ? G::kFullRopeScale : 1.0f, lane);
+				GemmaRopeInReg<HD, ROPE_W, ROT_PAIRS, FULL>(out_v, inv_freq, fpos, FULL ? G::kFullRopeScale : 1.0f, lane);
 			uint4 *q4 = (uint4 *)query_out + ((uint64_t)row * rank_heads + task) * HD_V;
 			#pragma unroll
 			for ( uint32_t s = 0u; s < SLOTS; ++s )
@@ -421,96 +422,85 @@ static void GemmaAttnPrepStoreLocalKernel(const uint16_t *__restrict__ gathered,
 					q4[c] = out_v[s];
 			}
 		}
-		else if ( task < rank_heads + KVH )
+		else if ( task < rank_heads + active_kvh )
 		{
-			const uint32_t kh = task - rank_heads;
-			const uint32_t store_pos = __ldg(store_positions + row);
-			const bool owns = SparkKvShardOwns(kv_view.shard, store_pos) != 0u;
+			const uint32_t idx = task - rank_heads;
+			const uint32_t kh = owns ? idx : (kv_first + idx);
 			const bool need = kh >= kv_first && kh < kv_first + local_kvh;
-			if ( owns || need )
+			uint4 in_v[SLOTS], out_v[SLOTS];
+			#pragma unroll
+			for ( uint32_t s = 0u; s < SLOTS; ++s )
 			{
-				uint16_t *slot = owns ? (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, __ldg(sequence_of_row + row), store_pos, row, LM_KV_ACCESS_WRITE) : (uint16_t *)0;
-				uint4 in_v[SLOTS], out_v[SLOTS];
+				const uint32_t c = s * 32u + lane;
+				if ( c < HD_V )
+					in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, Q_V + kh * HD_V + c);
+			}
+			GemmaHeadNormVec<HD, G::kQkNormWeighted, G::kNormRoundFirst>(in_v, k_norm, out_v, lane, G::kNormEpsilon, 1.0f);
+			if constexpr ( DO_ROPE )
+				GemmaRopeInReg<HD, ROPE_W, ROT_PAIRS, FULL>(out_v, inv_freq, fpos, FULL ? G::kFullRopeScale : 1.0f, lane);
+			if ( slot != 0 )
+			{
+				uint4 *k4 = (uint4 *)slot + kh * HD_V;
 				#pragma unroll
 				for ( uint32_t s = 0u; s < SLOTS; ++s )
 				{
 					const uint32_t c = s * 32u + lane;
 					if ( c < HD_V )
-						in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, Q_V + kh * HD_V + c);
+						k4[c] = out_v[s];
 				}
-				GemmaHeadNormVec<HD, G::kQkNormWeighted, G::kNormRoundFirst>(in_v, k_norm, out_v, lane, G::kNormEpsilon, 1.0f);
-				if constexpr ( DO_ROPE )
-					GemmaRopeInReg<HD, ROPE_W, ROT_PAIRS, FULL>(out_v, inv_freq, (float)__ldg(positions + row), FULL ? G::kFullRopeScale : 1.0f, lane);
-				if ( slot != 0 )
+			}
+			if ( need )
+			{
+				uint4 *ck4 = (uint4 *)kv_cur + (((uint64_t)(kh - kv_first) * rows + row) * 2u) * HD_V;
+				#pragma unroll
+				for ( uint32_t s = 0u; s < SLOTS; ++s )
 				{
-					uint4 *k4 = (uint4 *)slot + kh * HD_V;
-					#pragma unroll
-					for ( uint32_t s = 0u; s < SLOTS; ++s )
-					{
-						const uint32_t c = s * 32u + lane;
-						if ( c < HD_V )
-							k4[c] = out_v[s];
-					}
-				}
-				if ( need )
-				{
-					uint4 *ck4 = (uint4 *)kv_cur + (((uint64_t)(kh - kv_first) * rows + row) * 2u) * HD_V;
-					#pragma unroll
-					for ( uint32_t s = 0u; s < SLOTS; ++s )
-					{
-						const uint32_t c = s * 32u + lane;
-						if ( c < HD_V )
-							ck4[c] = out_v[s];
-					}
+					const uint32_t c = s * 32u + lane;
+					if ( c < HD_V )
+						ck4[c] = out_v[s];
 				}
 			}
 		}
 		else
 		{
-			const uint32_t vh = task - rank_heads - KVH;
-			const uint32_t store_pos = __ldg(store_positions + row);
-			const bool owns = SparkKvShardOwns(kv_view.shard, store_pos) != 0u;
+			const uint32_t idx = task - rank_heads - active_kvh;
+			const uint32_t vh = owns ? idx : (kv_first + idx);
 			const bool need = vh >= kv_first && vh < kv_first + local_kvh;
-			if ( owns || need )
+			const uint32_t src_base = (KEY_IS_VAL ? Q_V : Q_V + KV_V) + vh * HD_V;
+			uint4 in_v[SLOTS], out_v[SLOTS];
+			#pragma unroll
+			for ( uint32_t s = 0u; s < SLOTS; ++s )
 			{
-				uint16_t *slot = owns ? (uint16_t *)LmKvShardSlotRequired<Kv>(kv_view, __ldg(sequence_of_row + row), store_pos, row, LM_KV_ACCESS_WRITE) : (uint16_t *)0;
-				const uint32_t src_base = (KEY_IS_VAL ? Q_V : Q_V + KV_V) + vh * HD_V;
-				uint4 in_v[SLOTS], out_v[SLOTS];
+				const uint32_t c = s * 32u + lane;
+				if ( c < HD_V )
+					in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, src_base + c);
+			}
+			if constexpr ( G::kValueNorm )
+				GemmaHeadNormVec<HD, false, false>(in_v, (const float *)0, out_v, lane, G::kNormEpsilon, 1.0f);
+			if ( slot != 0 )
+			{
+				uint4 *v4 = (uint4 *)slot + KV_V + vh * HD_V;
 				#pragma unroll
 				for ( uint32_t s = 0u; s < SLOTS; ++s )
 				{
 					const uint32_t c = s * 32u + lane;
 					if ( c < HD_V )
-						in_v[s] = GemmaLoadRankMajor8Const<LOCAL_V>(gathered4, rows, row, src_base + c);
+						v4[c] = G::kValueNorm ? out_v[s] : in_v[s];
 				}
-				if constexpr ( G::kValueNorm )
-					GemmaHeadNormVec<HD, false, false>(in_v, (const float *)0, out_v, lane, G::kNormEpsilon, 1.0f);
-				if ( slot != 0 )
+			}
+			if ( need )
+			{
+				uint4 *cv4 = (uint4 *)kv_cur + (((uint64_t)(vh - kv_first) * rows + row) * 2u + 1u) * HD_V;
+				#pragma unroll
+				for ( uint32_t s = 0u; s < SLOTS; ++s )
 				{
-					uint4 *v4 = (uint4 *)slot + KV_V + vh * HD_V;
-					#pragma unroll
-					for ( uint32_t s = 0u; s < SLOTS; ++s )
-					{
-						const uint32_t c = s * 32u + lane;
-						if ( c < HD_V )
-							v4[c] = G::kValueNorm ? out_v[s] : in_v[s];
-					}
-				}
-				if ( need )
-				{
-					uint4 *cv4 = (uint4 *)kv_cur + (((uint64_t)(vh - kv_first) * rows + row) * 2u + 1u) * HD_V;
-					#pragma unroll
-					for ( uint32_t s = 0u; s < SLOTS; ++s )
-					{
-						const uint32_t c = s * 32u + lane;
-						if ( c < HD_V )
-							cv4[c] = G::kValueNorm ? out_v[s] : in_v[s];
-					}
+					const uint32_t c = s * 32u + lane;
+					if ( c < HD_V )
+						cv4[c] = G::kValueNorm ? out_v[s] : in_v[s];
 				}
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 #define GM_PREFILL_MAX_SEQS 64u
@@ -540,8 +530,11 @@ static void GemmaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__re
 {
 	constexpr uint32_t HD_V = HD >> 3u;
 	constexpr uint32_t KV_V = KVH * HD_V;
-	const uint32_t k_idx = blockIdx.x, lh = blockIdx.y, s = blockIdx.z;
+	constexpr uint32_t WARPS = GM_THREADS / 32u;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t k_idx = blockIdx.x * WARPS + warp, lh = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( s < plan.count && k_idx < plan.prior_keys[s] && lh < local_kvh )
 	{
 		const uint32_t seq = plan.count == 1u ? __ldg(sequence_of_row) : plan.seq_id[s];
@@ -554,14 +547,13 @@ static void GemmaPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__re
 			const uint4 *vs = (const uint4 *)slot + KV_V + kh * HD_V;
 			uint4 *kd = (uint4 *)kv_prior + (((uint64_t)lh * plan.total_prior + (plan.prior_off[s] + k_idx)) * 2u) * HD_V;
 			uint4 *vd = kd + HD_V;
-			for ( uint32_t c = threadIdx.x; c < HD_V; c += GM_THREADS )
+			for ( uint32_t c = lane; c < HD_V; c += 32u )
 			{
 				kd[c] = __ldg(ks + c);
 				vd[c] = __ldg(vs + c);
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<class Kv, uint32_t KVH, uint32_t HD>
@@ -572,8 +564,11 @@ static void GemmaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__rest
 {
 	constexpr uint32_t HD_V = HD >> 3u;
 	constexpr uint32_t KV_V = KVH * HD_V;
-	const uint32_t idx = blockIdx.x, peer = blockIdx.y, s = blockIdx.z;
+	constexpr uint32_t WARPS = GM_THREADS / 32u;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t idx = blockIdx.x * WARPS + warp, peer = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( s < plan.count && idx < plan.peer_keys[s] && peer < kv_view.shard.degree )
 	{
 		const uint32_t degree = kv_view.shard.degree, grain = kv_view.shard.grain, my_rank = kv_view.shard.rank;
@@ -595,7 +590,7 @@ static void GemmaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__rest
 					const uint4 *vs = (const uint4 *)slot + KV_V + kh * HD_V;
 					uint4 *kd = peer_dst + (((uint64_t)lh * plan.total_peer + (plan.peer_off[s] + idx)) * 2u) * HD_V;
 					uint4 *vd = kd + HD_V;
-					for ( uint32_t c = threadIdx.x; c < HD_V; c += GM_THREADS )
+					for ( uint32_t c = lane; c < HD_V; c += 32u )
 					{
 						kd[c] = __ldg(ks + c);
 						vd[c] = __ldg(vs + c);
@@ -604,7 +599,6 @@ static void GemmaPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__rest
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<uint32_t HD>
@@ -613,8 +607,11 @@ static void GemmaPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restri
 	const __grid_constant__ GemmaPrefillSeqPlan plan, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t HD_V = HD >> 3u;
-	const uint32_t idx = blockIdx.x, src_rank = blockIdx.y, s = blockIdx.z;
+	constexpr uint32_t WARPS = GM_THREADS / 32u;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t idx = blockIdx.x * WARPS + warp, src_rank = blockIdx.y, s = blockIdx.z;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( s < plan.count && idx < plan.peer_keys[s] && src_rank < shard.degree )
 	{
 		const uint32_t degree = shard.degree, grain = shard.grain;
@@ -629,12 +626,11 @@ static void GemmaPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restri
 			{
 				const uint4 *s4 = src_base + (((uint64_t)lh * plan.total_peer + (plan.peer_off[s] + idx)) * 2u) * HD_V;
 				uint4 *d4 = (uint4 *)kv_prior + (((uint64_t)lh * plan.total_prior + (plan.prior_off[s] + k_idx)) * 2u) * HD_V;
-				for ( uint32_t c = threadIdx.x; c < 2u * HD_V; c += GM_THREADS )
+				for ( uint32_t c = lane; c < 2u * HD_V; c += 32u )
 					d4[c] = __ldg(s4 + c);
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<uint32_t HD>
@@ -643,11 +639,17 @@ static __host__ __device__ constexpr uint32_t GemmaLocalPrefillKvTile(void)
 	return HD <= 128u ? 64u : 32u;
 }
 
-template<uint32_t HD>
+template<uint32_t HD, uint32_t Q_WARPS_OVR = 0u>
+static __host__ __device__ constexpr uint32_t GemmaLocalPrefillQWarps(void)
+{
+	return Q_WARPS_OVR != 0u ? Q_WARPS_OVR : (HD <= 128u ? 4u : 2u);
+}
+
+template<uint32_t HD, uint32_t Q_WARPS_OVR = 0u>
 static __host__ __device__ constexpr uint32_t GemmaLocalPrefillSharedBytes(void)
 {
 	constexpr uint32_t V_WARPS = HD <= 128u ? 1u : (HD / 128u);
-	constexpr uint32_t Q_WARPS = V_WARPS == 1u ? 4u : 2u;
+	constexpr uint32_t Q_WARPS = GemmaLocalPrefillQWarps<HD, Q_WARPS_OVR>();
 	constexpr uint32_t KV_TILE = GemmaLocalPrefillKvTile<HD>();
 	constexpr uint32_t ROW_BYTES = HD * 2u;
 	constexpr uint32_t KV_BYTES = 2u * KV_TILE * ROW_BYTES;
@@ -655,16 +657,16 @@ static __host__ __device__ constexpr uint32_t GemmaLocalPrefillSharedBytes(void)
 	return KV_BYTES + SCORE_BYTES;
 }
 
-template<uint32_t HD>
-__global__ __launch_bounds__((HD <= 128u ? 128u : (HD <= 256u ? 128u : 256u)), HD <= 256u ? 2 : 1)
+template<uint32_t HD, uint32_t Q_WARPS_OVR = 0u, uint32_t GATE_MODE = 0u>
+__global__ __launch_bounds__((GemmaLocalPrefillQWarps<HD, Q_WARPS_OVR>() * (HD <= 128u ? 1u : (HD / 128u)) * 32u), HD <= 256u ? 2 : 1)
 static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ kv_prior,
 	const uint16_t *__restrict__ kv_cur, const uint32_t *__restrict__ positions, const __grid_constant__ GemmaPrefillSeqPlan plan,
 	uint32_t rows, uint32_t rank_heads, uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t window, float qk_scale,
-	uint16_t *__restrict__ merged_out)
+	const uint16_t *__restrict__ gate_logits, uint32_t gate_stride, uint16_t *__restrict__ merged_out)
 {
 	constexpr uint32_t KV_TILE = GemmaLocalPrefillKvTile<HD>();
 	constexpr uint32_t V_WARPS = HD <= 128u ? 1u : (HD / 128u);
-	constexpr uint32_t Q_WARPS = V_WARPS == 1u ? 4u : 2u;
+	constexpr uint32_t Q_WARPS = GemmaLocalPrefillQWarps<HD, Q_WARPS_OVR>();
 	constexpr uint32_t THREADS = Q_WARPS * V_WARPS * 32u;
 	constexpr uint32_t Q_TILE = Q_WARPS * 16u;
 	constexpr uint32_t PART = HD / V_WARPS;
@@ -682,24 +684,19 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 	float *score_buf = (float *)(gm_prefill_smem + 2u * TILE_BYTES);
 	const uint32_t k_base = (uint32_t)__cvta_generic_to_shared(k_smem);
 	const uint32_t v_base = (uint32_t)__cvta_generic_to_shared(v_smem);
-	const uint32_t local_h = blockIdx.x, q_block = blockIdx.y, seq_idx = blockIdx.z;
+	const uint32_t local_h = blockIdx.x, q_block = gridDim.y - 1u - blockIdx.y, seq_idx = blockIdx.z;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t q_warp = warp / V_WARPS, v_warp = warp % V_WARPS;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( seq_idx >= plan.count )
-	{
-		LmDependentRelease();
 		return;
-	}
 	const uint32_t s_row_begin = plan.row_begin[seq_idx], s_rows = plan.row_len[seq_idx];
 	const uint32_t s_win_begin = plan.win_begin[seq_idx], s_prior_keys = plan.prior_keys[seq_idx], s_prior_off = plan.prior_off[seq_idx];
 	const uint32_t local_first = q_block * Q_TILE;
 	if ( local_first >= s_rows )
-	{
-		LmDependentRelease();
 		return;
-	}
 	const uint32_t row_first = s_row_begin + local_first;
 	const uint32_t row_end = s_row_begin + (local_first + Q_TILE < s_rows ? local_first + Q_TILE : s_rows);
 	const uint32_t lkvh = ((q_first + local_h) / group) - kv_first;
@@ -869,17 +866,33 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 				output[f][3] *= rescale[1];
 			}
 		}
-		#pragma unroll
-		for ( uint32_t f = 0u; f < KEY_FRAGS; ++f )
+		if ( whole )
+		{
 			#pragma unroll
-			for ( uint32_t e = 0u; e < 4u; ++e )
-			{
-				const uint32_t side = e >> 1u;
-				const float wt = (running_max[side] == -INFINITY || score[f][e] == -INFINITY) ? 0.0f :
-					SparkMathExp2Fast(fmaf(score[f][e], scale_log2, -shift[side]));
-				running_sum[side] += wt;
-				score[f][e] = wt;
-			}
+			for ( uint32_t f = 0u; f < KEY_FRAGS; ++f )
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 4u; ++e )
+				{
+					const uint32_t side = e >> 1u;
+					const float wt = SparkMathExp2Fast(fmaf(score[f][e], scale_log2, -shift[side]));
+					running_sum[side] += wt;
+					score[f][e] = wt;
+				}
+		}
+		else
+		{
+			#pragma unroll
+			for ( uint32_t f = 0u; f < KEY_FRAGS; ++f )
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 4u; ++e )
+				{
+					const uint32_t side = e >> 1u;
+					const float wt = (running_max[side] == -INFINITY || score[f][e] == -INFINITY) ? 0.0f :
+						SparkMathExp2Fast(fmaf(score[f][e], scale_log2, -shift[side]));
+					running_sum[side] += wt;
+					score[f][e] = wt;
+				}
+		}
 		#pragma unroll
 		for ( uint32_t step = 0u; step < P_STEPS; ++step )
 		{
@@ -914,18 +927,53 @@ static void GemmaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16,
 	}
 	const float inv_lo = valid_row[0] && running_sum[0] > 0.0f ? (1.0f / running_sum[0]) : 0.0f;
 	const float inv_hi = valid_row[1] && running_sum[1] > 0.0f ? (1.0f / running_sum[1]) : 0.0f;
+	float hg_lo = 1.0f, hg_hi = 1.0f;
+	if constexpr ( GATE_MODE == 2u )
+	{
+		if ( valid_row[0] )
+			hg_lo = SparkMathSoftplusGate(LmBf16ToFloat(__ldg(gate_logits + (uint64_t)row_lo * gate_stride + local_h)));
+		if ( valid_row[1] )
+			hg_hi = SparkMathSoftplusGate(LmBf16ToFloat(__ldg(gate_logits + (uint64_t)row_hi * gate_stride + local_h)));
+	}
 	#pragma unroll
 	for ( uint32_t f = 0u; f < VALUE_FRAGS; ++f )
 	{
 		const uint32_t col = v_warp * PART + f * 8u + (lane & 3u) * 2u;
 		if ( valid_row[0] )
-			__stcs((uint32_t *)(merged_out + ((uint64_t)row_lo * rank_heads + local_h) * HD + col),
-				LmPackBf16Pair(output[f][0] * inv_lo, output[f][1] * inv_lo));
+		{
+			const uint64_t idx = ((uint64_t)row_lo * rank_heads + local_h) * HD + col;
+			float v0 = output[f][0] * inv_lo, v1 = output[f][1] * inv_lo;
+			if constexpr ( GATE_MODE == 1u )
+			{
+				const uint32_t gp = __ldg((const uint32_t *)(gate_logits + idx));
+				v0 = SparkMathRoundBf16(v0) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp << 16u)));
+				v1 = SparkMathRoundBf16(v1) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp & 0xffff0000u)));
+			}
+			else if constexpr ( GATE_MODE == 2u )
+			{
+				v0 = SparkMathRoundBf16(v0) * hg_lo;
+				v1 = SparkMathRoundBf16(v1) * hg_lo;
+			}
+			__stcs((uint32_t *)(merged_out + idx), LmPackBf16Pair(v0, v1));
+		}
 		if ( valid_row[1] )
-			__stcs((uint32_t *)(merged_out + ((uint64_t)row_hi * rank_heads + local_h) * HD + col),
-				LmPackBf16Pair(output[f][2] * inv_hi, output[f][3] * inv_hi));
+		{
+			const uint64_t idx = ((uint64_t)row_hi * rank_heads + local_h) * HD + col;
+			float v0 = output[f][2] * inv_hi, v1 = output[f][3] * inv_hi;
+			if constexpr ( GATE_MODE == 1u )
+			{
+				const uint32_t gp = __ldg((const uint32_t *)(gate_logits + idx));
+				v0 = SparkMathRoundBf16(v0) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp << 16u)));
+				v1 = SparkMathRoundBf16(v1) * SparkMathRoundBf16(SparkMathSigmoid(__uint_as_float(gp & 0xffff0000u)));
+			}
+			else if constexpr ( GATE_MODE == 2u )
+			{
+				v0 = SparkMathRoundBf16(v0) * hg_hi;
+				v1 = SparkMathRoundBf16(v1) * hg_hi;
+			}
+			__stcs((uint32_t *)(merged_out + idx), LmPackBf16Pair(v0, v1));
+		}
 	}
-	LmDependentRelease();
 }
 
 template<uint32_t HD>
@@ -1006,17 +1054,12 @@ static void GemmaGqaDecodeKernel(LmKvShardView cache, const uint16_t *__restrict
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t head = kv_head * GRP + warp;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( row >= rows || warp >= GRP )
-	{
-		LmDependentRelease();
 		return;
-	}
 	const uint32_t sequence = __ldg(sequence_of_row + row);
 	if ( !LmKvCheckSequence(cache.pages, row, sequence) )
-	{
-		LmDependentRelease();
 		return;
-	}
 	uint32_t limit = __ldg(context_length + sequence);
 	if ( row_position != 0 )
 	{
@@ -1036,13 +1079,19 @@ static void GemmaGqaDecodeKernel(LmKvShardView cache, const uint16_t *__restrict
 	const uint32_t l_end = SparkKvShardLocalKeys(cache.shard, limit);
 	for ( uint32_t local = l_begin; local < l_end; ++local )
 	{
+		if ( warp == 0u && lane == 0u && local + 2u < l_end )
+		{
+			const uint8_t *pslot = LmKvShardSlotRequired<Kv>(cache, sequence, SparkKvShardLocalPosition(cache.shard, local + 2u), row, LM_KV_ACCESS_READ);
+			if ( pslot != 0 )
+			{
+				LmGqaShardPrefetchLine((const uint16_t *)pslot + kv_head * HD);
+				LmGqaShardPrefetchLine((const uint16_t *)pslot + KVH * HD + kv_head * HD);
+			}
+		}
 		const uint32_t position = SparkKvShardLocalPosition(cache.shard, local);
 		const uint8_t *slot = LmKvShardSlotRequired<Kv>(cache, sequence, position, row, LM_KV_ACCESS_READ);
 		if ( slot == 0 )
-		{
-			LmDependentRelease();
 			return;
-		}
 		float kv[ELEMS];
 		GemmaGqaLoadLane<HD>((const uint16_t *)slot + kv_head * HD, lane, kv);
 		float score = 0.0f;
@@ -1080,39 +1129,6 @@ static void GemmaGqaDecodeKernel(LmKvShardView cache, const uint16_t *__restrict
 		}
 		GemmaGqaStoreLane<HD>(base, first, destination * width, width, lane, acc);
 	}
-	LmDependentRelease();
-}
-
-template<uint32_t HIDDEN>
-__global__ __launch_bounds__(GM_THREADS, 2)
-static void GemmaSmallNBf16ProjKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ activation, uint16_t *__restrict__ output,
-	uint32_t rows, uint32_t output_dim)
-{
-	constexpr uint32_t VECS = HIDDEN >> 3u;
-	constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
-	__shared__ __align__(16) uint4 s_x[VECS];
-	const uint32_t row = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	LmDependentWait();
-	if ( row < rows )
-	{
-		const uint4 *x4 = (const uint4 *)(activation + (uint64_t)row * HIDDEN);
-		for ( uint32_t c = threadIdx.x; c < VECS; c += GM_THREADS )
-			s_x[c] = x4[c];
-		__syncthreads();
-		for ( uint32_t n = warp; n < output_dim; n += WARPS )
-		{
-			const uint4 *w4 = (const uint4 *)(weight + (uint64_t)n * HIDDEN);
-			float acc = 0.0f;
-			for ( uint32_t c = lane; c < VECS; c += LM_WARP_LANES )
-				acc = LmDotBf16x8(s_x[c], __ldg(&w4[c]), acc);
-			#pragma unroll
-			for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-				acc += __shfl_down_sync(0xffffffffu, acc, offset);
-			if ( lane == 0u )
-				output[(uint64_t)row * output_dim + n] = LmFloatToBf16(acc);
-		}
-	}
-	LmDependentRelease();
 }
 
 template<uint32_t THREADS>
@@ -1121,8 +1137,8 @@ static void GemmaOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint
 {
 	const uint64_t base = (uint64_t)blockIdx.x * dimension;
 	LmDependentWait();
-	LmGateUpRowBody<THREADS>(gate_bf16 + base, output_bf16 + base, output_bf16 + base, dimension, LmSigmoidGateOp<true>{});
 	LmDependentRelease();
+	LmGateUpRowBody<THREADS>(gate_bf16 + base, output_bf16 + base, output_bf16 + base, dimension, LmSigmoidGateOp<true>{});
 }
 
 template<uint32_t THREADS>
@@ -1133,6 +1149,7 @@ static void GemmaHeadGateBroadcastKernel(uint16_t *__restrict__ heads_bf16, cons
 	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES;
 	const uint32_t row = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	LmDependentWait();
+	LmDependentRelease();
 	for ( uint32_t head = warp; head < heads; head += WARPS )
 	{
 		uint16_t *base = heads_bf16 + ((((uint64_t)row * heads) + head) * head_dimension);
@@ -1147,7 +1164,6 @@ static void GemmaHeadGateBroadcastKernel(uint16_t *__restrict__ heads_bf16, cons
 			*(uint4 *)(base + index) = LmPackUint4FloatToBf16(v);
 		}
 	}
-	LmDependentRelease();
 }
 
 struct GemmaGeluTanhOp
@@ -1171,6 +1187,7 @@ static void GemmaAddRmsNormKernel(const uint16_t *__restrict__ input_bf16, uint1
 	uint4 staged[SLOTS];
 	float total = 0.0f;
 	LmDependentWait();
+	LmDependentRelease();
 	#pragma unroll
 	for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
 	{
@@ -1209,7 +1226,6 @@ static void GemmaAddRmsNormKernel(const uint16_t *__restrict__ input_bf16, uint1
 			*(uint4 *)(out_row + offset) = LmPackUint4FloatToBf16(out);
 		}
 	}
-	LmDependentRelease();
 }
 
 template<uint32_t THREADS, bool ROUND_FIRST, bool HAS_SCALAR, bool TRIPLE_OUT, uint32_t SLOTS = 4u>
@@ -1226,6 +1242,7 @@ static void GemmaPostNormAddNextKernel(uint16_t *__restrict__ residual, const ui
 	uint4 staged[SLOTS];
 	float total = 0.0f;
 	LmDependentWait();
+	LmDependentRelease();
 	#pragma unroll
 	for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
 	{
@@ -1299,7 +1316,6 @@ static void GemmaPostNormAddNextKernel(uint16_t *__restrict__ residual, const ui
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<uint32_t THREADS, bool ROUND_FIRST>
@@ -1315,6 +1331,7 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 	uint4 d_staged[2], m_staged[2];
 	float dense_total = 0.0f, moe_total = 0.0f, total = 0.0f;
 	LmDependentWait();
+	LmDependentRelease();
 	#pragma unroll
 	for ( uint32_t slot = 0u; slot < 2u; ++slot )
 	{
@@ -1396,7 +1413,6 @@ static void GemmaMoeCombineNextKernel(uint16_t *__restrict__ residual, const uin
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<uint32_t THREADS>
@@ -1405,8 +1421,8 @@ static void GemmaGeluTanhMulKernel(const uint16_t *__restrict__ gate_up, uint16_
 {
 	const uint64_t base = (uint64_t)blockIdx.y * 2u * width;
 	LmDependentWait();
-	LmBinaryBf16GridBody<THREADS>(gate_up + base, gate_up + base + width, output + (uint64_t)blockIdx.y * width, width, GemmaGeluTanhOp{});
 	LmDependentRelease();
+	LmBinaryBf16GridBody<THREADS>(gate_up + base, gate_up + base + width, output + (uint64_t)blockIdx.y * width, width, GemmaGeluTanhOp{});
 }
 
 template<uint32_t THREADS, bool HAS_LIMIT>
@@ -1415,11 +1431,11 @@ static void GemmaSiluMulKernel(const uint16_t *__restrict__ gate_up, uint16_t *_
 {
 	const uint64_t base = (uint64_t)blockIdx.y * 2u * width;
 	LmDependentWait();
+	LmDependentRelease();
 	if constexpr ( HAS_LIMIT )
 		LmBinaryBf16GridBody<THREADS>(gate_up + base, gate_up + base + width, output + (uint64_t)blockIdx.y * width, width, LmSiluGateLimitOp{limit});
 	else
 		LmBinaryBf16GridBody<THREADS>(gate_up + base, gate_up + base + width, output + (uint64_t)blockIdx.y * width, width, LmStridedGateUpOp<true>{});
-	LmDependentRelease();
 }
 
 template<uint32_t EXPERTS, uint32_t TOPK, bool BF16_INPUT>
@@ -1459,13 +1475,9 @@ static __device__ __forceinline__ void GemmaSigmoidTopkWarp(const void *logits_p
 		#pragma unroll
 		for ( uint32_t j = 0u; j < PER_LANE; ++j )
 			best = key[j] > best ? key[j] : best;
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		{
-			const unsigned long long other = __shfl_xor_sync(0xffffffffu, best, offset);
-			best = other > best ? other : best;
-		}
-		const uint32_t e = 0xffffffffu - (uint32_t)best;
+		const uint32_t high = __reduce_max_sync(0xffffffffu, (uint32_t)(best >> 32u));
+		const uint32_t low = __reduce_max_sync(0xffffffffu, (uint32_t)(best >> 32u) == high ? (uint32_t)best : 0u);
+		const uint32_t e = 0xffffffffu - low;
 		const uint32_t owner_lane = e & 31u;
 		float picked_s = 0.0f;
 		#pragma unroll
@@ -1480,7 +1492,7 @@ static __device__ __forceinline__ void GemmaSigmoidTopkWarp(const void *logits_p
 		chosen_s[pick] = picked_s;
 		total += picked_s;
 		if ( lane == 0u )
-			LmTopkRouteFault(fault, (uint32_t)(best >> 32u));
+			LmTopkRouteFault(fault, high);
 	}
 	if ( lane == 0u )
 	{
@@ -1503,7 +1515,7 @@ static __device__ __forceinline__ void GemmaSigmoidTopkWarp(const void *logits_p
 	}
 }
 
-template<class G>
+template<class G, bool MED = false>
 __global__ __launch_bounds__(GM_THREADS, 1)
 static void GemmaSigmoidRouteSmallKernel(const void *__restrict__ logits, const float *__restrict__ bias, uint32_t rows, uint32_t expert_first,
 	uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ packed_expert,
@@ -1511,29 +1523,35 @@ static void GemmaSigmoidRouteSmallKernel(const void *__restrict__ logits, const 
 	float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up, uint32_t n_down,
 	uint32_t *__restrict__ tile_prefix_down)
 {
-	__shared__ uint32_t s_exp[32];
-	__shared__ float s_wt[32];
+	constexpr uint32_t MAX_ROUTES = MED ? 256u : LM_ROUTE_SMALL_MAX;
+	constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
+	__shared__ uint32_t s_exp[MAX_ROUTES];
+	__shared__ float s_wt[MAX_ROUTES];
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, routes = rows * G::kTopK;
 	LmDependentWait();
-	if ( warp < rows )
-		GemmaSigmoidTopkWarp<G::kExperts, G::kTopK, !G::kRouterFloat>(logits, bias, warp, expert_first, G::kLocalExperts, G::kRoutedScale, fault,
-			s_exp + warp * G::kTopK, s_wt + warp * G::kTopK, lane);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		route_expert[threadIdx.x] = s_exp[threadIdx.x];
-		route_weight[threadIdx.x] = s_wt[threadIdx.x];
-	}
-	LmRouteBuildSmallBody<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
-		tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		const uint32_t packed = route_packed_row[threadIdx.x];
-		packed_weight[packed] = s_wt[threadIdx.x];
-		packed_expert[packed] = s_exp[threadIdx.x];
-	}
 	LmDependentRelease();
+	for ( uint32_t r = warp; r < rows; r += WARPS )
+		GemmaSigmoidTopkWarp<G::kExperts, G::kTopK, !G::kRouterFloat>(logits, bias, r, expert_first, G::kLocalExperts, G::kRoutedScale, fault,
+			s_exp + r * G::kTopK, s_wt + r * G::kTopK, lane);
+	__syncthreads();
+	for ( uint32_t idx = threadIdx.x; idx < routes; idx += GM_THREADS )
+	{
+		route_expert[idx] = s_exp[idx];
+		route_weight[idx] = s_wt[idx];
+	}
+	if constexpr ( MED )
+		LmRouteBuildBlock<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
+			tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
+	else
+		LmRouteBuildSmallBody<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
+			tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
+	__syncthreads();
+	for ( uint32_t idx = threadIdx.x; idx < routes; idx += GM_THREADS )
+	{
+		const uint32_t packed = route_packed_row[idx];
+		packed_weight[packed] = s_wt[idx];
+		packed_expert[packed] = s_exp[idx];
+	}
 }
 
 template<class G>
@@ -1545,10 +1563,10 @@ static void GemmaSigmoidTopkLocalKernel(const void *__restrict__ logits, const f
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t row = blockIdx.x * WARPS + warp;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( row < rows )
 		GemmaSigmoidTopkWarp<G::kExperts, G::kTopK, !G::kRouterFloat>(logits, bias, row, expert_first, G::kLocalExperts, G::kRoutedScale, fault,
 			route_expert + (uint64_t)row * G::kTopK, route_weight + (uint64_t)row * G::kTopK, lane);
-	LmDependentRelease();
 }
 
 template<class G>
@@ -1662,7 +1680,7 @@ static __device__ __forceinline__ void GemmaSoftmaxTopkWarp(const uint16_t *__re
 	}
 }
 
-template<class G>
+template<class G, bool MED = false>
 __global__ __launch_bounds__(GM_THREADS, 1)
 static void GemmaSoftmaxRouteSmallKernel(const uint16_t *__restrict__ logits, const float *__restrict__ expert_scale, uint32_t rows,
 	uint32_t expert_first, uint32_t *__restrict__ fault, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight,
@@ -1670,28 +1688,34 @@ static void GemmaSoftmaxRouteSmallKernel(const uint16_t *__restrict__ logits, co
 	uint32_t *__restrict__ route_source_token, float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up,
 	uint32_t *__restrict__ tile_prefix_up, uint32_t n_down, uint32_t *__restrict__ tile_prefix_down)
 {
-	__shared__ uint32_t s_exp[32];
-	__shared__ float s_wt[32];
+	constexpr uint32_t MAX_ROUTES = MED ? 256u : LM_ROUTE_SMALL_MAX;
+	constexpr uint32_t WARPS = GM_THREADS / LM_WARP_LANES;
+	__shared__ uint32_t s_exp[MAX_ROUTES];
+	__shared__ float s_wt[MAX_ROUTES];
 	const uint32_t routes = rows * G::kTopK, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	LmDependentWait();
-	if ( warp < rows )
-		GemmaSoftmaxTopkWarp<G>(logits, expert_scale, warp, expert_first, fault, s_exp + warp * G::kTopK, s_wt + warp * G::kTopK, lane);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		route_expert[threadIdx.x] = s_exp[threadIdx.x];
-		route_weight[threadIdx.x] = s_wt[threadIdx.x];
-	}
-	LmRouteBuildSmallBody<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
-		tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		const uint32_t packed = route_packed_row[threadIdx.x];
-		packed_weight[packed] = s_wt[threadIdx.x];
-		packed_expert[packed] = s_exp[threadIdx.x];
-	}
 	LmDependentRelease();
+	for ( uint32_t r = warp; r < rows; r += WARPS )
+		GemmaSoftmaxTopkWarp<G>(logits, expert_scale, r, expert_first, fault, s_exp + r * G::kTopK, s_wt + r * G::kTopK, lane);
+	__syncthreads();
+	for ( uint32_t idx = threadIdx.x; idx < routes; idx += GM_THREADS )
+	{
+		route_expert[idx] = s_exp[idx];
+		route_weight[idx] = s_wt[idx];
+	}
+	if constexpr ( MED )
+		LmRouteBuildBlock<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
+			tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
+	else
+		LmRouteBuildSmallBody<GM_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
+			tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
+	__syncthreads();
+	for ( uint32_t idx = threadIdx.x; idx < routes; idx += GM_THREADS )
+	{
+		const uint32_t packed = route_packed_row[idx];
+		packed_weight[packed] = s_wt[idx];
+		packed_expert[packed] = s_exp[idx];
+	}
 }
 
 template<class G>
@@ -1703,10 +1727,10 @@ static void GemmaSoftmaxTopkLocalKernel(const uint16_t *__restrict__ logits, con
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t row = blockIdx.x * WARPS + warp;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( row < rows )
 		GemmaSoftmaxTopkWarp<G>(logits, expert_scale, row, expert_first, fault, route_expert + (uint64_t)row * G::kTopK,
 			route_weight + (uint64_t)row * G::kTopK, lane);
-	LmDependentRelease();
 }
 
 template<uint32_t THREADS, uint32_t EXPERTS>
@@ -1717,6 +1741,7 @@ static void GemmaRouteBuildPackedKernel(const uint32_t *__restrict__ route_exper
 	uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
 	LmDependentWait();
+	LmDependentRelease();
 	LmRouteBuildBlock<THREADS, EXPERTS>(route_expert, routes, top_k, group_row_offset, route_packed_row, route_source_token, tile_m,
 		neuron_tiles_up, tile_prefix_up, neuron_tiles_down, tile_prefix_down);
 	__syncthreads();
@@ -1726,7 +1751,6 @@ static void GemmaRouteBuildPackedKernel(const uint32_t *__restrict__ route_exper
 		packed_weight[packed] = route_weight[route];
 		packed_expert[packed] = route_expert[route];
 	}
-	LmDependentRelease();
 }
 
 template<bool GELU>
@@ -1736,6 +1760,7 @@ static void GemmaMoeActPackedKernel(const uint16_t *__restrict__ gate, const uin
 {
 	const uint32_t pr = blockIdx.y;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( pr < group_row_offset[local_experts] )
 	{
 		const uint64_t row_base = (uint64_t)pr * width;
@@ -1760,10 +1785,9 @@ static void GemmaMoeActPackedKernel(const uint16_t *__restrict__ gate, const uin
 			o4[c] = LmPackUint4FloatToBf16(gv);
 		}
 	}
-	LmDependentRelease();
 }
 
-template<bool HAS_SHARED>
+template<bool HAS_SHARED, bool ALL_LOCAL = false, uint32_t TOP_K = 0u>
 __global__ __launch_bounds__(GM_THREADS, 2)
 static void GemmaMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
 	const uint32_t *__restrict__ route_expert, const uint16_t *__restrict__ shared, uint16_t *__restrict__ output, uint32_t top_k,
@@ -1775,19 +1799,28 @@ static void GemmaMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, con
 	uint16_t *out_row = output + row_base;
 	const uint16_t *shared_row = HAS_SHARED ? shared + row_base : (const uint16_t *)0;
 	LmDependentWait();
-	if ( threadIdx.x == 0u )
+	LmDependentRelease();
+	if constexpr ( ALL_LOCAL )
 	{
-		uint32_t count = 0u;
-		for ( uint32_t k = 0u; k < top_k; ++k )
+		if ( threadIdx.x < TOP_K )
+			active_rows[threadIdx.x] = __ldg(route_packed_row + row * TOP_K + threadIdx.x);
+	}
+	else
+	{
+		if ( threadIdx.x == 0u )
 		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] < local_experts )
-				active_rows[count++] = route_packed_row[route];
+			uint32_t count = 0u;
+			for ( uint32_t k = 0u; k < top_k; ++k )
+			{
+				const uint32_t route = row * top_k + k;
+				if ( route_expert[route] < local_experts )
+					active_rows[count++] = route_packed_row[route];
+			}
+			active_count = count;
 		}
-		active_count = count;
 	}
 	__syncthreads();
-	const uint32_t count = active_count;
+	const uint32_t count = ALL_LOCAL ? TOP_K : active_count;
 	const uint32_t chunks = width >> 3u;
 	const uint4 *packed4 = (const uint4 *)packed;
 	const uint4 *shared4 = HAS_SHARED ? (const uint4 *)shared_row : (const uint4 *)0;
@@ -1796,7 +1829,20 @@ static void GemmaMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, con
 	{
 		const uint4 zero = make_uint4(0u, 0u, 0u, 0u);
 		for ( uint32_t c = blockIdx.x * GM_THREADS + threadIdx.x; c < chunks; c += gridDim.x * GM_THREADS )
-			out4[c] = HAS_SHARED ? shared4[c] : zero;
+			out4[c] = HAS_SHARED ? __ldg(shared4 + c) : zero;
+	}
+	else if constexpr ( ALL_LOCAL )
+	{
+		for ( uint32_t c = blockIdx.x * GM_THREADS + threadIdx.x; c < chunks; c += gridDim.x * GM_THREADS )
+		{
+			float acc[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+			#pragma unroll
+			for ( uint32_t k = 0u; k < TOP_K; ++k )
+				LmAddBf16x8(acc, __ldcs(packed4 + (uint64_t)active_rows[k] * chunks + c));
+			if constexpr ( HAS_SHARED )
+				LmAddBf16x8(acc, __ldg(shared4 + c));
+			out4[c] = LmPackUint4FloatToBf16(acc);
+		}
 	}
 	else
 	{
@@ -1804,13 +1850,12 @@ static void GemmaMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, con
 		{
 			float acc[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 			for ( uint32_t k = 0u; k < count; ++k )
-				LmAddBf16x8(acc, packed4[(uint64_t)active_rows[k] * chunks + c]);
+				LmAddBf16x8(acc, __ldcs(packed4 + (uint64_t)active_rows[k] * chunks + c));
 			if constexpr ( HAS_SHARED )
-				LmAddBf16x8(acc, shared4[c]);
+				LmAddBf16x8(acc, __ldg(shared4 + c));
 			out4[c] = LmPackUint4FloatToBf16(acc);
 		}
 	}
-	LmDependentRelease();
 }
 
 template<class G, bool GELU>
@@ -1824,6 +1869,7 @@ static void GemmaMoeB1W1W3ActKernel(const uint16_t *__restrict__ w1, const uint1
 	constexpr uint32_t N = G::kMoeInter;
 	const uint32_t pr = blockIdx.y;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( pr < __ldg(group_row_offset + G::kLocalExperts) )
 	{
 		const uint32_t exp = __ldg(packed_expert + pr);
@@ -1842,15 +1888,16 @@ static void GemmaMoeB1W1W3ActKernel(const uint16_t *__restrict__ w1, const uint1
 			#pragma unroll 4
 			for ( uint32_t c = lane; c < K_V; c += LM_WARP_LANES )
 			{
-				const uint4 va = __ldg(act_row + c);
+				float af[8];
+				LmSkinnyUnpackBf16x8(__ldg(act_row + c), af);
 				const uint4 vw1_0 = __ldcs(w1_0 + c);
 				const uint4 vw3_0 = __ldcs(w3_0 + c);
 				const uint4 vw1_1 = __ldcs(w1_1 + c);
 				const uint4 vw3_1 = __ldcs(w3_1 + c);
-				g0 = fmaf(1.0f, LmSkinnyBf16Chunk(vw1_0, va, 0.0f), g0);
-				u0 = fmaf(1.0f, LmSkinnyBf16Chunk(vw3_0, va, 0.0f), u0);
-				g1 = fmaf(1.0f, LmSkinnyBf16Chunk(vw1_1, va, 0.0f), g1);
-				u1 = fmaf(1.0f, LmSkinnyBf16Chunk(vw3_1, va, 0.0f), u1);
+				g0 = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(vw1_0, af, 0.0f), g0);
+				u0 = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(vw3_0, af, 0.0f), u0);
+				g1 = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(vw1_1, af, 0.0f), g1);
+				u1 = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(vw3_1, af, 0.0f), u1);
 			}
 			#pragma unroll
 			for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
@@ -1873,7 +1920,6 @@ static void GemmaMoeB1W1W3ActKernel(const uint16_t *__restrict__ w1, const uint1
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
 template<class G, bool HAS_SHARED>
@@ -1891,6 +1937,7 @@ static void GemmaMoeB1W2FinalizeKernel(const uint16_t *__restrict__ w2, const ui
 	constexpr uint32_t GROUPS = 128u / SUB_LANES;
 	__shared__ uint32_t s_exp[G::kTopK], s_pr[G::kTopK], s_count;
 	LmDependentWait();
+	LmDependentRelease();
 	if ( threadIdx.x == 0u )
 	{
 		uint32_t cnt = 0u;
@@ -1941,10 +1988,12 @@ static void GemmaMoeB1W2FinalizeKernel(const uint16_t *__restrict__ w2, const ui
 					w2_nxt = __ldcs(w_nxt + 2u * K_V);
 					w3_nxt = __ldcs(w_nxt + 3u * K_V);
 				}
-				const float d0 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(w0_cur, va_cur, 0.0f));
-				const float d1 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(w1_cur, va_cur, 0.0f));
-				const float d2 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(w2_cur, va_cur, 0.0f));
-				const float d3 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(w3_cur, va_cur, 0.0f));
+				float af[8];
+				LmSkinnyUnpackBf16x8(va_cur, af);
+				const float d0 = GemmaFastHalfWarpSum(LmSkinnyBf16ChunkUnpacked(w0_cur, af, 0.0f));
+				const float d1 = GemmaFastHalfWarpSum(LmSkinnyBf16ChunkUnpacked(w1_cur, af, 0.0f));
+				const float d2 = GemmaFastHalfWarpSum(LmSkinnyBf16ChunkUnpacked(w2_cur, af, 0.0f));
+				const float d3 = GemmaFastHalfWarpSum(LmSkinnyBf16ChunkUnpacked(w3_cur, af, 0.0f));
 				if ( sub == 0u )
 				{
 					total[0] += SparkMathRoundBf16(d0);
@@ -1984,9 +2033,10 @@ static void GemmaMoeB1W2FinalizeKernel(const uint16_t *__restrict__ w2, const ui
 				#pragma unroll 4
 				for ( uint32_t c = sub; c < K_V; c += LM_WARP_LANES )
 				{
-					const uint4 va = __ldg(a_row + c);
-					acc0 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w0_row + c), va, 0.0f), acc0);
-					acc1 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w1_row + c), va, 0.0f), acc1);
+					float af[8];
+					LmSkinnyUnpackBf16x8(__ldg(a_row + c), af);
+					acc0 = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(__ldcs(w0_row + c), af, 0.0f), acc0);
+					acc1 = fmaf(1.0f, LmSkinnyBf16ChunkUnpacked(__ldcs(w1_row + c), af, 0.0f), acc1);
 				}
 				#pragma unroll
 				for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
@@ -2012,121 +2062,12 @@ static void GemmaMoeB1W2FinalizeKernel(const uint16_t *__restrict__ w2, const ui
 			}
 		}
 	}
-	LmDependentRelease();
 }
 
-static __device__ __forceinline__ void GemmaTilePrefixScan(const uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ prefix, uint32_t groups,
-	uint32_t tile_m, uint32_t n_tiles)
-{
-	const uint32_t lane = threadIdx.x & 31u;
-	if ( threadIdx.x < 32u )
-	{
-		const uint32_t per_lane = (groups + 31u) / 32u, first = lane * per_lane;
-		uint32_t own = 0u;
-		for ( uint32_t g = first; g < first + per_lane && g < groups; ++g )
-		{
-			const uint32_t r = group_row_offset[g + 1u] - group_row_offset[g];
-			own += (r + tile_m - 1u) / tile_m * n_tiles;
-		}
-		uint32_t running = own;
-		#pragma unroll
-		for ( uint32_t offset = 1u; offset < 32u; offset <<= 1u )
-		{
-			const uint32_t other = __shfl_up_sync(0xffffffffu, running, offset);
-			if ( lane >= offset )
-				running += other;
-		}
-		uint32_t off = running - own;
-		for ( uint32_t g = first; g < first + per_lane && g < groups; ++g )
-		{
-			prefix[g] = off;
-			const uint32_t r = group_row_offset[g + 1u] - group_row_offset[g];
-			off += (r + tile_m - 1u) / tile_m * n_tiles;
-		}
-		if ( lane == 31u )
-			prefix[groups] = running;
-	}
-	__syncthreads();
-}
-
-template<uint32_t BYTES, bool GROUPED>
-struct GemmaMmaSmem
-{
-	__align__(128) uint8_t buf[BYTES];
-	uint32_t prefix[257u];
-};
-
-template<uint32_t BYTES>
-struct GemmaMmaSmem<BYTES, false>
-{
-	__align__(128) uint8_t buf[BYTES];
-};
-
-static __device__ __forceinline__ uint32_t GemmaGroupedTotalTiles(const uint32_t *__restrict__ group_row_offset, uint32_t groups, uint32_t tile_m,
-	uint32_t n_tiles)
-{
-	uint32_t total = 0u;
-	for ( uint32_t g = 0u; g < groups; ++g )
-		total += (__ldg(group_row_offset + g + 1u) - __ldg(group_row_offset + g) + tile_m - 1u) / tile_m * n_tiles;
-	return total;
-}
-
-static __device__ __forceinline__ void GemmaGroupedTileScan(const uint32_t *__restrict__ group_row_offset, uint32_t groups, uint32_t tile,
-	uint32_t tile_m, uint32_t n_tiles, uint32_t &grp, uint32_t &row_base, uint32_t &row_limit, uint32_t &nt)
-{
-	uint32_t off = 0u;
-	for ( uint32_t g = 0u; g < groups; ++g )
-	{
-		const uint32_t first = __ldg(group_row_offset + g), end = __ldg(group_row_offset + g + 1u);
-		const uint32_t cnt = (end - first + tile_m - 1u) / tile_m * n_tiles;
-		if ( tile < off + cnt )
-		{
-			grp = g;
-			row_limit = end;
-			const uint32_t within = tile - off;
-			row_base = first + (within / n_tiles) * tile_m;
-			nt = within % n_tiles;
-			return;
-		}
-		off += cnt;
-	}
-	grp = 0u; row_base = 0u; row_limit = 0u; nt = 0u;
-}
-
-static __device__ __forceinline__ void GemmaGroupedTileLookup(const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ prefix,
-	uint32_t groups, uint32_t tile, uint32_t tile_m, uint32_t n_tiles, uint32_t &grp, uint32_t &row_base, uint32_t &row_limit, uint32_t &nt)
-{
-	uint32_t lo = 0u, hi = groups;
-	while ( lo + 1u < hi )
-	{
-		const uint32_t mid = (lo + hi) >> 1u;
-		if ( prefix[mid] <= tile ) lo = mid;
-		else hi = mid;
-	}
-	grp = lo;
-	const uint32_t first = group_row_offset[grp];
-	row_limit = group_row_offset[grp + 1u];
-	const uint32_t within = tile - prefix[grp];
-	row_base = first + (within / n_tiles) * tile_m;
-	nt = within % n_tiles;
-}
-
-template<uint32_t ACT_MODE>
-static __device__ __forceinline__ uint16_t GemmaMmaActValue(float g_acc, float u_acc, float wt, float limit)
-{
-	const float g = SparkMathRoundBf16(g_acc);
-	const float u = SparkMathRoundBf16(u_acc);
-	if constexpr ( ACT_MODE == 3u )
-		return LmFloatToBf16(SparkMathRoundBf16(SparkMathGeluTanhScaleFirst(g)) * u * wt);
-	else
-		return LmFloatToBf16(SparkMathGateLimitedGlu(g, u, limit) * wt);
-}
-
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES, bool DUAL, bool GROUPED, bool LDCS_B>
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES, bool DUAL, bool LDCS_B>
 __global__ __launch_bounds__(THREADS, 2)
 static void GemmaMmaKernel(const uint16_t *__restrict__ w0, const uint16_t *__restrict__ w1, const uint16_t *__restrict__ act,
-	uint16_t *__restrict__ out0, uint16_t *__restrict__ out1, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ source_row_map, uint32_t rows, uint32_t groups, uint32_t K, uint32_t n0, uint32_t n1)
+	uint16_t *__restrict__ out0, uint16_t *__restrict__ out1, uint32_t rows, uint32_t K, uint32_t n0, uint32_t n1)
 {
 	constexpr uint32_t KSTEPS = TILE_K / 16u, ROW_CHUNKS = TILE_K / 8u, ROW_BYTES = TILE_K * 2u;
 	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
@@ -2135,10 +2076,8 @@ static void GemmaMmaKernel(const uint16_t *__restrict__ w0, const uint16_t *__re
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
 	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
 	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
-	constexpr bool USE_PREFIX = GROUPED && (STAGES * STAGE_BYTES <= 48000u);
 	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid MMA warp tile");
-	__shared__ GemmaMmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
-	uint8_t *const smem = smem_s.buf;
+	__shared__ __align__(128) uint8_t smem[STAGES * STAGE_BYTES];
 	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
 	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
@@ -2146,32 +2085,15 @@ static void GemmaMmaKernel(const uint16_t *__restrict__ w0, const uint16_t *__re
 	const uint32_t k_tiles = K / TILE_K;
 	const uint32_t n0_tiles = (n0 + TILE_N - 1u) / TILE_N;
 	const uint32_t n_tiles = DUAL ? (n0_tiles + (n1 + TILE_N - 1u) / TILE_N) : n0_tiles;
+	const uint32_t m_tiles = (rows + TILE_M - 1u) / TILE_M;
+	const uint32_t total_tiles = m_tiles * n_tiles;
 	LmDependentWait();
-	uint32_t total_tiles;
-	if constexpr ( USE_PREFIX )
-	{
-		GemmaTilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
-		total_tiles = smem_s.prefix[groups];
-	}
-	else if constexpr ( GROUPED )
-		total_tiles = GemmaGroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
-	else
-		total_tiles = ((rows + TILE_M - 1u) / TILE_M) * n_tiles;
+	LmDependentRelease();
 	auto swz = [](uint32_t r, uint32_t c) -> uint32_t { return (c & ~7u) | LmStreamSwizzle8(r, c & 7u); };
 	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
 	{
-		uint32_t grp = 0u, row_base, row_limit, nt;
-		if constexpr ( USE_PREFIX )
-			GemmaGroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		else if constexpr ( GROUPED )
-			GemmaGroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		else
-		{
-			const uint32_t m_tiles = (rows + TILE_M - 1u) / TILE_M;
-			row_base = (tile % m_tiles) * TILE_M;
-			row_limit = rows;
-			nt = tile / m_tiles;
-		}
+		const uint32_t row_base = (tile % m_tiles) * TILE_M;
+		const uint32_t nt = tile / m_tiles;
 		const bool second = DUAL && nt >= n0_tiles;
 		const uint32_t col_base = (second ? nt - n0_tiles : nt) * TILE_N;
 		const uint32_t cur_n = second ? n1 : n0;
@@ -2184,12 +2106,11 @@ static void GemmaMmaKernel(const uint16_t *__restrict__ w0, const uint16_t *__re
 		{
 			const uint32_t r = row0 + q * ROW_STEP;
 			const uint32_t packed = row_base + r;
-			const uint32_t valid = packed < row_limit ? 1u : 0u;
-			const uint32_t src_r = valid != 0u ? (GROUPED && source_row_map != 0 ? source_row_map[packed] : packed) : 0u;
-			a_src[q] = act + (uint64_t)src_r * K + col0 * 8u;
+			const uint32_t valid = packed < rows ? 1u : 0u;
+			a_src[q] = act + (uint64_t)(valid != 0u ? packed : 0u) * K + col0 * 8u;
 			a_mask |= valid << q;
 		}
-		const uint16_t *b_base = w_ptr + (((uint64_t)grp * cur_n) + col_base + row0) * K + col0 * 8u;
+		const uint16_t *b_base = w_ptr + (uint64_t)(col_base + row0) * K + col0 * 8u;
 		const uint64_t b_step = (uint64_t)ROW_STEP * K;
 		#pragma unroll
 		for ( uint32_t q = 0u; q < B_PER_T; ++q )
@@ -2349,516 +2270,13 @@ static void GemmaMmaKernel(const uint16_t *__restrict__ w0, const uint16_t *__re
 				{
 					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
 					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					if ( r < row_limit && c < cur_n )
+					if ( r < rows && c < cur_n )
 						*(uint32_t *)(o_ptr + (uint64_t)r * cur_n + c) = (uint32_t)LmFloatToBf16(total[i][j][e]) |
 							((uint32_t)LmFloatToBf16(total[i][j][e + 1u]) << 16u);
 				}
 		if ( tile + gridDim.x < total_tiles )
 			__syncthreads();
 	}
-	LmDependentRelease();
-}
-
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t ACT_MODE>
-__global__ __launch_bounds__(THREADS, 2)
-static void GemmaMmaGateUpActKernel(const uint16_t *__restrict__ w_gate, const uint16_t *__restrict__ w_up, const uint16_t *__restrict__ act,
-	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ source_row_map,
-	uint16_t *__restrict__ out, uint32_t groups, uint32_t K, uint32_t N, float limit)
-{
-	constexpr uint32_t TILE_K = 64u, KSTEPS = 4u, ROW_CHUNKS = 8u, ROW_BYTES = 128u, STAGES = 2u;
-	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
-	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
-	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
-	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + 2u * B_BYTES;
-	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
-	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
-	constexpr bool USE_PREFIX = (STAGES * STAGE_BYTES <= 48000u);
-	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid fused gate-up MMA tile");
-	__shared__ GemmaMmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
-	uint8_t *const smem = smem_s.buf;
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
-	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
-	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
-	const uint32_t k_tiles = K / TILE_K, n_tiles = (N + TILE_N - 1u) / TILE_N;
-	LmDependentWait();
-	uint32_t total_tiles;
-	if constexpr ( USE_PREFIX )
-	{
-		GemmaTilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
-		total_tiles = smem_s.prefix[groups];
-	}
-	else
-		total_tiles = GemmaGroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
-	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
-	{
-		uint32_t grp, row_base, row_limit, nt;
-		if constexpr ( USE_PREFIX )
-			GemmaGroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		else
-			GemmaGroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		const uint32_t col_base = nt * TILE_N;
-		const uint16_t *a_src[A_PER_T];
-		uint32_t a_mask = 0u, b_mask = 0u;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < A_PER_T; ++q )
-		{
-			const uint32_t packed = row_base + row0 + q * ROW_STEP;
-			const uint32_t valid = packed < row_limit ? 1u : 0u;
-			const uint32_t src_r = valid != 0u ? source_row_map[packed] : 0u;
-			a_src[q] = act + (uint64_t)src_r * K + col0 * 8u;
-			a_mask |= valid << q;
-		}
-		const uint64_t g_off = (((uint64_t)grp * N) + col_base + row0) * K + col0 * 8u;
-		const uint16_t *bg_base = w_gate + g_off, *bu_base = w_up + g_off;
-		const uint64_t b_step = (uint64_t)ROW_STEP * K;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
-			b_mask |= (col_base + row0 + q * ROW_STEP < N ? 1u : 0u) << q;
-		auto issue_k = [&](uint32_t st_off)
-		{
-			const uint32_t stage = shared_base + st_off;
-			#pragma unroll
-			for ( uint32_t q = 0u; q < A_PER_T; ++q )
-			{
-				const uint32_t r = row0 + q * ROW_STEP;
-				const uint32_t valid = (a_mask >> q) & 1u;
-				LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? a_src[q] : act, valid << 4u);
-				a_src[q] += TILE_K;
-			}
-			#pragma unroll
-			for ( uint32_t q = 0u; q < B_PER_T; ++q )
-			{
-				const uint32_t r = row0 + q * ROW_STEP;
-				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
-				const uint32_t valid = (b_mask >> q) & 1u;
-				LmStreamCopy(stage + A_BYTES + sw, valid != 0u ? bg_base + q * b_step : w_gate, valid << 4u);
-				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, valid != 0u ? bu_base + q * b_step : w_up, valid << 4u);
-			}
-			bg_base += TILE_K;
-			bu_base += TILE_K;
-		};
-		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
-		float tg[MF][NF][4], tu[MF][NF][4];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-			{
-				tg[i][j][0] = tg[i][j][1] = tg[i][j][2] = tg[i][j][3] = 0.0f;
-				tu[i][j][0] = tu[i][j][1] = tu[i][j][2] = tu[i][j][3] = 0.0f;
-			}
-		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
-		{
-			#pragma unroll
-			for ( uint32_t ii = 0u; ii < MF; ++ii )
-			{
-				const uint32_t r = warp_m * WARP_M + ii * 16u + (lane & 15u);
-				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
-				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
-			}
-			#pragma unroll
-			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
-			{
-				const uint32_t r = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
-				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
-				const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
-				uint32_t tmp[4];
-				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + off);
-				bg_reg[buf][jj][0] = tmp[0]; bg_reg[buf][jj][1] = tmp[1];
-				bg_reg[buf][jj + 1u][0] = tmp[2]; bg_reg[buf][jj + 1u][1] = tmp[3];
-				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + B_BYTES + off);
-				bu_reg[buf][jj][0] = tmp[0]; bu_reg[buf][jj][1] = tmp[1];
-				bu_reg[buf][jj + 1u][0] = tmp[2]; bu_reg[buf][jj + 1u][1] = tmp[3];
-			}
-		};
-		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
-		if ( kp < k_tiles )
-			issue_k(sp_off);
-		LmStreamCommit();
-		kp++;
-		sp_off ^= STAGE_BYTES;
-		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-		{
-			LmStreamWait<0u>();
-			__syncthreads();
-			const uint32_t stage_s = shared_base + sc_off;
-			if ( kp < k_tiles )
-			{
-				issue_k(sp_off);
-				kp++;
-				sp_off ^= STAGE_BYTES;
-			}
-			LmStreamCommit();
-			load_frag(0u, 0u, stage_s);
-			#pragma unroll
-			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
-			{
-				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-				if ( ks + 1u < KSTEPS )
-					load_frag(nxt, ks + 1u, stage_s);
-				#pragma unroll
-				for ( uint32_t i = 0u; i < MF; ++i )
-					#pragma unroll
-					for ( uint32_t j = 0u; j < NF; ++j )
-					{
-						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
-					}
-			}
-			sc_off ^= STAGE_BYTES;
-		}
-		LmStreamWait<0u>();
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-				#pragma unroll
-				for ( uint32_t e = 0u; e < 4u; e += 2u )
-				{
-					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
-					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					if ( r < row_limit && c < N )
-					{
-						const float wt = __ldg(packed_weight + r);
-						const uint16_t lo = GemmaMmaActValue<ACT_MODE>(tg[i][j][e], tu[i][j][e], wt, limit);
-						const uint16_t hi = GemmaMmaActValue<ACT_MODE>(tg[i][j][e + 1u], tu[i][j][e + 1u], wt, limit);
-						*(uint32_t *)(out + (uint64_t)r * N + c) = (uint32_t)lo | ((uint32_t)hi << 16u);
-					}
-				}
-		if ( tile + gridDim.x < total_tiles )
-			__syncthreads();
-	}
-	LmDependentRelease();
-}
-
-static __device__ __forceinline__ float GemmaBf16Dot8Exact(const float *wf, const float *af)
-{
-	float a0 = fmaf(wf[0], af[0], 0.0f);
-	float a1 = wf[1] * af[1];
-	a0 = fmaf(wf[2], af[2], a0);
-	a1 = fmaf(wf[3], af[3], a1);
-	a0 = fmaf(wf[4], af[4], a0);
-	a1 = fmaf(wf[5], af[5], a1);
-	a0 = fmaf(wf[6], af[6], a0);
-	a1 = fmaf(wf[7], af[7], a1);
-	return a0 + a1;
-}
-
-template<bool DUAL>
-__global__ __launch_bounds__(GM_THREADS, 2)
-static void GemmaExactSplitDenseKernel(const uint16_t *__restrict__ w0, const uint16_t *__restrict__ w1, const uint16_t *__restrict__ act,
-	uint16_t *__restrict__ out0, float *__restrict__ out0_f32, uint16_t *__restrict__ out1, uint32_t rows, uint32_t K, uint32_t n0, uint32_t n1)
-{
-	constexpr uint32_t SPLIT_W = 8u, BN = 4u, RT = 8u;
-	__shared__ float partial[SPLIT_W][BN][RT];
-	const uint32_t warp = threadIdx.x >> 5u, sub = threadIdx.x & 31u;
-	const uint32_t n0_tiles = (n0 + BN - 1u) / BN;
-	const uint32_t nt = blockIdx.x, r0 = blockIdx.y * RT;
-	const uint32_t count = rows - r0 < RT ? rows - r0 : RT;
-	const bool second = DUAL && nt >= n0_tiles;
-	const uint32_t col0 = (second ? nt - n0_tiles : nt) * BN;
-	const uint32_t cur_n = second ? n1 : n0;
-	const uint16_t *w_ptr = second ? w1 : w0;
-	uint16_t *o_ptr = second ? out1 : out0;
-	float *o_f32 = second ? (float *)0 : out0_f32;
-	const uint32_t chunks = K >> 3u;
-	const uint32_t first = chunks * warp / SPLIT_W, last = chunks * (warp + 1u) / SPLIT_W, seg = last - first;
-	const uint4 *w_rows[BN];
-	#pragma unroll
-	for ( uint32_t b = 0u; b < BN; ++b )
-		w_rows[b] = (const uint4 *)(w_ptr + (uint64_t)(col0 + b < cur_n ? col0 + b : 0u) * K) + first;
-	float acc[BN][RT];
-	#pragma unroll
-	for ( uint32_t b = 0u; b < BN; ++b )
-		#pragma unroll
-		for ( uint32_t r = 0u; r < RT; ++r )
-			acc[b][r] = 0.0f;
-	LmDependentWait();
-	for ( uint32_t c = sub; c < seg; c += 32u )
-	{
-		float wf[BN][8];
-		#pragma unroll
-		for ( uint32_t b = 0u; b < BN; ++b )
-			LmSkinnyUnpackBf16x8(__ldg(w_rows[b] + c), wf[b]);
-		const uint32_t col_elem = (first + c) * 8u;
-		#pragma unroll
-		for ( uint32_t r = 0u; r < RT; ++r )
-		{
-			const uint32_t rr = r0 + (r < count ? r : 0u);
-			float af[8];
-			LmSkinnyUnpackBf16x8(__ldg((const uint4 *)(act + (uint64_t)rr * K + col_elem)), af);
-			#pragma unroll
-			for ( uint32_t b = 0u; b < BN; ++b )
-				acc[b][r] = fmaf(1.0f, GemmaBf16Dot8Exact(wf[b], af), acc[b][r]);
-		}
-	}
-	#pragma unroll
-	for ( uint32_t b = 0u; b < BN; ++b )
-		#pragma unroll
-		for ( uint32_t r = 0u; r < RT; ++r )
-		{
-			#pragma unroll
-			for ( uint32_t step = 16u; step > 0u; step >>= 1u )
-				acc[b][r] += __shfl_xor_sync(0xffffffffu, acc[b][r], step);
-			if ( sub == 0u )
-				partial[warp][b][r] = acc[b][r];
-		}
-	__syncthreads();
-	if ( warp == 0u )
-	{
-		const uint32_t b = sub >> 3u, r = sub & 7u;
-		if ( col0 + b < cur_n && r < count )
-		{
-			float total = 0.0f;
-			#pragma unroll
-			for ( uint32_t w = 0u; w < SPLIT_W; ++w )
-				total += partial[w][b][r];
-			const uint64_t idx = (uint64_t)(r0 + r) * cur_n + (col0 + b);
-			if ( o_f32 != 0 )
-				o_f32[idx] = total;
-			else
-				o_ptr[idx] = LmFloatToBf16(total);
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t R, uint32_t K_V, uint32_t N, bool GELU>
-static __device__ __forceinline__ void GemmaMoeFastW1W3Tile(const uint4 *w1_0, const uint4 *w3_0, const uint4 *w1_1, const uint4 *w3_1,
-	bool has1, const uint4 *act4, const float *packed_weight, const uint32_t *route_source_token, uint16_t *out, uint32_t r0, uint32_t col0,
-	uint32_t lane, float limit)
-{
-	const uint4 *a_row[R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-		a_row[r] = act4 + (uint64_t)__ldg(route_source_token + r0 + r) * K_V;
-	float g0[R], u0[R], g1[R], u1[R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-	{
-		g0[r] = 0.0f;
-		u0[r] = 0.0f;
-		g1[r] = 0.0f;
-		u1[r] = 0.0f;
-	}
-	#pragma unroll 4
-	for ( uint32_t c = lane; c < K_V; c += LM_WARP_LANES )
-	{
-		const uint4 vw1_0 = __ldcs(w1_0 + c);
-		const uint4 vw3_0 = __ldcs(w3_0 + c);
-		const uint4 vw1_1 = __ldcs(w1_1 + c);
-		const uint4 vw3_1 = __ldcs(w3_1 + c);
-		#pragma unroll
-		for ( uint32_t r = 0u; r < R; ++r )
-		{
-			const uint4 va = __ldg(a_row[r] + c);
-			g0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw1_0, va, 0.0f), g0[r]);
-			u0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw3_0, va, 0.0f), u0[r]);
-			g1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw1_1, va, 0.0f), g1[r]);
-			u1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw3_1, va, 0.0f), u1[r]);
-		}
-	}
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-	{
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		{
-			g0[r] += __shfl_down_sync(0xffffffffu, g0[r], offset);
-			u0[r] += __shfl_down_sync(0xffffffffu, u0[r], offset);
-			g1[r] += __shfl_down_sync(0xffffffffu, g1[r], offset);
-			u1[r] += __shfl_down_sync(0xffffffffu, u1[r], offset);
-		}
-		if ( lane == 0u )
-		{
-			const float wt = __ldg(packed_weight + r0 + r);
-			out[(uint64_t)(r0 + r) * N + col0] = GemmaMmaActValue<GELU ? 3u : 4u>(g0[r], u0[r], wt, limit);
-			if ( has1 )
-				out[(uint64_t)(r0 + r) * N + col0 + 1u] = GemmaMmaActValue<GELU ? 3u : 4u>(g1[r], u1[r], wt, limit);
-		}
-	}
-}
-
-template<class G, bool GELU>
-__global__ __launch_bounds__(128u, 4)
-static void GemmaMoeFastW1W3ActKernel(const uint16_t *__restrict__ w1, const uint16_t *__restrict__ w3, const uint16_t *__restrict__ act,
-	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token,
-	uint16_t *__restrict__ out, float limit)
-{
-	constexpr uint32_t WARPS = 4u, RG = 4u, NPG = 2u;
-	constexpr uint32_t K = G::kHidden, N = G::kMoeInter, K_V = K >> 3u;
-	constexpr uint32_t COLS_PER_BLK = WARPS * NPG;
-	constexpr uint32_t N_TILES = (N + COLS_PER_BLK - 1u) / COLS_PER_BLK;
-	__shared__ uint32_t prefix[G::kLocalExperts + 1u];
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	LmDependentWait();
-	GemmaTilePrefixScan(group_row_offset, prefix, G::kLocalExperts, RG, N_TILES);
-	const uint32_t total_tiles = prefix[G::kLocalExperts];
-	const uint4 *act4 = (const uint4 *)act;
-	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
-	{
-		uint32_t grp, r0, row_limit, nt;
-		GemmaGroupedTileLookup(group_row_offset, prefix, G::kLocalExperts, tile, RG, N_TILES, grp, r0, row_limit, nt);
-		const uint32_t count = row_limit - r0 < RG ? row_limit - r0 : RG;
-		const uint32_t col0 = nt * COLS_PER_BLK + warp * NPG;
-		if ( col0 < N )
-		{
-			const bool has1 = col0 + 1u < N;
-			const uint64_t w_off0 = ((uint64_t)grp * N + col0) * K_V;
-			const uint4 *w1_0 = (const uint4 *)w1 + w_off0;
-			const uint4 *w3_0 = (const uint4 *)w3 + w_off0;
-			const uint4 *w1_1 = has1 ? w1_0 + K_V : w1_0;
-			const uint4 *w3_1 = has1 ? w3_0 + K_V : w3_0;
-			if constexpr ( K <= 4096u )
-			{
-				if ( lane == 0u )
-				{
-					LmPrefetchL2(w1_0, K_V * 16u);
-					LmPrefetchL2(w3_0, K_V * 16u);
-					if ( has1 )
-					{
-						LmPrefetchL2(w1_1, K_V * 16u);
-						LmPrefetchL2(w3_1, K_V * 16u);
-					}
-				}
-			}
-			if ( count == 1u )
-				GemmaMoeFastW1W3Tile<1u, K_V, N, GELU>(w1_0, w3_0, w1_1, w3_1, has1, act4, packed_weight, route_source_token, out, r0, col0, lane, limit);
-			else if ( count == 2u )
-				GemmaMoeFastW1W3Tile<2u, K_V, N, GELU>(w1_0, w3_0, w1_1, w3_1, has1, act4, packed_weight, route_source_token, out, r0, col0, lane, limit);
-			else if ( count == 3u )
-				GemmaMoeFastW1W3Tile<3u, K_V, N, GELU>(w1_0, w3_0, w1_1, w3_1, has1, act4, packed_weight, route_source_token, out, r0, col0, lane, limit);
-			else
-				GemmaMoeFastW1W3Tile<4u, K_V, N, GELU>(w1_0, w3_0, w1_1, w3_1, has1, act4, packed_weight, route_source_token, out, r0, col0, lane, limit);
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t R, uint32_t K_V, uint32_t N>
-static __device__ __forceinline__ void GemmaMoeFastW2TileHalf(const uint4 *w0, const uint4 *act4, uint16_t *out, uint32_t r0, uint32_t col0, uint32_t sub)
-{
-	const uint4 vw0 = __ldcs(w0);
-	const uint4 vw1 = __ldcs(w0 + K_V);
-	const uint4 vw2 = __ldcs(w0 + 2u * K_V);
-	const uint4 vw3 = __ldcs(w0 + 3u * K_V);
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-	{
-		const uint4 va = __ldg(act4 + (uint64_t)(r0 + r) * K_V + sub);
-		const float d0 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(vw0, va, 0.0f));
-		const float d1 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(vw1, va, 0.0f));
-		const float d2 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(vw2, va, 0.0f));
-		const float d3 = GemmaHalfWarpSum(LmSkinnyBf16Chunk(vw3, va, 0.0f));
-		if ( sub == 0u )
-		{
-			uint2 packed;
-			packed.x = (uint32_t)LmFloatToBf16(d0) | ((uint32_t)LmFloatToBf16(d1) << 16u);
-			packed.y = (uint32_t)LmFloatToBf16(d2) | ((uint32_t)LmFloatToBf16(d3) << 16u);
-			*(uint2 *)(out + (uint64_t)(r0 + r) * N + col0) = packed;
-		}
-	}
-}
-
-template<uint32_t R, uint32_t K_V, uint32_t N, bool STREAM>
-static __device__ __forceinline__ void GemmaMoeFastW2TileFull(const uint4 *w0, const uint4 *w1, const uint4 *act4, uint16_t *out, uint32_t r0,
-	uint32_t col0, uint32_t lane)
-{
-	const uint4 *a_row[R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-		a_row[r] = act4 + (uint64_t)(r0 + r) * K_V;
-	float acc0[R], acc1[R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-	{
-		acc0[r] = 0.0f;
-		acc1[r] = 0.0f;
-	}
-	#pragma unroll 4
-	for ( uint32_t c = lane; c < K_V; c += LM_WARP_LANES )
-	{
-		const uint4 vw0 = STREAM ? __ldcs(w0 + c) : __ldg(w0 + c);
-		const uint4 vw1 = STREAM ? __ldcs(w1 + c) : __ldg(w1 + c);
-		#pragma unroll
-		for ( uint32_t r = 0u; r < R; ++r )
-		{
-			const uint4 va = __ldg(a_row[r] + c);
-			acc0[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw0, va, 0.0f), acc0[r]);
-			acc1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw1, va, 0.0f), acc1[r]);
-		}
-	}
-	#pragma unroll
-	for ( uint32_t r = 0u; r < R; ++r )
-	{
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		{
-			acc0[r] += __shfl_down_sync(0xffffffffu, acc0[r], offset);
-			acc1[r] += __shfl_down_sync(0xffffffffu, acc1[r], offset);
-		}
-		if ( lane == 0u )
-			*(uint32_t *)(out + (uint64_t)(r0 + r) * N + col0) = (uint32_t)LmFloatToBf16(acc0[r]) | ((uint32_t)LmFloatToBf16(acc1[r]) << 16u);
-	}
-}
-
-template<class G>
-__global__ __launch_bounds__(128u, 4)
-static void GemmaMoeFastW2Kernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ act, const uint32_t *__restrict__ group_row_offset,
-	uint16_t *__restrict__ out)
-{
-	constexpr uint32_t RG = 4u;
-	constexpr uint32_t K = G::kMoeInter, N = G::kHidden, K_V = K >> 3u;
-	constexpr bool HALF_WARP = (K == 128u);
-	constexpr bool STREAM = (G::kLocalExperts > 8u);
-	constexpr uint32_t SUB_LANES = HALF_WARP ? 16u : 32u;
-	constexpr uint32_t NPG = HALF_WARP ? 4u : 2u;
-	constexpr uint32_t GROUPS = 128u / SUB_LANES;
-	constexpr uint32_t COLS_PER_BLK = GROUPS * NPG;
-	constexpr uint32_t N_TILES = (N + COLS_PER_BLK - 1u) / COLS_PER_BLK;
-	__shared__ uint32_t prefix[G::kLocalExperts + 1u];
-	const uint32_t group_id = threadIdx.x / SUB_LANES, sub = threadIdx.x & (SUB_LANES - 1u);
-	LmDependentWait();
-	GemmaTilePrefixScan(group_row_offset, prefix, G::kLocalExperts, RG, N_TILES);
-	const uint32_t total_tiles = prefix[G::kLocalExperts];
-	const uint4 *act4 = (const uint4 *)act;
-	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
-	{
-		uint32_t grp, r0, row_limit, nt;
-		GemmaGroupedTileLookup(group_row_offset, prefix, G::kLocalExperts, tile, RG, N_TILES, grp, r0, row_limit, nt);
-		const uint32_t count = row_limit - r0 < RG ? row_limit - r0 : RG;
-		const uint32_t col0 = nt * COLS_PER_BLK + group_id * NPG;
-		if ( col0 < N )
-		{
-			if constexpr ( HALF_WARP )
-			{
-				const uint4 *w0 = (const uint4 *)w2 + ((uint64_t)grp * N + col0) * K_V + sub;
-				if ( count == 1u )
-					GemmaMoeFastW2TileHalf<1u, K_V, N>(w0, act4, out, r0, col0, sub);
-				else if ( count == 2u )
-					GemmaMoeFastW2TileHalf<2u, K_V, N>(w0, act4, out, r0, col0, sub);
-				else if ( count == 3u )
-					GemmaMoeFastW2TileHalf<3u, K_V, N>(w0, act4, out, r0, col0, sub);
-				else
-					GemmaMoeFastW2TileHalf<4u, K_V, N>(w0, act4, out, r0, col0, sub);
-			}
-			else
-			{
-				const uint4 *w0 = (const uint4 *)w2 + ((uint64_t)grp * N + col0) * K_V;
-				const uint4 *w1 = w0 + K_V;
-				if ( count == 1u )
-					GemmaMoeFastW2TileFull<1u, K_V, N, STREAM>(w0, w1, act4, out, r0, col0, sub);
-				else if ( count == 2u )
-					GemmaMoeFastW2TileFull<2u, K_V, N, STREAM>(w0, w1, act4, out, r0, col0, sub);
-				else if ( count == 3u )
-					GemmaMoeFastW2TileFull<3u, K_V, N, STREAM>(w0, w1, act4, out, r0, col0, sub);
-				else
-					GemmaMoeFastW2TileFull<4u, K_V, N, STREAM>(w0, w1, act4, out, r0, col0, sub);
-			}
-		}
-	}
-	LmDependentRelease();
 }
 
 template<class G>
@@ -2909,63 +2327,64 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static int32_t DenseMma(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t K, uint32_t N,
 		uint32_t sms, SparkGpuStream stream)
 	{
-		if ( rows > 128u && (N > 3072u || (N >= 640u && K > 512u)) )
+		const uint32_t stream_tiles = ((rows + 127u) / 128u) * ((N + 127u) / 128u);
+		if ( rows > 128u && (N > 3072u || (N >= 640u && K > 512u && (rows > 512u || N > 1280u || stream_tiles >= sms))) )
 			return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, K, N, 0u, 0u, sms, stream);
 		const bool k128 = (K & 127u) == 0u;
 		if ( rows <= 16u )
 		{
 			if ( N <= 1024u )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 16u, 64u, 32u, 1u, 3u, false, false, false>), ((rows + 15u) / 16u) * ((N + 15u) / 16u), 32u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 16u, 64u, 32u, 1u, 3u, false, false>), ((rows + 15u) / 16u) * ((N + 15u) / 16u), 32u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else if ( k128 )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 32u, 128u, 64u, 1u, 2u, false, false, true>), ((rows + 15u) / 16u) * ((N + 31u) / 32u), 64u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 32u, 128u, 64u, 1u, 2u, false, true>), ((rows + 15u) / 16u) * ((N + 31u) / 32u), 64u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else if ( N >= 4096u && (N & 63u) == 0u )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 64u, 64u, 128u, 1u, 3u, false, false, true>), ((rows + 15u) / 16u) * ((N + 63u) / 64u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 64u, 64u, 128u, 1u, 3u, false, true>), ((rows + 15u) / 16u) * ((N + 63u) / 64u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 32u, 64u, 64u, 1u, 3u, false, false, true>), ((rows + 15u) / 16u) * ((N + 31u) / 32u), 64u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 32u, 64u, 64u, 1u, 3u, false, true>), ((rows + 15u) / 16u) * ((N + 31u) / 32u), 64u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 		}
 		else if ( rows <= 32u )
 		{
 			if ( N <= 1024u )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 16u, 64u, 64u, 2u, 3u, false, false, false>), ((rows + 31u) / 32u) * ((N + 15u) / 16u), 64u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 16u, 64u, 64u, 2u, 3u, false, false>), ((rows + 31u) / 32u) * ((N + 15u) / 16u), 64u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else if ( k128 )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 128u, 128u, 2u, 2u, false, false, true>), ((rows + 31u) / 32u) * ((N + 31u) / 32u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 128u, 128u, 2u, 2u, false, true>), ((rows + 31u) / 32u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 31u) / 32u) * ((N + 31u) / 32u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 64u, 128u, 2u, 3u, false, false>), ((rows + 31u) / 32u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 		}
 		else if ( rows <= 64u )
 		{
 			if ( N <= 1024u )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 16u, 64u, 128u, 4u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 15u) / 16u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 16u, 64u, 128u, 4u, 3u, false, false>), ((rows + 63u) / 64u) * ((N + 15u) / 16u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else if ( k128 )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 128u, 128u, 2u, 2u, false, false, true>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 128u, 128u, 2u, 2u, false, true>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false, true>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, true>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 		}
 		else if ( rows <= 128u )
 		{
 			if ( N >= 1024u )
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<128u, 32u, 64u, 256u, 4u, 2u, false, false, true>), ((rows + 127u) / 128u) * ((N + 31u) / 32u), 256u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<128u, 32u, 64u, 256u, 4u, 2u, false, true>), ((rows + 127u) / 128u) * ((N + 31u) / 32u), 256u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 			else
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
-					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+					weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 		}
 		else if ( N <= 256u )
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
-				weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, false, false>), ((rows + 63u) / 64u) * ((N + 31u) / 32u), 128u, 0, stream,
+				weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 		else
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 64u, 64u, 256u, 2u, 3u, false, false, false>), ((rows + 63u) / 64u) * ((N + 63u) / 64u), 256u, 0, stream,
-				weight, (const uint16_t *)0, source, destination, (uint16_t *)0, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, N, 0u);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 64u, 64u, 256u, 2u, 3u, false, false>), ((rows + 63u) / 64u) * ((N + 63u) / 64u), 256u, 0, stream,
+				weight, (const uint16_t *)0, source, destination, (uint16_t *)0, rows, K, N, 0u);
 		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
@@ -2978,14 +2397,14 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			if ( small_n )
 			{
 				const uint32_t nt = (n0 + 15u) / 16u + (n1 + 15u) / 16u;
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 16u, 64u, 32u, 1u, 3u, true, false, false>), ((rows + 15u) / 16u) * nt, 32u, 0, stream,
-					w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 16u, 64u, 32u, 1u, 3u, true, false>), ((rows + 15u) / 16u) * nt, 32u, 0, stream,
+					w0, w1, source, out0, out1, rows, K, n0, n1);
 			}
 			else
 			{
 				const uint32_t nt = (n0 + 31u) / 32u + (n1 + 31u) / 32u;
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 32u, 64u, 64u, 1u, 3u, true, false, false>), ((rows + 15u) / 16u) * nt, 64u, 0, stream,
-					w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 32u, 64u, 64u, 1u, 3u, true, false>), ((rows + 15u) / 16u) * nt, 64u, 0, stream,
+					w0, w1, source, out0, out1, rows, K, n0, n1);
 			}
 		}
 		else if ( rows <= 32u )
@@ -2993,39 +2412,95 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			if ( small_n )
 			{
 				const uint32_t nt = (n0 + 15u) / 16u + (n1 + 15u) / 16u;
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 16u, 64u, 64u, 2u, 3u, true, false, false>), ((rows + 31u) / 32u) * nt, 64u, 0, stream,
-					w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 16u, 64u, 64u, 2u, 3u, true, false>), ((rows + 31u) / 32u) * nt, 64u, 0, stream,
+					w0, w1, source, out0, out1, rows, K, n0, n1);
 			}
 			else
 			{
 				const uint32_t nt = (n0 + 31u) / 32u + (n1 + 31u) / 32u;
-				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 64u, 128u, 2u, 3u, true, false, false>), ((rows + 31u) / 32u) * nt, 128u, 0, stream,
-					w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 32u, 64u, 128u, 2u, 3u, true, false>), ((rows + 31u) / 32u) * nt, 128u, 0, stream,
+					w0, w1, source, out0, out1, rows, K, n0, n1);
 			}
 		}
 		else if ( rows <= 64u && small_n )
 		{
 			const uint32_t nt = (n0 + 15u) / 16u + (n1 + 15u) / 16u;
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 16u, 64u, 128u, 4u, 3u, true, false, false>), ((rows + 63u) / 64u) * nt, 128u, 0, stream,
-				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 16u, 64u, 128u, 4u, 3u, true, false>), ((rows + 63u) / 64u) * nt, 128u, 0, stream,
+				w0, w1, source, out0, out1, rows, K, n0, n1);
 		}
-		else if ( rows <= 128u )
+		else if ( rows <= 128u || (rows <= 1024u && ((n0 & 63u) != 0u || (n0 + n1) <= 640u)) )
 		{
 			const uint32_t nt = (n0 + 31u) / 32u + (n1 + 31u) / 32u;
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, true, false, false>), ((rows + 63u) / 64u) * nt, 128u, 0, stream,
-				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 32u, 64u, 128u, 2u, 3u, true, false>), ((rows + 63u) / 64u) * nt, 128u, 0, stream,
+				w0, w1, source, out0, out1, rows, K, n0, n1);
 		}
 		else if ( rows <= 1024u )
 		{
 			const uint32_t nt = (n0 + 63u) / 64u + (n1 + 63u) / 64u;
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 64u, 64u, 256u, 2u, 3u, true, false, false>), ((rows + 63u) / 64u) * nt, 256u, 0, stream,
-				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 64u, 64u, 256u, 2u, 3u, true, false>), ((rows + 63u) / 64u) * nt, 256u, 0, stream,
+				w0, w1, source, out0, out1, rows, K, n0, n1);
 		}
 		else
 		{
 			const uint32_t nt = (n0 + 63u) / 64u + (n1 + 63u) / 64u;
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<128u, 64u, 64u, 256u, 4u, 2u, true, false, false>), ((rows + 127u) / 128u) * nt, 256u, 0, stream,
-				w0, w1, source, out0, out1, (const uint32_t *)0, (const uint32_t *)0, rows, 1u, K, n0, n1);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<128u, 64u, 64u, 256u, 4u, 2u, true, false>), ((rows + 127u) / 128u) * nt, 256u, 0, stream,
+				w0, w1, source, out0, out1, rows, K, n0, n1);
+		}
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	template<uint32_t ACT_MODE, bool HAS_ROUTER, bool ROUTER_F32>
+	static int32_t DenseGateUpActMma(const uint16_t *gate_up_w, const uint16_t *router_w, const uint16_t *act,
+		uint16_t *out_inter, uint16_t *router_bf16, float *router_f32, uint32_t rows, uint32_t K, uint32_t ffn_rows,
+		uint32_t experts, float limit, uint32_t sms, SparkGpuStream stream)
+	{
+		const bool wide_n = !HAS_ROUTER && ffn_rows >= 512u && (ffn_rows & 63u) == 0u;
+		if ( wide_n )
+		{
+			const uint32_t nt = ffn_rows / 64u;
+			if ( rows <= 16u )
+			{
+				constexpr uint32_t smem = 2u * (16u + 128u) * 128u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaDenseGateUpActMmaKernel<16u, 64u, 128u, 1u, ACT_MODE, HAS_ROUTER, ROUTER_F32>),
+					dim3(nt, (rows + 15u) / 16u), 128u, smem, stream, gate_up_w, router_w, act, out_inter, router_bf16, router_f32, rows, K, ffn_rows, experts, limit);
+			}
+			else if ( rows <= 32u )
+			{
+				constexpr uint32_t smem = 2u * (32u + 128u) * 128u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaDenseGateUpActMmaKernel<32u, 64u, 256u, 2u, ACT_MODE, HAS_ROUTER, ROUTER_F32>),
+					dim3(nt, (rows + 31u) / 32u), 256u, smem, stream, gate_up_w, router_w, act, out_inter, router_bf16, router_f32, rows, K, ffn_rows, experts, limit);
+			}
+			else
+			{
+				constexpr uint32_t smem = 2u * (64u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<100u + ACT_MODE * 4u + (HAS_ROUTER ? 2u : 0u) + (ROUTER_F32 ? 1u : 0u)>(
+						GemmaDenseGateUpActMmaKernel<64u, 64u, 256u, 2u, ACT_MODE, HAS_ROUTER, ROUTER_F32>, smem, 256u, sms, (uint32_t *)0) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaDenseGateUpActMmaKernel<64u, 64u, 256u, 2u, ACT_MODE, HAS_ROUTER, ROUTER_F32>),
+					dim3(nt, (rows + 63u) / 64u), 256u, smem, stream, gate_up_w, router_w, act, out_inter, router_bf16, router_f32, rows, K, ffn_rows, experts, limit);
+			}
+		}
+		else
+		{
+			const uint32_t nt = (ffn_rows + 31u) / 32u + (HAS_ROUTER ? (experts + 31u) / 32u : 0u);
+			if ( rows <= 16u )
+			{
+				constexpr uint32_t smem = 2u * (16u + 64u) * 128u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaDenseGateUpActMmaKernel<16u, 32u, 128u, 1u, ACT_MODE, HAS_ROUTER, ROUTER_F32>),
+					dim3(nt, (rows + 15u) / 16u), 128u, smem, stream, gate_up_w, router_w, act, out_inter, router_bf16, router_f32, rows, K, ffn_rows, experts, limit);
+			}
+			else if ( rows <= 32u )
+			{
+				constexpr uint32_t smem = 2u * (32u + 64u) * 128u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaDenseGateUpActMmaKernel<32u, 32u, 128u, 2u, ACT_MODE, HAS_ROUTER, ROUTER_F32>),
+					dim3(nt, (rows + 31u) / 32u), 128u, smem, stream, gate_up_w, router_w, act, out_inter, router_bf16, router_f32, rows, K, ffn_rows, experts, limit);
+			}
+			else
+			{
+				constexpr uint32_t smem = 2u * (64u + 64u) * 128u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaDenseGateUpActMmaKernel<64u, 32u, 256u, 4u, ACT_MODE, HAS_ROUTER, ROUTER_F32>),
+					dim3(nt, (rows + 63u) / 64u), 256u, smem, stream, gate_up_w, router_w, act, out_inter, router_bf16, router_f32, rows, K, ffn_rows, experts, limit);
+			}
 		}
 		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
@@ -3035,37 +2510,181 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	{
 		constexpr uint32_t ACT_MODE = GELU ? 3u : 4u;
 		const uint32_t local_mean = (rows * G::kTopK + G::kExperts - 1u) / G::kExperts;
-		const uint32_t grid = sms * 4u;
-		if ( local_mean <= 16u )
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaGateUpActKernel<16u, 64u, 128u, 1u, ACT_MODE>), grid, 128u, 0, stream,
-				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->route_source_token,
-				state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
-		else if ( local_mean <= 32u )
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaGateUpActKernel<32u, 64u, 256u, 2u, ACT_MODE>), sms * 2u, 256u, 0, stream,
-				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->route_source_token,
-				state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		const uint32_t tile_m = local_mean >= 22u ? 64u : local_mean >= 10u ? 32u : 16u;
+		const uint32_t n_tiles = G::kMoeInter / 64u;
+		uint32_t blocks = sms * 2u;
+		(void)LM_LAUNCH_DEPENDENT((GemmaBuildTilePrefixKernel), 1u, 32u, 0, stream,
+			state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, n_tiles);
+		if ( tile_m == 16u )
+		{
+			constexpr uint32_t smem = 2u * (16u + 128u) * 128u;
+			if ( GemmaDynSmemSetup<1u + ACT_MODE * 3u>(GemmaMoeMmaW1ActLdcsKernel<16u, 1u, ACT_MODE>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW1ActLdcsKernel<16u, 1u, ACT_MODE>), blocks, 256u, smem, stream,
+				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->tile_prefix_up,
+				state->route_source_token, state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		}
+		else if ( tile_m == 32u )
+		{
+			constexpr uint32_t smem = 2u * (32u + 128u) * 128u;
+			if ( GemmaDynSmemSetup<2u + ACT_MODE * 3u>(GemmaMoeMmaW1ActLdcsKernel<32u, 2u, ACT_MODE>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW1ActLdcsKernel<32u, 2u, ACT_MODE>), blocks, 256u, smem, stream,
+				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->tile_prefix_up,
+				state->route_source_token, state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		}
 		else
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaGateUpActKernel<64u, 64u, 256u, 2u, ACT_MODE>), sms * 2u, 256u, 0, stream,
-				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->route_source_token,
-				state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		{
+			constexpr uint32_t smem = 2u * (64u + 128u) * 128u;
+			if ( GemmaDynSmemSetup<3u + ACT_MODE * 3u>(GemmaMoeMmaW1ActLdcsKernel<64u, 2u, ACT_MODE>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW1ActLdcsKernel<64u, 2u, ACT_MODE>), blocks, 256u, smem, stream,
+				layer->moe_w1, layer->moe_w3, act, state->packed_weight, state->group_row_offset, state->tile_prefix_up,
+				state->route_source_token, state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter, layer->swiglu_limit);
+		}
 		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
 	static int32_t MoeDownMma(const State *state, const GemmaLayer *layer, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 	{
 		const uint32_t local_mean = (rows * G::kTopK + G::kExperts - 1u) / G::kExperts;
-		if ( local_mean <= 16u )
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<16u, 64u, 64u, 128u, 1u, 3u, false, true, false>), sms * 3u, 128u, 0, stream,
-				layer->moe_w2, (const uint16_t *)0, state->expert_act, state->expert_out, (uint16_t *)0, state->group_row_offset,
-				(const uint32_t *)0, rows * G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, 0u);
-		else if ( local_mean <= 32u )
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<32u, 64u, 64u, 256u, 2u, 3u, false, true, false>), sms * 2u, 256u, 0, stream,
-				layer->moe_w2, (const uint16_t *)0, state->expert_act, state->expert_out, (uint16_t *)0, state->group_row_offset,
-				(const uint32_t *)0, rows * G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, 0u);
+		const uint32_t tile_m = local_mean >= 22u ? 64u : local_mean >= 10u ? 32u : 16u;
+		constexpr uint32_t TILE_N = (G::kHidden & 127u) == 0u ? 128u : 64u;
+		const uint32_t n_tiles = G::kHidden / TILE_N;
+		uint32_t blocks = sms * 2u;
+		(void)LM_LAUNCH_DEPENDENT((GemmaBuildTilePrefixKernel), 1u, 32u, 0, stream,
+			state->group_row_offset, state->tile_prefix_down, G::kLocalExperts, tile_m, n_tiles);
+		if constexpr ( G::kMoeInter == 128u && TILE_N == 128u )
+		{
+			if ( tile_m == 16u )
+			{
+				constexpr uint32_t smem = 2u * (16u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<31u>(GemmaMoeMmaW2K128Kernel<16u, 1u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2K128Kernel<16u, 1u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kHidden);
+			}
+			else if ( tile_m == 32u )
+			{
+				constexpr uint32_t smem = 2u * (32u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<32u>(GemmaMoeMmaW2K128Kernel<32u, 2u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2K128Kernel<32u, 2u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kHidden);
+			}
+			else
+			{
+				constexpr uint32_t smem = 2u * (64u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<33u>(GemmaMoeMmaW2K128Kernel<64u, 2u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2K128Kernel<64u, 2u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kHidden);
+			}
+		}
+		else if constexpr ( TILE_N == 128u )
+		{
+			if ( tile_m == 16u )
+			{
+				constexpr uint32_t smem = 2u * (16u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<41u>(GemmaMoeMmaW2GeneralKernel<16u, 128u, 1u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2GeneralKernel<16u, 128u, 1u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kMoeInter, G::kHidden);
+			}
+			else if ( tile_m == 32u )
+			{
+				constexpr uint32_t smem = 2u * (32u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<42u>(GemmaMoeMmaW2GeneralKernel<32u, 128u, 2u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2GeneralKernel<32u, 128u, 2u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kMoeInter, G::kHidden);
+			}
+			else
+			{
+				constexpr uint32_t smem = 2u * (64u + 128u) * 128u;
+				if ( GemmaDynSmemSetup<43u>(GemmaMoeMmaW2GeneralKernel<64u, 128u, 2u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2GeneralKernel<64u, 128u, 2u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kMoeInter, G::kHidden);
+			}
+		}
 		else
-			(void)LM_LAUNCH_DEPENDENT((GemmaMmaKernel<64u, 128u, 64u, 256u, 2u, 2u, false, true, false>), sms * 2u, 256u, 0, stream,
-				layer->moe_w2, (const uint16_t *)0, state->expert_act, state->expert_out, (uint16_t *)0, state->group_row_offset,
-				(const uint32_t *)0, rows * G::kTopK, G::kLocalExperts, G::kMoeInter, G::kHidden, 0u);
+		{
+			if ( tile_m <= 32u )
+			{
+				constexpr uint32_t smem = 2u * (32u + 64u) * 128u;
+				(void)LM_LAUNCH_DEPENDENT((GemmaBuildTilePrefixKernel), 1u, 32u, 0, stream,
+					state->group_row_offset, state->tile_prefix_down, G::kLocalExperts, 32u, n_tiles);
+				if ( GemmaDynSmemSetup<51u>(GemmaMoeMmaW2GeneralKernel<32u, 64u, 2u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2GeneralKernel<32u, 64u, 2u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kMoeInter, G::kHidden);
+			}
+			else
+			{
+				constexpr uint32_t smem = 2u * (64u + 64u) * 128u;
+				if ( GemmaDynSmemSetup<52u>(GemmaMoeMmaW2GeneralKernel<64u, 64u, 2u>, smem, 256u, sms, &blocks) != LM_LAUNCH_OK )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				(void)LM_LAUNCH_DEPENDENT((GemmaMoeMmaW2GeneralKernel<64u, 64u, 2u>), blocks, 256u, smem, stream,
+					layer->moe_w2, state->expert_act, state->group_row_offset, state->tile_prefix_down, state->expert_out, G::kLocalExperts, G::kMoeInter, G::kHidden);
+			}
+		}
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	static int32_t ExactDenseLaunch(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32,
+		uint32_t rows, uint32_t K, uint32_t N, SparkGpuStream stream)
+	{
+		if ( N <= LM_SKINNY_SPLIT_MAX_OUTPUTS && K >= 2048u )
+		{
+			if ( rows <= 8u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseV2Kernel<false, 8u, 4u>), dim3((N + 3u) / 4u, 1u), GM_THREADS, 0, stream,
+					weight, (const uint16_t *)0, source, destination, destination_f32, (uint16_t *)0, (float *)0, rows, K, N, 0u);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseV2Kernel<false, 16u, 2u>), dim3((N + 1u) / 2u, (rows + 15u) / 16u), GM_THREADS, 0, stream,
+					weight, (const uint16_t *)0, source, destination, destination_f32, (uint16_t *)0, (float *)0, rows, K, N, 0u);
+		}
+		else if ( K >= 256u )
+		{
+			if ( rows <= 4u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseTileKernel<1u, 4u, 4u, 4u, false, 4u>), dim3((N + 15u) / 16u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, K, N);
+			else if ( rows <= 8u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseTileKernel<1u, 4u, 8u, 2u, false, 4u>), dim3((N + 7u) / 8u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, K, N);
+			else if ( rows <= 16u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseTileKernel<1u, 4u, 16u, 2u, false, 3u>), dim3((N + 7u) / 8u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, K, N);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseTileKernel<2u, 4u, 16u, 2u, true, 2u>), dim3((N + 7u) / 8u, (rows + 31u) / 32u), 256u, 0, stream,
+					weight, source, destination, destination_f32, rows, K, N);
+		}
+		else if ( K == 128u )
+		{
+			if ( rows <= 4u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseSmallKKernel<16u, 4u, 2u>), dim3((N + 15u) / 16u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, N);
+			else if ( rows <= 8u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseSmallKKernel<16u, 8u, 2u>), dim3((N + 15u) / 16u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, N);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseSmallKKernel<16u, 16u, 2u>), dim3((N + 15u) / 16u, (rows + 15u) / 16u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, N);
+		}
+		else if ( K == 64u )
+		{
+			if ( rows <= 4u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseSmallKKernel<8u, 4u, 2u>), dim3((N + 31u) / 32u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, N);
+			else if ( rows <= 8u )
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseSmallKKernel<8u, 8u, 2u>), dim3((N + 31u) / 32u, 1u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, N);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaExactDenseSmallKKernel<8u, 16u, 2u>), dim3((N + 31u) / 32u, (rows + 15u) / 16u), 128u, 0, stream,
+					weight, source, destination, destination_f32, rows, N);
+		}
+		else
+			return LM_LAUNCH_ERR_SHAPE;
 		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
@@ -3084,12 +2703,11 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		if ( exact == 0u && destination_f32 == 0 && rows > 8u && (input_dimension & 63u) == 0u && mma_n_ok )
 			return DenseMma(weight, source, destination, rows, input_dimension, output_dimension, step->multiprocessors, stream);
-		if ( exact != 0u && rows > 8u && (input_dimension & 7u) == 0u &&
-			output_dimension <= LM_SKINNY_SPLIT_MAX_OUTPUTS && input_dimension >= 2048u )
+		if ( rows >= 2u && (input_dimension & 7u) == 0u )
 		{
-			(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseKernel<false>), dim3((output_dimension + 3u) / 4u, (rows + 7u) / 8u), GM_THREADS, 0, stream,
-				weight, (const uint16_t *)0, source, destination, destination_f32, (uint16_t *)0, rows, input_dimension, output_dimension, 0u);
-			return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+			const int32_t fast = ExactDenseLaunch(weight, source, destination, destination_f32, rows, input_dimension, output_dimension, stream);
+			if ( fast != LM_LAUNCH_ERR_SHAPE )
+				return fast;
 		}
 		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
 			exact, step->multiprocessors, stream);
@@ -3152,6 +2770,80 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		return CudaStageLaunched();
 	}
 
+	template<uint32_t HD, uint32_t Q_WARPS_OVR, uint32_t GATE_MODE>
+	static SparkStatus LaunchLocalPrefillAttn(const State *state, const SparkStageRunnerStep *step, SparkGpuStream stream,
+		const uint16_t *kv_prior, const uint16_t *kv_cur, const GemmaPrefillSeqPlan &plan, uint32_t max_seq_rows, uint32_t rank_heads,
+		uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t window, uint32_t gate_stride)
+	{
+		constexpr uint32_t V_WARPS = HD <= 128u ? 1u : (HD / 128u);
+		constexpr uint32_t Q_WARPS = GemmaLocalPrefillQWarps<HD, Q_WARPS_OVR>();
+		constexpr uint32_t ATTN_THREADS = Q_WARPS * V_WARPS * 32u;
+		constexpr uint32_t Q_TILE = Q_WARPS * 16u;
+		constexpr uint32_t shared_bytes = GemmaLocalPrefillSharedBytes<HD, Q_WARPS_OVR>();
+		if constexpr ( shared_bytes > 48000u )
+		{
+			if ( GemmaDynSmemSetup<200u + (HD / 64u) * 16u + Q_WARPS_OVR * 4u + GATE_MODE>(
+					GemmaLocalPrefillAttnKernel<HD, Q_WARPS_OVR, GATE_MODE>, shared_bytes, ATTN_THREADS, step->multiprocessors, (uint32_t *)0) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		(void)LM_LAUNCH_DEPENDENT((GemmaLocalPrefillAttnKernel<HD, Q_WARPS_OVR, GATE_MODE>),
+			dim3(rank_heads, (max_seq_rows + Q_TILE - 1u) / Q_TILE, plan.count), ATTN_THREADS, shared_bytes, stream,
+			state->query, kv_prior, kv_cur, step->positions, plan, step->rows, rank_heads, q_first, group,
+			kv_first, window, G::kAttentionScale, state->gate_logits, gate_stride, state->merged);
+		return CudaStageLaunched();
+	}
+
+	template<bool FULL>
+	static SparkStatus LaunchLocalPrefillGateDispatch(const State *state, const SparkStageRunnerStep *step, SparkGpuStream stream,
+		const uint16_t *kv_prior, const uint16_t *kv_cur, const GemmaPrefillSeqPlan &plan, uint32_t max_seq_rows, uint32_t rank_heads,
+		uint32_t q_first, uint32_t group, uint32_t kv_first, uint32_t window, bool fuse_gate)
+	{
+		constexpr uint32_t HD = FULL ? G::kFullDim : G::kSlidingDim;
+		constexpr uint32_t BIG_QW = GemmaLocalPrefillQWarps<HD, 0u>();
+		constexpr uint32_t HALF_QW = BIG_QW > 1u ? (BIG_QW / 2u) : 1u;
+		constexpr uint32_t BIG_Q_TILE = BIG_QW * 16u;
+		const uint32_t gate_stride = G::kHeadGate ? (FULL ? S::kFullGateRows : S::kSlidingGateRows) : (rank_heads * HD);
+		const uint32_t big_ctas = rank_heads * ((max_seq_rows + BIG_Q_TILE - 1u) / BIG_Q_TILE) * plan.count;
+		const bool use_half_q = (HALF_QW < BIG_QW) && (big_ctas < step->multiprocessors);
+		if constexpr ( G::kOutputGate )
+		{
+			if ( fuse_gate )
+				return use_half_q ?
+					LaunchLocalPrefillAttn<HD, HALF_QW, 1u>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads, q_first, group, kv_first, window, gate_stride) :
+					LaunchLocalPrefillAttn<HD, 0u, 1u>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads, q_first, group, kv_first, window, gate_stride);
+		}
+		else if constexpr ( G::kHeadGate )
+		{
+			if ( fuse_gate )
+				return use_half_q ?
+					LaunchLocalPrefillAttn<HD, HALF_QW, 2u>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads, q_first, group, kv_first, window, gate_stride) :
+					LaunchLocalPrefillAttn<HD, 0u, 2u>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads, q_first, group, kv_first, window, gate_stride);
+		}
+		return use_half_q ?
+			LaunchLocalPrefillAttn<HD, HALF_QW, 0u>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads, q_first, group, kv_first, window, gate_stride) :
+			LaunchLocalPrefillAttn<HD, 0u, 0u>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads, q_first, group, kv_first, window, gate_stride);
+	}
+
+	template<bool HEAD_GATE>
+	static SparkStatus LaunchExactGateOut(const State *state, const GemmaLayer *layer, uint32_t rows, uint32_t width, uint32_t hd,
+		uint32_t gate_stride, SparkGpuStream stream)
+	{
+		const uint32_t smem = rows * width * (uint32_t)sizeof(uint16_t);
+		if ( rows == 1u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateOutKernel<1u, HEAD_GATE>), dim3((G::kHidden + 15u) / 16u, 1u), 128u, smem, stream,
+				state->merged, state->gate_logits, layer->out, state->partial, rows, width, G::kHidden, hd, gate_stride);
+		else if ( rows <= 4u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateOutKernel<4u, HEAD_GATE>), dim3((G::kHidden + 15u) / 16u, 1u), 128u, smem, stream,
+				state->merged, state->gate_logits, layer->out, state->partial, rows, width, G::kHidden, hd, gate_stride);
+		else if ( rows <= 8u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateOutKernel<8u, HEAD_GATE>), dim3((G::kHidden + 15u) / 16u, 1u), 128u, smem, stream,
+				state->merged, state->gate_logits, layer->out, state->partial, rows, width, G::kHidden, hd, gate_stride);
+		else
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateOutKernel<16u, HEAD_GATE>), dim3((G::kHidden + 7u) / 8u, 1u), 128u, smem, stream,
+				state->merged, state->gate_logits, layer->out, state->partial, rows, width, G::kHidden, hd, gate_stride);
+		return CudaStageLaunched();
+	}
+
 	template<bool FULL>
 	static SparkStatus Attention(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
@@ -3172,7 +2864,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			(G::kHidden * sizeof(uint16_t));
 		const uint64_t stride = units * G::kHidden * sizeof(uint16_t) / sizeof(float);
 		const LmKvShardView *view = FULL ? &state->full_views[layer->kv_index] : &state->sliding_views[layer->kv_index];
-		bool gate_done = false;
+		bool gate_done = false, gate_applied = false;
 		SparkStatus status;
 		if ( state->kv_attached == 0u || stride > state->record_stride )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -3182,18 +2874,26 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			const bool both_split = local_rows <= LM_SKINNY_SPLIT_MAX_OUTPUTS && gate_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS;
 			const bool both_nosplit = local_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS && gate_out > LM_SKINNY_SPLIT_MAX_OUTPUTS;
 			const bool allow_multi = both_split || both_nosplit;
-			const bool dual_n_ok = ((local_rows + gate_out <= 1024u) && (local_rows & 15u) == 0u && (gate_out & 15u) == 0u) ||
-				((local_rows & 31u) == 0u && (gate_out & 31u) == 0u);
+			const bool dual_n_ok = (local_rows & 1u) == 0u && (gate_out & 1u) == 0u;
 			if ( (prefill_wave || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && dual_n_ok )
 			{
 				if ( DualDenseMma(layer->qkv, layer->gate, state->normed, state->attn_local, state->gate_logits, rows, G::kHidden, local_rows, gate_out, stream) == LM_LAUNCH_OK )
 					gate_done = true;
 			}
-			else if ( !prefill_wave && exact != 0u && rows > 8u && both_split && G::kHidden >= 2048u )
+			else if ( !prefill_wave && both_split && rows >= 2u && (rows <= 8u || exact != 0u) && G::kHidden >= 2048u && (G::kHidden & 7u) == 0u )
 			{
-				const uint32_t nt = (local_rows + 3u) / 4u + (gate_out + 3u) / 4u;
-				(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseKernel<true>), dim3(nt, (rows + 7u) / 8u), GM_THREADS, 0, stream,
-					layer->qkv, layer->gate, state->normed, state->attn_local, (float *)0, state->gate_logits, rows, G::kHidden, local_rows, gate_out);
+				if ( rows <= 8u )
+				{
+					const uint32_t nt = (local_rows + 3u) / 4u + (gate_out + 3u) / 4u;
+					(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseV2Kernel<true, 8u, 4u>), dim3(nt, 1u), GM_THREADS, 0, stream,
+						layer->qkv, layer->gate, state->normed, state->attn_local, (float *)0, state->gate_logits, (float *)0, rows, G::kHidden, local_rows, gate_out);
+				}
+				else
+				{
+					const uint32_t nt = (local_rows + 1u) / 2u + (gate_out + 1u) / 2u;
+					(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitDenseV2Kernel<true, 16u, 2u>), dim3(nt, (rows + 15u) / 16u), GM_THREADS, 0, stream,
+						layer->qkv, layer->gate, state->normed, state->attn_local, (float *)0, state->gate_logits, (float *)0, rows, G::kHidden, local_rows, gate_out);
+				}
 				if ( CudaStageLaunched() == SPARK_STATUS_OK )
 					gate_done = true;
 			}
@@ -3314,11 +3014,10 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		const bool use_local_prefill = plan_ok && (uint64_t)degree * a2a_stride_bytes <= buf_cap_bytes && prior_bytes <= buf_cap_bytes;
 		if ( use_local_prefill )
 		{
-			const uint32_t local_tasks = rank_heads + 2u * KVH;
 			uint16_t *kv_cur = state->slot;
 			uint16_t *kv_prior = (uint16_t *)state->send;
 			CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			(void)LM_LAUNCH_DEPENDENT((GemmaAttnPrepStoreLocalKernel<G, FULL>), dim3((local_tasks + WARPS - 1u) / WARPS, rows), GM_THREADS, 0, stream,
+			(void)LM_LAUNCH_DEPENDENT((GemmaAttnPrepStoreLocalKernel<G, FULL>), rows, GM_THREADS, 0, stream,
 				state->attn_gathered, G::kQkNormWeighted ? layer->q_norm : (const float *)0, G::kQkNormWeighted ? layer->k_norm : (const float *)0,
 				step->positions, step->positions, step->sequence_of_row, FULL ? state->full_inv_freq : state->full_inv_freq + (G::kFullDim / 2u),
 				*view, state->query, kv_cur, rows, q_first, rank_heads, kv_first, local_kvh);
@@ -3329,50 +3028,31 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			{
 				if ( degree > 1u )
 				{
-					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvPackKernel<Kv, KVH, HD>), dim3(max_seq_peer, degree, plan.count), GM_THREADS, 0, stream,
+					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvPackKernel<Kv, KVH, HD>), dim3((max_seq_peer + 7u) / 8u, degree, plan.count), GM_THREADS, 0, stream,
 						*view, step->sequence_of_row, plan, rank_heads, group, local_kvh, a2a_stride_bytes, (uint8_t *)state->send);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 					status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, a2a_units, 0u, state->send, state->received);
 					if ( status != SPARK_STATUS_OK )
 						return status;
-					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvUnpackKernel<HD>), dim3(max_seq_peer, degree, plan.count), GM_THREADS, 0, stream,
+					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvUnpackKernel<HD>), dim3((max_seq_peer + 7u) / 8u, degree, plan.count), GM_THREADS, 0, stream,
 						view->shard, (const uint8_t *)state->received, a2a_stride_bytes, plan, local_kvh, kv_prior);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 				else
 				{
-					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvDirectKernel<Kv, KVH, HD>), dim3(max_seq_prior, local_kvh, plan.count), GM_THREADS, 0, stream,
+					(void)LM_LAUNCH_DEPENDENT((GemmaPriorKvDirectKernel<Kv, KVH, HD>), dim3((max_seq_prior + 7u) / 8u, local_kvh, plan.count), GM_THREADS, 0, stream,
 						*view, step->sequence_of_row, plan, kv_first, local_kvh, kv_prior);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 			}
-			constexpr uint32_t V_WARPS = HD <= 128u ? 1u : (HD / 128u);
-			constexpr uint32_t Q_WARPS = V_WARPS == 1u ? 4u : 2u;
-			constexpr uint32_t ATTN_THREADS = Q_WARPS * V_WARPS * 32u;
-			constexpr uint32_t Q_TILE = Q_WARPS * 16u;
-			constexpr uint32_t shared_bytes = GemmaLocalPrefillSharedBytes<HD>();
-			if constexpr ( shared_bytes > 48000u )
-			{
-				static std::atomic<uint64_t> lp_granted(0u);
-				int dev = 0;
-				if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				if ( (lp_granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
-				{
-					if ( SparkGpuFuncSetAttribute((const void *)GemmaLocalPrefillAttnKernel<HD>,
-							SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-					lp_granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
-				}
-			}
-			(void)LM_LAUNCH_DEPENDENT((GemmaLocalPrefillAttnKernel<HD>), dim3(rank_heads, (max_seq_rows + Q_TILE - 1u) / Q_TILE, plan.count),
-				ATTN_THREADS, shared_bytes, stream, state->query, kv_prior, kv_cur, step->positions, plan, rows, rank_heads, q_first, group,
-				kv_first, window, G::kAttentionScale, state->merged);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
+			const bool fuse_gate = (G::kOutputGate || G::kHeadGate) && gate_done;
+			if ( LaunchLocalPrefillGateDispatch<FULL>(state, step, stream, kv_prior, kv_cur, plan, max_seq_rows, rank_heads,
+					q_first, group, kv_first, window, fuse_gate) != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			gate_applied = fuse_gate;
 		}
 		else
 		{
@@ -3384,10 +3064,12 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			constexpr bool kFastGqa = (HD == 128u || HD == 256u || HD == 512u) && (HEADS % KVH == 0u) && ((HEADS / KVH) <= 2u);
-			if ( kFastGqa && exact == 0u && step->tree == 0u && rows >= 32u && rows <= 64u )
+			constexpr bool kFastGqaSmall = (HD == 128u || HD == 256u || HD == 512u) && (HEADS % KVH == 0u) && ((HEADS / KVH) <= 2u);
+			constexpr bool kFastGqaWin = !FULL && (HD == 128u || HD == 256u) && (HEADS % KVH == 0u) && ((HEADS / KVH) <= 8u);
+			const bool use_fast_gqa = kFastGqaSmall || (kFastGqaWin && window != 0u && window <= 256u);
+			if ( use_fast_gqa && exact == 0u && step->tree == 0u && rows >= 32u && rows <= 64u )
 			{
-				if constexpr ( kFastGqa )
+				if constexpr ( kFastGqaSmall || kFastGqaWin )
 				{
 					constexpr uint32_t DEC_THREADS = (HEADS / KVH) * 32u;
 					(void)LM_LAUNCH_DEPENDENT((GemmaGqaDecodeKernel<Kv, KVH, HD, HEADS>), dim3(rows, KVH), DEC_THREADS, 0, stream,
@@ -3407,33 +3089,138 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			if ( LmGqaShardMergeLaunch<HD>(state->received, stride, degree, HEADS, state->tp_rank, state->merged, rows, stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
-		if constexpr ( G::kOutputGate )
+		if constexpr ( G::kOutputGate || G::kHeadGate )
 		{
-			if ( !gate_done && Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, width, step, stream) != LM_LAUNCH_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			(void)LM_LAUNCH_DEPENDENT((GemmaOutputGateKernel<GM_THREADS>), rows, GM_THREADS, 0, stream, state->merged, state->gate_logits, width);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
-		if constexpr ( G::kHeadGate )
-		{
-			constexpr uint32_t GATE_ROWS = FULL ? S::kFullGateRows : S::kSlidingGateRows;
-			if ( !gate_done )
+			if ( !gate_applied )
 			{
-				if ( exact == 0u && GATE_ROWS <= 16u )
-					(void)LM_LAUNCH_DEPENDENT((GemmaSmallNBf16ProjKernel<G::kHidden>), rows, GM_THREADS, 0, stream,
-						layer->gate, state->normed, state->gate_logits, rows, GATE_ROWS);
-				else if ( Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, GATE_ROWS, step, stream) != LM_LAUNCH_OK )
+				const uint32_t gate_out = G::kOutputGate ? width : (FULL ? S::kFullGateRows : S::kSlidingGateRows);
+				if ( !gate_done && Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, gate_out, step, stream) != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				if ( !prefill_wave && rows <= 16u && (rows <= 8u || exact != 0u) && width >= 256u && width <= 1024u && (width & 7u) == 0u )
+					return LaunchExactGateOut<G::kHeadGate>(state, layer, rows, width, HD, gate_out, stream);
+				if constexpr ( G::kOutputGate )
+					(void)LM_LAUNCH_DEPENDENT((GemmaOutputGateKernel<GM_THREADS>), rows, GM_THREADS, 0, stream, state->merged, state->gate_logits, width);
+				else
+					(void)LM_LAUNCH_DEPENDENT((GemmaHeadGateBroadcastKernel<128u>), rows, 128u, 0, stream,
+						state->merged, state->gate_logits, width / HD, HD, gate_out);
+				if ( CudaStageLaunched() != SPARK_STATUS_OK )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
-			(void)LM_LAUNCH_DEPENDENT((GemmaHeadGateBroadcastKernel<128u>), rows, 128u, 0, stream,
-				state->merged, state->gate_logits, width / HD, HD, GATE_ROWS);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		if ( Linear(layer->out, state->merged, state->partial, rows, width, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
+	}
+
+	template<uint32_t ACT_MODE, bool HAS_ROUTER>
+	static SparkStatus LaunchExactSplitGateUp(State *state, const GemmaLayer *layer, uint32_t rows, uint32_t ffn_rows, SparkGpuStream stream)
+	{
+		uint16_t *rt_bf16 = HAS_ROUTER && !G::kRouterFloat ? state->router_logits : (uint16_t *)0;
+		float *rt_f32 = HAS_ROUTER && G::kRouterFloat ? state->router_probs : (float *)0;
+		const uint16_t *rt_w = HAS_ROUTER ? layer->router_proj : (const uint16_t *)0;
+		if ( rows == 1u )
+		{
+			const uint32_t nt = (ffn_rows + 1u) / 2u + (HAS_ROUTER ? (G::kExperts + 3u) / 4u : 0u);
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitGateUpRouterKernel<HAS_ROUTER, G::kRouterFloat, 1u, ACT_MODE>), dim3(nt, 1u), GM_THREADS, 0, stream,
+				layer->gate_up, rt_w, state->normed, state->intermediate, rt_bf16, rt_f32, rows, G::kHidden, ffn_rows, G::kExperts, layer->swiglu_limit);
+		}
+		else if ( rows <= 4u )
+		{
+			const uint32_t nt = (ffn_rows + 1u) / 2u + (HAS_ROUTER ? (G::kExperts + 3u) / 4u : 0u);
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitGateUpRouterKernel<HAS_ROUTER, G::kRouterFloat, 4u, ACT_MODE>), dim3(nt, 1u), GM_THREADS, 0, stream,
+				layer->gate_up, rt_w, state->normed, state->intermediate, rt_bf16, rt_f32, rows, G::kHidden, ffn_rows, G::kExperts, layer->swiglu_limit);
+		}
+		else if ( rows <= 8u )
+		{
+			const uint32_t nt = (ffn_rows + 1u) / 2u + (HAS_ROUTER ? (G::kExperts + 3u) / 4u : 0u);
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitGateUpRouterKernel<HAS_ROUTER, G::kRouterFloat, 8u, ACT_MODE>), dim3(nt, 1u), GM_THREADS, 0, stream,
+				layer->gate_up, rt_w, state->normed, state->intermediate, rt_bf16, rt_f32, rows, G::kHidden, ffn_rows, G::kExperts, layer->swiglu_limit);
+		}
+		else
+		{
+			const uint32_t nt = ffn_rows + (HAS_ROUTER ? (G::kExperts + 1u) / 2u : 0u);
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactSplitGateUpRouterKernel<HAS_ROUTER, G::kRouterFloat, 16u, ACT_MODE>), dim3(nt, (rows + 15u) / 16u), GM_THREADS, 0, stream,
+				layer->gate_up, rt_w, state->normed, state->intermediate, rt_bf16, rt_f32, rows, G::kHidden, ffn_rows, G::kExperts, layer->swiglu_limit);
+		}
+		return CudaStageLaunched();
+	}
+
+	template<uint32_t ACT_MODE>
+	static SparkStatus LaunchExactGateUp(State *state, const GemmaLayer *layer, uint32_t rows, uint32_t ffn_rows, SparkGpuStream stream)
+	{
+		const dim3 grid((ffn_rows + 3u) / 4u, 1u);
+		if ( rows == 1u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateUpActKernel<1u, ACT_MODE>), grid, 128u, 0, stream,
+				layer->gate_up, state->normed, state->intermediate, rows, G::kHidden, ffn_rows, layer->swiglu_limit);
+		else if ( rows <= 4u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateUpActKernel<4u, ACT_MODE>), grid, 128u, 0, stream,
+				layer->gate_up, state->normed, state->intermediate, rows, G::kHidden, ffn_rows, layer->swiglu_limit);
+		else if ( rows <= 8u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateUpActKernel<8u, ACT_MODE>), grid, 128u, 0, stream,
+				layer->gate_up, state->normed, state->intermediate, rows, G::kHidden, ffn_rows, layer->swiglu_limit);
+		else
+			(void)LM_LAUNCH_DEPENDENT((GemmaExactGateUpActKernel<16u, ACT_MODE>), grid, 128u, 0, stream,
+				layer->gate_up, state->normed, state->intermediate, rows, G::kHidden, ffn_rows, layer->swiglu_limit);
+		return CudaStageLaunched();
+	}
+
+	template<uint32_t ACT_MODE>
+	static SparkStatus MlpGateUpAct(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
+	{
+		const uint32_t rows = step->rows, ffn_rows = layer->ffn_rows, exact = step->commit == 0u ? 1u : 0u;
+		const bool prefill_wave = PrefillWave(step);
+		const bool has_sig_router = G::kMoe && G::kSigmoidRouter && layer->router_proj != 0;
+		state->router_fused_done = 0u;
+		if ( (prefill_wave || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && (ffn_rows & 31u) == 0u )
+		{
+			if constexpr ( G::kMoe && G::kSigmoidRouter )
+			{
+				if ( has_sig_router && (G::kExperts & 1u) == 0u )
+				{
+					if ( DenseGateUpActMma<ACT_MODE, true, G::kRouterFloat>(layer->gate_up, layer->router_proj, state->normed, state->intermediate,
+							G::kRouterFloat ? (uint16_t *)0 : state->router_logits, G::kRouterFloat ? state->router_probs : (float *)0,
+							rows, G::kHidden, ffn_rows, G::kExperts, layer->swiglu_limit, step->multiprocessors, stream) != LM_LAUNCH_OK )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+					state->router_fused_done = 1u;
+					return SPARK_STATUS_OK;
+				}
+			}
+			if ( DenseGateUpActMma<ACT_MODE, false, false>(layer->gate_up, (const uint16_t *)0, state->normed, state->intermediate,
+					(uint16_t *)0, (float *)0, rows, G::kHidden, ffn_rows, 0u, layer->swiglu_limit, step->multiprocessors, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			return SPARK_STATUS_OK;
+		}
+		if ( !prefill_wave && (rows <= 8u || exact != 0u) && (G::kHidden & 7u) == 0u )
+		{
+			if ( 2u * ffn_rows <= LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kHidden >= 2048u )
+			{
+				if constexpr ( G::kMoe && G::kSigmoidRouter )
+				{
+					if ( has_sig_router && G::kExperts <= LM_SKINNY_SPLIT_MAX_OUTPUTS )
+					{
+						if ( LaunchExactSplitGateUp<ACT_MODE, true>(state, layer, rows, ffn_rows, stream) != SPARK_STATUS_OK )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+						state->router_fused_done = 1u;
+						return SPARK_STATUS_OK;
+					}
+				}
+				return LaunchExactSplitGateUp<ACT_MODE, false>(state, layer, rows, ffn_rows, stream);
+			}
+			if ( 2u * ffn_rows > LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kHidden >= 256u && rows <= 16u )
+				return LaunchExactGateUp<ACT_MODE>(state, layer, rows, ffn_rows, stream);
+		}
+		if ( Linear(layer->gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * ffn_rows, step, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if constexpr ( ACT_MODE == 0u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaGeluTanhMulKernel<GM_THREADS>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream,
+				state->gate_up, state->intermediate, ffn_rows);
+		else if constexpr ( ACT_MODE == 2u )
+			(void)LM_LAUNCH_DEPENDENT((GemmaSiluMulKernel<GM_THREADS, true>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream,
+				state->gate_up, state->intermediate, ffn_rows, layer->swiglu_limit);
+		else
+			(void)LM_LAUNCH_DEPENDENT((GemmaSiluMulKernel<GM_THREADS, false>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream,
+				state->gate_up, state->intermediate, ffn_rows, INFINITY);
+		return CudaStageLaunched();
 	}
 
 	static SparkStatus Mlp(State *state, const Frame &frame, const GemmaLayer &entry)
@@ -3441,49 +3228,15 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		const GemmaLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
 		SparkGpuStream stream = frame.stream;
-		const uint32_t rows = step->rows, ffn_rows = layer->ffn_rows, exact = step->commit == 0u ? 1u : 0u;
-		const bool prefill_wave = PrefillWave(step);
-		bool fused_router = false;
-		if constexpr ( G::kMoe && G::kSigmoidRouter )
-		{
-			const uint32_t gu_out = 2u * ffn_rows;
-			const bool both_split = gu_out <= LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kExperts <= LM_SKINNY_SPLIT_MAX_OUTPUTS;
-			const bool both_nosplit = gu_out > LM_SKINNY_SPLIT_MAX_OUTPUTS && G::kExperts > LM_SKINNY_SPLIT_MAX_OUTPUTS;
-			const bool allow_multi = both_split || both_nosplit;
-			const bool dual_n_ok = ((gu_out + G::kExperts <= 1024u) && (gu_out & 15u) == 0u && (G::kExperts & 15u) == 0u) ||
-				((gu_out & 31u) == 0u && (G::kExperts & 31u) == 0u);
-			if ( !G::kRouterFloat && layer->router_proj != 0 && (prefill_wave || (exact == 0u && rows > 8u)) && (G::kHidden & 63u) == 0u && dual_n_ok )
-			{
-				if ( DualDenseMma(layer->gate_up, layer->router_proj, state->normed, state->gate_up, state->router_logits, rows, G::kHidden, gu_out, G::kExperts, stream) == LM_LAUNCH_OK )
-					fused_router = true;
-			}
-			else if ( !prefill_wave && allow_multi && layer->router_proj != 0 && (rows <= 8u || exact != 0u) )
-			{
-				const uint32_t allow_split = both_split ? 2u : 0u;
-				const LmSkinnyDenseTarget targets[2] =
-				{
-					{ layer->gate_up, state->gate_up, (float *)0, gu_out, gu_out, 0u, LmScaleTensorNone() },
-					{ layer->router_proj, G::kRouterFloat ? (uint16_t *)0 : state->router_logits, G::kRouterFloat ? state->router_probs : (float *)0,
-						G::kExperts, G::kExperts, 0u, LmScaleTensorNone() }
-				};
-				if ( LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, state->normed, rows, G::kHidden, stream, exact, allow_split) == LM_LAUNCH_OK )
-					fused_router = true;
-			}
-		}
-		state->router_fused_done = fused_router ? 1u : 0u;
-		if ( !fused_router && Linear(layer->gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * ffn_rows, step, stream) != LM_LAUNCH_OK )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		SparkStatus status;
 		if constexpr ( G::kGeluMlp )
-			(void)LM_LAUNCH_DEPENDENT((GemmaGeluTanhMulKernel<GM_THREADS>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream,
-				state->gate_up, state->intermediate, ffn_rows);
+			status = MlpGateUpAct<0u>(state, layer, step, stream);
 		else if ( layer->swiglu_limit != INFINITY )
-			(void)LM_LAUNCH_DEPENDENT((GemmaSiluMulKernel<GM_THREADS, true>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream,
-				state->gate_up, state->intermediate, ffn_rows, layer->swiglu_limit);
+			status = MlpGateUpAct<2u>(state, layer, step, stream);
 		else
-			(void)LM_LAUNCH_DEPENDENT((GemmaSiluMulKernel<GM_THREADS, false>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream,
-				state->gate_up, state->intermediate, ffn_rows, INFINITY);
-		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-			Linear(layer->down, state->intermediate, state->partial, rows, ffn_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
+			status = MlpGateUpAct<1u>(state, layer, step, stream);
+		if ( status != SPARK_STATUS_OK ||
+			Linear(layer->down, state->intermediate, state->partial, step->rows, layer->ffn_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
 	}
@@ -3513,7 +3266,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		ExpertRoutes(state, step, rows, &expert_routes);
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
 		const uint32_t local_mean = (routes + G::kExperts - 1u) / G::kExperts;
-		const bool use_fast_moe = (exact != 0u) || (!prefill_wave && (rows <= 8u || (G::kLocalExperts >= 16u && local_mean <= 3u)));
+		const bool use_fast_moe = (exact != 0u) || (!prefill_wave && (rows <= 8u || local_mean <= 3u));
 		if ( !use_fast_moe && (prefill_wave || rows >= 16u || routes >= 128u) && (G::kHidden & 63u) == 0u && (G::kMoeInter & 63u) == 0u && G::kLocalExperts <= 256u )
 		{
 			if ( MoeW1W3ActMma<GELU>(state, layer, act_in, rows, step->multiprocessors, stream) != LM_LAUNCH_OK )
@@ -3521,7 +3274,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		else if ( G::kHidden >= 256u && G::kLocalExperts <= 256u )
 		{
-			(void)LM_LAUNCH_DEPENDENT((GemmaMoeFastW1W3ActKernel<G, GELU>), step->multiprocessors * 4u, 128u, 0, stream,
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeExactW1W3ActKernel<G, GELU>), dim3((G::kMoeInter + 7u) / 8u, G::kLocalExperts), 128u, 0, stream,
 				layer->moe_w1, layer->moe_w3, act_in, state->packed_weight, state->group_row_offset, state->route_source_token,
 				state->expert_act, layer->swiglu_limit);
 		}
@@ -3541,16 +3294,26 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			if ( MoeDownMma(state, layer, rows, step->multiprocessors, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
-		else if ( use_fast_moe && G::kMoeInter >= 128u && G::kLocalExperts <= 256u )
+		else if ( use_fast_moe && G::kMoeInter == 128u && G::kLocalExperts <= 256u )
 		{
-			(void)LM_LAUNCH_DEPENDENT((GemmaMoeFastW2Kernel<G>), step->multiprocessors * 4u, 128u, 0, stream,
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeExactW2K128Kernel<G, 8u, 4u>), dim3((G::kHidden + 63u) / 64u, G::kLocalExperts), 256u, 0, stream,
+				layer->moe_w2, state->expert_act, state->group_row_offset, state->expert_out);
+			if ( CudaStageLaunched() != SPARK_STATUS_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+		else if ( use_fast_moe && G::kMoeInter >= 256u && G::kMoeInter <= 2048u && G::kLocalExperts <= 256u )
+		{
+			constexpr uint32_t w2_smem = 8u * G::kMoeInter * (uint32_t)sizeof(uint16_t);
+			(void)LM_LAUNCH_DEPENDENT((GemmaMoeExactW2GeneralKernel<G, 8u>), dim3((G::kHidden + 7u) / 8u, G::kLocalExperts), 128u, w2_smem, stream,
 				layer->moe_w2, state->expert_act, state->group_row_offset, state->expert_out);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		else if ( ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		(void)LM_LAUNCH_DEPENDENT((GemmaMoeLocalFinalizeKernel<HAS_SHARED>), dim3(LmVecBlocks<GM_THREADS>(G::kHidden), rows), GM_THREADS, 0, stream,
+		constexpr bool kAllLocal = G::kLocalExperts == G::kExperts;
+		const uint32_t fin_x = rows >= 32u ? 1u : LmVecBlocks<GM_THREADS>(G::kHidden);
+		(void)LM_LAUNCH_DEPENDENT((GemmaMoeLocalFinalizeKernel<HAS_SHARED, kAllLocal, G::kTopK>), dim3(fin_x, rows), GM_THREADS, 0, stream,
 			state->expert_out, state->route_packed_row, state->route_expert, HAS_SHARED ? state->partial : (const uint16_t *)0, output,
 			G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
@@ -3562,14 +3325,19 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		uint16_t *output = state->partial + (uint64_t)rows * G::kHidden;
 		if ( Linear(layer->router_proj, state->attn_full, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( routes <= 32u )
+		if ( routes <= 256u )
 		{
 			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
 			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-			(void)LM_LAUNCH_DEPENDENT((GemmaSoftmaxRouteSmallKernel<G>), 1u, GM_THREADS, 0, stream, state->router_logits, layer->expert_scale, rows,
-				state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
-				state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
+			if ( routes <= LM_ROUTE_SMALL_MAX )
+				(void)LM_LAUNCH_DEPENDENT((GemmaSoftmaxRouteSmallKernel<G, false>), 1u, GM_THREADS, 0, stream, state->router_logits, layer->expert_scale, rows,
+					state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
+					state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaSoftmaxRouteSmallKernel<G, true>), 1u, GM_THREADS, 0, stream, state->router_logits, layer->expert_scale, rows,
+					state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
+					state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -3605,14 +3373,19 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			}
 		}
 		const void *logits_ptr = G::kRouterFloat ? (const void *)state->router_probs : (const void *)state->router_logits;
-		if ( routes <= 32u )
+		if ( routes <= 256u )
 		{
 			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
 			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-			(void)LM_LAUNCH_DEPENDENT((GemmaSigmoidRouteSmallKernel<G>), 1u, GM_THREADS, 0, stream, logits_ptr, layer->expert_bias, rows,
-				state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
-				state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
+			if ( routes <= LM_ROUTE_SMALL_MAX )
+				(void)LM_LAUNCH_DEPENDENT((GemmaSigmoidRouteSmallKernel<G, false>), 1u, GM_THREADS, 0, stream, logits_ptr, layer->expert_bias, rows,
+					state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
+					state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
+			else
+				(void)LM_LAUNCH_DEPENDENT((GemmaSigmoidRouteSmallKernel<G, true>), 1u, GM_THREADS, 0, stream, logits_ptr, layer->expert_bias, rows,
+					state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
+					state->route_packed_row, state->route_source_token, state->packed_weight, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
