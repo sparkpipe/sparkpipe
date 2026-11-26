@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DECLARES = re.compile(r"graph_ignores_gather\s*=\s*(?!0u?\s*;)[^;]+;")
+DECLARES = re.compile(r"graph_ignores_gather\s*=(?!\s*0u?\s*;)[^;]+;")
 READS = re.compile(r"\bgather_(?:context|sequence)\b")
 SUFFIXES = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp"}
 
