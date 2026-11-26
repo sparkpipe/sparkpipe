@@ -149,100 +149,6 @@ static double TimeUs(cudaStream_t stream, int warmup, int iters, Fn &&fn)
 	return (double)ms * 1000.0 / (double)iters;
 }
 
-static void RunHyScaledDenseTests(uint32_t sms, cudaStream_t stream)
-{
-	using HyProd = HyModel<Hy4Geometry<16u>>;
-	DevPool pool(stream);
-	struct ShapeSpec { const char *name; uint32_t n; uint32_t k; };
-	const ShapeSpec shapes[] = {
-		{ "hy4_q_a", 2048u, 6144u },
-		{ "hy4_kv_a", 576u, 6144u },
-		{ "hy4_out", 6144u, 1024u },
-		{ "hy4_index_q", 4096u, 2048u },
-		{ "hy4_shared_gu", 256u, 6144u },
-		{ "hy4_shared_dn", 6144u, 128u },
-	};
-	const uint32_t max_rows = 2048u;
-	uint16_t *act = (uint16_t *)pool.Fill((uint64_t)max_rows * 6144u, sizeof(uint16_t), FILL_BF16, 0.25f, 0.0f);
-	uint16_t *out_new = (uint16_t *)pool.Alloc((uint64_t)max_rows * 6144u * sizeof(uint16_t));
-	uint16_t *out_ref = (uint16_t *)pool.Alloc((uint64_t)max_rows * 6144u * sizeof(uint16_t));
-	uint16_t *out_sub = (uint16_t *)pool.Alloc((uint64_t)max_rows * 6144u * sizeof(uint16_t));
-
-	printf("\n=== 1. Hy4 Scaled Dense (MXFP8 fused-E8M0 & FP8 block-128) ===\n");
-	for ( const ShapeSpec &sp : shapes )
-	{
-		uint8_t *w = (uint8_t *)pool.Fill((uint64_t)sp.n * sp.k, 1u, FILL_FP8, 0.0f, 0.0f);
-		uint8_t *s_mx = (uint8_t *)pool.Fill((uint64_t)sp.n * (sp.k / 32u), 1u, FILL_E8M0, 0.0f, 123.0f);
-		float *s_fp8 = (float *)pool.Fill((uint64_t)sp.n * (sp.k / 128u), sizeof(float), FILL_F32, 0.05f, 0.06f);
-		HyScaled w_mx = { w, s_mx, HY_CODEC_MXFP8 };
-		HyScaled w_f8 = { w, s_fp8, HY_CODEC_FP8_BLOCK128 };
-		const LmScaleTensor sc_mx = LmScaleTensorBuild(s_mx, LM_SCALE_ENCODING_UE8M0, 1u, sp.n, sp.k, 1u, 32u);
-		const LmScaleTensor sc_f8 = LmScaleTensorBuild(s_fp8, LM_SCALE_ENCODING_F32, 1u, sp.n, sp.k, 1u, 128u);
-
-		const uint32_t check_rows = 512u;
-		Check(HyProd::LaunchScaledDense<LmMxfp8>(w_mx, act, out_new, check_rows, sp.k, sp.n, sms, stream) == LM_LAUNCH_OK, sp.name, "mxfp8 new launch");
-		Check(LmStreamGemmDense<LmMxfp8>(w, sc_mx, act, out_ref, (float *)0, check_rows, sp.k, sp.n, 0u, 0u, sms, stream) == LM_LAUNCH_OK, sp.name, "mxfp8 ref launch");
-		cudaStreamSynchronize(stream);
-		std::vector<uint16_t> h_new((uint64_t)check_rows * sp.n), h_ref((uint64_t)check_rows * sp.n);
-		cudaMemcpy(h_new.data(), out_new, h_new.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		cudaMemcpy(h_ref.data(), out_ref, h_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		uint32_t max_ulp = 0u;
-		const double rel_mx = RelL2(h_new, h_ref, h_new.size(), &max_ulp);
-		Check(rel_mx < 1e-3 && max_ulp <= 1u, sp.name, "mxfp8 vs ref exactness", rel_mx, (double)max_ulp);
-
-		const uint32_t sub_rows_list[] = { 1u, 16u, 17u, 32u, 33u, 64u };
-		for ( uint32_t sr : sub_rows_list )
-		{
-			Check(HyProd::LaunchScaledDense<LmMxfp8>(w_mx, act, out_sub, sr, sp.k, sp.n, sms, stream) == LM_LAUNCH_OK, sp.name, "mxfp8 sub launch");
-			cudaStreamSynchronize(stream);
-			std::vector<uint16_t> h_sub((uint64_t)sr * sp.n);
-			cudaMemcpy(h_sub.data(), out_sub, h_sub.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-			Check(DiffCount(h_sub, h_new, h_sub.size()) == 0u, sp.name, "mxfp8 0-ULP warm==cold", (double)sr, (double)DiffCount(h_sub, h_new, h_sub.size()));
-		}
-
-		Check(HyProd::LaunchScaledDense<LmFp8>(w_f8, act, out_new, check_rows, sp.k, sp.n, sms, stream) == LM_LAUNCH_OK, sp.name, "fp8 new launch");
-		Check(LmStreamGemmDense<LmFp8>(w, sc_f8, act, out_ref, (float *)0, check_rows, sp.k, sp.n, 0u, 0u, sms, stream) == LM_LAUNCH_OK, sp.name, "fp8 ref launch");
-		cudaStreamSynchronize(stream);
-		cudaMemcpy(h_new.data(), out_new, h_new.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		cudaMemcpy(h_ref.data(), out_ref, h_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		Check(DiffCount(h_new, h_ref, h_new.size()) == 0u, sp.name, "fp8 0-ULP vs LmStreamGemmDense", (double)DiffCount(h_new, h_ref, h_new.size()), 0.0);
-
-		for ( uint32_t rows : { 512u, 1024u, 2048u } )
-		{
-			const double t_mx_ref = TimeUs(stream, 4, 20, [&]() {
-				LmStreamGemmDense<LmMxfp8>(w, sc_mx, act, out_ref, (float *)0, rows, sp.k, sp.n, 0u, 0u, sms, stream);
-			});
-			const double t_mx_new = TimeUs(stream, 4, 20, [&]() {
-				HyProd::LaunchScaledDense<LmMxfp8>(w_mx, act, out_new, rows, sp.k, sp.n, sms, stream);
-			});
-			const double t_f8_ref = TimeUs(stream, 4, 20, [&]() {
-				LmStreamGemmDense<LmFp8>(w, sc_f8, act, out_ref, (float *)0, rows, sp.k, sp.n, 0u, 0u, sms, stream);
-			});
-			const double t_f8_new = TimeUs(stream, 4, 20, [&]() {
-				HyProd::LaunchScaledDense<LmFp8>(w_f8, act, out_new, rows, sp.k, sp.n, sms, stream);
-			});
-			const double flops = 2.0 * (double)rows * (double)sp.n * (double)sp.k;
-			printf("  %-14s M=%4u | MXFP8: ref=%7.1f us  new=%7.1f us (%5.2fx, %5.1f TF/s) | FP8: ref=%7.1f us  new=%7.1f us (%5.2fx, %5.1f TF/s)\n",
-				sp.name, rows, t_mx_ref, t_mx_new, t_mx_ref / t_mx_new, flops / (t_mx_new * 1e6),
-				t_f8_ref, t_f8_new, t_f8_ref / t_f8_new, flops / (t_f8_new * 1e6));
-		}
-	}
-
-	uint8_t *w_hi = (uint8_t *)pool.Fill(256ull * 128ull, 1u, FILL_FP8, 0.0f, 0.0f);
-	uint8_t *s_hi = (uint8_t *)pool.Fill(256ull * 4ull, 1u, FILL_E8M0, 0.0f, 136.0f);
-	HyScaled w_mx_hi = { w_hi, s_hi, HY_CODEC_MXFP8 };
-	const LmScaleTensor sc_hi = LmScaleTensorBuild(s_hi, LM_SCALE_ENCODING_UE8M0, 1u, 256u, 128u, 1u, 32u);
-	Check(HyProd::LaunchScaledDense<LmMxfp8>(w_mx_hi, act, out_new, 64u, 128u, 256u, sms, stream) == LM_LAUNCH_OK, "hy4_hi_e8m0", "new launch");
-	Check(LmStreamGemmDense<LmMxfp8>(w_hi, sc_hi, act, out_ref, (float *)0, 64u, 128u, 256u, 0u, 0u, sms, stream) == LM_LAUNCH_OK, "hy4_hi_e8m0", "ref launch");
-	cudaStreamSynchronize(stream);
-	std::vector<uint16_t> h_hi_new(64u * 256u), h_hi_ref(64u * 256u);
-	cudaMemcpy(h_hi_new.data(), out_new, h_hi_new.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-	cudaMemcpy(h_hi_ref.data(), out_ref, h_hi_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-	uint32_t hi_ulp = 0u;
-	const double hi_rel = RelL2(h_hi_new, h_hi_ref, h_hi_new.size(), &hi_ulp);
-	Check(hi_rel < 1e-3 && hi_ulp <= 1u, "hy4_hi_e8m0", "e8m0>134 cold branch exactness", hi_rel, (double)hi_ulp);
-}
-
 static void BuildSyntheticRoutes(uint32_t local_experts, uint32_t rows, uint32_t top_k, uint32_t total_experts,
 	std::vector<uint32_t> &offsets, std::vector<uint32_t> &src_tok, std::vector<float> &packed_wt)
 {
@@ -273,6 +179,250 @@ static void BuildSyntheticRoutes(uint32_t local_experts, uint32_t rows, uint32_t
 	offsets[local_experts] = cur;
 }
 
+/* BASE e17c8fce1 MiMo MXFP4 expert kernel for direct paired A/B timing */
+static __device__ __forceinline__ uint32_t BaseE8m0ToBf16x2(uint8_t sc)
+{
+	const uint32_t s = (uint32_t)sc;
+	if ( s >= 2u && s <= 142u )
+	{
+		const uint32_t b = (s + 112u) << 7u;
+		return b | (b << 16u);
+	}
+	return 0u;
+}
+
+static __device__ __forceinline__ void BaseE2m1Word4(uint32_t word, uint8_t sc, uint32_t scale_bf16x2, uint32_t lo[2], uint32_t hi[2])
+{
+	if ( scale_bf16x2 != 0u )
+	{
+		lo[0] = MimoE2m1ByteFast(word, scale_bf16x2);
+		lo[1] = MimoE2m1ByteFast(word >> 8u, scale_bf16x2);
+		hi[0] = MimoE2m1ByteFast(word >> 16u, scale_bf16x2);
+		hi[1] = MimoE2m1ByteFast(word >> 24u, scale_bf16x2);
+	}
+	else
+	{
+		const float scale = LmUe8m0ToFloat(sc);
+		const float2 p0 = LmSkinnyE2m1Pair(word, 0u);
+		const float2 p1 = LmSkinnyE2m1Pair(word, 1u);
+		const float2 p2 = LmSkinnyE2m1Pair(word, 2u);
+		const float2 p3 = LmSkinnyE2m1Pair(word, 3u);
+		lo[0] = LmPackBf16Pair(p0.x * scale, p0.y * scale);
+		lo[1] = LmPackBf16Pair(p1.x * scale, p1.y * scale);
+		hi[0] = LmPackBf16Pair(p2.x * scale, p2.y * scale);
+		hi[1] = LmPackBf16Pair(p3.x * scale, p3.y * scale);
+	}
+}
+
+static __device__ __forceinline__ void BaseCpAsync16(void *dst, const void *src, uint32_t bytes)
+{
+	const uint32_t smem = (uint32_t)__cvta_generic_to_shared(dst);
+	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
+}
+
+template<uint32_t MAX_M_TILES, uint32_t STAGES, bool FUSED_GATE_UP>
+static __host__ __device__ constexpr uint32_t BaseMxfp4SharedBytes(uint32_t groups)
+{
+	constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
+	constexpr uint32_t W_ROWS_TOTAL = (FUSED_GATE_UP ? 2u : 1u) * (FUSED_GATE_UP ? 64u : 128u);
+	return STAGES * TILE_M * 136u * 2u + STAGES * W_ROWS_TOTAL * 64u + 2u * W_ROWS_TOTAL * 16u + (groups + 1u) * 4u;
+}
+
+template<uint32_t MAX_M_TILES, uint32_t STAGES, bool ACTIVATION_PACKED, bool FUSED_GATE_UP>
+__global__ __launch_bounds__(256u, MAX_M_TILES <= 2u ? 2 : 1)
+static void BaseMimoMxfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ s1, const uint8_t *__restrict__ w3,
+	const uint8_t *__restrict__ s3, const uint16_t *__restrict__ activation, uint16_t *__restrict__ output,
+	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ route_source_token, uint32_t groups, uint32_t input_dim,
+	uint32_t output_dim)
+{
+	constexpr uint32_t THREADS = 256u, TILE_M = MAX_M_TILES * 16u, TILE_K = 128u;
+	constexpr uint32_t TILE_N = FUSED_GATE_UP ? 64u : 128u, W_ROWS_TOTAL = (FUSED_GATE_UP ? 2u : 1u) * TILE_N;
+	constexpr uint32_t A_PITCH = 136u, B_ROW_BYTES = 64u;
+	constexpr uint32_t A_STAGE_BYTES = TILE_M * A_PITCH * 2u, B_STAGE_BYTES = W_ROWS_TOTAL * B_ROW_BYTES;
+	extern __shared__ __align__(128) uint8_t base_mx4_smem[];
+	uint16_t (*s_a)[TILE_M][A_PITCH] = (uint16_t (*)[TILE_M][A_PITCH])base_mx4_smem;
+	uint8_t (*s_b)[W_ROWS_TOTAL][B_ROW_BYTES] = (uint8_t (*)[W_ROWS_TOTAL][B_ROW_BYTES])(base_mx4_smem + STAGES * A_STAGE_BYTES);
+	uint8_t (*s_sc)[W_ROWS_TOTAL][16u] = (uint8_t (*)[W_ROWS_TOTAL][16u])(base_mx4_smem + STAGES * A_STAGE_BYTES + STAGES * B_STAGE_BYTES);
+	uint32_t *prefix = (uint32_t *)(base_mx4_smem + STAGES * A_STAGE_BYTES + STAGES * B_STAGE_BYTES + 2u * W_ROWS_TOTAL * 16u);
+	const uint32_t n_blocks = (output_dim + TILE_N - 1u) / TILE_N;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
+	const uint32_t k_tiles = input_dim / TILE_K;
+	const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u), scale_pitch = (uint64_t)(input_dim >> 5u);
+	const uint64_t scale_group_stride = (uint64_t)output_dim * scale_pitch;
+	const uint32_t b_row0 = FUSED_GATE_UP ? (warp * 8u + g) : (warp * 16u + g);
+	const uint32_t b_row1 = FUSED_GATE_UP ? (TILE_N + warp * 8u + g) : (warp * 16u + 8u + g);
+	constexpr uint32_t A_VEC_THREADS = 16u, A_ROW_STEP = 16u, A_COPIES = (TILE_M + 15u) / 16u;
+	const uint32_t a_vec = threadIdx.x % A_VEC_THREADS, a_row0 = threadIdx.x / A_VEC_THREADS;
+	LmStreamGemmArguments targs;
+	targs.group_row_offset = group_row_offset;
+	targs.groups = groups;
+	targs.rows = 0u;
+	LmStreamTilePrefix(targs, prefix, groups, TILE_M, n_blocks);
+	const uint32_t total_tiles = prefix[groups];
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
+	{
+		const LmStreamTile work = LmStreamTileAt(targs, prefix, groups, TILE_M, TILE_N, n_blocks, tile);
+		const uint32_t group = work.group, first = work.row_base, row_end = work.row_limit, n_base = work.neuron_base;
+		const uint32_t count = row_end - first < TILE_M ? row_end - first : TILE_M;
+		const uint32_t m_tiles_live = (count + 15u) >> 4u;
+		const uint16_t *a_ptrs[A_COPIES];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < A_COPIES; ++i )
+		{
+			const uint32_t lr = a_row0 + i * A_ROW_STEP;
+			if ( lr < count )
+			{
+				const uint32_t pr = first + lr;
+				a_ptrs[i] = activation + (uint64_t)(ACTIVATION_PACKED ? pr : route_source_token[pr]) * input_dim + (uint64_t)a_vec * 8u;
+			}
+			else
+				a_ptrs[i] = 0;
+		}
+		auto stage_tile = [&](uint32_t st, uint32_t kt) {
+			#pragma unroll
+			for ( uint32_t i = 0u; i < A_COPIES; ++i )
+			{
+				const uint32_t lr = a_row0 + i * A_ROW_STEP;
+				if ( lr < TILE_M && a_ptrs[i] != 0 )
+					BaseCpAsync16(&s_a[st][lr][a_vec * 8u], a_ptrs[i] + (uint64_t)kt * TILE_K, 16u);
+			}
+			#pragma unroll
+			for ( uint32_t idx = threadIdx.x; idx < W_ROWS_TOTAL * 4u; idx += THREADS )
+			{
+				const uint32_t wr = idx / 4u, bv = idx % 4u;
+				const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
+				const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
+				const bool ok = neuron < output_dim;
+				const uint8_t *wbase = (mat == 0u ? w1 : w3);
+				const uint8_t *src = ok ? wbase + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)kt * B_ROW_BYTES + (uint64_t)bv * 16u : wbase;
+				BaseCpAsync16(&s_b[st][wr][bv * 16u], src, ok ? 16u : 0u);
+			}
+			if ( (kt & 3u) == 0u )
+			{
+				const uint32_t sc_off = kt * 4u, avail = sc_off < scale_pitch ? (uint32_t)(scale_pitch - sc_off) : 0u;
+				const uint32_t sb_slot = (kt >> 2u) & 1u;
+				#pragma unroll
+				for ( uint32_t wr = threadIdx.x; wr < W_ROWS_TOTAL; wr += THREADS )
+				{
+					const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
+					const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
+					const uint32_t bytes = (neuron < output_dim && avail != 0u) ? (avail >= 16u ? 16u : avail) : 0u;
+					const uint8_t *sbase = (mat == 0u ? s1 : s3);
+					const uint8_t *src = bytes != 0u ? sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off : sbase;
+					BaseCpAsync16(&s_sc[sb_slot][wr][0], src, bytes);
+				}
+			}
+			asm volatile("cp.async.commit_group;\n" ::: "memory");
+		};
+		float acc0[MAX_M_TILES][4], acc1[MAX_M_TILES][4];
+		#pragma unroll
+		for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+			acc0[m][0] = acc0[m][1] = acc0[m][2] = acc0[m][3] = acc1[m][0] = acc1[m][1] = acc1[m][2] = acc1[m][3] = 0.0f;
+		uint32_t kp = 0u, sp = 0u, sc = 0u;
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < k_tiles )
+			{
+				stage_tile(sp, kp);
+				kp++;
+				sp = (sp + 1u == STAGES) ? 0u : (sp + 1u);
+			}
+		}
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+		{
+			if constexpr ( STAGES == 3u )
+			{
+				if ( kt + 1u < k_tiles )
+					asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+				else
+					asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+			}
+			else
+				asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+			__syncthreads();
+			if ( kp < k_tiles )
+			{
+				stage_tile(sp, kp);
+				kp++;
+				sp = (sp + 1u == STAGES) ? 0u : (sp + 1u);
+			}
+			const uint32_t sb_slot = (kt >> 2u) & 1u, sb_sub = (kt & 3u) * 4u;
+			const uint32_t sc0_all = *(const uint32_t *)&s_sc[sb_slot][b_row0][sb_sub];
+			const uint32_t sc1_all = *(const uint32_t *)&s_sc[sb_slot][b_row1][sb_sub];
+			#pragma unroll
+			for ( uint32_t sg = 0u; sg < 4u; ++sg )
+			{
+				const uint8_t raw0 = (uint8_t)(sc0_all >> (sg * 8u));
+				const uint8_t raw1 = (uint8_t)(sc1_all >> (sg * 8u));
+				const uint32_t w0 = *(const uint32_t *)&s_b[sc][b_row0][sg * 16u + c * 4u];
+				const uint32_t w1_w = *(const uint32_t *)&s_b[sc][b_row1][sg * 16u + c * 4u];
+				uint32_t b0_lo[2], b0_hi[2], b1_lo[2], b1_hi[2];
+				BaseE2m1Word4(w0, raw0, BaseE8m0ToBf16x2(raw0), b0_lo, b0_hi);
+				BaseE2m1Word4(w1_w, raw1, BaseE8m0ToBf16x2(raw1), b1_lo, b1_hi);
+				const uint32_t k_off = sg * 32u + c * 8u;
+				#pragma unroll
+				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+				{
+					if ( m < m_tiles_live )
+					{
+						const uint4 low = *(const uint4 *)&s_a[sc][m * 16u + g][k_off];
+						const uint4 high = *(const uint4 *)&s_a[sc][m * 16u + g + 8u][k_off];
+						const uint32_t a0[4] = { low.x, high.x, low.y, high.y };
+						const uint32_t a1[4] = { low.z, high.z, low.w, high.w };
+						LmMmaBf16(acc0[m], a0, b0_lo);
+						LmMmaBf16(acc0[m], a1, b0_hi);
+						LmMmaBf16(acc1[m], a0, b1_lo);
+						LmMmaBf16(acc1[m], a1, b1_hi);
+					}
+				}
+			}
+			sc = (sc + 1u == STAGES) ? 0u : (sc + 1u);
+		}
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		if constexpr ( FUSED_GATE_UP )
+		{
+			const uint32_t col = n_base + warp * 8u + c * 2u;
+			if ( col < output_dim )
+				#pragma unroll
+				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+					if ( m < m_tiles_live )
+						#pragma unroll
+						for ( uint32_t h = 0u; h < 2u; ++h )
+						{
+							const uint32_t pr = first + m * 16u + g + h * 8u;
+							if ( pr < row_end )
+							{
+								const float v0 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u]))) * SparkMathRoundBf16(acc1[m][h * 2u]);
+								const float v1 = SparkMathRoundBf16(SparkMathSilu(SparkMathRoundBf16(acc0[m][h * 2u + 1u]))) * SparkMathRoundBf16(acc1[m][h * 2u + 1u]);
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
+							}
+						}
+		}
+		else
+		{
+			const uint32_t col0 = n_base + warp * 16u + c * 2u, col1 = col0 + 8u;
+			#pragma unroll
+			for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
+				if ( m < m_tiles_live )
+					#pragma unroll
+					for ( uint32_t h = 0u; h < 2u; ++h )
+					{
+						const uint32_t pr = first + m * 16u + g + h * 8u;
+						if ( pr < row_end )
+						{
+							if ( col0 < output_dim )
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col0) = LmPackBf16Pair(acc0[m][h * 2u], acc0[m][h * 2u + 1u]);
+							if ( col1 < output_dim )
+								*(uint32_t *)(output + (uint64_t)pr * output_dim + col1) = LmPackBf16Pair(acc1[m][h * 2u], acc1[m][h * 2u + 1u]);
+						}
+					}
+		}
+		if ( tile + gridDim.x < total_tiles )
+			__syncthreads();
+	}
+}
+
 static void RunHyMoeTests(uint32_t sms, cudaStream_t stream)
 {
 	using G = Hy4Geometry<16u>;
@@ -297,10 +447,12 @@ static void RunHyMoeTests(uint32_t sms, cudaStream_t stream)
 	uint16_t *act_16 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *act_32 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *act_64 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
+	uint16_t *act_96 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *out_ref = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint16_t *out_16 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint16_t *out_32 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint16_t *out_64 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
+	uint16_t *out_96 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint32_t *d_off = (uint32_t *)pool.Alloc((E + 1u) * sizeof(uint32_t));
 	uint32_t *d_src = (uint32_t *)pool.Alloc(max_packed * sizeof(uint32_t));
 	float *d_pwt = (float *)pool.Alloc(max_packed * sizeof(float));
@@ -312,30 +464,41 @@ static void RunHyMoeTests(uint32_t sms, cudaStream_t stream)
 	const LmScaleTensor t3_f8 = LmScaleTensorBuild(s3_f8, LM_SCALE_ENCODING_F32, E, I, H, 1u, 128u);
 	const LmScaleTensor t2_f8 = LmScaleTensorBuild(s2_f8, LM_SCALE_ENCODING_F32, E, H, I, 1u, 128u);
 
-	auto set_smem = [](const void *fn, uint32_t bytes) {
+	auto set_smem = [](const void *fn, uint32_t bytes) -> uint32_t {
 		if ( bytes > 49152u )
 			cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes);
+		int occ = 1;
+		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ, fn, 256, (int)bytes) != cudaSuccess || occ < 1 )
+			occ = 1;
+		return (uint32_t)occ;
 	};
-	constexpr uint32_t smem_u16 = 3u * (16u * 256u + 2u * 64u * 128u) + (E + 1u) * 4u;
-	constexpr uint32_t smem_u32 = 3u * (32u * 256u + 2u * 64u * 128u) + (E + 1u) * 4u;
+	constexpr uint32_t smem_u16 = 2u * (16u * 256u + 2u * 64u * 128u) + (E + 1u) * 4u;
+	constexpr uint32_t smem_u32 = 2u * (32u * 256u + 2u * 64u * 128u) + (E + 1u) * 4u;
 	constexpr uint32_t smem_u64 = 3u * (64u * 256u + 2u * 64u * 128u) + (E + 1u) * 4u;
-	constexpr uint32_t smem_d16 = 3u * (16u * 256u + 128u * 128u) + (E + 1u) * 4u;
-	constexpr uint32_t smem_d32 = 3u * (32u * 256u + 128u * 128u) + (E + 1u) * 4u;
+	constexpr uint32_t smem_u96 = 2u * (96u * 256u + 2u * 64u * 128u) + (E + 1u) * 4u;
+	constexpr uint32_t smem_d16 = 2u * (16u * 256u + 128u * 128u) + (E + 1u) * 4u;
+	constexpr uint32_t smem_d32 = 2u * (32u * 256u + 128u * 128u) + (E + 1u) * 4u;
 	constexpr uint32_t smem_d64 = 3u * (64u * 256u + 128u * 128u) + (E + 1u) * 4u;
-	set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 16u, 1u, 8u, 3u>, smem_u16);
-	set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 32u, 2u, 4u, 3u>, smem_u32);
-	set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 64u, 2u, 4u, 3u>, smem_u64);
-	set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 16u, 1u, 8u, 3u>, smem_d16);
-	set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 32u, 2u, 4u, 3u>, smem_d32);
-	set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 64u, 2u, 4u, 3u>, smem_d64);
-	set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 16u, 1u, 8u, 3u>, smem_u16);
-	set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 32u, 2u, 4u, 3u>, smem_u32);
-	set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 64u, 2u, 4u, 3u>, smem_u64);
-	set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 16u, 1u, 8u, 3u>, smem_d16);
-	set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 32u, 2u, 4u, 3u>, smem_d32);
-	set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 64u, 2u, 4u, 3u>, smem_d64);
+	constexpr uint32_t smem_d96 = 3u * (96u * 256u + 64u * 128u) + (E + 1u) * 4u;
+	const uint32_t occ_u16 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 16u, 1u, 8u, 2u>, smem_u16);
+	const uint32_t occ_u32 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 32u, 2u, 4u, 2u>, smem_u32);
+	const uint32_t occ_u64 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 64u, 2u, 4u, 3u>, smem_u64);
+	const uint32_t occ_u96 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 96u, 2u, 4u, 2u>, smem_u96);
+	const uint32_t occ_d16 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 16u, 128u, 1u, 8u, 2u>, smem_d16);
+	const uint32_t occ_d32 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 32u, 128u, 2u, 4u, 2u>, smem_d32);
+	const uint32_t occ_d64 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 64u, 128u, 2u, 4u, 3u>, smem_d64);
+	const uint32_t occ_d96 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmMxfp8, 96u, 64u, 2u, 4u, 3u>, smem_d96);
+	const uint32_t occ_fu16 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 16u, 1u, 8u, 2u>, smem_u16);
+	const uint32_t occ_fu32 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 32u, 2u, 4u, 2u>, smem_u32);
+	const uint32_t occ_fu64 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 64u, 2u, 4u, 3u>, smem_u64);
+	const uint32_t occ_fu96 = set_smem((const void *)HyMoeMmaW1W3SwigluKernel<G, LmFp8, 96u, 2u, 4u, 2u>, smem_u96);
+	const uint32_t occ_fd16 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 16u, 128u, 1u, 8u, 2u>, smem_d16);
+	const uint32_t occ_fd32 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 32u, 128u, 2u, 4u, 2u>, smem_d32);
+	const uint32_t occ_fd64 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 64u, 128u, 2u, 4u, 3u>, smem_d64);
+	const uint32_t occ_fd96 = set_smem((const void *)HyMoeMmaW2Kernel<G, LmFp8, 96u, 64u, 2u, 4u, 3u>, smem_d96);
 
-	printf("\n=== 2. Hy4 MoE W1W3+SwiGLU & W2 (MXFP8 & FP8) ===\n");
+	printf("\n=== 1. Hy4 MoE W1W3+SwiGLU & W2 (MXFP8 & FP8, occ: u16=%u u32=%u u64=%u u96=%u d16=%u d32=%u d64=%u d96=%u) ===\n",
+		occ_u16, occ_u32, occ_u64, occ_u96, occ_d16, occ_d32, occ_d64, occ_d96);
 	{
 		std::vector<uint32_t> off, src;
 		std::vector<float> pwt;
@@ -351,30 +514,36 @@ static void RunHyMoeTests(uint32_t sms, cudaStream_t stream)
 			gate_ref, up_ref, d_pwt, d_off, E, act_ref, I, G::kSwigluLimit);
 		LmStreamGemmGrouped<LmMxfp8>(w2, t2_mx, act_ref, out_ref, d_off, (const uint32_t *)0, E, packed, I, H, sms, stream);
 
-		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 16u, 1u, 8u, 3u><<<sms, 256u, smem_u16, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_16);
-		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 32u, 2u, 4u, 3u><<<sms, 256u, smem_u32, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_32);
-		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_u64, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_64);
-		HyMoeMmaW2Kernel<G, LmMxfp8, 16u, 1u, 8u, 3u><<<sms, 256u, smem_d16, stream>>>(w2, t2_mx, act_16, d_off, out_16);
-		HyMoeMmaW2Kernel<G, LmMxfp8, 32u, 2u, 4u, 3u><<<sms, 256u, smem_d32, stream>>>(w2, t2_mx, act_32, d_off, out_32);
-		HyMoeMmaW2Kernel<G, LmMxfp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_d64, stream>>>(w2, t2_mx, act_64, d_off, out_64);
+		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 16u, 1u, 8u, 2u><<<sms * occ_u16, 256u, smem_u16, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_16);
+		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 32u, 2u, 4u, 2u><<<sms * occ_u32, 256u, smem_u32, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_32);
+		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 64u, 2u, 4u, 3u><<<sms * occ_u64, 256u, smem_u64, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_64);
+		HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 96u, 2u, 4u, 2u><<<sms * occ_u96, 256u, smem_u96, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_96);
+		HyMoeMmaW2Kernel<G, LmMxfp8, 16u, 128u, 1u, 8u, 2u><<<sms * occ_d16, 256u, smem_d16, stream>>>(w2, t2_mx, act_16, d_off, out_16);
+		HyMoeMmaW2Kernel<G, LmMxfp8, 32u, 128u, 2u, 4u, 2u><<<sms * occ_d32, 256u, smem_d32, stream>>>(w2, t2_mx, act_32, d_off, out_32);
+		HyMoeMmaW2Kernel<G, LmMxfp8, 64u, 128u, 2u, 4u, 3u><<<sms * occ_d64, 256u, smem_d64, stream>>>(w2, t2_mx, act_64, d_off, out_64);
+		HyMoeMmaW2Kernel<G, LmMxfp8, 96u, 64u, 2u, 4u, 3u><<<sms * occ_d96, 256u, smem_d96, stream>>>(w2, t2_mx, act_96, d_off, out_96);
 		cudaStreamSynchronize(stream);
 
-		std::vector<uint16_t> ha_ref((uint64_t)packed * I), ha16((uint64_t)packed * I), ha32((uint64_t)packed * I), ha64((uint64_t)packed * I);
-		std::vector<uint16_t> ho_ref((uint64_t)packed * H), ho16((uint64_t)packed * H), ho32((uint64_t)packed * H), ho64((uint64_t)packed * H);
+		std::vector<uint16_t> ha_ref((uint64_t)packed * I), ha16((uint64_t)packed * I), ha32((uint64_t)packed * I), ha64((uint64_t)packed * I), ha96((uint64_t)packed * I);
+		std::vector<uint16_t> ho_ref((uint64_t)packed * H), ho16((uint64_t)packed * H), ho32((uint64_t)packed * H), ho64((uint64_t)packed * H), ho96((uint64_t)packed * H);
 		cudaMemcpy(ha_ref.data(), act_ref, ha_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha16.data(), act_16, ha16.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha32.data(), act_32, ha32.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha64.data(), act_64, ha64.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		cudaMemcpy(ha96.data(), act_96, ha96.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho_ref.data(), out_ref, ho_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho16.data(), out_16, ho16.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho32.data(), out_32, ho32.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho64.data(), out_64, ho64.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		cudaMemcpy(ho96.data(), out_96, ho96.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 
 		uint32_t ulp_u = 0u, ulp_d = 0u;
-		Check(RelL2(ha64, ha_ref, ha64.size(), &ulp_u) < 2e-3, "hy4_moe_mxfp8", "W1W3 vs ref", RelL2(ha64, ha_ref, ha64.size(), 0), (double)ulp_u);
-		Check(DiffCount(ha16, ha32, ha16.size()) == 0u && DiffCount(ha32, ha64, ha32.size()) == 0u, "hy4_moe_mxfp8", "W1W3 0-ULP M16==M32==M64");
-		Check(RelL2(ho64, ho_ref, ho64.size(), &ulp_d) < 2e-3, "hy4_moe_mxfp8", "W2 vs ref", RelL2(ho64, ho_ref, ho64.size(), 0), (double)ulp_d);
-		Check(DiffCount(ho16, ho32, ho16.size()) == 0u && DiffCount(ho32, ho64, ho32.size()) == 0u, "hy4_moe_mxfp8", "W2 0-ULP M16==M32==M64");
+		Check(RelL2(ha96, ha_ref, ha96.size(), &ulp_u) < 2e-3, "hy4_moe_mxfp8", "W1W3 vs ref", RelL2(ha96, ha_ref, ha96.size(), 0), (double)ulp_u);
+		Check(DiffCount(ha16, ha32, ha16.size()) == 0u && DiffCount(ha32, ha64, ha32.size()) == 0u && DiffCount(ha64, ha96, ha64.size()) == 0u,
+			"hy4_moe_mxfp8", "W1W3 0-ULP M16==M32==M64==M96");
+		Check(RelL2(ho96, ho_ref, ho96.size(), &ulp_d) < 2e-3, "hy4_moe_mxfp8", "W2 vs ref", RelL2(ho96, ho_ref, ho96.size(), 0), (double)ulp_d);
+		Check(DiffCount(ho16, ho32, ho16.size()) == 0u && DiffCount(ho32, ho64, ho32.size()) == 0u && DiffCount(ho64, ho96, ho64.size()) == 0u,
+			"hy4_moe_mxfp8", "W2 0-ULP M16==M32==M64==M96");
 
 		LmStreamGemmGrouped<LmFp8>(w1, t1_f8, act, gate_ref, d_off, d_src, E, packed, H, I, sms, stream);
 		LmStreamGemmGrouped<LmFp8>(w3, t3_f8, act, up_ref, d_off, d_src, E, packed, H, I, sms, stream);
@@ -382,19 +551,19 @@ static void RunHyMoeTests(uint32_t sms, cudaStream_t stream)
 			gate_ref, up_ref, d_pwt, d_off, E, act_ref, I, G::kSwigluLimit);
 		LmStreamGemmGrouped<LmFp8>(w2, t2_f8, act_ref, out_ref, d_off, (const uint32_t *)0, E, packed, I, H, sms, stream);
 
-		HyMoeMmaW1W3SwigluKernel<G, LmFp8, 16u, 1u, 8u, 3u><<<sms, 256u, smem_u16, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_16);
-		HyMoeMmaW1W3SwigluKernel<G, LmFp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_u64, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_64);
-		HyMoeMmaW2Kernel<G, LmFp8, 16u, 1u, 8u, 3u><<<sms, 256u, smem_d16, stream>>>(w2, t2_f8, act_16, d_off, out_16);
-		HyMoeMmaW2Kernel<G, LmFp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_d64, stream>>>(w2, t2_f8, act_64, d_off, out_64);
+		HyMoeMmaW1W3SwigluKernel<G, LmFp8, 16u, 1u, 8u, 2u><<<sms * occ_fu16, 256u, smem_u16, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_16);
+		HyMoeMmaW1W3SwigluKernel<G, LmFp8, 96u, 2u, 4u, 2u><<<sms * occ_fu96, 256u, smem_u96, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_96);
+		HyMoeMmaW2Kernel<G, LmFp8, 16u, 128u, 1u, 8u, 2u><<<sms * occ_fd16, 256u, smem_d16, stream>>>(w2, t2_f8, act_16, d_off, out_16);
+		HyMoeMmaW2Kernel<G, LmFp8, 96u, 64u, 2u, 4u, 3u><<<sms * occ_fd96, 256u, smem_d96, stream>>>(w2, t2_f8, act_96, d_off, out_96);
 		cudaStreamSynchronize(stream);
 		cudaMemcpy(ha_ref.data(), act_ref, ha_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha16.data(), act_16, ha16.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		cudaMemcpy(ha64.data(), act_64, ha64.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		cudaMemcpy(ha96.data(), act_96, ha96.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho_ref.data(), out_ref, ho_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho16.data(), out_16, ho16.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		cudaMemcpy(ho64.data(), out_64, ho64.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		Check(DiffCount(ha64, ha_ref, ha64.size()) == 0u && DiffCount(ha16, ha64, ha16.size()) == 0u, "hy4_moe_fp8", "W1W3 0-ULP exact vs ref");
-		Check(DiffCount(ho64, ho_ref, ho64.size()) == 0u && DiffCount(ho16, ho64, ho16.size()) == 0u, "hy4_moe_fp8", "W2 0-ULP exact vs ref");
+		cudaMemcpy(ho96.data(), out_96, ho96.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		Check(DiffCount(ha96, ha_ref, ha96.size()) == 0u && DiffCount(ha16, ha96, ha16.size()) == 0u, "hy4_moe_fp8", "W1W3 0-ULP exact vs ref");
+		Check(DiffCount(ho96, ho_ref, ho96.size()) == 0u && DiffCount(ho16, ho96, ho16.size()) == 0u, "hy4_moe_fp8", "W2 0-ULP exact vs ref");
 	}
 
 	for ( uint32_t rows : { 512u, 1024u, 2048u } )
@@ -416,90 +585,41 @@ static void RunHyMoeTests(uint32_t sms, cudaStream_t stream)
 			LmStreamGemmGrouped<LmMxfp8>(w2, t2_mx, act_ref, out_ref, d_off, (const uint32_t *)0, E, rows * G::kTopK, I, H, sms, stream);
 		});
 		const double t_new_mx = TimeUs(stream, 2, 10, [&]() {
-			if ( mean > 24u )
+			if ( mean > 40u )
 			{
-				HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_u64, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_64);
-				HyMoeMmaW2Kernel<G, LmMxfp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_d64, stream>>>(w2, t2_mx, act_64, d_off, out_64);
+				HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 96u, 2u, 4u, 2u><<<sms * occ_u96, 256u, smem_u96, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_96);
+				HyMoeMmaW2Kernel<G, LmMxfp8, 96u, 64u, 2u, 4u, 3u><<<sms * occ_d96, 256u, smem_d96, stream>>>(w2, t2_mx, act_96, d_off, out_96);
+			}
+			else if ( mean > 24u )
+			{
+				HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 64u, 2u, 4u, 3u><<<sms * occ_u64, 256u, smem_u64, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_64);
+				HyMoeMmaW2Kernel<G, LmMxfp8, 64u, 128u, 2u, 4u, 3u><<<sms * occ_d64, 256u, smem_d64, stream>>>(w2, t2_mx, act_64, d_off, out_64);
 			}
 			else
 			{
-				HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 32u, 2u, 4u, 3u><<<sms, 256u, smem_u32, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_32);
-				HyMoeMmaW2Kernel<G, LmMxfp8, 32u, 2u, 4u, 3u><<<sms, 256u, smem_d32, stream>>>(w2, t2_mx, act_32, d_off, out_32);
+				HyMoeMmaW1W3SwigluKernel<G, LmMxfp8, 32u, 2u, 4u, 2u><<<sms * occ_u32, 256u, smem_u32, stream>>>(w1, t1_mx, w3, t3_mx, act, d_pwt, d_src, d_off, act_32);
+				HyMoeMmaW2Kernel<G, LmMxfp8, 32u, 128u, 2u, 4u, 2u><<<sms * occ_d32, 256u, smem_d32, stream>>>(w2, t2_mx, act_32, d_off, out_32);
 			}
 		});
 		const double t_new_f8 = TimeUs(stream, 2, 10, [&]() {
-			if ( mean > 24u )
+			if ( mean > 40u )
 			{
-				HyMoeMmaW1W3SwigluKernel<G, LmFp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_u64, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_64);
-				HyMoeMmaW2Kernel<G, LmFp8, 64u, 2u, 4u, 3u><<<sms, 256u, smem_d64, stream>>>(w2, t2_f8, act_64, d_off, out_64);
+				HyMoeMmaW1W3SwigluKernel<G, LmFp8, 96u, 2u, 4u, 2u><<<sms * occ_fu96, 256u, smem_u96, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_96);
+				HyMoeMmaW2Kernel<G, LmFp8, 96u, 64u, 2u, 4u, 3u><<<sms * occ_fd96, 256u, smem_d96, stream>>>(w2, t2_f8, act_96, d_off, out_96);
+			}
+			else if ( mean > 24u )
+			{
+				HyMoeMmaW1W3SwigluKernel<G, LmFp8, 64u, 2u, 4u, 3u><<<sms * occ_fu64, 256u, smem_u64, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_64);
+				HyMoeMmaW2Kernel<G, LmFp8, 64u, 128u, 2u, 4u, 3u><<<sms * occ_fd64, 256u, smem_d64, stream>>>(w2, t2_f8, act_64, d_off, out_64);
 			}
 			else
 			{
-				HyMoeMmaW1W3SwigluKernel<G, LmFp8, 32u, 2u, 4u, 3u><<<sms, 256u, smem_u32, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_32);
-				HyMoeMmaW2Kernel<G, LmFp8, 32u, 2u, 4u, 3u><<<sms, 256u, smem_d32, stream>>>(w2, t2_f8, act_32, d_off, out_32);
+				HyMoeMmaW1W3SwigluKernel<G, LmFp8, 32u, 2u, 4u, 2u><<<sms * occ_fu32, 256u, smem_u32, stream>>>(w1, t1_f8, w3, t3_f8, act, d_pwt, d_src, d_off, act_32);
+				HyMoeMmaW2Kernel<G, LmFp8, 32u, 128u, 2u, 4u, 2u><<<sms * occ_fd32, 256u, smem_d32, stream>>>(w2, t2_f8, act_32, d_off, out_32);
 			}
 		});
 		printf("  hy4_moe        M=%4u (packed=%4u, mean=%2u) | MXFP8: ref=%7.1f us  new=%7.1f us (%5.2fx) | FP8 new=%7.1f us\n",
 			rows, packed, mean, t_ref_mx, t_new_mx, t_ref_mx / t_new_mx, t_new_f8);
-	}
-}
-
-static void RunMimoFp8DenseTests(uint32_t sms, cudaStream_t stream)
-{
-	using ProModel = MimoModel<Mimo26ProGeometry<16u>>;
-	DevPool pool(stream);
-	struct ShapeSpec { const char *name; uint32_t n; uint32_t k; };
-	const ShapeSpec shapes[] = {
-		{ "pro_qkv", 1696u, 6144u },
-		{ "pro_dense_gu", 2304u, 6144u },
-		{ "pro_dense_dn", 6144u, 1152u },
-		{ "flash_qkv_s", 928u, 4096u },
-		{ "flash_qkv_f", 848u, 4096u },
-	};
-	const uint32_t max_rows = 2048u;
-	uint16_t *act = (uint16_t *)pool.Fill((uint64_t)max_rows * 6144u, sizeof(uint16_t), FILL_BF16, 0.25f, 0.0f);
-	uint16_t *out_new = (uint16_t *)pool.Alloc((uint64_t)max_rows * 6144u * sizeof(uint16_t));
-	uint16_t *out_ref = (uint16_t *)pool.Alloc((uint64_t)max_rows * 6144u * sizeof(uint16_t));
-	uint16_t *out_sub = (uint16_t *)pool.Alloc((uint64_t)max_rows * 6144u * sizeof(uint16_t));
-
-	printf("\n=== 3. MiMo26 FP8 Block-128 Dense ===\n");
-	for ( const ShapeSpec &sp : shapes )
-	{
-		uint8_t *w = (uint8_t *)pool.Fill((uint64_t)sp.n * sp.k, 1u, FILL_FP8, 0.0f, 0.0f);
-		float *s = (float *)pool.Fill((uint64_t)sp.n * (sp.k / 128u), sizeof(float), FILL_F32, 0.05f, 0.06f);
-		MimoScaled ws = { w, s };
-		const LmScaleTensor sc = LmScaleTensorBuild(s, LM_SCALE_ENCODING_F32, 1u, sp.n, sp.k, 1u, 128u);
-
-		const uint32_t check_rows = 512u;
-		Check(ProModel::LaunchFp8Dense(ws, sc, act, out_new, check_rows, sp.k, sp.n, sms, stream) == LM_LAUNCH_OK, sp.name, "fp8 new launch");
-		Check(LmStreamGemmDense<LmFp8>(w, sc, act, out_ref, (float *)0, check_rows, sp.k, sp.n, 0u, 0u, sms, stream) == LM_LAUNCH_OK, sp.name, "fp8 ref launch");
-		cudaStreamSynchronize(stream);
-		std::vector<uint16_t> h_new((uint64_t)check_rows * sp.n), h_ref((uint64_t)check_rows * sp.n);
-		cudaMemcpy(h_new.data(), out_new, h_new.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		cudaMemcpy(h_ref.data(), out_ref, h_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-		Check(DiffCount(h_new, h_ref, h_new.size()) == 0u, sp.name, "0-ULP vs LmStreamGemmDense", (double)DiffCount(h_new, h_ref, h_new.size()), 0.0);
-
-		for ( uint32_t sr : { 1u, 16u, 17u, 32u, 64u } )
-		{
-			Check(ProModel::LaunchFp8Dense(ws, sc, act, out_sub, sr, sp.k, sp.n, sms, stream) == LM_LAUNCH_OK, sp.name, "fp8 sub launch");
-			cudaStreamSynchronize(stream);
-			std::vector<uint16_t> h_sub((uint64_t)sr * sp.n);
-			cudaMemcpy(h_sub.data(), out_sub, h_sub.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-			Check(DiffCount(h_sub, h_new, h_sub.size()) == 0u, sp.name, "0-ULP warm==cold", (double)sr, (double)DiffCount(h_sub, h_new, h_sub.size()));
-		}
-
-		for ( uint32_t rows : { 512u, 1024u, 2048u } )
-		{
-			const double t_ref = TimeUs(stream, 4, 20, [&]() {
-				LmStreamGemmDense<LmFp8>(w, sc, act, out_ref, (float *)0, rows, sp.k, sp.n, 0u, 0u, sms, stream);
-			});
-			const double t_new = TimeUs(stream, 4, 20, [&]() {
-				ProModel::LaunchFp8Dense(ws, sc, act, out_new, rows, sp.k, sp.n, sms, stream);
-			});
-			const double flops = 2.0 * (double)rows * (double)sp.n * (double)sp.k;
-			printf("  %-14s M=%4u | ref=%7.1f us  new=%7.1f us (%5.2fx, %5.1f TF/s)\n",
-				sp.name, rows, t_ref, t_new, t_ref / t_new, flops / (t_new * 1e6));
-		}
 	}
 }
 
@@ -522,13 +642,36 @@ static void RunMimoMxfp4Tests(const char *tag, uint32_t sms, cudaStream_t stream
 	uint16_t *act_16 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *act_32 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *act_64 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
+	uint16_t *act_96 = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *act_ref = (uint16_t *)pool.Alloc((uint64_t)max_packed * I * sizeof(uint16_t));
 	uint16_t *out_16 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint16_t *out_32 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint16_t *out_64 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
+	uint16_t *out_96 = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint16_t *out_ref = (uint16_t *)pool.Alloc((uint64_t)max_packed * H * sizeof(uint16_t));
 	uint32_t *d_off = (uint32_t *)pool.Alloc((E + 1u) * sizeof(uint32_t));
 	uint32_t *d_src = (uint32_t *)pool.Alloc(max_packed * sizeof(uint32_t));
+
+	auto prep_base = [](const void *fn, uint32_t bytes) -> uint32_t {
+		if ( bytes > 49152u )
+			cudaFuncSetAttribute(fn, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes);
+		int occ = 1;
+		if ( cudaOccupancyMaxActiveBlocksPerMultiprocessor(&occ, fn, 256, (int)bytes) != cudaSuccess || occ < 1 )
+			occ = 1;
+		return (uint32_t)occ;
+	};
+	constexpr uint32_t bsm_u1 = BaseMxfp4SharedBytes<1u, 2u, true>(E);
+	constexpr uint32_t bsm_u2 = BaseMxfp4SharedBytes<2u, 2u, true>(E);
+	constexpr uint32_t bsm_u4 = BaseMxfp4SharedBytes<4u, 3u, true>(E);
+	constexpr uint32_t bsm_d1 = BaseMxfp4SharedBytes<1u, 2u, false>(E);
+	constexpr uint32_t bsm_d2 = BaseMxfp4SharedBytes<2u, 2u, false>(E);
+	constexpr uint32_t bsm_d4 = BaseMxfp4SharedBytes<4u, 3u, false>(E);
+	const uint32_t bocc_u1 = prep_base((const void *)BaseMimoMxfp4ExpertsKernel<1u, 2u, false, true>, bsm_u1);
+	const uint32_t bocc_u2 = prep_base((const void *)BaseMimoMxfp4ExpertsKernel<2u, 2u, false, true>, bsm_u2);
+	const uint32_t bocc_u4 = prep_base((const void *)BaseMimoMxfp4ExpertsKernel<4u, 3u, false, true>, bsm_u4);
+	const uint32_t bocc_d1 = prep_base((const void *)BaseMimoMxfp4ExpertsKernel<1u, 2u, true, false>, bsm_d1);
+	const uint32_t bocc_d2 = prep_base((const void *)BaseMimoMxfp4ExpertsKernel<2u, 2u, true, false>, bsm_d2);
+	const uint32_t bocc_d4 = prep_base((const void *)BaseMimoMxfp4ExpertsKernel<4u, 3u, true, false>, bsm_d4);
 
 	{
 		std::vector<uint32_t> off, src;
@@ -541,30 +684,36 @@ static void RunMimoMxfp4Tests(const char *tag, uint32_t sms, cudaStream_t stream
 		MimoMoeFastW1W3SiluKernel<G><<<sms * 4u, 128u, 0, stream>>>(w1, s1, w3, s3, act, d_src, d_off, act_ref, 512u);
 		MimoMoeFastW2Kernel<G><<<sms * 4u, 128u, 0, stream>>>(w2, s2, act_ref, d_off, out_ref);
 
-		Check(Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 3u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u16");
-		Check(Model::template Mxfp4Launch<32u, 128u, 1u, 8u, 3u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u32");
+		Check(Model::template Mxfp4Launch<16u, 64u, 1u, 8u, 2u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u16");
+		Check(Model::template Mxfp4Launch<32u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u32");
 		Check(Model::template Mxfp4Launch<64u, 64u, 2u, 4u, 3u, false, true>(w1, s1, w3, s3, act, act_64, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u64");
-		Check(Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 3u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d16");
-		Check(Model::template Mxfp4Launch<32u, 256u, 1u, 8u, 3u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d32");
+		Check(Model::template Mxfp4Launch<96u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_96, d_off, d_src, packed, H, I, sms, stream) == LM_LAUNCH_OK, tag, "u96");
+		Check(Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 2u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d16");
+		Check(Model::template Mxfp4Launch<32u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d32");
 		Check(Model::template Mxfp4Launch<64u, 128u, 2u, 4u, 3u, true, false>(w2, s2, 0, 0, act_64, out_64, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d64");
+		Check(Model::template Mxfp4Launch<96u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_96, out_96, d_off, 0, packed, I, H, sms, stream) == LM_LAUNCH_OK, tag, "d96");
 		cudaStreamSynchronize(stream);
 
-		std::vector<uint16_t> ha_ref((uint64_t)packed * I), ha16((uint64_t)packed * I), ha32((uint64_t)packed * I), ha64((uint64_t)packed * I);
-		std::vector<uint16_t> ho_ref((uint64_t)packed * H), ho16((uint64_t)packed * H), ho32((uint64_t)packed * H), ho64((uint64_t)packed * H);
+		std::vector<uint16_t> ha_ref((uint64_t)packed * I), ha16((uint64_t)packed * I), ha32((uint64_t)packed * I), ha64((uint64_t)packed * I), ha96((uint64_t)packed * I);
+		std::vector<uint16_t> ho_ref((uint64_t)packed * H), ho16((uint64_t)packed * H), ho32((uint64_t)packed * H), ho64((uint64_t)packed * H), ho96((uint64_t)packed * H);
 		cudaMemcpy(ha_ref.data(), act_ref, ha_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha16.data(), act_16, ha16.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha32.data(), act_32, ha32.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ha64.data(), act_64, ha64.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		cudaMemcpy(ha96.data(), act_96, ha96.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho_ref.data(), out_ref, ho_ref.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho16.data(), out_16, ho16.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho32.data(), out_32, ho32.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 		cudaMemcpy(ho64.data(), out_64, ho64.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
+		cudaMemcpy(ho96.data(), out_96, ho96.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 
 		uint32_t ulp_u = 0u, ulp_d = 0u;
-		Check(RelL2(ha64, ha_ref, ha64.size(), &ulp_u) < 2e-3, tag, "W1W3 vs fast scalar ref", RelL2(ha64, ha_ref, ha64.size(), 0), (double)ulp_u);
-		Check(DiffCount(ha16, ha32, ha16.size()) == 0u && DiffCount(ha32, ha64, ha32.size()) == 0u, tag, "W1W3 0-ULP M16==M32==M64");
-		Check(RelL2(ho64, ho_ref, ho64.size(), &ulp_d) < 2e-3, tag, "W2 vs fast scalar ref", RelL2(ho64, ho_ref, ho64.size(), 0), (double)ulp_d);
-		Check(DiffCount(ho16, ho32, ho16.size()) == 0u && DiffCount(ho32, ho64, ho32.size()) == 0u, tag, "W2 0-ULP M16==M32==M64");
+		Check(RelL2(ha96, ha_ref, ha96.size(), &ulp_u) < 2e-3, tag, "W1W3 vs fast scalar ref", RelL2(ha96, ha_ref, ha96.size(), 0), (double)ulp_u);
+		Check(DiffCount(ha16, ha32, ha16.size()) == 0u && DiffCount(ha32, ha64, ha32.size()) == 0u && DiffCount(ha64, ha96, ha64.size()) == 0u,
+			tag, "W1W3 0-ULP M16==M32==M64==M96");
+		Check(RelL2(ho96, ho_ref, ho96.size(), &ulp_d) < 2e-3, tag, "W2 vs fast scalar ref", RelL2(ho96, ho_ref, ho96.size(), 0), (double)ulp_d);
+		Check(DiffCount(ho16, ho32, ho16.size()) == 0u && DiffCount(ho32, ho64, ho32.size()) == 0u && DiffCount(ho64, ho96, ho64.size()) == 0u,
+			tag, "W2 0-ULP M16==M32==M64==M96");
 	}
 
 	for ( uint32_t rows : { 512u, 1024u, 2048u } )
@@ -576,75 +725,50 @@ static void RunMimoMxfp4Tests(const char *tag, uint32_t sms, cudaStream_t stream
 		cudaMemcpy(d_off, off.data(), off.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
 		cudaMemcpy(d_src, src.data(), src.size() * sizeof(uint32_t), cudaMemcpyHostToDevice);
 		const uint32_t mean = (packed + E - 1u) / E;
+
+		const double t_base = TimeUs(stream, 2, 10, [&]() {
+			if ( mean > 32u )
+			{
+				BaseMimoMxfp4ExpertsKernel<4u, 3u, false, true><<<sms * bocc_u4, 256u, bsm_u4, stream>>>(w1, s1, w3, s3, act, act_ref, d_off, d_src, E, H, I);
+				BaseMimoMxfp4ExpertsKernel<4u, 3u, true, false><<<sms * bocc_d4, 256u, bsm_d4, stream>>>(w2, s2, 0, 0, act_ref, out_ref, d_off, 0, E, I, H);
+			}
+			else if ( mean > 16u )
+			{
+				BaseMimoMxfp4ExpertsKernel<2u, 2u, false, true><<<sms * bocc_u2, 256u, bsm_u2, stream>>>(w1, s1, w3, s3, act, act_ref, d_off, d_src, E, H, I);
+				BaseMimoMxfp4ExpertsKernel<2u, 2u, true, false><<<sms * bocc_d2, 256u, bsm_d2, stream>>>(w2, s2, 0, 0, act_ref, out_ref, d_off, 0, E, I, H);
+			}
+			else
+			{
+				BaseMimoMxfp4ExpertsKernel<1u, 2u, false, true><<<sms * bocc_u1, 256u, bsm_u1, stream>>>(w1, s1, w3, s3, act, act_ref, d_off, d_src, E, H, I);
+				BaseMimoMxfp4ExpertsKernel<1u, 2u, true, false><<<sms * bocc_d1, 256u, bsm_d1, stream>>>(w2, s2, 0, 0, act_ref, out_ref, d_off, 0, E, I, H);
+			}
+		});
 		const double t_new = TimeUs(stream, 2, 10, [&]() {
-			if ( mean > 24u )
+			if ( mean > 40u )
+			{
+				Model::template Mxfp4Launch<96u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_96, d_off, d_src, packed, H, I, sms, stream);
+				Model::template Mxfp4Launch<96u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_96, out_96, d_off, 0, packed, I, H, sms, stream);
+			}
+			else if ( mean > 24u )
 			{
 				Model::template Mxfp4Launch<64u, 64u, 2u, 4u, 3u, false, true>(w1, s1, w3, s3, act, act_64, d_off, d_src, packed, H, I, sms, stream);
 				Model::template Mxfp4Launch<64u, 128u, 2u, 4u, 3u, true, false>(w2, s2, 0, 0, act_64, out_64, d_off, 0, packed, I, H, sms, stream);
 			}
 			else if ( mean > 10u )
 			{
-				Model::template Mxfp4Launch<32u, 128u, 1u, 8u, 3u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream);
-				Model::template Mxfp4Launch<32u, 256u, 1u, 8u, 3u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream);
+				Model::template Mxfp4Launch<32u, 64u, 2u, 4u, 2u, false, true>(w1, s1, w3, s3, act, act_32, d_off, d_src, packed, H, I, sms, stream);
+				Model::template Mxfp4Launch<32u, 128u, 2u, 4u, 2u, true, false>(w2, s2, 0, 0, act_32, out_32, d_off, 0, packed, I, H, sms, stream);
 			}
 			else
 			{
-				Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 3u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream);
-				Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 3u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream);
+				Model::template Mxfp4Launch<16u, 64u, 1u, 8u, 2u, false, true>(w1, s1, w3, s3, act, act_16, d_off, d_src, packed, H, I, sms, stream);
+				Model::template Mxfp4Launch<16u, 128u, 1u, 8u, 2u, true, false>(w2, s2, 0, 0, act_16, out_16, d_off, 0, packed, I, H, sms, stream);
 			}
 		});
 		const double flops = 6.0 * (double)packed * (double)H * (double)I;
-		printf("  %-14s M=%4u (packed=%4u, mean=%2u) | new=%7.1f us (%5.1f TF/s)\n", tag, rows, packed, mean, t_new, flops / (t_new * 1e6));
+		printf("  %-14s M=%4u (packed=%4u, mean=%2u) | BASE=%7.1f us  NEW=%7.1f us (%5.2fx, %5.1f TF/s)\n",
+			tag, rows, packed, mean, t_base, t_new, t_base / t_new, flops / (t_new * 1e6));
 	}
-}
-
-static void RunMimoLocalAttnTests(cudaStream_t stream)
-{
-	DevPool pool(stream);
-	constexpr uint32_t HD = 192u, VD = 128u, SLOT = HD + VD;
-	const uint32_t rows = 512u, prior = 3584u, rank_heads = 4u, group = 16u;
-	uint16_t *q = (uint16_t *)pool.Fill((uint64_t)rows * rank_heads * HD, sizeof(uint16_t), FILL_BF16, 0.25f, 0.0f);
-	uint16_t *kv_p = (uint16_t *)pool.Fill((uint64_t)prior * SLOT, sizeof(uint16_t), FILL_BF16, 0.25f, 0.0f);
-	uint16_t *kv_c = (uint16_t *)pool.Fill((uint64_t)rows * SLOT, sizeof(uint16_t), FILL_BF16, 0.25f, 0.0f);
-	float *sinks = (float *)pool.Fill(rank_heads, sizeof(float), FILL_F32, 0.5f, 0.2f);
-	uint16_t *out4 = (uint16_t *)pool.Alloc((uint64_t)rows * rank_heads * VD * sizeof(uint16_t));
-	uint16_t *out2 = (uint16_t *)pool.Alloc((uint64_t)rows * rank_heads * VD * sizeof(uint16_t));
-	std::vector<uint32_t> h_pos(rows);
-	for ( uint32_t i = 0u; i < rows; ++i )
-		h_pos[i] = prior + i;
-	uint32_t *d_pos = (uint32_t *)pool.Alloc(rows * sizeof(uint32_t));
-	cudaMemcpy(d_pos, h_pos.data(), rows * sizeof(uint32_t), cudaMemcpyHostToDevice);
-
-	printf("\n=== 5. MiMo26 Local Prefill Attn (Q_WARPS=2 vs Q_WARPS=4 0-ULP) ===\n");
-	const float scale = 1.0f / std::sqrt((float)HD);
-	MimoLocalPrefillAttnKernel<HD, VD, true, 4u><<<dim3(rank_heads, (rows + 63u) / 64u), 128u, 0, stream>>>(
-		q, kv_p, kv_c, d_pos, sinks, rows, rank_heads, 0u, group, 0u, 0u, prior, 128u, scale, out4);
-	MimoLocalPrefillAttnKernel<HD, VD, true, 2u><<<dim3(rank_heads, (rows + 31u) / 32u), 64u, 0, stream>>>(
-		q, kv_p, kv_c, d_pos, sinks, rows, rank_heads, 0u, group, 0u, 0u, prior, 128u, scale, out2);
-	cudaStreamSynchronize(stream);
-	std::vector<uint16_t> h4((uint64_t)rows * rank_heads * VD), h2((uint64_t)rows * rank_heads * VD);
-	cudaMemcpy(h4.data(), out4, h4.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-	cudaMemcpy(h2.data(), out2, h2.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-	Check(DiffCount(h2, h4, h4.size()) == 0u, "mimo_attn_swa", "Q_WARPS=2 == Q_WARPS=4 0-ULP");
-
-	MimoLocalPrefillAttnKernel<HD, VD, false, 4u><<<dim3(rank_heads, (rows + 63u) / 64u), 128u, 0, stream>>>(
-		q, kv_p, kv_c, d_pos, (const float *)0, rows, rank_heads, 0u, group, 0u, 0u, prior, 0u, scale, out4);
-	MimoLocalPrefillAttnKernel<HD, VD, false, 2u><<<dim3(rank_heads, (rows + 31u) / 32u), 64u, 0, stream>>>(
-		q, kv_p, kv_c, d_pos, (const float *)0, rows, rank_heads, 0u, group, 0u, 0u, prior, 0u, scale, out2);
-	cudaStreamSynchronize(stream);
-	cudaMemcpy(h4.data(), out4, h4.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-	cudaMemcpy(h2.data(), out2, h2.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-	Check(DiffCount(h2, h4, h4.size()) == 0u, "mimo_attn_full", "Q_WARPS=2 == Q_WARPS=4 0-ULP");
-
-	const double t4 = TimeUs(stream, 4, 20, [&]() {
-		MimoLocalPrefillAttnKernel<HD, VD, false, 4u><<<dim3(rank_heads, (rows + 63u) / 64u), 128u, 0, stream>>>(
-			q, kv_p, kv_c, d_pos, (const float *)0, rows, rank_heads, 0u, group, 0u, 0u, prior, 0u, scale, out4);
-	});
-	const double t2 = TimeUs(stream, 4, 20, [&]() {
-		MimoLocalPrefillAttnKernel<HD, VD, false, 2u><<<dim3(rank_heads, (rows + 31u) / 32u), 64u, 0, stream>>>(
-			q, kv_p, kv_c, d_pos, (const float *)0, rows, rank_heads, 0u, group, 0u, 0u, prior, 0u, scale, out2);
-	});
-	printf("  flash_full_attn M=512 ctx=4096 | Q_WARPS=4: %7.1f us  Q_WARPS=2: %7.1f us (%5.2fx)\n", t4, t2, t4 / t2);
 }
 
 int main(void)
@@ -661,13 +785,10 @@ int main(void)
 	cudaStream_t stream = 0;
 	cudaStreamCreate(&stream);
 
-	RunHyScaledDenseTests(sms, stream);
 	RunHyMoeTests(sms, stream);
-	RunMimoFp8DenseTests(sms, stream);
-	printf("\n=== 4. MiMo26 MXFP4 MoE W1W3+SiLU & W2 (0-bank-conflict ldmatrix) ===\n");
+	printf("\n=== 2. MiMo26 MXFP4 MoE W1W3+SiLU & W2 (Paired BASE vs NEW) ===\n");
 	RunMimoMxfp4Tests<Mimo26ProGeometry<16u>>("mimo_pro_mx4", sms, stream);
 	RunMimoMxfp4Tests<Mimo26FlashGeometry<16u>>("mimo_flash_mx4", sms, stream);
-	RunMimoLocalAttnTests(stream);
 
 	cudaStreamDestroy(stream);
 	if ( g_failures != 0 )
