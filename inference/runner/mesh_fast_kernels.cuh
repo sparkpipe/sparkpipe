@@ -412,9 +412,10 @@ static __device__ __forceinline__ SparkTpMeshHybridGrant SparkTpMeshHybridAcquir
         const volatile uint64_t *shipped = control != 0 ? (const volatile uint64_t *)(uintptr_t)control->shipped_cell : 0;
         const uint64_t t0 = SparkTpLdAcquireU64(&ctrl->trigger[0].seq);
         const uint64_t t1 = SparkTpLdAcquireU64(&ctrl->trigger[1].seq);
+        const uint64_t issued = SparkTpLdAcquireU64(&ctrl->cpu_issued_seq);
         const uint32_t prior_is_hybrid = rseq != 0u && (rseq == t0 || rseq == t1) ? 1u : 0u;
         const uint32_t cpu_pending = rseq != 0u && prior_is_hybrid == 0u &&
-            (shipped == 0 || SparkTpLdAcquireU64(shipped) != rseq) ? 1u : 0u;
+            issued < rseq && (shipped == 0 || SparkTpLdAcquireU64(shipped) != rseq) ? 1u : 0u;
         const uint64_t mode = SparkTpLdAcquireU64(&ctrl->cpu_mode);
         gen = (uint32_t)SparkTpLdAcquireU64(&ctrl->grant_gen);
         pcount = ctrl->peer_count;
@@ -2841,6 +2842,7 @@ static __device__ __forceinline__ void SparkTpMeshFast2dRingDoorbell(
     control->round_seq = tag;
     control->seq = seq;
     if ( set_cursor != 0u ) control->slot_cursor = seq;
+    __threadfence_system();
     SparkTpStReleaseSysU64(&cell[0],tag);
 }
 
@@ -3363,13 +3365,13 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_THREADS,2) void SparkTpMeshFas
                 else
                 {
                     if ( is_row_ag == 0u && length != 0u )
-                        SparkTpMeshCopyHalves(next_band_dst,output + begin + start,length,(uint64_t)(tid - 32u),lanes - 32u);
+                        SparkTpMeshCopyBytesVolatile((volatile uint8_t *)next_band_dst,output + begin + start,length * sizeof(uint16_t),(uint64_t)(tid - 32u),lanes - 32u);
                     if ( is_row_ag != 0u )
                         SparkTpMeshFastRunPrefetch(prefetch,resume,tid,&s_wait_over);
                 }
             }
             else if ( is_row_ag == 0u && length != 0u )
-                SparkTpMeshCopyHalves(next_band_dst,output + begin + start,length,lane - 32u,lanes - 32u);
+                SparkTpMeshCopyBytesVolatile((volatile uint8_t *)next_band_dst,output + begin + start,length * sizeof(uint16_t),lane - 32u,lanes - 32u);
         }
         else if ( length != 0u )
         {

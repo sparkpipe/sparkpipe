@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <endian.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,6 +94,16 @@ typedef struct ResponderState
     volatile uint32_t cancel_after_ns;
     volatile uint32_t drop_peer;
     volatile uint64_t rounds_serviced;
+    SparkWeightdMeshHybridCtrl *hybrid_ctrl;
+    uint8_t *hybrid_shm;
+    uint32_t hybrid_pi[16u];
+    uint32_t hybrid_wrs[16u];
+    volatile uint32_t ship_delay_ns;
+    volatile uint32_t revoke_every_n;
+    volatile uint64_t hybrid_dma_count;
+    volatile uint64_t hybrid_wqe_errors;
+    volatile uint64_t cpu_doorbell_count;
+    volatile uint64_t revoke_count;
 } ResponderState;
 
 static void ResponderServiceGate(ResponderState *st, uint64_t *gate_seen)
@@ -124,11 +135,8 @@ static uint16_t Sum2d4x4Bf16(uint16_t *const peer_buf[16u], uint64_t idx)
     return FloatToBf16Rn(col_acc);
 }
 
-static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uint64_t tag)
+static void ResponderDeliverRoute(ResponderState *st, uint64_t tag, uint64_t bytes, SparkWeightdMeshRoute route)
 {
-    uint64_t bytes = cell[1];
-    SparkWeightdMeshRoute route;
-    route.word = cell[3];
     uint64_t ring = (tag - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u);
     uint32_t half = route.fields.half;
     uint64_t half_off = SPARK_WEIGHTD_MESH_HALF_OFFSET(half);
@@ -136,6 +144,9 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
         (half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE ?
             SPARK_WEIGHTD_MESH_TAIL_OFFSET(half) : (SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u));
     uint64_t t0 = NowNs();
+    SparkWeightdMeshHybridCtrl *hctrl = __atomic_load_n(&st->hybrid_ctrl, __ATOMIC_ACQUIRE);
+    if ( hctrl != 0 )
+        __atomic_store_n(&hctrl->cpu_issued_seq, tag, __ATOMIC_RELEASE);
     uint32_t cancel_ns = __atomic_load_n(&st->cancel_after_ns, __ATOMIC_ACQUIRE);
     if ( cancel_ns != 0u )
     {
@@ -318,9 +329,124 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
         __atomic_store_n((volatile uint64_t *)(st->band + ((uint64_t)p * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ring) * SPARK_WEIGHTD_MESH_SLOT_BYTES + p_tail_off),
             tag, __ATOMIC_RELEASE);
     }
+    uint32_t rev_n = __atomic_load_n(&st->revoke_every_n, __ATOMIC_ACQUIRE);
+    if ( hctrl != 0 && rev_n != 0u && ((st->chunk_idx + 1u) % rev_n) == 0u )
+    {
+        __atomic_store_n(&hctrl->cpu_mode, 0u, __ATOMIC_SEQ_CST);
+        while ( __atomic_load_n(&hctrl->gpu_busy, __ATOMIC_ACQUIRE) != 0u ) {}
+        memset(hctrl->trigger, 0, sizeof(hctrl->trigger));
+        for ( uint32_t pi_i = 0u; pi_i < hctrl->peer_count; ++pi_i )
+        {
+            hctrl->gpu_pi[pi_i] = st->hybrid_pi[pi_i];
+            hctrl->gpu_wrs[pi_i] = st->hybrid_wrs[pi_i];
+            hctrl->cpu_sq_limit[pi_i] = st->hybrid_pi[pi_i] + hctrl->peers[pi_i].sq_depth;
+            hctrl->cpu_wr_limit[pi_i] = st->hybrid_wrs[pi_i] + 64u;
+        }
+        __atomic_store_n(&hctrl->cpu_issued_seq, tag, __ATOMIC_RELEASE);
+        __atomic_store_n(&hctrl->grant_gen, hctrl->grant_gen + 1u, __ATOMIC_RELEASE);
+        __atomic_store_n(&hctrl->cpu_mode, 1u, __ATOMIC_SEQ_CST);
+        __atomic_fetch_add(&st->revoke_count, 1ull, __ATOMIC_RELEASE);
+    }
+    uint32_t sdelay = __atomic_load_n(&st->ship_delay_ns, __ATOMIC_ACQUIRE);
+    if ( sdelay != 0u )
+    {
+        uint64_t d0 = NowNs();
+        while ( NowNs() - d0 < (uint64_t)sdelay ) {}
+    }
     __atomic_store_n(st->shipped, tag, __ATOMIC_RELEASE);
     st->chunk_idx++;
     __atomic_fetch_add(&st->rounds_serviced, 1ull, __ATOMIC_RELEASE);
+}
+
+static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uint64_t tag)
+{
+    uint64_t bytes = cell[1];
+    SparkWeightdMeshRoute route;
+    route.word = cell[3];
+    __atomic_fetch_add(&st->cpu_doorbell_count, 1ull, __ATOMIC_RELEASE);
+    ResponderDeliverRoute(st, tag, bytes, route);
+}
+
+static uint32_t ResponderServiceHybrid(ResponderState *st, uint64_t *seen)
+{
+    SparkWeightdMeshHybridCtrl *ctrl = __atomic_load_n(&st->hybrid_ctrl, __ATOMIC_ACQUIRE);
+    if ( ctrl == 0 || st->hybrid_shm == 0 )
+        return 0u;
+    uint64_t s0 = __atomic_load_n(&ctrl->trigger[0].seq, __ATOMIC_ACQUIRE);
+    uint64_t s1 = __atomic_load_n(&ctrl->trigger[1].seq, __ATOMIC_ACQUIRE);
+    if ( s1 > *seen )
+    {
+        uint64_t r0 = __atomic_load_n(&ctrl->trigger[0].seq, __ATOMIC_ACQUIRE);
+        if ( r0 > s0 ) s0 = r0;
+    }
+    uint64_t want = *seen == 0u ? 0u : (*seen + 1u);
+    uint32_t slot_idx = UINT32_MAX;
+    uint64_t tag = 0u;
+    if ( want == 0u )
+    {
+        if ( s0 != 0u && (s1 == 0u || s0 < s1) ) { slot_idx = 0u; tag = s0; }
+        else if ( s1 != 0u ) { slot_idx = 1u; tag = s1; }
+    }
+    else
+    {
+        if ( s0 == want ) { slot_idx = 0u; tag = s0; }
+        else if ( s1 == want ) { slot_idx = 1u; tag = s1; }
+    }
+    if ( slot_idx == UINT32_MAX )
+        return 0u;
+    uint64_t meta = __atomic_load_n(&ctrl->trigger[slot_idx].meta, __ATOMIC_ACQUIRE);
+    uint64_t slot = __atomic_load_n(&ctrl->trigger[slot_idx].slot, __ATOMIC_ACQUIRE);
+    uint64_t bytes = __atomic_load_n(&ctrl->trigger[slot_idx].bytes, __ATOMIC_ACQUIRE);
+    if ( __atomic_load_n(&ctrl->trigger[slot_idx].seq, __ATOMIC_ACQUIRE) != tag )
+        return 0u;
+    uint32_t peer_mask = SparkWeightdMeshHybridMetaPeerMask(meta);
+    uint32_t ds = SparkWeightdMeshHybridMetaDs(meta);
+    uint32_t num_bb = SparkWeightdMeshHybridMetaNumBb(meta);
+    uint32_t is_peer = 0u, saw = 0u;
+    uint64_t slot_base = slot * SPARK_WEIGHTD_MESH_SLOT_BYTES;
+    if ( ds != 3u || num_bb != 1u || bytes == 0u || bytes > SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u )
+        __atomic_fetch_add(&st->hybrid_wqe_errors, 1ull, __ATOMIC_RELEASE);
+    for ( uint32_t i = 0u; i < ctrl->peer_count; ++i )
+    {
+        const SparkWeightdMeshHybridPeer *hp = &ctrl->peers[i];
+        if ( (peer_mask & (1u << hp->target)) == 0u )
+            continue;
+        uint32_t pi = st->hybrid_pi[i];
+        uint32_t sq_idx = pi & hp->sq_mask;
+        const uint8_t *wqe = st->hybrid_shm + hp->sq_shm_off + (size_t)sq_idx * 64u;
+        uint32_t w0, w1, rkey, len, lkey;
+        uint64_t raddr;
+        memcpy(&w0, wqe + 0u, 4u);
+        memcpy(&w1, wqe + 4u, 4u);
+        memcpy(&raddr, wqe + 16u, 8u);
+        memcpy(&rkey, wqe + 24u, 4u);
+        memcpy(&len, wqe + 32u, 4u);
+        memcpy(&lkey, wqe + 36u, 4u);
+        uint32_t exp_w0 = htobe32(((uint32_t)(uint16_t)pi << 8u) | 0x08u);
+        uint32_t exp_w1 = htobe32(hp->qpn_shifted | ds);
+        if ( w0 != exp_w0 || w1 != exp_w1 || raddr != htobe64(hp->remote_base + slot_base) ||
+             rkey != hp->rkey_be || len != htobe32((uint32_t)(bytes + 8u)) ||
+             (lkey != hp->recv_lkey_be && lkey != hp->staging_lkey_be) )
+            __atomic_fetch_add(&st->hybrid_wqe_errors, 1ull, __ATOMIC_RELEASE);
+        if ( saw == 0u )
+        {
+            is_peer = lkey == hp->staging_lkey_be ? 1u : 0u;
+            saw = 1u;
+        }
+        st->hybrid_pi[i] = pi + num_bb;
+        st->hybrid_wrs[i]++;
+        __atomic_store_n(&ctrl->cpu_sq_limit[i], st->hybrid_pi[i] + hp->sq_depth, __ATOMIC_RELEASE);
+        __atomic_store_n(&ctrl->cpu_wr_limit[i], st->hybrid_wrs[i] + 64u, __ATOMIC_RELEASE);
+    }
+    SparkWeightdMeshRoute route;
+    route.word = 0u;
+    route.fields.peer_mask = peer_mask;
+    route.fields.mode = is_peer != 0u ? SPARK_WEIGHTD_MESH_ROUTE_PEER : SPARK_WEIGHTD_MESH_ROUTE_FULL;
+    route.fields.compact_tail = 1u;
+    __atomic_fetch_add(&st->hybrid_dma_count, 1ull, __ATOMIC_RELEASE);
+    *seen = tag;
+    ResponderDeliverRoute(st, tag, bytes, route);
+    return 1u;
 }
 
 static void *ResponderMain(void *arg)
@@ -338,6 +464,8 @@ static void *ResponderMain(void *arg)
             __atomic_store_n(&st->reset_req, 0u, __ATOMIC_RELEASE);
         }
         ResponderServiceGate(st, &gate_seen);
+        if ( ResponderServiceHybrid(st, &seen) != 0u )
+            continue;
         uint64_t t_pri = __atomic_load_n(&st->doorbell[0], __ATOMIC_ACQUIRE);
         uint64_t t_alt = __atomic_load_n(&st->doorbell_alt[0], __ATOMIC_ACQUIRE);
         uint64_t want = seen == 0u ? 0u : seen + 1u;
@@ -502,6 +630,12 @@ static void FixtureResetEpoch(LargeFixture *f, uint32_t rank, uint32_t degree, u
     __atomic_store_n(&f->responder.cancel_after_ns, 0u, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.drop_peer, UINT32_MAX, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.rounds_serviced, 0ull, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.revoke_every_n, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.hybrid_dma_count, 0ull, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.hybrid_wqe_errors, 0ull, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.cpu_doorbell_count, 0ull, __ATOMIC_RELEASE);
+    __atomic_store_n(&f->responder.revoke_count, 0ull, __ATOMIC_RELEASE);
     __atomic_store_n(&f->responder.reset_req, 1u, __ATOMIC_RELEASE);
     while ( __atomic_load_n(&f->responder.reset_req, __ATOMIC_ACQUIRE) != 0u ) {}
     CUDA_OK(cudaMemcpyAsync(f->control, &host, sizeof(host), cudaMemcpyHostToDevice, f->stream));
@@ -978,6 +1112,182 @@ static void Test2dRows63DeadlockRegression(LargeFixture *f)
         "WideStreamGather non-zero rank times out cleanly on dropped peer without hanging");
 }
 
+static void SetupHybrid2dCtrl(LargeFixture *f, SparkWeightdMeshHybridCtrl *ctrl_host,
+    uint8_t *shm_host, uint32_t rank, uint32_t degree)
+{
+    memset(ctrl_host, 0, sizeof(*ctrl_host));
+    memset(shm_host, 0, 16u * 65536u);
+    ctrl_host->magic = SPARK_WEIGHTD_MESH_HYBRID_MAGIC;
+    ctrl_host->version = SPARK_WEIGHTD_MESH_HYBRID_VERSION;
+    ctrl_host->flags = SPARK_WEIGHTD_MESH_HYBRID_FLAG_BF_UNIQUE;
+    ctrl_host->shm_generation = 1u;
+    ctrl_host->shm_bytes = 16u * 65536u;
+    ctrl_host->recv_iova_base = (uint64_t)(uintptr_t)f->band_host;
+    ctrl_host->staging_iova_base = (uint64_t)(uintptr_t)f->staging_host;
+    ctrl_host->owner_lane = 0u;
+    ctrl_host->owner_band = 0u;
+    ctrl_host->owner_rank = rank;
+    ctrl_host->degree = degree;
+    ctrl_host->peer_count = degree - 1u;
+    ctrl_host->all_peers_mask = ((1u << degree) - 1u) & ~(1u << rank);
+    ctrl_host->min_max_inline = 828u;
+    ctrl_host->dbrec_in_shm = 0u;
+    ctrl_host->grant_gen = 1u;
+    ctrl_host->cpu_issued_seq = 0u;
+    for ( uint32_t i = 0u, target = 0u; target < degree; ++target )
+    {
+        if ( target == rank ) continue;
+        SparkWeightdMeshHybridPeer *hp = &ctrl_host->peers[i];
+        hp->sq_shm_off = i * 65536u;
+        hp->dbrec_shm_off = SPARK_WEIGHTD_MESH_HYBRID_OFFSET_NONE;
+        hp->sq_depth = 1024u;
+        hp->sq_mask = 1023u;
+        hp->qpn_shifted = (0x100u + target) << 8u;
+        hp->rkey_be = htobe32(0x22000000u + target);
+        hp->recv_lkey_be = htobe32(0x33000000u);
+        hp->staging_lkey_be = htobe32(0x44000000u);
+        hp->remote_base = UINT64_C(0x700000000000) + (uint64_t)target * UINT64_C(0x10000000);
+        hp->staging_peer_off = (uint64_t)target * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES;
+        hp->max_inline = 828u;
+        hp->peer = (uint8_t)i;
+        hp->target = (uint8_t)target;
+        ctrl_host->gpu_pi[i] = 0u;
+        ctrl_host->gpu_wrs[i] = 0u;
+        ctrl_host->cpu_sq_limit[i] = 1024u;
+        ctrl_host->cpu_wr_limit[i] = 64u;
+        f->responder.hybrid_pi[i] = 0u;
+        f->responder.hybrid_wrs[i] = 0u;
+        i++;
+    }
+    __atomic_store_n(&ctrl_host->cpu_mode, 1u, __ATOMIC_SEQ_CST);
+}
+
+static void Test2dHybridB64AndRevokeResume(LargeFixture *f)
+{
+    const uint32_t degree = 16u;
+    const uint64_t shapes[3] = { 63ull * 4096ull, 43ull * 7168ull, 63ull * 6144ull };
+    const uint32_t test_ranks[4] = { 0u, 7u, 9u, 15u };
+    SparkWeightdMeshHybridCtrl *ctrl_host = 0, *ctrl_dev = 0;
+    uint8_t *shm_host = 0, *shm_dev = 0;
+    CUDA_OK(cudaHostAlloc(&ctrl_host, sizeof(*ctrl_host), cudaHostAllocPortable | cudaHostAllocMapped));
+    CUDA_OK(cudaHostGetDevicePointer(&ctrl_dev, ctrl_host, 0u));
+    CUDA_OK(cudaHostAlloc(&shm_host, 16u * 65536u, cudaHostAllocPortable | cudaHostAllocMapped));
+    CUDA_OK(cudaHostGetDevicePointer(&shm_dev, shm_host, 0u));
+    f->responder.hybrid_shm = shm_host;
+    SparkTpMeshFastHybridBindOverride(f->gate_dev, ctrl_dev, shm_dev, 0u);
+
+    for ( uint32_t s = 0u; s < 3u; ++s )
+    {
+        const uint64_t elements = shapes[s];
+        const uint64_t cap2d = SPARK_TP_MESH_FAST_2D_CAP_ELEMENTS;
+        const uint64_t chunks = (elements + cap2d - 1u) / cap2d;
+        EnsurePeerBufs(f, elements, 9100u + s * 53u);
+        uint16_t *h_ref = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+        uint16_t *h_out = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+        for ( uint64_t i = 0u; i < elements; ++i )
+            h_ref[i] = Sum2d4x4Bf16(f->responder.peer_buf, i);
+        for ( uint32_t ri = 0u; ri < 4u; ++ri )
+        {
+            const uint32_t rank = test_ranks[ri];
+            __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
+            FixtureResetEpoch(f, rank, degree, 1u, elements, 1u, 0u, 0u);
+            SetupHybrid2dCtrl(f, ctrl_host, shm_host, rank, degree);
+            __atomic_store_n(&f->responder.hybrid_ctrl, ctrl_host, __ATOMIC_RELEASE);
+            f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+            CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[rank], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+            CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)elements * sizeof(uint16_t)));
+            cudaGraph_t graph = 0;
+            cudaGraphExec_t exec = 0;
+            CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_dev, f->scratch,
+                elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+            CUDA_OK(cudaStreamEndCapture(f->stream, &graph));
+            CUDA_OK(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+            const uint32_t reps = 8u;
+            for ( uint32_t rep = 0u; rep < reps; ++rep )
+                CUDA_OK(cudaGraphLaunch(exec, f->stream));
+            CUDA_OK(cudaStreamSynchronize(f->stream));
+            CUDA_OK(cudaMemcpy(h_out, f->out_dev, (size_t)elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+            SparkTpMeshRoundControl ctrl;
+            CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+            CHECK(ctrl.error_word == 0u && ctrl.rounds_done == reps &&
+                  memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0 &&
+                  __atomic_load_n(&f->responder.hybrid_dma_count, __ATOMIC_ACQUIRE) == 4u * chunks * reps &&
+                  __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u &&
+                  __atomic_load_n(&f->responder.cpu_doorbell_count, __ATOMIC_ACQUIRE) == 0u,
+                "2D 4x4 B64 Hybrid MODE 0 emits verified 3-peer DMA WQEs across all hops with 0-ULP match");
+            cudaGraphExecDestroy(exec);
+            cudaGraphDestroy(graph);
+        }
+
+        __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
+        FixtureResetEpoch(f, 9u, degree, 1u, elements, 1u, 0u, 0u);
+        SetupHybrid2dCtrl(f, ctrl_host, shm_host, 9u, degree);
+        __atomic_store_n(&f->responder.ship_delay_ns, 300000u, __ATOMIC_RELEASE);
+        __atomic_store_n(&f->responder.revoke_every_n, 2u, __ATOMIC_RELEASE);
+        __atomic_store_n(&f->responder.hybrid_ctrl, ctrl_host, __ATOMIC_RELEASE);
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+        CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[9], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)elements * sizeof(uint16_t)));
+        for ( uint32_t rep = 0u; rep < 4u; ++rep )
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, 9u, degree, f->local_dev, f->out_dev, f->scratch,
+                elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(h_out, f->out_dev, (size_t)elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+        SparkTpMeshRoundControl ctrl;
+        CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+        CHECK(ctrl.error_word == 0u && ctrl.rounds_done == 4u &&
+              memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0 &&
+              __atomic_load_n(&f->responder.revoke_count, __ATOMIC_ACQUIRE) >= 4u &&
+              __atomic_load_n(&f->responder.hybrid_dma_count, __ATOMIC_ACQUIRE) >= 2u * chunks * 4u &&
+              __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
+            "2D 4x4 B64 Hybrid resumes immediately after revoke+re-grant under 300us ship delay via cpu_issued_seq");
+
+        __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
+        FixtureResetEpoch(f, 7u, degree, 1u, elements, 1u, 0u, 0u);
+        SetupHybrid2dCtrl(f, ctrl_host, shm_host, 7u, degree);
+        __atomic_store_n(&ctrl_host->cpu_mode, 0u, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&f->responder.hybrid_ctrl, ctrl_host, __ATOMIC_RELEASE);
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+        CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[7], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)elements * sizeof(uint16_t)));
+        for ( uint32_t rep = 0u; rep < 2u; ++rep )
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, 7u, degree, f->local_dev, f->out_dev, f->scratch,
+                elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        uint64_t cpu_before = __atomic_load_n(&f->responder.cpu_doorbell_count, __ATOMIC_ACQUIRE);
+        __atomic_store_n(&ctrl_host->grant_gen, 2u, __ATOMIC_RELEASE);
+        __atomic_store_n(&ctrl_host->cpu_mode, 1u, __ATOMIC_SEQ_CST);
+        for ( uint32_t rep = 0u; rep < 4u; ++rep )
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, 7u, degree, f->local_dev, f->out_dev, f->scratch,
+                elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(h_out, f->out_dev, (size_t)elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+        CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+        CHECK(ctrl.error_word == 0u && ctrl.rounds_done == 6u &&
+              memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0 &&
+              cpu_before == 8u * chunks &&
+              __atomic_load_n(&f->responder.cpu_doorbell_count, __ATOMIC_ACQUIRE) == cpu_before &&
+              __atomic_load_n(&f->responder.hybrid_dma_count, __ATOMIC_ACQUIRE) == 16u * chunks &&
+              __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
+            "2D 4x4 B64 transitions cleanly from CPU doorbells to Hybrid MODE 0 within the same epoch");
+
+        free(h_out);
+        free(h_ref);
+    }
+
+    SparkTpMeshFastHybridClearOverride(f->gate_dev);
+    __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
+    f->responder.hybrid_shm = 0;
+    f->gate_host->capabilities = 0u;
+    cudaFreeHost(shm_host);
+    cudaFreeHost(ctrl_host);
+}
+
 int main(void)
 {
     LargeFixture fixture;
@@ -1005,6 +1315,7 @@ int main(void)
     TestE14R2Degree4AndScatterFastPaths(&fixture);
     Test2dCrossRankAndGateGx(&fixture);
     Test2dRows63DeadlockRegression(&fixture);
+    Test2dHybridB64AndRevokeResume(&fixture);
     TestLargeCancelAndTimeout(&fixture);
 
     RunLargeBenchmarks(&fixture);

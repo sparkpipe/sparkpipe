@@ -69,7 +69,8 @@ typedef struct SparkWeightdMeshHybridCtrl
     char shm_path[SPARK_WEIGHTD_MESH_HYBRID_SHM_PATH_BYTES];
     uint64_t cpu_mode;
     uint64_t grant_gen;
-    uint64_t pad_cpu_mode[6];
+    uint64_t cpu_issued_seq;
+    uint64_t pad_cpu_mode[5];
     uint64_t gpu_busy;
     uint64_t gpu_last_gen;
     uint64_t pad_gpu_busy[6];

@@ -1,0 +1,2 @@
++374
+Fix B64 Hybrid MODE 0 and 2D 4x4 collective timeouts: preserve unissued hybrid triggers across revoke/grant via a deferred queue, publish cpu_issued_seq to break revoke fallback cascades, upgrade ARM64 doorbell load barrier to dmb oshld plus 2D doorbell system fence, and validate hybrid DMA WQE raddr/len/lkey.
