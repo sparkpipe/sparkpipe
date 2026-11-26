@@ -8,6 +8,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKLC = ROOT / "tools" / "sklc" / "sklc.py"
 NORM_ACT_SKL = ROOT / "inference" / "kernels" / "skl" / "norm_act.skl"
+STAGE_OPS_SKL = ROOT / "inference" / "kernels" / "skl" / "stage_ops.skl"
 HOSTED_BIN = ROOT / "build" / "test_nvrm_hosted_launch"
 NVRM_LIB = ROOT / "build" / "runtime_libs" / "libsparkpipe_device_nvrm.so"
 FORBIDDEN_LIBS = ("libcuda", "libcudart", "libnvidia")
@@ -18,6 +19,13 @@ PROD_OVERLAY_KERNELS = (
     ("head_rmsnorm_silu_gate_pdl_exact_128_bf16", "_Z28QwenGdnHeadRmsNormGateKernelILb0EEvPKtS1_S1_Ptjjjj"),
     ("attn_tp1_merge_sigmoid_gate_pdl_exact_bf16", "_Z28QwenHybridTp1MergeGateKernelILj24ELj256ELj14336EEvPKfPKtPtj"),
     ("add_elements_pdl_exact_bf16x8", "_Z19LmAddElementsKernelPtPKtm"),
+    ("gqa_split_reduce_sigmoid_gate_pdl_exact_bf16", "_Z28QwenGqaSplitReduceGateKernelILj24ELj256ELj14336EEvPKfPKtPKjS5_S5_Ptj"),
+    ("head_certified_reduce_f32", "_Z32SparkLmHeadCertifiedReduceKernelPKfPKjPjPfj"),
+    ("stage_embedding_lookup_pdl_bf16x8", "_Z22LmStageEmbeddingKernelILj256EEvPKtPKjPtjjj"),
+    ("stage_store_outputs_u32_f32", "_Z29StageRunnerStoreOutputsKernelPjPfPKjPKfS2_j"),
+    ("stage_chain_advance_u32", "_Z29StageRunnerChainAdvanceKernelPjPKjS_S_S1_jS_S_j"),
+    ("stage_last_rows_gather_pdl_bf16x8", "_Z27LmStageLastRowsGatherKernelPKjS0_PKtPtj"),
+    ("stage_last_rows_scatter_pdl_u32_f32", "_Z28LmStageLastRowsScatterKernelPKjS0_S0_PKfPjPfj"),
 )
 
 SKL_EXACT = """kernel[128, 32] _Z10HostedStepILj7EEvPjj(global u32* output, u32 base) {
@@ -80,7 +88,7 @@ def verify_multi_kernel_overlay_bundle(directory):
     cmd = [sys.executable, str(SKLC), "--arch", "sm121a"]
     for src_name, dst_name in PROD_OVERLAY_KERNELS:
         cmd.extend(["--only", src_name, "--rename", f"{src_name}={dst_name}"])
-    cmd.extend([str(NORM_ACT_SKL), "-o", str(cubin_path), "--manifest", str(manifest_path)])
+    cmd.extend([str(NORM_ACT_SKL), str(STAGE_OPS_SKL), "-o", str(cubin_path), "--manifest", str(manifest_path)])
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert res.returncode == 0, f"sklc multi-kernel overlay bundle failed: {res.stderr}"
     mtxt = manifest_path.read_text(encoding="utf-8")

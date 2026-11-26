@@ -353,6 +353,30 @@ static void TestReach(void)
 	assert(SparkSpeculationFrameReach(0.0f,0.5f,6.0f,3.0f,0.3f) == 0.0f);
 }
 
+static void TestColdHigherClassInheritance(void)
+{
+	SparkSpeculationFrameModel model;
+	SparkSpeculationFrameRequest request;
+	SparkSpeculationFrameChoice inherited,small_feasible;
+	uint32_t index;
+	memset(&model,0,sizeof(model));
+	memset(&request,0,sizeof(request));
+	SparkSpeculationFrameObserveChain(&model,1u,512u,200000000ull);
+	SparkSpeculationFrameObserveFrame(&model,2u,512u,210000000ull);
+	SparkSpeculationFrameObserveFrame(&model,8u,512u,230000000ull);
+	SparkSpeculationFrameObserveFrame(&model,16u,512u,250000000ull);
+	for (index=0u; index<6u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(6u,0u)],12u,12u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	request.feasible = 16u;
+	request.context = 512u;
+	request.match_length = 32u;
+	SparkSpeculationFrameChoose(&model,0,&request,&inherited);
+	assert(inherited.drafts >= 8u && inherited.probe == 0u);
+	request.feasible = 6u;
+	SparkSpeculationFrameChoose(&model,0,&request,&small_feasible);
+	assert(small_feasible.drafts == 1u && small_feasible.probe == 1u);
+}
+
 int main(void)
 {
 	TestBuckets();
@@ -365,6 +389,7 @@ int main(void)
 	TestBatch();
 	TestStale();
 	TestReach();
+	TestColdHigherClassInheritance();
 	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame; a frame shared by several lanes prices drafts against the rows and tokens already in it, with the extra cost of separate sequences learned from batch steps; a cost not refreshed for %u frames yields to its fresh neighbours and is replaced when measured again: ok\n",SPARK_SPECULATION_FRAME_STALE_FRAMES);
 	return(0);
 }
