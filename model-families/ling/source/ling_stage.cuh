@@ -684,6 +684,145 @@ static void LingKdaGatesKernel(const uint16_t *__restrict__ decay_logit, const f
 	LmDependentRelease();
 }
 
+template<class G>
+__global__ __launch_bounds__(LG_THREADS, 2)
+static void LingKdaConvGatesPrefillKernel(const uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index,
+	const uint16_t *__restrict__ qkv, const uint16_t *__restrict__ conv_weight, const uint16_t *__restrict__ decay_logit,
+	const float *__restrict__ dt_bias, const float *__restrict__ a_log, const uint16_t *__restrict__ beta,
+	uint16_t *__restrict__ query, uint16_t *__restrict__ key, uint16_t *__restrict__ value,
+	float *__restrict__ retention, float *__restrict__ write_gate, uint32_t rows)
+{
+	using S = LingShape<G>;
+	constexpr uint32_t CHANNELS = S::kKdaChannels, WIDTH = S::kKdaWidth, HEADS = S::kKdaRankHeads;
+	constexpr uint32_t SPAN = G::kConv, HALO = SPAN - 1u, VECS = WIDTH >> 3u;
+	constexpr uint32_t CONV_BLKS = (CHANNELS + LG_THREADS - 1u) / LG_THREADS;
+	const uint32_t r0 = blockIdx.x * 32u;
+	const uint32_t r1 = r0 + 32u < rows ? r0 + 32u : rows;
+	LmDependentWait();
+	if ( blockIdx.y < CONV_BLKS )
+	{
+		const uint32_t ch = blockIdx.y * LG_THREADS + threadIdx.x;
+		if ( ch < CHANNELS && r0 < rows )
+		{
+			const uint16_t *slot = window + ((uint64_t)__ldg(state_index) * CHANNELS + ch) * SPAN;
+			float w[SPAN];
+			uint16_t taps[SPAN];
+			#pragma unroll
+			for ( uint32_t k = 0u; k < SPAN; ++k )
+				w[k] = LmBf16ToFloat(__ldg(conv_weight + (uint64_t)ch * SPAN + k));
+			#pragma unroll
+			for ( uint32_t k = 0u; k < HALO; ++k )
+				taps[k + 1u] = r0 + k >= HALO ? __ldg(qkv + (uint64_t)(r0 + k - HALO) * CHANNELS + ch) : __ldg(slot + 1u + r0 + k);
+			for ( uint32_t r = r0; r < r1; ++r )
+			{
+				#pragma unroll
+				for ( uint32_t k = 0u; k < HALO; ++k )
+					taps[k] = taps[k + 1u];
+				taps[HALO] = __ldg(qkv + (uint64_t)r * CHANNELS + ch);
+				float total = 0.0f;
+				#pragma unroll
+				for ( uint32_t k = 0u; k < SPAN; ++k )
+					total += LmBf16ToFloat(taps[k]) * w[k];
+				LingKdaWriteSplit<WIDTH>(query, key, value, r, ch, LingKdaConvActivate<SPAN, G::kKdaConvRoundedSum>(total));
+			}
+		}
+	}
+	else
+	{
+		const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+		for ( uint32_t r = r0 + warp; r < r1; r += 8u )
+		{
+			const uint64_t base = (uint64_t)r * WIDTH;
+			const uint4 *dl4 = (const uint4 *)(decay_logit + base);
+			for ( uint32_t v = lane; v < VECS; v += 32u )
+			{
+				const uint32_t col = v << 3u;
+				const float a_scale = __ldg(a_log + (col / G::kKdaDim));
+				float d[8], b[8], out[8];
+				LmLoadBf16x8AsFloat(__ldg(dl4 + v), d);
+				LmLoadFloat8(dt_bias + col, b);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					out[k] = LmBoundedDecay(d[k], b[k], a_scale, G::kKdaLowerBound);
+				LmStoreFloat8(retention + base + col, out);
+			}
+			if ( lane < HEADS )
+			{
+				const uint64_t bidx = (uint64_t)r * HEADS + lane;
+				write_gate[bidx] = LingKdaBetaValue<G::kKdaDoubledBeta>(__ldg(beta + bidx));
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
+template<class G>
+__global__ __launch_bounds__(LG_THREADS, 2)
+static void LingKdaWindowCommitKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index,
+	const uint16_t *__restrict__ qkv, uint32_t rows)
+{
+	using S = LingShape<G>;
+	constexpr uint32_t CHANNELS = S::kKdaChannels, SPAN = G::kConv;
+	const uint32_t ch = blockIdx.x * LG_THREADS + threadIdx.x;
+	LmDependentWait();
+	if ( ch < CHANNELS )
+	{
+		uint16_t *slot = window + ((uint64_t)__ldg(state_index) * CHANNELS + ch) * SPAN;
+		#pragma unroll
+		for ( uint32_t k = 0u; k < SPAN; ++k )
+			slot[k] = __ldg(qkv + (uint64_t)(rows - SPAN + k) * CHANNELS + ch);
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t HEAD_DIM, bool ROUND_ONCE>
+__global__ __launch_bounds__(128u, 4)
+static void LingKdaHeadNormGateWarpKernel(uint16_t *__restrict__ mixed, const uint16_t *__restrict__ gate, const uint16_t *__restrict__ weight,
+	uint32_t total_heads, float epsilon)
+{
+	static_assert(HEAD_DIM == 128u, "KDA head dimension is 128");
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t item = blockIdx.x * 4u + warp;
+	LmDependentWait();
+	if ( item < total_heads )
+	{
+		const uint64_t base = (uint64_t)item * HEAD_DIM;
+		uint2 *m2 = (uint2 *)(mixed + base);
+		const uint2 mv = __ldg((const uint2 *)(m2 + lane));
+		const uint2 gv = __ldg((const uint2 *)(gate + base) + lane);
+		const uint2 wv = __ldg((const uint2 *)weight + lane);
+		const float v0 = __uint_as_float(mv.x << 16u), v1 = __uint_as_float(mv.x & 0xffff0000u);
+		const float v2 = __uint_as_float(mv.y << 16u), v3 = __uint_as_float(mv.y & 0xffff0000u);
+		float p0 = v0 * v0, p1 = v1 * v1, p2 = v2 * v2, p3 = v3 * v3;
+		#pragma unroll
+		for ( uint32_t off = 4u; off > 0u; off >>= 1u )
+		{
+			p0 += __shfl_down_sync(0xffffffffu, p0, off);
+			p1 += __shfl_down_sync(0xffffffffu, p1, off);
+			p2 += __shfl_down_sync(0xffffffffu, p2, off);
+			p3 += __shfl_down_sync(0xffffffffu, p3, off);
+		}
+		float s = (p0 + p2) + (p1 + p3);
+		s += __shfl_down_sync(0xffffffffu, s, 16u);
+		s += __shfl_down_sync(0xffffffffu, s, 8u);
+		const float scale = SparkMathRmsScale(__shfl_sync(0xffffffffu, s, 0u), (float)HEAD_DIM, epsilon);
+		const float w0 = __uint_as_float(wv.x << 16u), w1 = __uint_as_float(wv.x & 0xffff0000u);
+		const float w2 = __uint_as_float(wv.y << 16u), w3 = __uint_as_float(wv.y & 0xffff0000u);
+		const float g0 = __uint_as_float(gv.x << 16u), g1 = __uint_as_float(gv.x & 0xffff0000u);
+		const float g2 = __uint_as_float(gv.y << 16u), g3 = __uint_as_float(gv.y & 0xffff0000u);
+		auto apply = [&](float v, float w, float g) -> float
+		{
+			return ROUND_ONCE ? SparkMathRmsNormGateOnce(v, scale, w, SparkMathSigmoidFast(g))
+				: SparkMathRoundBf16(SparkMathRoundBf16(v * scale) * w) * SparkMathSigmoidFast(g);
+		};
+		uint2 out;
+		out.x = LmPackBf16Pair(apply(v0, w0, g0), apply(v1, w1, g1));
+		out.y = LmPackBf16Pair(apply(v2, w2, g2), apply(v3, w3, g3));
+		m2[lane] = out;
+	}
+	LmDependentRelease();
+}
+
 template<uint32_t HEAD_DIM, bool ROUND_ONCE>
 __global__ __launch_bounds__(128u, 2)
 static void LingKdaHeadNormGateKernel(uint16_t *__restrict__ mixed, const uint16_t *__restrict__ gate, const uint16_t *__restrict__ weight,
@@ -872,12 +1011,85 @@ static void LingMlaPrepStoreLocalKernel(const uint16_t *__restrict__ mla_q, cons
 	LmDependentRelease();
 }
 
-template<class Kv, uint32_t SLOT>
+template<class G>
 __global__ __launch_bounds__(LG_THREADS, 2)
+static void LingMlaPrepStoreLocalFastKernel(const uint16_t *__restrict__ mla_q, const uint16_t *__restrict__ mla_kv, const float *__restrict__ kv_norm,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_of_row, LmKvShardView kv_view,
+	uint16_t *__restrict__ mla_query, uint16_t *__restrict__ kv_all, uint32_t total_ctx)
+{
+	using S = LingShape<G>;
+	constexpr uint32_t LAT = G::kLatent, HALF = G::kRope / 2u;
+	constexpr uint32_t SLOTS = (LAT + LG_THREADS - 1u) / LG_THREADS;
+	__shared__ float reduction[LmBlockWarps<LG_THREADS>()];
+	const uint32_t row = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	LmDependentWait();
+	const uint32_t pos = __ldg(positions + row);
+	const bool owns = SparkKvShardOwns(kv_view.shard, pos) != 0u;
+	uint16_t *slot = owns ? (uint16_t *)LmKvShardSlotRequired<typename S::Kv>(kv_view, __ldg(sequence_of_row + row), pos, row, LM_KV_ACCESS_WRITE) : (uint16_t *)0;
+	uint16_t *dst_all = pos < total_ctx ? kv_all + (uint64_t)pos * S::kSlot : (uint16_t *)0;
+	const uint16_t *src = mla_kv + (uint64_t)row * S::kSlot;
+	float vals[SLOTS], total = 0.0f;
+	#pragma unroll
+	for ( uint32_t s = 0u; s < SLOTS; ++s )
+	{
+		const uint32_t idx = threadIdx.x + s * LG_THREADS;
+		if ( idx < LAT )
+		{
+			const float v = LmBf16ToFloat(__ldg(src + idx));
+			vals[s] = v;
+			total += v * v;
+		}
+	}
+	const float scale = SparkMathRmsScale(LmBlockSumOnce<LG_THREADS>(total, reduction), (float)LAT, G::kNormEpsilon);
+	#pragma unroll
+	for ( uint32_t s = 0u; s < SLOTS; ++s )
+	{
+		const uint32_t idx = threadIdx.x + s * LG_THREADS;
+		if ( idx < LAT )
+		{
+			const uint16_t out_v = LmFloatToBf16(G::kNormRoundFirst ? SparkMathNormGainRounded(vals[s] * scale, __ldg(kv_norm + idx))
+				: vals[s] * scale * __ldg(kv_norm + idx));
+			if ( slot != 0 )
+				slot[idx] = out_v;
+			if ( dst_all != 0 )
+				dst_all[idx] = out_v;
+		}
+	}
+	if ( warp == 0u && lane < HALF )
+	{
+		const float angle = (float)pos * __powf(G::kRopeTheta, -2.0f * (float)lane / (float)G::kRope);
+		const uint32_t packed_in = __ldg((const uint32_t *)(src + LAT + 2u * lane));
+		float x0 = LmBf16ToFloat((uint16_t)(packed_in & 0xffffu));
+		float x1 = LmBf16ToFloat((uint16_t)(packed_in >> 16u));
+		LmRopePairRounded<LM_ROPE_ROUNDED_TERMS>(&x0, &x1, angle, 1.0f);
+		const uint32_t packed_out = LmPackBf16Pair(x0, x1);
+		if ( slot != 0 )
+			*(uint32_t *)(slot + LAT + 2u * lane) = packed_out;
+		if ( dst_all != 0 )
+			*(uint32_t *)(dst_all + LAT + 2u * lane) = packed_out;
+	}
+	else if ( warp >= 1u && warp <= S::kMlaRankHeads && lane < HALF )
+	{
+		const uint32_t h = warp - 1u;
+		const uint64_t src_base = ((uint64_t)row * S::kMlaRankHeads + h) * S::kQkDim + G::kNope;
+		const uint64_t dst_base = ((uint64_t)row * S::kMlaRankHeads + h) * S::kSlot + LAT;
+		const float angle = (float)pos * __powf(G::kRopeTheta, -2.0f * (float)lane / (float)G::kRope);
+		const uint32_t packed_in = __ldg((const uint32_t *)(mla_q + src_base + 2u * lane));
+		float x0 = LmBf16ToFloat((uint16_t)(packed_in & 0xffffu));
+		float x1 = LmBf16ToFloat((uint16_t)(packed_in >> 16u));
+		LmRopePairRounded<LM_ROPE_ROUNDED_TERMS>(&x0, &x1, angle, 1.0f);
+		*(uint32_t *)(mla_query + dst_base + 2u * lane) = LmPackBf16Pair(x0, x1);
+	}
+	LmDependentRelease();
+}
+
+template<class Kv, uint32_t SLOT>
+__global__ __launch_bounds__(128u, 4)
 static void LingMlaDirectPriorKvKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row, uint32_t old_ctx, uint16_t *__restrict__ kv_all)
 {
 	constexpr uint32_t SLOT_V = SLOT >> 3u;
-	const uint32_t pos = blockIdx.x;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t pos = blockIdx.x * 4u + warp;
 	LmDependentWait();
 	if ( pos < old_ctx )
 	{
@@ -887,7 +1099,7 @@ static void LingMlaDirectPriorKvKernel(LmKvShardView kv_view, const uint32_t *__
 		{
 			const uint4 *s4 = (const uint4 *)slot;
 			uint4 *d4 = (uint4 *)(kv_all + (uint64_t)pos * SLOT);
-			for ( uint32_t c = threadIdx.x; c < SLOT_V; c += LG_THREADS )
+			for ( uint32_t c = lane; c < SLOT_V; c += 32u )
 				d4[c] = __ldg(s4 + c);
 		}
 	}
@@ -895,12 +1107,13 @@ static void LingMlaDirectPriorKvKernel(LmKvShardView kv_view, const uint32_t *__
 }
 
 template<uint32_t SLOT>
-__global__ __launch_bounds__(LG_THREADS, 2)
+__global__ __launch_bounds__(128u, 4)
 static void LingMlaUnpackPriorKvKernel(SparkKvShard shard, const uint8_t *__restrict__ gathered_bytes, uint64_t rank_stride,
 	uint32_t prior_local_keys, uint32_t old_ctx, uint16_t *__restrict__ kv_all)
 {
 	constexpr uint32_t SLOT_V = SLOT >> 3u;
-	const uint32_t local = blockIdx.x, src_rank = blockIdx.y;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t local = blockIdx.x * 4u + warp, src_rank = blockIdx.y;
 	SparkKvShard src_shard = shard;
 	src_shard.rank = src_rank;
 	const uint32_t pos = SparkKvShardLocalPosition(src_shard, local);
@@ -909,8 +1122,30 @@ static void LingMlaUnpackPriorKvKernel(SparkKvShard shard, const uint8_t *__rest
 	{
 		const uint4 *s4 = (const uint4 *)(gathered_bytes + (uint64_t)src_rank * rank_stride) + (uint64_t)local * SLOT_V;
 		uint4 *d4 = (uint4 *)(kv_all + (uint64_t)pos * SLOT);
-		for ( uint32_t c = threadIdx.x; c < SLOT_V; c += LG_THREADS )
+		for ( uint32_t c = lane; c < SLOT_V; c += 32u )
 			d4[c] = __ldg(s4 + c);
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t VALUE_DIM>
+__global__ __launch_bounds__(128u, 4)
+static void LingMlaHeadGateFastKernel(uint16_t *__restrict__ heads_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t total_heads)
+{
+	static_assert(VALUE_DIM == 128u, "fast MLA head gate requires VALUE_DIM 128");
+	const uint32_t item = blockIdx.x * 8u + (threadIdx.x >> 4u);
+	const uint32_t c = threadIdx.x & 15u;
+	LmDependentWait();
+	if ( item < total_heads )
+	{
+		uint4 *base = (uint4 *)(heads_bf16 + (uint64_t)item * VALUE_DIM);
+		const float gate = SparkMathRoundBf16(SparkMathSigmoid(LmBf16ToFloat(__ldg(gate_bf16 + item))));
+		float v[8];
+		LmLoadBf16x8AsFloat(__ldg((const uint4 *)(base + c)), v);
+		#pragma unroll
+		for ( uint32_t k = 0u; k < 8u; ++k )
+			v[k] *= gate;
+		base[c] = LmPackUint4FloatToBf16(v);
 	}
 	LmDependentRelease();
 }
@@ -1416,12 +1651,98 @@ struct LingModel : CudaStage<LingModel<G>>
 			output_dimension, exact, step->multiprocessors, stream);
 	}
 
+	static int32_t LaunchMultiDenseBf16(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *source, uint32_t rows,
+		uint32_t K, uint32_t sms, SparkGpuStream stream)
+	{
+		if ( count < 2u || count > 3u || (K & 63u) != 0u )
+			return LM_LAUNCH_ERR_SHAPE;
+		uint32_t n128 = 0u, n64 = 0u;
+		for ( uint32_t i = 0u; i < count; ++i )
+		{
+			if ( targets[i].output_dimension <= 8u || (targets[i].output_dimension & 1u) != 0u )
+				return LM_LAUNCH_ERR_SHAPE;
+			n128 += (targets[i].output_dimension + 127u) / 128u;
+			n64 += (targets[i].output_dimension + 63u) / 64u;
+		}
+		const bool use_128 = rows >= 256u && ((rows + 63u) / 64u) * n128 >= sms;
+		const uint32_t tile_n = use_128 ? 128u : 64u;
+		LingMultiDensePlan plan;
+		memset(&plan, 0, sizeof(plan));
+		plan.count = count;
+		for ( uint32_t i = 0u; i < count; ++i )
+		{
+			plan.weight[i] = (const uint16_t *)targets[i].weight;
+			plan.out_bf16[i] = targets[i].output_bf16;
+			plan.out_f32[i] = targets[i].output_f32;
+			plan.out_dim[i] = targets[i].output_dimension;
+			plan.tile_prefix[i + 1u] = plan.tile_prefix[i] + (targets[i].output_dimension + tile_n - 1u) / tile_n;
+		}
+		uint32_t blocks = sms;
+		if ( use_128 )
+		{
+			constexpr uint32_t sh = 4u * (64u + 128u) * 128u;
+			if ( LingMoeMmaSetup<G, 51u>(LingMultiDenseMmaKernel<64u, 128u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+				return LM_LAUNCH_ERR_SHAPE;
+			(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<64u, 128u, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
+		}
+		else if ( rows <= 32u )
+		{
+			constexpr uint32_t sh = 4u * (32u + 64u) * 128u;
+			if ( LingMoeMmaSetup<G, 52u>(LingMultiDenseMmaKernel<32u, 64u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+				return LM_LAUNCH_ERR_SHAPE;
+			(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<32u, 64u, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
+		}
+		else
+		{
+			constexpr uint32_t sh = 4u * (64u + 64u) * 128u;
+			if ( LingMoeMmaSetup<G, 53u>(LingMultiDenseMmaKernel<64u, 64u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
+				return LM_LAUNCH_ERR_SHAPE;
+			(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<64u, 64u, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
+		}
+		(void)n64;
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
 	static int32_t LinearMulti(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *source, uint32_t rows, uint32_t input_dimension,
 		const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
-		if ( !PrefillUnified(step) && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
+		const bool prefill_unified = PrefillUnified(step);
+		if ( !prefill_unified && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
 			return LmSkinnyDenseMulti<LmBf16Format>(targets, count, source, rows, input_dimension, stream, exact);
+		if ( prefill_unified && rows >= 32u && (input_dimension & 63u) == 0u )
+		{
+			LmSkinnyDenseTarget big[3];
+			uint32_t small_idx[4];
+			uint32_t big_count = 0u, small_count = 0u;
+			bool can_fuse = true;
+			for ( uint32_t i = 0u; i < count; ++i )
+			{
+				if ( targets[i].output_dimension <= 8u && targets[i].output_f32 == 0 && input_dimension == G::kHidden && small_count < 4u )
+					small_idx[small_count++] = i;
+				else if ( big_count < 3u )
+					big[big_count++] = targets[i];
+				else
+					can_fuse = false;
+			}
+			if ( can_fuse && big_count >= 2u )
+			{
+				const int32_t st = LaunchMultiDenseBf16(big, big_count, source, rows, input_dimension, step->multiprocessors, stream);
+				if ( st == LM_LAUNCH_OK )
+				{
+					for ( uint32_t s = 0u; s < small_count; ++s )
+					{
+						const LmSkinnyDenseTarget &t = targets[small_idx[s]];
+						if ( Linear((const uint16_t *)t.weight, source, t.output_bf16, t.output_f32, rows, input_dimension,
+								t.output_dimension, step, stream) != LM_LAUNCH_OK )
+							SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+					}
+					return LM_LAUNCH_OK;
+				}
+				if ( st != LM_LAUNCH_ERR_SHAPE )
+					return st;
+			}
+		}
 		for ( uint32_t index = 0u; index < count; ++index )
 			if ( Linear((const uint16_t *)targets[index].weight, source, targets[index].output_bf16, targets[index].output_f32, rows, input_dimension,
 					targets[index].output_dimension, step, stream) != LM_LAUNCH_OK )
@@ -1626,6 +1947,15 @@ struct LingModel : CudaStage<LingModel<G>>
 					state->query, state->key, state->value, state->retention, state->write_gate, (uint16_t *)0, (float *)0, (float *)0,
 					sequences, rows, step->commit);
 		}
+		else if ( prefill_unified && !replay && !beta_fused && step->sequence_row_indices == 0 && rows >= 32u )
+		{
+			constexpr uint32_t CONV_BLKS = (S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS;
+			(void)LM_LAUNCH_DEPENDENT((LingKdaConvGatesPrefillKernel<G>), dim3((rows + 31u) / 32u, CONV_BLKS + 1u), LG_THREADS, 0, stream,
+				window, step->recurrent_index, state->qkv, layer->kda_conv, state->decay_logit, layer->kda_dt_bias, layer->kda_a_log,
+				state->beta, state->query, state->key, state->value, state->retention, state->write_gate, rows);
+			(void)LM_LAUNCH_DEPENDENT((LingKdaWindowCommitKernel<G>), CONV_BLKS, LG_THREADS, 0, stream,
+				window, step->recurrent_index, state->qkv, rows);
+		}
 		else
 		{
 			if ( replay )
@@ -1668,8 +1998,15 @@ struct LingModel : CudaStage<LingModel<G>>
 						layer->kda_out.weight, (const float *)0, state->partial, rows, stream);
 			}
 		}
-		(void)LM_LAUNCH_DEPENDENT((LingKdaHeadNormGateKernel<G::kKdaDim, G::kKdaNormRoundOnce>), dim3(S::kKdaRankHeads, rows), 128u, 0, stream,
-			state->kda_mixed, state->kda_gate, layer->kda_norm, S::kKdaRankHeads, G::kNormEpsilon);
+		if constexpr ( G::kKdaDim == 128u )
+		{
+			const uint32_t total_heads = rows * S::kKdaRankHeads;
+			(void)LM_LAUNCH_DEPENDENT((LingKdaHeadNormGateWarpKernel<G::kKdaDim, G::kKdaNormRoundOnce>), (total_heads + 3u) / 4u, 128u, 0, stream,
+				state->kda_mixed, state->kda_gate, layer->kda_norm, total_heads, G::kNormEpsilon);
+		}
+		else
+			(void)LM_LAUNCH_DEPENDENT((LingKdaHeadNormGateKernel<G::kKdaDim, G::kKdaNormRoundOnce>), dim3(S::kKdaRankHeads, rows), 128u, 0, stream,
+				state->kda_mixed, state->kda_gate, layer->kda_norm, S::kKdaRankHeads, G::kNormEpsilon);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->kda_out, state->kda_mixed, state->partial, rows, S::kKdaWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1760,8 +2097,12 @@ struct LingModel : CudaStage<LingModel<G>>
 		{
 			uint16_t *kv_all = (uint16_t *)state->attn_received;
 			CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			(void)LM_LAUNCH_DEPENDENT((LingMlaPrepStoreLocalKernel<G>), dim3(S::kMlaRankHeads + 1u, rows), LG_THREADS, 0, stream,
-				state->mla_q, state->mla_kv, layer->mla_kv_norm, step->positions, step->sequence_of_row, *view, state->mla_query, kv_all, total_ctx);
+			if constexpr ( S::kMlaRankHeads <= 7u && (G::kRope / 2u) <= 32u )
+				(void)LM_LAUNCH_DEPENDENT((LingMlaPrepStoreLocalFastKernel<G>), rows, LG_THREADS, 0, stream,
+					state->mla_q, state->mla_kv, layer->mla_kv_norm, step->positions, step->sequence_of_row, *view, state->mla_query, kv_all, total_ctx);
+			else
+				(void)LM_LAUNCH_DEPENDENT((LingMlaPrepStoreLocalKernel<G>), dim3(S::kMlaRankHeads + 1u, rows), LG_THREADS, 0, stream,
+					state->mla_q, state->mla_kv, layer->mla_kv_norm, step->positions, step->sequence_of_row, *view, state->mla_query, kv_all, total_ctx);
 			CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			(void)LM_LAUNCH_DEPENDENT((LingGatherMetaKernel), 1u, 32u, 0, stream, step->sequence_of_row, old_ctx, total_ctx,
 				state->gather_seq, state->gather_offset, state->gather_prior_ctx, state->gather_total_ctx);
@@ -1777,14 +2118,14 @@ struct LingModel : CudaStage<LingModel<G>>
 					status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, kv_pack_units, 0u, state->attn_send, state->mla_gathered);
 					if ( status != SPARK_STATUS_OK )
 						return status;
-					(void)LM_LAUNCH_DEPENDENT((LingMlaUnpackPriorKvKernel<S::kSlot>), dim3(prior_local_keys, degree), LG_THREADS, 0, stream,
+					(void)LM_LAUNCH_DEPENDENT((LingMlaUnpackPriorKvKernel<S::kSlot>), dim3((prior_local_keys + 3u) / 4u, degree), 128u, 0, stream,
 						view->shard, (const uint8_t *)state->mla_gathered, kv_rank_stride, prior_local_keys, old_ctx, kv_all);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 				else
 				{
-					(void)LM_LAUNCH_DEPENDENT((LingMlaDirectPriorKvKernel<typename S::Kv, S::kSlot>), old_ctx, LG_THREADS, 0, stream,
+					(void)LM_LAUNCH_DEPENDENT((LingMlaDirectPriorKvKernel<typename S::Kv, S::kSlot>), (old_ctx + 3u) / 4u, 128u, 0, stream,
 						*view, step->sequence_of_row, old_ctx, kv_all);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1850,8 +2191,15 @@ struct LingModel : CudaStage<LingModel<G>>
 						state->partial, rows, stream);
 			}
 		}
-		(void)LM_LAUNCH_DEPENDENT((LingMlaHeadGateKernel<G::kValueDim>), dim3(rows, S::kMlaRankHeads), 128u, 0, stream,
-			state->mla_value, state->mla_gate, S::kMlaRankHeads);
+		if constexpr ( G::kValueDim == 128u )
+		{
+			const uint32_t total_heads = rows * S::kMlaRankHeads;
+			(void)LM_LAUNCH_DEPENDENT((LingMlaHeadGateFastKernel<G::kValueDim>), (total_heads + 7u) / 8u, 128u, 0, stream,
+				state->mla_value, state->mla_gate, total_heads);
+		}
+		else
+			(void)LM_LAUNCH_DEPENDENT((LingMlaHeadGateKernel<G::kValueDim>), dim3(rows, S::kMlaRankHeads), 128u, 0, stream,
+				state->mla_value, state->mla_gate, S::kMlaRankHeads);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->mla_out, state->mla_value, state->partial, rows, S::kMlaRankHeads * G::kValueDim, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

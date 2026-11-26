@@ -56,8 +56,10 @@ static __device__ __forceinline__ void LingGroupedTileLookup(const uint32_t *__r
 	const uint32_t first = __ldg(group_row_offset + lo);
 	row_limit = __ldg(group_row_offset + lo + 1u);
 	const uint32_t within = tile - __ldg(prefix + lo);
-	row_base = first + (within / n_tiles) * tile_m;
-	nt = within % n_tiles;
+	const uint32_t m_tiles = (row_limit - first + tile_m - 1u) / tile_m;
+	nt = within / m_tiles;
+	row_base = first + (within % m_tiles) * tile_m;
+	(void)n_tiles;
 }
 
 template<uint32_t EXPERTS, uint32_t GROUPS, uint32_t TOPK_GROUPS, uint32_t TOPK>
@@ -2952,6 +2954,195 @@ static void LingMoeFinalizeWarpSliceKernel(const uint16_t *__restrict__ packed_s
 			LmAddBf16x8(acc, __ldcs((const uint4 *)(shared + (uint64_t)token * total_cols + col_offset + elem)));
 			*(uint4 *)(output + (uint64_t)token * total_cols + col_offset + elem) = LmPackUint4FloatToBf16(acc);
 		}
+	}
+	LmDependentRelease();
+}
+
+typedef struct LingMultiDensePlan
+{
+	uint32_t count;
+	uint32_t tile_prefix[4];
+	const uint16_t *weight[3];
+	uint16_t *out_bf16[3];
+	float *out_f32[3];
+	uint32_t out_dim[3];
+} LingMultiDensePlan;
+
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t STAGES>
+__global__ __launch_bounds__(256u, (STAGES * (TILE_M + TILE_N) * 128u <= 49152u) ? 2 : 1)
+static void LingMultiDenseMmaKernel(const __grid_constant__ LingMultiDensePlan plan, const uint16_t *__restrict__ act,
+	uint32_t rows, uint32_t K)
+{
+	constexpr uint32_t TILE_K = 64u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
+	constexpr uint32_t WARPS = 8u, WARPS_N = WARPS / WARPS_M, WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
+	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
+	constexpr uint32_t A_CHUNKS = TILE_M * ROW_CHUNKS, A_PER_T = (A_CHUNKS + 255u) / 256u;
+	constexpr uint32_t B_PER_T = (TILE_N * ROW_CHUNKS) / 256u, ROW_STEP = 256u / ROW_CHUNKS;
+	static_assert(STAGES >= 3u, "zero-bubble W2 BF16 pipeline requires STAGES >= 3");
+	extern __shared__ __align__(128) uint8_t smem[];
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
+	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
+	const uint32_t k_tiles = K / TILE_K;
+	const uint32_t m_tiles = (rows + TILE_M - 1u) / TILE_M;
+	const uint32_t total_n_tiles = plan.tile_prefix[plan.count];
+	const uint32_t total_tiles = m_tiles * total_n_tiles;
+	LmDependentWait();
+	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
+	{
+		const uint32_t nt = tile / m_tiles;
+		const uint32_t row_base = (tile % m_tiles) * TILE_M;
+		uint32_t t = 0u;
+		if ( plan.count > 1u && nt >= plan.tile_prefix[1] )
+			t = (plan.count > 2u && nt >= plan.tile_prefix[2]) ? 2u : 1u;
+		const uint32_t col_base = (nt - plan.tile_prefix[t]) * TILE_N;
+		const uint32_t cur_n = plan.out_dim[t];
+		const uint16_t *w_ptr = plan.weight[t];
+		uint16_t *o_bf16 = plan.out_bf16[t];
+		float *o_f32 = plan.out_f32[t];
+		const uint16_t *a_src[A_PER_T];
+		uint32_t a_mask = 0u, b_mask = 0u;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < A_PER_T; ++q )
+		{
+			const uint32_t chunk = threadIdx.x + q * 256u;
+			const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+			const uint32_t packed = row_base + r;
+			const uint32_t valid = chunk < A_CHUNKS && packed < rows ? 1u : 0u;
+			a_src[q] = act + (uint64_t)(valid != 0u ? packed : 0u) * K + c * 8u;
+			a_mask |= valid << q;
+		}
+		const uint16_t *b_base = w_ptr + (uint64_t)(col_base + row0) * K + col0 * 8u;
+		const uint64_t b_step = (uint64_t)ROW_STEP * K;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			b_mask |= (col_base + row0 + q * ROW_STEP < cur_n ? 1u : 0u) << q;
+		auto issue_k = [&](uint32_t st_off)
+		{
+			const uint32_t stage = shared_base + st_off;
+			#pragma unroll
+			for ( uint32_t q = 0u; q < A_PER_T; ++q )
+			{
+				const uint32_t chunk = threadIdx.x + q * 256u;
+				if ( chunk < A_CHUNKS )
+				{
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					const uint32_t valid = (a_mask >> q) & 1u;
+					LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+					a_src[q] += TILE_K;
+				}
+			}
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t valid = (b_mask >> q) & 1u;
+				LmStreamCopy(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? b_base + q * b_step : w_ptr, valid << 4u);
+			}
+			b_base += TILE_K;
+		};
+		auto advance = [](uint32_t &off)
+		{
+			off += STAGE_BYTES;
+			if ( off == STAGES * STAGE_BYTES )
+				off = 0u;
+		};
+		uint32_t a_reg[2][MF][4], b_reg[2][NF][2];
+		float total[MF][NF][4];
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+				total[i][j][0] = total[i][j][1] = total[i][j][2] = total[i][j][3] = 0.0f;
+		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
+		{
+			#pragma unroll
+			for ( uint32_t ii = 0u; ii < MF; ++ii )
+			{
+				const uint32_t r = warp_m * WARP_M + ii * 16u + (lane & 15u);
+				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
+				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
+			}
+			#pragma unroll
+			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
+			{
+				const uint32_t r = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
+				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
+				uint32_t tmp[4];
+				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
+				b_reg[buf][jj][0] = tmp[0]; b_reg[buf][jj][1] = tmp[1];
+				b_reg[buf][jj + 1u][0] = tmp[2]; b_reg[buf][jj + 1u][1] = tmp[3];
+			}
+		};
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < k_tiles )
+				issue_k(sp_off);
+			LmStreamCommit();
+			kp++;
+			advance(sp_off);
+		}
+		LmStreamWait<STAGES - 2u>();
+		__syncthreads();
+		load_frag(0u, 0u, shared_base + sc_off);
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+		{
+			const uint32_t stage_s = shared_base + sc_off;
+			#pragma unroll
+			for ( uint32_t ks = 0u; ks < 4u; ++ks )
+			{
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks == 0u )
+				{
+					if ( kp < k_tiles )
+					{
+						issue_k(sp_off);
+						kp++;
+						advance(sp_off);
+					}
+					LmStreamCommit();
+				}
+				if ( ks + 1u < 4u )
+					load_frag(nxt, ks + 1u, stage_s);
+				else if ( kt + 1u < k_tiles )
+				{
+					LmStreamWait<STAGES - 2u>();
+					__syncthreads();
+					advance(sc_off);
+					load_frag(nxt, 0u, shared_base + sc_off);
+				}
+				#pragma unroll
+				for ( uint32_t i = 0u; i < MF; ++i )
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+						LmMmaBf16(total[i][j], a_reg[cur][i], b_reg[cur][j]);
+			}
+		}
+		LmStreamWait<0u>();
+		#pragma unroll
+		for ( uint32_t i = 0u; i < MF; ++i )
+			#pragma unroll
+			for ( uint32_t j = 0u; j < NF; ++j )
+				#pragma unroll
+				for ( uint32_t e = 0u; e < 4u; e += 2u )
+				{
+					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
+					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+					if ( r < rows && c < cur_n )
+					{
+						const uint64_t at = (uint64_t)r * cur_n + c;
+						if ( o_f32 != 0 )
+							*(float2 *)(o_f32 + at) = make_float2(total[i][j][e], total[i][j][e + 1u]);
+						else
+							*(uint32_t *)(o_bf16 + at) = LmPackBf16Pair(total[i][j][e], total[i][j][e + 1u]);
+					}
+				}
+		if ( tile + gridDim.x < total_tiles )
+			__syncthreads();
 	}
 	LmDependentRelease();
 }

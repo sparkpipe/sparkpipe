@@ -73,8 +73,10 @@ static __device__ __forceinline__ void GemmaGroupedTileLookupGlobal(const uint32
 	const uint32_t first = __ldg(group_row_offset + grp);
 	row_limit = __ldg(group_row_offset + grp + 1u);
 	const uint32_t within = tile - __ldg(prefix + grp);
-	row_base = first + (within / n_tiles) * tile_m;
-	nt = within % n_tiles;
+	const uint32_t m_tiles = (row_limit - first + tile_m - 1u) / tile_m;
+	nt = within / m_tiles;
+	row_base = first + (within % m_tiles) * tile_m;
+	(void)n_tiles;
 }
 
 __global__ __launch_bounds__(32u, 4)
@@ -781,8 +783,8 @@ static void GemmaExactGateOutKernel(const uint16_t *__restrict__ merged, const u
 	}
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t ACT_MODE, bool HAS_ROUTER, bool ROUTER_F32>
-__global__ __launch_bounds__(THREADS, 1)
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t ACT_MODE, bool HAS_ROUTER, bool ROUTER_F32, uint32_t STAGES = 2u>
+__global__ __launch_bounds__(THREADS, (STAGES * (TILE_M + 2u * TILE_N) * 128u <= 49152u) ? 2 : 1)
 static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w, const uint16_t *__restrict__ router_w,
 	const uint16_t *__restrict__ act, uint16_t *__restrict__ out_inter, uint16_t *__restrict__ router_bf16,
 	float *__restrict__ router_f32, uint32_t rows, uint32_t K, uint32_t ffn_rows, uint32_t experts, float limit)
@@ -857,6 +859,17 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			bu_base += TILE_K;
 		LmStreamCommit();
 	};
+	auto advance = [](uint32_t &off)
+	{
+		if constexpr ( STAGES == 2u )
+			off ^= STAGE_BYTES;
+		else
+		{
+			off += STAGE_BYTES;
+			if ( off == STAGES * STAGE_BYTES )
+				off = 0u;
+		}
+	};
 	uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
 	float tg[MF][NF][4], tu[MF][NF][4];
 	#pragma unroll
@@ -905,37 +918,93 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			}
 		}
 	};
-	uint32_t sp_off = 0u, sc_off = 0u;
-	issue_k(sp_off);
-	sp_off ^= STAGE_BYTES;
-	for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+	uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+	#pragma unroll
+	for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
 	{
-		LmStreamWait<0u>();
-		__syncthreads();
-		const uint32_t stage_s = shared_base + sc_off;
-		if ( kt + 1u < k_tiles )
-		{
+		if ( kp < k_tiles )
 			issue_k(sp_off);
-			sp_off ^= STAGE_BYTES;
-		}
-		load_frag(0u, 0u, stage_s);
-		#pragma unroll
-		for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
+		else
+			LmStreamCommit();
+		kp++;
+		advance(sp_off);
+	}
+	if constexpr ( STAGES >= 3u )
+	{
+		LmStreamWait<STAGES - 2u>();
+		__syncthreads();
+		load_frag(0u, 0u, shared_base + sc_off);
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 		{
-			const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-			if ( ks + 1u < KSTEPS )
-				load_frag(nxt, ks + 1u, stage_s);
+			const uint32_t stage_s = shared_base + sc_off;
 			#pragma unroll
-			for ( uint32_t i = 0u; i < MF; ++i )
-				#pragma unroll
-				for ( uint32_t j = 0u; j < NF; ++j )
+			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
+			{
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks == 0u )
 				{
-					LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-					if ( !is_router )
-						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+					if ( kp < k_tiles )
+					{
+						issue_k(sp_off);
+						kp++;
+						advance(sp_off);
+					}
+					else
+						LmStreamCommit();
 				}
+				if ( ks + 1u < KSTEPS )
+					load_frag(nxt, ks + 1u, stage_s);
+				else if ( kt + 1u < k_tiles )
+				{
+					LmStreamWait<STAGES - 2u>();
+					__syncthreads();
+					advance(sc_off);
+					load_frag(nxt, 0u, shared_base + sc_off);
+				}
+				#pragma unroll
+				for ( uint32_t i = 0u; i < MF; ++i )
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+					{
+						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+						if ( !is_router )
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+					}
+			}
 		}
-		sc_off ^= STAGE_BYTES;
+	}
+	else
+	{
+		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+		{
+			LmStreamWait<0u>();
+			__syncthreads();
+			const uint32_t stage_s = shared_base + sc_off;
+			if ( kp < k_tiles )
+			{
+				issue_k(sp_off);
+				kp++;
+				advance(sp_off);
+			}
+			load_frag(0u, 0u, stage_s);
+			#pragma unroll
+			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
+			{
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks + 1u < KSTEPS )
+					load_frag(nxt, ks + 1u, stage_s);
+				#pragma unroll
+				for ( uint32_t i = 0u; i < MF; ++i )
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+					{
+						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+						if ( !is_router )
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+					}
+			}
+			advance(sc_off);
+		}
 	}
 	LmStreamWait<0u>();
 	#pragma unroll
@@ -963,7 +1032,7 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			}
 }
 
-template<uint32_t TILE_M, uint32_t WARPS_M, uint32_t ACT_MODE, bool LDCS_B = true>
+template<uint32_t TILE_M, uint32_t WARPS_M, uint32_t ACT_MODE, bool LDCS_B = true, uint32_t STAGES = 2u>
 __global__ __launch_bounds__(256u, 1)
 static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, const uint16_t *__restrict__ w_up,
 	const uint16_t *__restrict__ act, const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
@@ -973,6 +1042,7 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 	constexpr uint32_t TILE_N = 64u, TILE_K = 64u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
 	constexpr uint32_t WARPS = 8u, WARPS_N = WARPS / WARPS_M, WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t B_BUFS = (MF * NF >= 8u) ? 1u : 2u;
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + 2u * B_BYTES;
 	constexpr uint32_t A_CHUNKS = TILE_M * ROW_CHUNKS, A_PER_T = (A_CHUNKS + 255u) / 256u;
 	constexpr uint32_t B_PER_T = (TILE_N * ROW_CHUNKS) / 256u, ROW_STEP = 256u / ROW_CHUNKS;
@@ -1066,7 +1136,18 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 				}
 			}
 		};
-		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
+		auto advance = [](uint32_t &off)
+		{
+			if constexpr ( STAGES == 2u )
+				off ^= STAGE_BYTES;
+			else
+			{
+				off += STAGE_BYTES;
+				if ( off == STAGES * STAGE_BYTES )
+					off = 0u;
+			}
+		};
+		uint32_t a_reg[2][MF][4], bg_reg[B_BUFS][NF][2], bu_reg[B_BUFS][NF][2];
 		float tg[MF][NF][4], tu[MF][NF][4];
 		#pragma unroll
 		for ( uint32_t i = 0u; i < MF; ++i )
@@ -1075,7 +1156,7 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 				#pragma unroll
 				for ( uint32_t e = 0u; e < 4u; ++e )
 					tg[i][j][e] = tu[i][j][e] = 0.0f;
-		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
+		auto load_a = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
 		{
 			#pragma unroll
 			for ( uint32_t ii = 0u; ii < MF; ++ii )
@@ -1084,13 +1165,16 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
 				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
 			}
+		};
+		auto load_b = [&](uint32_t bbuf, uint32_t ks, uint32_t stage_s)
+		{
 			if constexpr ( NF == 1u )
 			{
 				const uint32_t r = warp_n * WARP_N + (lane & 7u);
 				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
 				const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
-				LmStreamLdMatrix2(bg_reg[buf][0], stage_s + A_BYTES + off);
-				LmStreamLdMatrix2(bu_reg[buf][0], stage_s + A_BYTES + B_BYTES + off);
+				LmStreamLdMatrix2(bg_reg[bbuf][0], stage_s + A_BYTES + off);
+				LmStreamLdMatrix2(bu_reg[bbuf][0], stage_s + A_BYTES + B_BYTES + off);
 			}
 			else
 			{
@@ -1102,51 +1186,128 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 					const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
 					uint32_t tmp[4];
 					LmStreamLdMatrix4(tmp, stage_s + A_BYTES + off);
-					bg_reg[buf][jj][0] = tmp[0]; bg_reg[buf][jj][1] = tmp[1];
-					bg_reg[buf][jj + 1u][0] = tmp[2]; bg_reg[buf][jj + 1u][1] = tmp[3];
+					bg_reg[bbuf][jj][0] = tmp[0]; bg_reg[bbuf][jj][1] = tmp[1];
+					bg_reg[bbuf][jj + 1u][0] = tmp[2]; bg_reg[bbuf][jj + 1u][1] = tmp[3];
 					LmStreamLdMatrix4(tmp, stage_s + A_BYTES + B_BYTES + off);
-					bu_reg[buf][jj][0] = tmp[0]; bu_reg[buf][jj][1] = tmp[1];
-					bu_reg[buf][jj + 1u][0] = tmp[2]; bu_reg[buf][jj + 1u][1] = tmp[3];
+					bu_reg[bbuf][jj][0] = tmp[0]; bu_reg[bbuf][jj][1] = tmp[1];
+					bu_reg[bbuf][jj + 1u][0] = tmp[2]; bu_reg[bbuf][jj + 1u][1] = tmp[3];
 				}
 			}
 		};
-		uint32_t sp_off = 0u, sc_off = 0u;
-		issue_a(sp_off);
-		prefetch_b();
-		store_b(sp_off);
-		sp_off ^= STAGE_BYTES;
-		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+		if constexpr ( !LDCS_B && STAGES >= 3u )
 		{
-			LmStreamWait<0u>();
-			__syncthreads();
-			const uint32_t stage_s = shared_base + sc_off;
-			if ( kt + 1u < k_tiles )
-			{
-				issue_a(sp_off);
-				prefetch_b();
-			}
-			load_frag(0u, 0u, stage_s);
+			uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
 			#pragma unroll
-			for ( uint32_t ks = 0u; ks < 4u; ++ks )
+			for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
 			{
-				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-				if ( ks + 1u < 4u )
-					load_frag(nxt, ks + 1u, stage_s);
+				if ( kp < k_tiles )
+					issue_a(sp_off);
+				else
+					LmStreamCommit();
+				kp++;
+				advance(sp_off);
+			}
+			LmStreamWait<STAGES - 2u>();
+			__syncthreads();
+			load_a(0u, 0u, shared_base + sc_off);
+			if constexpr ( B_BUFS == 2u )
+				load_b(0u, 0u, shared_base + sc_off);
+			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
+			{
+				const uint32_t stage_s = shared_base + sc_off;
 				#pragma unroll
-				for ( uint32_t i = 0u; i < MF; ++i )
-					#pragma unroll
-					for ( uint32_t j = 0u; j < NF; ++j )
+				for ( uint32_t ks = 0u; ks < 4u; ++ks )
+				{
+					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if constexpr ( B_BUFS == 1u )
+						load_b(0u, ks, stage_s);
+					if ( ks == 0u )
 					{
-						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+						if ( kp < k_tiles )
+						{
+							issue_a(sp_off);
+							kp++;
+							advance(sp_off);
+						}
+						else
+							LmStreamCommit();
 					}
+					if ( ks + 1u < 4u )
+					{
+						load_a(nxt, ks + 1u, stage_s);
+						if constexpr ( B_BUFS == 2u )
+							load_b(nxt, ks + 1u, stage_s);
+					}
+					else if ( kt + 1u < k_tiles )
+					{
+						LmStreamWait<STAGES - 2u>();
+						__syncthreads();
+						advance(sc_off);
+						load_a(nxt, 0u, shared_base + sc_off);
+						if constexpr ( B_BUFS == 2u )
+							load_b(nxt, 0u, shared_base + sc_off);
+					}
+					const uint32_t bcur = B_BUFS == 2u ? cur : 0u;
+					#pragma unroll
+					for ( uint32_t i = 0u; i < MF; ++i )
+						#pragma unroll
+						for ( uint32_t j = 0u; j < NF; ++j )
+						{
+							LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[bcur][j]);
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[bcur][j]);
+						}
+				}
 			}
-			if ( kt + 1u < k_tiles )
+		}
+		else
+		{
+			uint32_t sp_off = 0u, sc_off = 0u;
+			issue_a(sp_off);
+			prefetch_b();
+			store_b(sp_off);
+			sp_off ^= STAGE_BYTES;
+			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 			{
-				store_b(sp_off);
-				sp_off ^= STAGE_BYTES;
+				LmStreamWait<0u>();
+				__syncthreads();
+				const uint32_t stage_s = shared_base + sc_off;
+				if ( kt + 1u < k_tiles )
+				{
+					issue_a(sp_off);
+					prefetch_b();
+				}
+				load_a(0u, 0u, stage_s);
+				if constexpr ( B_BUFS == 2u )
+					load_b(0u, 0u, stage_s);
+				#pragma unroll
+				for ( uint32_t ks = 0u; ks < 4u; ++ks )
+				{
+					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if constexpr ( B_BUFS == 1u )
+						load_b(0u, ks, stage_s);
+					if ( ks + 1u < 4u )
+					{
+						load_a(nxt, ks + 1u, stage_s);
+						if constexpr ( B_BUFS == 2u )
+							load_b(nxt, ks + 1u, stage_s);
+					}
+					const uint32_t bcur = B_BUFS == 2u ? cur : 0u;
+					#pragma unroll
+					for ( uint32_t i = 0u; i < MF; ++i )
+						#pragma unroll
+						for ( uint32_t j = 0u; j < NF; ++j )
+						{
+							LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[bcur][j]);
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[bcur][j]);
+						}
+				}
+				if ( kt + 1u < k_tiles )
+				{
+					store_b(sp_off);
+					sp_off ^= STAGE_BYTES;
+				}
+				sc_off ^= STAGE_BYTES;
 			}
-			sc_off ^= STAGE_BYTES;
 		}
 		LmStreamWait<0u>();
 		#pragma unroll
@@ -1310,7 +1471,7 @@ static void GemmaMoeMmaW2K128Kernel(const uint16_t *__restrict__ w2, const uint1
 }
 
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t THREADS = 256u, uint32_t STAGES = 2u>
-__global__ __launch_bounds__(THREADS, STAGES >= 3u ? 2 : 1)
+__global__ __launch_bounds__(THREADS, (STAGES * (TILE_M + TILE_N) * 128u <= 49152u) ? 2 : 1)
 static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ act,
 	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ tile_prefix,
 	uint16_t *__restrict__ out_bf16, uint32_t groups, uint32_t K, uint32_t N)
@@ -1318,6 +1479,7 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 	constexpr uint32_t TILE_K = 64u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
 	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M, WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t B_BUFS = (MF * NF >= 12u) ? 1u : 2u;
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
 	constexpr uint32_t A_CHUNKS = TILE_M * ROW_CHUNKS, A_PER_T = (A_CHUNKS + THREADS - 1u) / THREADS;
 	constexpr uint32_t B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS, ROW_STEP = THREADS / ROW_CHUNKS;
@@ -1383,14 +1545,14 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 					off = 0u;
 			}
 		};
-		uint32_t a_reg[2][MF][4], b_reg[2][NF][2];
+		uint32_t a_reg[2][MF][4], b_reg[B_BUFS][NF][2];
 		float acc[MF][NF][4];
 		#pragma unroll
 		for ( uint32_t i = 0u; i < MF; ++i )
 			#pragma unroll
 			for ( uint32_t j = 0u; j < NF; ++j )
 				acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
-		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
+		auto load_a = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
 		{
 			#pragma unroll
 			for ( uint32_t ii = 0u; ii < MF; ++ii )
@@ -1399,6 +1561,9 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
 				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
 			}
+		};
+		auto load_b = [&](uint32_t bbuf, uint32_t ks, uint32_t stage_s)
+		{
 			#pragma unroll
 			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
 			{
@@ -1406,8 +1571,8 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
 				uint32_t tmp[4];
 				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
-				b_reg[buf][jj][0] = tmp[0]; b_reg[buf][jj][1] = tmp[1];
-				b_reg[buf][jj + 1u][0] = tmp[2]; b_reg[buf][jj + 1u][1] = tmp[3];
+				b_reg[bbuf][jj][0] = tmp[0]; b_reg[bbuf][jj][1] = tmp[1];
+				b_reg[bbuf][jj + 1u][0] = tmp[2]; b_reg[bbuf][jj + 1u][1] = tmp[3];
 			}
 		};
 		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
@@ -1425,7 +1590,9 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 		{
 			LmStreamWait<STAGES - 2u>();
 			__syncthreads();
-			load_frag(0u, 0u, shared_base + sc_off);
+			load_a(0u, 0u, shared_base + sc_off);
+			if constexpr ( B_BUFS == 2u )
+				load_b(0u, 0u, shared_base + sc_off);
 			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 			{
 				const uint32_t stage_s = shared_base + sc_off;
@@ -1433,6 +1600,8 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 				for ( uint32_t ks = 0u; ks < 4u; ++ks )
 				{
 					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if constexpr ( B_BUFS == 1u )
+						load_b(0u, ks, stage_s);
 					if ( ks == 0u )
 					{
 						if ( kp < k_tiles )
@@ -1445,19 +1614,26 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 							LmStreamCommit();
 					}
 					if ( ks + 1u < 4u )
-						load_frag(nxt, ks + 1u, stage_s);
+					{
+						load_a(nxt, ks + 1u, stage_s);
+						if constexpr ( B_BUFS == 2u )
+							load_b(nxt, ks + 1u, stage_s);
+					}
 					else if ( kt + 1u < k_tiles )
 					{
 						LmStreamWait<STAGES - 2u>();
 						__syncthreads();
 						advance(sc_off);
-						load_frag(nxt, 0u, shared_base + sc_off);
+						load_a(nxt, 0u, shared_base + sc_off);
+						if constexpr ( B_BUFS == 2u )
+							load_b(nxt, 0u, shared_base + sc_off);
 					}
+					const uint32_t bcur = B_BUFS == 2u ? cur : 0u;
 					#pragma unroll
 					for ( uint32_t i = 0u; i < MF; ++i )
 						#pragma unroll
 						for ( uint32_t j = 0u; j < NF; ++j )
-							LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[cur][j]);
+							LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[bcur][j]);
 				}
 			}
 		}
@@ -1474,18 +1650,27 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 					kp++;
 					advance(sp_off);
 				}
-				load_frag(0u, 0u, stage_s);
+				load_a(0u, 0u, stage_s);
+				if constexpr ( B_BUFS == 2u )
+					load_b(0u, 0u, stage_s);
 				#pragma unroll
 				for ( uint32_t ks = 0u; ks < 4u; ++ks )
 				{
 					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if constexpr ( B_BUFS == 1u )
+						load_b(0u, ks, stage_s);
 					if ( ks + 1u < 4u )
-						load_frag(nxt, ks + 1u, stage_s);
+					{
+						load_a(nxt, ks + 1u, stage_s);
+						if constexpr ( B_BUFS == 2u )
+							load_b(nxt, ks + 1u, stage_s);
+					}
+					const uint32_t bcur = B_BUFS == 2u ? cur : 0u;
 					#pragma unroll
 					for ( uint32_t i = 0u; i < MF; ++i )
 						#pragma unroll
 						for ( uint32_t j = 0u; j < NF; ++j )
-							LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[cur][j]);
+							LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[bcur][j]);
 				}
 				advance(sc_off);
 			}
