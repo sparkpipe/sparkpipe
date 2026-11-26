@@ -11,6 +11,7 @@ SKLC = ROOT / "tools" / "sklc" / "sklc.py"
 SKL_DIR = ROOT / "inference" / "kernels" / "skl"
 SUITES = [
     "skinny_decode.skl",
+    "linear_attn.skl",
     "mx_gemm.skl",
     "norm_act.skl",
     "stage_ops.skl",
@@ -22,6 +23,13 @@ EXPECTED_KERNELS = [
     "skinny_nvfp4_b1",
     "skinny_mxfp4_b1",
     "skinny_bf16_b1",
+    "skinny_bf16_dense_l32_r1_n1_pdl",
+    "skinny_bf16_multi_l32_r1_n1_pdl",
+    "skinny_bf16_split_r1_pdl",
+    "delta_rule_decode1_256_128_128_4_pdl",
+    "gdn_conv_split_tiled_4_128_pdl",
+    "causal_conv_serial_256_4_swish_bf16_pdl",
+    "causal_conv_tiled_4_swish_bf16_pdl",
     "mx_quantize_e4m3_ue8m0",
     "rmsnorm_bf16_vec16",
     "fused_residual_rmsnorm_bf16x8",
@@ -32,6 +40,24 @@ EXPECTED_KERNELS = [
     "head_rmsnorm_silu_gate_pdl_exact_128_bf16",
     "head_rmsnorm_sigmoid_gate_pdl_exact_128_bf16",
     "fused_residual_rmsnorm_f32_generic_pdl_exact_bf16x8",
+    "fused_residual_rmsnorm_f32_round_pdl_bf16x8",
+    "fused_residual_rmsnorm_bf16_pdl_bf16x8",
+    "fused_residual_rmsnorm_bf16_round_pdl_bf16x8",
+    "bf16_rmsnorm_pdl_bf16x8",
+    "centered_rmsnorm_pdl_bf16x8",
+    "lm_silu_mul_pdl_bf16x8",
+    "head_rmsnorm_f32_pdl_bf16",
+    "head_rmsnorm_bf16_pdl_bf16",
+    "head_rmsnorm_silu_gate_generic_pdl",
+    "head_rmsnorm_sigmoid_gate_generic_pdl",
+    "head_rmsnorm_sigmoid_gate_once_generic_pdl",
+    "lm_gather_rows_pdl_bf16x8",
+    "lm_scatter_rows_pdl_bf16x8",
+    "lm_slice_columns_pdl_bf16x8",
+    "lm_concat_rows_pdl_bf16x8",
+    "lm_rank_major_rows_pdl_bf16x8",
+    "lm_scale_elements_bf16_pdl",
+    "lm_scale_elements_f32_pdl",
     "lm_output_gate_pdl_exact_bf16x8",
     "lm_sigmoid_rows_pdl_bf16x8",
     "lm_add_rows_pdl_bf16x8",
@@ -43,9 +69,14 @@ EXPECTED_KERNELS = [
     "add_elements_pdl_exact_bf16x8",
     "gqa_split_reduce_sigmoid_gate_pdl_exact_bf16",
     "head_certified_reduce_f32",
+    "head_certified_rescore_f32_bf16",
+    "head_certified_fp8_score_1024",
+    "head_candidate_256_1024_pdl_bf16",
     "head_commit_argmax_pdl_f32",
+    "head_softmax_pdl_f32",
     "stage_embedding_lookup_pdl_bf16x8",
     "stage_embedding_alias_pdl_bf16x8",
+    "stage_embedding_whole_pdl_bf16x8",
     "stage_store_outputs_u32_f32",
     "stage_chain_advance_u32",
     "stage_last_rows_gather_pdl_bf16x8",
@@ -159,6 +190,12 @@ def verify_codegen_invariants():
             assert k.stack_bytes == 0, f"unexpected stack usage in {k.name}: {k.stack_bytes}"
             if k.name == "latent_attn_decode_512_64":
                 assert k.registers <= 80, f"expected <=80 regs for {k.name}, got {k.registers}"
+            if k.name == "head_certified_fp8_score_1024":
+                assert k.registers <= 64, f"expected <=64 regs for 1024-thread {k.name}, got {k.registers}"
+            if k.name == "skinny_bf16_dense_l32_r1_n1_pdl":
+                assert k.registers <= 88, f"expected <=88 regs for 8-way {k.name}, got {k.registers}"
+            if k.name in ("skinny_bf16_multi_l32_r1_n1_pdl", "skinny_bf16_split_r1_pdl"):
+                assert k.registers <= 56, f"expected <=56 regs for 4-way {k.name}, got {k.registers}"
             for idx, (lo, hi) in enumerate(k.insns):
                 wr = (hi >> 46) & 0x7
                 rd = (hi >> 49) & 0x7
@@ -204,6 +241,41 @@ def verify_new_builtins():
         assert "param builtin_smoke 2 u8 align 1 bytes 1 offset 12" in mtxt, mtxt
         blob = cubin_path.read_bytes()
         assert struct.pack("<IHHI", 0, 2, 12, (1 << 18) | (0x1F << 12)) in blob, "expected exact 1-byte EIATTR_KPARAM_INFO size encoding"
+
+    src2 = """kernel[256, 32] phase3_builtins_smoke(blob[216, 8] args) {
+    shared f32 scratch[8];
+    reg u32 tid = tid_x();
+    reg u32 n = param_u32(args, 144);
+    reg u64 dst = param_u64(args, 16);
+    if (tid >= n) { return; }
+    reg f32 v = e4m3_to_f32(tid & 0xFF);
+    reg f32x4 ev = cvt_e4m3x4_f32x4(tid);
+    reg f32x4 sv = lds128(scratch, 0);
+    dyn_sts32(tid, v + ev[0] + sv[0]);
+    barrier();
+    reg f32 back = dyn_lds32_f32(tid);
+    if (tid == 0) {
+        sts32(scratch, 0, back);
+    }
+    stg32_stream(ptr_add(dst, 4, 4), f32_as_u32(back));
+}
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        skl_path = pathlib.Path(tmp) / "p3.skl"
+        cubin_path = pathlib.Path(tmp) / "p3.cubin"
+        manifest_path = pathlib.Path(tmp) / "p3.manifest"
+        skl_path.write_text(src2, encoding="utf-8")
+        res = subprocess.run(
+            [sys.executable, str(SKLC), "--arch", "sm121", str(skl_path), "-o", str(cubin_path), "--manifest", str(manifest_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert res.returncode == 0, f"phase3_builtins_smoke failed: {res.stderr}"
+        mtxt = manifest_path.read_text(encoding="utf-8")
+        assert "param phase3_builtins_smoke 0 b8 align 8 bytes 216 offset 0" in mtxt, mtxt
+        blob = cubin_path.read_bytes()
+        assert struct.pack("<IHHI", 0, 0, 0, (216 << 18) | (0x1F << 12)) in blob, "expected exact 216-byte EIATTR_KPARAM_INFO blob encoding"
 
 
 def verify_rename_and_only():

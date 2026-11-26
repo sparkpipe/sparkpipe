@@ -777,3 +777,716 @@ kernel[BLOCK, 32] stage_embedding_alias_pdl_bf16x8(
         stg16(ptr_add(target, k, 2), 0);
     }
 }
+
+kernel[BLOCK, 32] head_certified_rescore_f32_bf16(
+    global u32* hidden_bf16, global u32* head_weight_bf16,
+    global u32* candidate_ids, global u32* candidate_count,
+    global u32* partial_scores, global u32* partial_candidates,
+    u32 hidden_dimension
+) {
+    shared f32 best_score[8];
+    shared u32 best_cand[8];
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 bx = ctaid_x();
+    reg u32 count = ldg32_persist(candidate_count);
+    reg u32 pairs = hidden_dimension >> 1;
+    for (reg u32 e = tid; e < pairs; e += BLOCK) {
+        reg u32 raw = ldg32_persist(ptr_add(hidden_bf16, e, 4));
+        dyn_sts32(e << 1, bf16_lo(raw));
+        dyn_sts32((e << 1) + 1, bf16_hi(raw));
+    }
+    barrier();
+    reg f32 running_best = -3.0e38f;
+    reg u32 running_cand = 0xFFFFFFFF;
+    reg u32 row_bytes = hidden_dimension << 1;
+    reg u32 pairs4 = pairs & 0xFFFFFF80;
+    for (reg u32 slot = bx * 8 + wid; slot < count; slot += 1024) {
+        reg u32 cand = ldg32_stream(ptr_add(candidate_ids, slot, 4));
+        reg u64 w_ptr = ptr_add(ptr_add(head_weight_bf16, cand, row_bytes), lane, 4);
+        reg f32 acc = 0.0f;
+        for (reg u32 p = lane; p < pairs4; p += 128) {
+            reg u32 r0 = ldg32_persist(w_ptr);
+            reg u32 r1 = ldg32_persist(ptr_add(w_ptr, 32, 4));
+            reg u32 r2 = ldg32_persist(ptr_add(w_ptr, 64, 4));
+            reg u32 r3 = ldg32_persist(ptr_add(w_ptr, 96, 4));
+            reg u32 i0 = p << 1;
+            acc = fma(dyn_lds32_f32(i0), bf16_lo(r0), acc);
+            acc = fma(dyn_lds32_f32(i0 + 1), bf16_hi(r0), acc);
+            reg u32 i1 = i0 + 64;
+            acc = fma(dyn_lds32_f32(i1), bf16_lo(r1), acc);
+            acc = fma(dyn_lds32_f32(i1 + 1), bf16_hi(r1), acc);
+            reg u32 i2 = i0 + 128;
+            acc = fma(dyn_lds32_f32(i2), bf16_lo(r2), acc);
+            acc = fma(dyn_lds32_f32(i2 + 1), bf16_hi(r2), acc);
+            reg u32 i3 = i0 + 192;
+            acc = fma(dyn_lds32_f32(i3), bf16_lo(r3), acc);
+            acc = fma(dyn_lds32_f32(i3 + 1), bf16_hi(r3), acc);
+            w_ptr = ptr_add(w_ptr, 128, 4);
+        }
+        for (reg u32 p = pairs4 + lane; p < pairs; p += 32) {
+            reg u32 raw = ldg32_persist(w_ptr);
+            acc = fma(dyn_lds32_f32(p << 1), bf16_lo(raw), acc);
+            acc = fma(dyn_lds32_f32((p << 1) + 1), bf16_hi(raw), acc);
+            w_ptr = ptr_add(w_ptr, 32, 4);
+        }
+        for (reg u32 el = (pairs << 1) + lane; el < hidden_dimension; el += 32) {
+            ureg u64 w_row = ptr_add(head_weight_bf16, cand, row_bytes);
+            acc = fma(dyn_lds32_f32(el), bf16_lo(ldg16_persist(ptr_add(w_row, el, 2))), acc);
+        }
+        acc = acc + shfl_down(acc, 16);
+        acc = acc + shfl_down(acc, 8);
+        acc = acc + shfl_down(acc, 4);
+        acc = acc + shfl_down(acc, 2);
+        acc = acc + shfl_down(acc, 1);
+        reg f32 score = shfl_idx(acc, 0);
+        if (lane == 0) {
+            if (score > running_best) {
+                running_best = score;
+                running_cand = cand;
+            } else {
+                if (score == running_best) {
+                    if (cand < running_cand) {
+                        running_best = score;
+                        running_cand = cand;
+                    }
+                }
+            }
+        }
+    }
+    reg f32 os16 = shfl_down(running_best, 16);
+    reg u32 oc16 = shfl_down(running_cand, 16);
+    if (os16 > running_best) {
+        running_best = os16;
+        running_cand = oc16;
+    } else {
+        if (os16 == running_best) {
+            if (oc16 < running_cand) {
+                running_best = os16;
+                running_cand = oc16;
+            }
+        }
+    }
+    reg f32 os8 = shfl_down(running_best, 8);
+    reg u32 oc8 = shfl_down(running_cand, 8);
+    if (os8 > running_best) {
+        running_best = os8;
+        running_cand = oc8;
+    } else {
+        if (os8 == running_best) {
+            if (oc8 < running_cand) {
+                running_best = os8;
+                running_cand = oc8;
+            }
+        }
+    }
+    reg f32 os4 = shfl_down(running_best, 4);
+    reg u32 oc4 = shfl_down(running_cand, 4);
+    if (os4 > running_best) {
+        running_best = os4;
+        running_cand = oc4;
+    } else {
+        if (os4 == running_best) {
+            if (oc4 < running_cand) {
+                running_best = os4;
+                running_cand = oc4;
+            }
+        }
+    }
+    reg f32 os2 = shfl_down(running_best, 2);
+    reg u32 oc2 = shfl_down(running_cand, 2);
+    if (os2 > running_best) {
+        running_best = os2;
+        running_cand = oc2;
+    } else {
+        if (os2 == running_best) {
+            if (oc2 < running_cand) {
+                running_best = os2;
+                running_cand = oc2;
+            }
+        }
+    }
+    reg f32 os1 = shfl_down(running_best, 1);
+    reg u32 oc1 = shfl_down(running_cand, 1);
+    if (os1 > running_best) {
+        running_best = os1;
+        running_cand = oc1;
+    } else {
+        if (os1 == running_best) {
+            if (oc1 < running_cand) {
+                running_best = os1;
+                running_cand = oc1;
+            }
+        }
+    }
+    if (lane == 0) {
+        sts32(best_score, wid, running_best);
+        sts32(best_cand, wid, running_cand);
+    }
+    barrier();
+    if (tid == 0) {
+        reg f32 fb = lds32(best_score, 0);
+        reg u32 fc = lds32(best_cand, 0);
+        unroll (w = 1..8) {
+            reg f32 ws = lds32(best_score, w);
+            reg u32 wc = lds32(best_cand, w);
+            if (ws > fb) {
+                fb = ws;
+                fc = wc;
+            } else {
+                if (ws == fb) {
+                    if (wc < fc) {
+                        fb = ws;
+                        fc = wc;
+                    }
+                }
+            }
+        }
+        stg32(ptr_add(partial_scores, bx, 4), f32_as_u32(fb));
+        stg32(ptr_add(partial_candidates, bx, 4), fc);
+    }
+}
+
+kernel[1024, 64] head_certified_fp8_score_1024(
+    global u32* hidden_bf16, global u32* shadow_payload,
+    global u32* shadow_scale_f32, global u32* cert_norm_f32,
+    global u32* hidden_norm_f32, global u32* coarse_scores,
+    global u32* bounds, u32 candidate_count, u32 hidden_dimension
+) {
+    reg u32 neuron = (ctaid_x() << 5) + warp_id();
+    reg u32 lane = lane_id();
+    if (neuron >= candidate_count) { return; }
+    reg u32 tiles = hidden_dimension >> 9;
+    reg u32 groups_bytes = (hidden_dimension >> 5) << 2;
+    reg u32 half_lane = lane >> 1;
+    reg u64 scale_ptr = ptr_add(ptr_add(shadow_scale_f32, neuron, groups_bytes), half_lane, 4);
+    reg u64 cert_ptr = ptr_add(ptr_add(cert_norm_f32, neuron, groups_bytes), half_lane, 4);
+    reg u64 hnorm_ptr = ptr_add(hidden_norm_f32, half_lane, 4);
+    reg u64 shadow_ptr = ptr_add(ptr_add(shadow_payload, neuron, hidden_dimension), lane, 16);
+    reg u64 hidden_ptr = ptr_add(hidden_bf16, lane, 32);
+    reg f32 acc = 0.0f;
+    reg f32 bound = 0.0f;
+    reg u32 lane_even = lane & 30;
+    reg u32 is_even = lane & 1;
+    for (reg u32 tile = 0; tile < tiles; tile += 1) {
+        reg f32 scale = 0.0f;
+        if (is_even == 0) {
+            scale = u32_as_f32(ldg32_persist(scale_ptr));
+            reg f32 hn = u32_as_f32(ldg32_persist(hnorm_ptr));
+            reg f32 cn = u32_as_f32(ldg32_persist(cert_ptr));
+            bound = fma(hn, cn, bound);
+        }
+        scale = shfl_idx(scale, lane_even);
+        reg u32x4 sv = ldg128_persist(shadow_ptr);
+        reg u32x8 hv = ldg256_persist(hidden_ptr);
+        unroll (w = 0..4) {
+            reg f32x4 ev = cvt_e4m3x4_f32x4(sv[w]);
+            reg u32 h0 = hv[w * 2];
+            reg u32 h1 = hv[w * 2 + 1];
+            acc = fma(bf16_lo(h0), ev[0] * scale, acc);
+            acc = fma(bf16_hi(h0), ev[1] * scale, acc);
+            acc = fma(bf16_lo(h1), ev[2] * scale, acc);
+            acc = fma(bf16_hi(h1), ev[3] * scale, acc);
+        }
+        scale_ptr = ptr_add(scale_ptr, 16, 4);
+        cert_ptr = ptr_add(cert_ptr, 16, 4);
+        hnorm_ptr = ptr_add(hnorm_ptr, 16, 4);
+        shadow_ptr = ptr_add(shadow_ptr, 32, 16);
+        hidden_ptr = ptr_add(hidden_ptr, 32, 32);
+    }
+    if ((hidden_dimension & 256) != 0) {
+        reg u32 grp = (tiles << 4) + (lane >> 2);
+        ureg u64 scale_row = ptr_add(shadow_scale_f32, neuron, groups_bytes);
+        ureg u64 cert_row = ptr_add(cert_norm_f32, neuron, groups_bytes);
+        ureg u64 shadow_row = ptr_add(shadow_payload, neuron, hidden_dimension);
+        reg f32 scale = u32_as_f32(ldg32_persist(ptr_add(scale_row, grp, 4)));
+        reg u32 half_idx = (tiles << 6) + lane;
+        reg u32x2 sh = ldg64_persist(ptr_add(shadow_row, half_idx, 8));
+        reg u32x4 hv = ldg128_persist(ptr_add(hidden_bf16, half_idx, 16));
+        unroll (w = 0..2) {
+            reg f32x4 ev = cvt_e4m3x4_f32x4(sh[w]);
+            reg u32 h0 = hv[w * 2];
+            reg u32 h1 = hv[w * 2 + 1];
+            acc = fma(bf16_lo(h0), ev[0] * scale, acc);
+            acc = fma(bf16_hi(h0), ev[1] * scale, acc);
+            acc = fma(bf16_lo(h1), ev[2] * scale, acc);
+            acc = fma(bf16_hi(h1), ev[3] * scale, acc);
+        }
+        if ((lane & 3) == 0) {
+            reg f32 hn = u32_as_f32(ldg32_persist(ptr_add(hidden_norm_f32, grp, 4)));
+            reg f32 cn = u32_as_f32(ldg32_persist(ptr_add(cert_row, grp, 4)));
+            bound = fma(hn, cn, bound);
+        }
+    }
+    acc = acc + shfl_down(acc, 16);
+    acc = acc + shfl_down(acc, 8);
+    acc = acc + shfl_down(acc, 4);
+    acc = acc + shfl_down(acc, 2);
+    acc = acc + shfl_down(acc, 1);
+    bound = bound + shfl_down(bound, 16);
+    bound = bound + shfl_down(bound, 8);
+    bound = bound + shfl_down(bound, 4);
+    bound = bound + shfl_down(bound, 2);
+    bound = bound + shfl_down(bound, 1);
+    if (lane == 0) {
+        stg32(ptr_add(coarse_scores, neuron, 4), f32_as_u32(acc));
+        reg u32 ops = tiles + ((hidden_dimension >> 8) & 1) + 5;
+        reg f32 u = u32_to_f32(ops) * 5.9604644775390625e-08f;
+        reg f32 d = 1.0f - u;
+        reg f32 rd = rcp(d);
+        rd = fma(rd, fma(-d, rd, 1.0f), rd);
+        reg f32 g = u * rd;
+        g = fma(rd, fma(-d, g, u), g);
+        bound = bound * (1.0f + g);
+        reg u32 bb = f32_as_u32(bound);
+        reg u32 nb = bb;
+        if (bb == 0x80000000) {
+            nb = 1;
+        } else {
+            if ((bb & 0x7FFFFFFF) < 0x7F800000) {
+                nb = bb + 1;
+            }
+        }
+        stg32(ptr_add(bounds, neuron, 4), nb);
+    }
+}
+
+kernel[BLOCK, 64] head_candidate_256_1024_pdl_bf16(
+    global u32* normed_bf16, global u32* head_weight_bf16, global u32* token_ids,
+    global u32* candidate_score, global u32* candidate_token,
+    u32 rows, u32 hidden, u32 vocabulary
+) {
+    shared u32 stage[8448];
+    shared f32 input_s[128];
+    shared f32 shared_score[8];
+    shared u32 shared_token[8];
+    pdl_wait();
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 tile = ctaid_x();
+    reg u32 row = ctaid_y();
+    reg u32 gx = grid_x();
+    reg u32 has_tok = token_ids[0] | token_ids[1];
+    reg f32 best = u32_as_f32(0xFF800000);
+    reg u32 best_tok = 0;
+    reg u32 row_bytes = hidden << 1;
+    ureg u64 act_row = ptr_add(normed_bf16, row, row_bytes);
+    reg u32 fast_bad = (hidden & 63) | (head_weight_bf16[0] & 15);
+    if (fast_bad == 0) {
+        reg u32 chunks = hidden >> 6;
+        for (reg u32 sub = 0; sub < 1024; sub += 128) {
+            reg u32 base_index = (tile << 10) + sub;
+            if (base_index < vocabulary) {
+                reg u32 index = base_index + tid;
+                reg f32 total = 0.0f;
+                reg u32x4 st0 = pack_u32x4(0, 0, 0, 0);
+                reg u32x4 st1 = pack_u32x4(0, 0, 0, 0);
+                reg u32x4 st2 = pack_u32x4(0, 0, 0, 0);
+                reg u32x4 st3 = pack_u32x4(0, 0, 0, 0);
+                reg u32 sl0 = tid;
+                reg u32 i0 = base_index + (sl0 >> 3);
+                if (i0 < vocabulary) {
+                    reg u32 t0 = i0;
+                    if (has_tok != 0) { t0 = ldg32_persist(ptr_add(token_ids, i0, 4)); }
+                    st0 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t0, row_bytes), sl0 & 7, 16));
+                }
+                reg u32 sl1 = tid + 256;
+                reg u32 i1 = base_index + (sl1 >> 3);
+                if (i1 < vocabulary) {
+                    reg u32 t1 = i1;
+                    if (has_tok != 0) { t1 = ldg32_persist(ptr_add(token_ids, i1, 4)); }
+                    st1 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t1, row_bytes), sl1 & 7, 16));
+                }
+                reg u32 sl2 = tid + 512;
+                reg u32 i2 = base_index + (sl2 >> 3);
+                if (i2 < vocabulary) {
+                    reg u32 t2 = i2;
+                    if (has_tok != 0) { t2 = ldg32_persist(ptr_add(token_ids, i2, 4)); }
+                    st2 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t2, row_bytes), sl2 & 7, 16));
+                }
+                reg u32 sl3 = tid + 768;
+                reg u32 i3 = base_index + (sl3 >> 3);
+                if (i3 < vocabulary) {
+                    reg u32 t3 = i3;
+                    if (has_tok != 0) { t3 = ldg32_persist(ptr_add(token_ids, i3, 4)); }
+                    st3 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t3, row_bytes), sl3 & 7, 16));
+                }
+                reg u32 w0 = (sl0 >> 3) * 33 + ((sl0 & 7) << 2);
+                sts32(stage, w0, st0[0]);
+                sts32(stage, w0 + 1, st0[1]);
+                sts32(stage, w0 + 2, st0[2]);
+                sts32(stage, w0 + 3, st0[3]);
+                reg u32 w1 = (sl1 >> 3) * 33 + ((sl1 & 7) << 2);
+                sts32(stage, w1, st1[0]);
+                sts32(stage, w1 + 1, st1[1]);
+                sts32(stage, w1 + 2, st1[2]);
+                sts32(stage, w1 + 3, st1[3]);
+                reg u32 w2 = (sl2 >> 3) * 33 + ((sl2 & 7) << 2);
+                sts32(stage, w2, st2[0]);
+                sts32(stage, w2 + 1, st2[1]);
+                sts32(stage, w2 + 2, st2[2]);
+                sts32(stage, w2 + 3, st2[3]);
+                reg u32 w3 = (sl3 >> 3) * 33 + ((sl3 & 7) << 2);
+                sts32(stage, w3, st3[0]);
+                sts32(stage, w3 + 1, st3[1]);
+                sts32(stage, w3 + 2, st3[2]);
+                sts32(stage, w3 + 3, st3[3]);
+                if (tid < 64) {
+                    sts32(input_s, tid, bf16_lo(ldg16_persist(ptr_add(act_row, tid, 2))));
+                }
+                barrier();
+                for (reg u32 chunk = 0; chunk < chunks; chunk += 1) {
+                    reg u32 buf = chunk & 1;
+                    reg u32 nbuf = buf ^ 1;
+                    if (chunk + 1 < chunks) {
+                        reg u32 nfirst = (chunk + 1) << 6;
+                        st0 = pack_u32x4(0, 0, 0, 0);
+                        st1 = pack_u32x4(0, 0, 0, 0);
+                        st2 = pack_u32x4(0, 0, 0, 0);
+                        st3 = pack_u32x4(0, 0, 0, 0);
+                        if (i0 < vocabulary) {
+                            reg u32 t0 = i0;
+                            if (has_tok != 0) { t0 = ldg32_persist(ptr_add(token_ids, i0, 4)); }
+                            st0 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t0, row_bytes), (nfirst >> 3) + (sl0 & 7), 16));
+                        }
+                        if (i1 < vocabulary) {
+                            reg u32 t1 = i1;
+                            if (has_tok != 0) { t1 = ldg32_persist(ptr_add(token_ids, i1, 4)); }
+                            st1 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t1, row_bytes), (nfirst >> 3) + (sl1 & 7), 16));
+                        }
+                        if (i2 < vocabulary) {
+                            reg u32 t2 = i2;
+                            if (has_tok != 0) { t2 = ldg32_persist(ptr_add(token_ids, i2, 4)); }
+                            st2 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t2, row_bytes), (nfirst >> 3) + (sl2 & 7), 16));
+                        }
+                        if (i3 < vocabulary) {
+                            reg u32 t3 = i3;
+                            if (has_tok != 0) { t3 = ldg32_persist(ptr_add(token_ids, i3, 4)); }
+                            st3 = ldg128_stream(ptr_add(ptr_add(head_weight_bf16, t3, row_bytes), (nfirst >> 3) + (sl3 & 7), 16));
+                        }
+                    }
+                    if (tid < 128) {
+                        reg u32 sbase = buf * 4224 + tid * 33;
+                        reg u32 ibase = buf << 6;
+                        for (reg u32 el = 0; el < 32; el += 1) {
+                            reg u32 word = lds32(stage, sbase + el);
+                            total = fma(lds32(input_s, ibase + (el << 1)), bf16_lo(word), total);
+                            total = fma(lds32(input_s, ibase + (el << 1) + 1), bf16_hi(word), total);
+                        }
+                    }
+                    if (chunk + 1 < chunks) {
+                        reg u32 nsbase = nbuf * 4224;
+                        sts32(stage, nsbase + w0, st0[0]);
+                        sts32(stage, nsbase + w0 + 1, st0[1]);
+                        sts32(stage, nsbase + w0 + 2, st0[2]);
+                        sts32(stage, nsbase + w0 + 3, st0[3]);
+                        sts32(stage, nsbase + w1, st1[0]);
+                        sts32(stage, nsbase + w1 + 1, st1[1]);
+                        sts32(stage, nsbase + w1 + 2, st1[2]);
+                        sts32(stage, nsbase + w1 + 3, st1[3]);
+                        sts32(stage, nsbase + w2, st2[0]);
+                        sts32(stage, nsbase + w2 + 1, st2[1]);
+                        sts32(stage, nsbase + w2 + 2, st2[2]);
+                        sts32(stage, nsbase + w2 + 3, st2[3]);
+                        sts32(stage, nsbase + w3, st3[0]);
+                        sts32(stage, nsbase + w3 + 1, st3[1]);
+                        sts32(stage, nsbase + w3 + 2, st3[2]);
+                        sts32(stage, nsbase + w3 + 3, st3[3]);
+                        if (tid < 64) {
+                            sts32(input_s, (nbuf << 6) + tid, bf16_lo(ldg16_persist(ptr_add(act_row, ((chunk + 1) << 6) + tid, 2))));
+                        }
+                    }
+                    barrier();
+                }
+                if (tid < 128) {
+                    if (index < vocabulary) {
+                        if (total > best) {
+                            best = total;
+                            best_tok = index;
+                            if (has_tok != 0) {
+                                best_tok = ldg32_persist(ptr_add(token_ids, index, 4));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        reg u32 tend = (tile + 1) << 10;
+        if (tend > vocabulary) {
+            tend = vocabulary;
+        }
+        for (reg u32 idx = (tile << 10) + tid; idx < tend; idx += BLOCK) {
+            reg u32 tok = idx;
+            if (has_tok != 0) {
+                tok = ldg32_persist(ptr_add(token_ids, idx, 4));
+            }
+            ureg u64 w_row = ptr_add(head_weight_bf16, tok, row_bytes);
+            reg f32 total = 0.0f;
+            for (reg u32 el = 0; el < hidden; el += 1) {
+                total = fma(bf16_lo(ldg16_persist(ptr_add(act_row, el, 2))), bf16_lo(ldg16_stream(ptr_add(w_row, el, 2))), total);
+            }
+            if (total > best) {
+                best = total;
+                best_tok = tok;
+            }
+        }
+    }
+    reg f32 os16 = shfl_down(best, 16);
+    reg u32 ot16 = shfl_down(best_tok, 16);
+    if (os16 > best) { best = os16; best_tok = ot16; }
+    reg f32 os8 = shfl_down(best, 8);
+    reg u32 ot8 = shfl_down(best_tok, 8);
+    if (os8 > best) { best = os8; best_tok = ot8; }
+    reg f32 os4 = shfl_down(best, 4);
+    reg u32 ot4 = shfl_down(best_tok, 4);
+    if (os4 > best) { best = os4; best_tok = ot4; }
+    reg f32 os2 = shfl_down(best, 2);
+    reg u32 ot2 = shfl_down(best_tok, 2);
+    if (os2 > best) { best = os2; best_tok = ot2; }
+    reg f32 os1 = shfl_down(best, 1);
+    reg u32 ot1 = shfl_down(best_tok, 1);
+    if (os1 > best) { best = os1; best_tok = ot1; }
+    if (lane == 0) {
+        sts32(shared_score, wid, best);
+        sts32(shared_token, wid, best_tok);
+    }
+    barrier();
+    if (wid == 0) {
+        reg f32 fb = u32_as_f32(0xFF800000);
+        reg u32 ft = 0xFFFFFFFF;
+        if (lane < 8) {
+            fb = lds32(shared_score, lane);
+            ft = lds32(shared_token, lane);
+        }
+        reg f32 fs4 = shfl_down(fb, 4);
+        reg u32 ft4 = shfl_down(ft, 4);
+        if (fs4 > fb) { fb = fs4; ft = ft4; }
+        reg f32 fs2 = shfl_down(fb, 2);
+        reg u32 ft2 = shfl_down(ft, 2);
+        if (fs2 > fb) { fb = fs2; ft = ft2; }
+        reg f32 fs1 = shfl_down(fb, 1);
+        reg u32 ft1 = shfl_down(ft, 1);
+        if (fs1 > fb) { fb = fs1; ft = ft1; }
+        if (lane == 0) {
+            reg u32 out_idx = row * gx + tile;
+            stg32(ptr_add(candidate_score, out_idx, 4), f32_as_u32(fb));
+            stg32(ptr_add(candidate_token, out_idx, 4), ft);
+        }
+    }
+    pdl_release();
+}
+
+kernel[BLOCK, 32] stage_embedding_whole_pdl_bf16x8(
+    global u32* table, global u32* token_ids, global u32* hidden_bf16,
+    u32 hidden, u32 vocab, u32 alias_first, u32 alias_count, u32 alias_row
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 row = ctaid_y();
+    reg u32 raw_tok = ldg32_stream(ptr_add(token_ids, row, 4));
+    reg u32 tok = raw_tok;
+    if (raw_tok - alias_first < alias_count) {
+        tok = alias_row;
+    }
+    reg u32 row_bytes = hidden << 1;
+    ureg u64 target = ptr_add(hidden_bf16, row, row_bytes);
+    reg u32 tid = ctaid_x() * BLOCK + tid_x();
+    reg u32 stride = grid_x() * BLOCK;
+    reg u32 align_bad = (hidden & 7) | (target[0] & 15);
+    if (tok < vocab) {
+        ureg u64 source = ptr_add(table, tok, row_bytes);
+        reg u32 src_bad = align_bad | (source[0] & 15);
+        if (src_bad == 0) {
+            reg u32 vecs = hidden >> 3;
+            for (reg u32 v = tid; v < vecs; v += stride) {
+                reg u32x4 val = ldg128_persist(ptr_add(source, v, 16));
+                unroll (k = 0..4) {
+                    reg u32 p = val[k];
+                    reg u32 lo = p & 0xFFFF;
+                    reg u32 hi = p & 0xFFFF0000;
+                    if (lo == 0x8000) { lo = 0; }
+                    if (hi == 0x80000000) { hi = 0; }
+                    val[k] = lo | hi;
+                }
+                stg128(ptr_add(target, v, 16), val);
+            }
+            return;
+        }
+        for (reg u32 k = tid; k < hidden; k += stride) {
+            reg u32 val = ldg16_persist(ptr_add(source, k, 2));
+            if (val == 0x8000) { val = 0; }
+            stg16(ptr_add(target, k, 2), val);
+        }
+        return;
+    }
+    if (align_bad == 0) {
+        reg u32 vecs = hidden >> 3;
+        reg u32x4 zero = pack_u32x4(0, 0, 0, 0);
+        for (reg u32 v = tid; v < vecs; v += stride) {
+            stg128(ptr_add(target, v, 16), zero);
+        }
+        return;
+    }
+    for (reg u32 k = tid; k < hidden; k += stride) {
+        stg16(ptr_add(target, k, 2), 0);
+    }
+}
+
+kernel[BLOCK, 48] head_softmax_pdl_f32(
+    global u32* logits, u32 rows, u32 vocabulary, f32 temperature
+) {
+    shared f32 reduction[8];
+    pdl_wait();
+    reg u32 row = ctaid_x();
+    if (row >= rows) {
+        pdl_release();
+        return;
+    }
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg f32 clamped_t = maxf(temperature, 1.0e-4f);
+    reg f32 rt = rcp(clamped_t);
+    rt = fma(rt, fma(-clamped_t, rt, 1.0f), rt);
+    rt = fma(rt, fma(-clamped_t, rt, 1.0f), rt);
+    ureg u64 row_ptr = ptr_add(logits, row, vocabulary << 2);
+    reg f32 local = u32_as_f32(0xFF800000);
+    reg u32 align_bad = (vocabulary & 3) | (row_ptr[0] & 15);
+    if (align_bad == 0) {
+        reg u32 vecs = vocabulary >> 2;
+        for (reg u32 idx = tid; idx < vecs; idx += BLOCK) {
+            reg u32x4 v = ldg128_stream(ptr_add(row_ptr, idx, 16));
+            local = maxf(local, u32_as_f32(v[0]) * rt);
+            local = maxf(local, u32_as_f32(v[1]) * rt);
+            local = maxf(local, u32_as_f32(v[2]) * rt);
+            local = maxf(local, u32_as_f32(v[3]) * rt);
+        }
+        local = maxf(local, shfl_down(local, 16));
+        local = maxf(local, shfl_down(local, 8));
+        local = maxf(local, shfl_down(local, 4));
+        local = maxf(local, shfl_down(local, 2));
+        local = maxf(local, shfl_down(local, 1));
+        if (lane == 0) { sts32(reduction, wid, local); }
+        barrier();
+        reg f32 mx = u32_as_f32(0xFF800000);
+        if (lane < 8) { mx = lds32(reduction, lane); }
+        mx = maxf(mx, shfl_down(mx, 4));
+        mx = maxf(mx, shfl_down(mx, 2));
+        mx = maxf(mx, shfl_down(mx, 1));
+        mx = shfl_idx(mx, 0);
+        barrier();
+        reg f32 total = 0.0f;
+        reg u32 idx4 = tid;
+        for (reg u32 step = 0; idx4 + 768 < vocabulary; step += 1) {
+            reg f32 v0 = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx4, 4)));
+            reg f32 v1 = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx4 + 256, 4)));
+            reg f32 v2 = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx4 + 512, 4)));
+            reg f32 v3 = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx4 + 768, 4)));
+            reg f32 e0 = exp2_ftz((v0 * rt - mx) * 1.4426950408889634f);
+            reg f32 e1 = exp2_ftz((v1 * rt - mx) * 1.4426950408889634f);
+            reg f32 e2 = exp2_ftz((v2 * rt - mx) * 1.4426950408889634f);
+            reg f32 e3 = exp2_ftz((v3 * rt - mx) * 1.4426950408889634f);
+            stg32(ptr_add(row_ptr, idx4, 4), f32_as_u32(e0));
+            stg32(ptr_add(row_ptr, idx4 + 256, 4), f32_as_u32(e1));
+            stg32(ptr_add(row_ptr, idx4 + 512, 4), f32_as_u32(e2));
+            stg32(ptr_add(row_ptr, idx4 + 768, 4), f32_as_u32(e3));
+            total = total + e0;
+            total = total + e1;
+            total = total + e2;
+            total = total + e3;
+            idx4 = idx4 + 1024;
+        }
+        for (reg u32 idx = idx4; idx < vocabulary; idx += BLOCK) {
+            reg f32 v = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx, 4)));
+            reg f32 e = exp2_ftz((v * rt - mx) * 1.4426950408889634f);
+            stg32(ptr_add(row_ptr, idx, 4), f32_as_u32(e));
+            total = total + e;
+        }
+        total = total + shfl_down(total, 16);
+        total = total + shfl_down(total, 8);
+        total = total + shfl_down(total, 4);
+        total = total + shfl_down(total, 2);
+        total = total + shfl_down(total, 1);
+        if (lane == 0) { sts32(reduction, wid, total); }
+        barrier();
+        reg f32 sm = 0.0f;
+        if (lane < 8) { sm = lds32(reduction, lane); }
+        sm = sm + shfl_down(sm, 4);
+        sm = sm + shfl_down(sm, 2);
+        sm = sm + shfl_down(sm, 1);
+        sm = shfl_idx(sm, 0);
+        barrier();
+        reg f32 denom = maxf(sm, 1.0e-20f);
+        reg f32 inv_d = rcp(denom);
+        inv_d = fma(inv_d, fma(-denom, inv_d, 1.0f), inv_d);
+        for (reg u32 idx = tid; idx < vecs; idx += BLOCK) {
+            reg u32x4 v = ldg128_stream(ptr_add(row_ptr, idx, 16));
+            reg f32 x0 = u32_as_f32(v[0]);
+            reg f32 q0 = x0 * inv_d;
+            q0 = fma(inv_d, fma(-denom, q0, x0), q0);
+            reg f32 x1 = u32_as_f32(v[1]);
+            reg f32 q1 = x1 * inv_d;
+            q1 = fma(inv_d, fma(-denom, q1, x1), q1);
+            reg f32 x2 = u32_as_f32(v[2]);
+            reg f32 q2 = x2 * inv_d;
+            q2 = fma(inv_d, fma(-denom, q2, x2), q2);
+            reg f32 x3 = u32_as_f32(v[3]);
+            reg f32 q3 = x3 * inv_d;
+            q3 = fma(inv_d, fma(-denom, q3, x3), q3);
+            stg128(ptr_add(row_ptr, idx, 16), pack_u32x4(f32_as_u32(q0), f32_as_u32(q1), f32_as_u32(q2), f32_as_u32(q3)));
+        }
+        pdl_release();
+        return;
+    }
+    for (reg u32 idx = tid; idx < vocabulary; idx += BLOCK) {
+        local = maxf(local, u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx, 4))) * rt);
+    }
+    local = maxf(local, shfl_down(local, 16));
+    local = maxf(local, shfl_down(local, 8));
+    local = maxf(local, shfl_down(local, 4));
+    local = maxf(local, shfl_down(local, 2));
+    local = maxf(local, shfl_down(local, 1));
+    if (lane == 0) { sts32(reduction, wid, local); }
+    barrier();
+    reg f32 mx = u32_as_f32(0xFF800000);
+    if (lane < 8) { mx = lds32(reduction, lane); }
+    mx = maxf(mx, shfl_down(mx, 4));
+    mx = maxf(mx, shfl_down(mx, 2));
+    mx = maxf(mx, shfl_down(mx, 1));
+    mx = shfl_idx(mx, 0);
+    barrier();
+    reg f32 total = 0.0f;
+    for (reg u32 idx = tid; idx < vocabulary; idx += BLOCK) {
+        reg f32 v = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx, 4)));
+        reg f32 e = exp2_ftz((v * rt - mx) * 1.4426950408889634f);
+        stg32(ptr_add(row_ptr, idx, 4), f32_as_u32(e));
+        total = total + e;
+    }
+    total = total + shfl_down(total, 16);
+    total = total + shfl_down(total, 8);
+    total = total + shfl_down(total, 4);
+    total = total + shfl_down(total, 2);
+    total = total + shfl_down(total, 1);
+    if (lane == 0) { sts32(reduction, wid, total); }
+    barrier();
+    reg f32 sm = 0.0f;
+    if (lane < 8) { sm = lds32(reduction, lane); }
+    sm = sm + shfl_down(sm, 4);
+    sm = sm + shfl_down(sm, 2);
+    sm = sm + shfl_down(sm, 1);
+    sm = shfl_idx(sm, 0);
+    barrier();
+    reg f32 denom = maxf(sm, 1.0e-20f);
+    reg f32 inv_d = rcp(denom);
+    inv_d = fma(inv_d, fma(-denom, inv_d, 1.0f), inv_d);
+    for (reg u32 idx = tid; idx < vocabulary; idx += BLOCK) {
+        reg f32 x = u32_as_f32(ldg32_stream(ptr_add(row_ptr, idx, 4)));
+        reg f32 q = x * inv_d;
+        q = fma(inv_d, fma(-denom, q, x), q);
+        stg32(ptr_add(row_ptr, idx, 4), f32_as_u32(q));
+    }
+    pdl_release();
+}

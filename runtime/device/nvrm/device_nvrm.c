@@ -141,6 +141,7 @@ typedef struct NvrmKernel
 	const SparkNvrmCubinKernel *kernel;
 	SparkDeviceParameter *parameters;
 	int32_t overlay_index;
+	SparkNvrmQmdCache qmd_cache;
 } NvrmKernel;
 
 typedef struct NvrmEvent
@@ -330,10 +331,12 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *host)
 {
 	NvrmAllocation *nvrm = NvrmNew(allocation,"register");
+	const SparkNvrmMemoryKind kind = (allocation->access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) == 0u ?
+		SPARK_NVRM_MEMORY_USER_READ_ONLY : SPARK_NVRM_MEMORY_USER;
 	SparkStatus status;
 	if ( nvrm == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = SparkNvrmMemoryAttach(&nvrm_gpu,host,allocation->bytes,SPARK_NVRM_MEMORY_USER,&nvrm->memory,allocation->owner);
+	status = SparkNvrmMemoryAttach(&nvrm_gpu,host,allocation->bytes,kind,&nvrm->memory,allocation->owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		free(nvrm);
@@ -1096,15 +1099,18 @@ static uint32_t NvrmSlotFree(const NvrmQueue *nvrm, uint64_t start, uint64_t end
 
 static SparkStatus NvrmSlot(NvrmQueue *nvrm, uint32_t bytes, const char *owner, uint64_t *start)
 {
-	const uint64_t completed = SparkNvrmChannelCompleted(&nvrm->channel);
+	uint64_t completed;
 	if ( nvrm->slots.bytes == 0u )
 		NVRM_TRY(SparkNvrmMemoryAllocate(&nvrm_gpu,NVRM_SLOT_RING_BYTES,SparkNvrmLaunchControlKind(&nvrm_gpu),&nvrm->slots,owner));
+	*start = nvrm->slot_head + bytes <= nvrm->slots.bytes ? nvrm->slot_head : 0u;
+	if ( NvrmSlotFree(nvrm,*start,*start + bytes) != 0u )
+		return(SPARK_STATUS_OK);
+	completed = SparkNvrmChannelCompleted(&nvrm->channel);
 	while ( nvrm->slot_count != 0u && nvrm->slot_records[nvrm->slot_first].value <= completed )
 	{
 		nvrm->slot_first = (nvrm->slot_first + 1u) % NVRM_SLOT_RECORDS;
 		nvrm->slot_count--;
 	}
-	*start = nvrm->slot_head + bytes <= nvrm->slots.bytes ? nvrm->slot_head : 0u;
 	while ( NvrmSlotFree(nvrm,*start,*start + bytes) == 0u )
 	{
 		NVRM_TRY(NvrmWaitChannel(nvrm->queue->id,&nvrm->channel,nvrm->slot_records[nvrm->slot_first].value,"kernel_launch"));
@@ -1126,7 +1132,7 @@ static void NvrmSlotTaken(NvrmQueue *nvrm, uint64_t start, uint32_t bytes, uint6
 
 static void NvrmLaunchRequestFill(const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch, SparkNvrmLaunchRequest *request)
 {
-	const NvrmKernel *compiled = (const NvrmKernel *)kernel->backend;
+	NvrmKernel *compiled = (NvrmKernel *)kernel->backend;
 	request->kernel = compiled->kernel;
 	request->grid[0] = launch->groups.x;
 	request->grid[1] = launch->groups.y;
@@ -1141,6 +1147,7 @@ static void NvrmLaunchRequestFill(const SparkDeviceKernel *kernel, const SparkDe
 	request->cluster[1] = launch->cluster.y;
 	request->cluster[2] = launch->cluster.z;
 	request->dependent = launch->dependent;
+	request->qmd_cache = &compiled->qmd_cache;
 }
 
 static SparkStatus NvrmBindingsRefused(const SparkDeviceKernel *kernel, const char *operation)

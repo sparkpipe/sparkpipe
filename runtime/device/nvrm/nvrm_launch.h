@@ -27,6 +27,17 @@ typedef struct SparkNvrmProgram
 	SparkNvrmMemory code;
 } SparkNvrmProgram;
 
+typedef struct SparkNvrmQmdCache
+{
+	SparkNvrmQmd template_qmd;
+	uint32_t block[3];
+	uint32_t cluster[3];
+	uint32_t dynamic_shared_bytes;
+	uint32_t local_bytes;
+	uint32_t slot_bytes;
+	uint32_t state;
+} SparkNvrmQmdCache;
+
 typedef struct SparkNvrmLaunchRequest
 {
 	const SparkNvrmCubinKernel *kernel;
@@ -45,6 +56,7 @@ typedef struct SparkNvrmLaunchRequest
 	uint32_t latch_arrive;
 	uint32_t latch_wait;
 	uint64_t next_qmd_address;
+	SparkNvrmQmdCache *qmd_cache;
 } SparkNvrmLaunchRequest;
 
 SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, const char *manifest, uint64_t manifest_bytes,

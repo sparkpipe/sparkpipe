@@ -175,22 +175,49 @@ static SparkGpuError GpuLayoutAgrees(const SparkDeviceKernel *kernel, const Spar
 	return(SPARK_GPU_SUCCESS);
 }
 
+#define GPU_LAUNCH_CACHE_SIZE 256u
+
+typedef struct GpuLaunchCacheEntry
+{
+	const void *function;
+	SparkDeviceKernel *kernel;
+	const char *name;
+	uint64_t generation;
+} GpuLaunchCacheEntry;
+
+static _Thread_local GpuLaunchCacheEntry gpu_launch_cache[GPU_LAUNCH_CACHE_SIZE];
+
 static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, uint32_t dependent, size_t shared_bytes,
 	SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
 {
 	SparkDeviceKernel *kernel = 0;
 	SparkDeviceLaunch launch;
 	const char *name = 0;
+	const uint64_t generation = SparkNvrmRegisteredGeneration();
+	const uint32_t slot = (uint32_t)(((uint64_t)(uintptr_t)function * UINT64_C(0x9e3779b97f4a7c15)) >> 56);
+	GpuLaunchCacheEntry *cached = &gpu_launch_cache[slot];
 	SparkGpuError error;
 	if ( grid == 0 || block == 0 || (count != 0u && (layout == 0 || parameters == 0)) || shared_bytes > UINT32_MAX )
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a hosted launch needs its grid, its block, its parameters and at most 4 GiB of shared memory");
-	if ( SparkDeviceGetProperties() == 0 )
+	if ( cached->generation == generation && cached->function == function && cached->kernel != 0 && SparkDeviceGetProperties() != 0 )
 	{
-		GPU_TRY(SparkNvrmRegisteredName(function,&name));
-		GPU_TRY(GpuReady());
+		kernel = cached->kernel;
+		name = cached->name;
 	}
-	if ( SparkNvrmRegisteredResolve(function,&name,&kernel) != SPARK_STATUS_OK )
-		GPU_FAIL(SparkDeviceLastError()->status);
+	else
+	{
+		if ( SparkDeviceGetProperties() == 0 )
+		{
+			GPU_TRY(SparkNvrmRegisteredName(function,&name));
+			GPU_TRY(GpuReady());
+		}
+		if ( SparkNvrmRegisteredResolve(function,&name,&kernel) != SPARK_STATUS_OK )
+			GPU_FAIL(SparkDeviceLastError()->status);
+		cached->function = function;
+		cached->kernel = kernel;
+		cached->name = name;
+		cached->generation = SparkNvrmRegisteredGeneration();
+	}
 	if ( (error = GpuLayoutAgrees(kernel,layout,count,bytes,name)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(error);
 	if ( stream == 0 && (error = SparkNvrmGpuDefaultStream(&stream)) != SPARK_GPU_SUCCESS )
@@ -421,13 +448,15 @@ static uint32_t GpuRegisteredRange(const void *pointer, uint64_t bytes, SparkDev
 	uint32_t found = 0u;
 	pthread_mutex_lock(&gpu_mutex);
 	for (entry = gpu_allocations; entry != 0 && found == 0u; entry = entry->next)
-		if ( entry->registered != 0u && (const uint8_t *)pointer >= (const uint8_t *)entry->host &&
-			bytes <= entry->buffer.bytes - (uint64_t)((const uint8_t *)pointer - (const uint8_t *)entry->host) &&
-			(uint64_t)((const uint8_t *)pointer - (const uint8_t *)entry->host) < entry->buffer.bytes )
+		if ( entry->registered != 0u && (const uint8_t *)pointer >= (const uint8_t *)entry->host )
 		{
-			range->buffer = &entry->buffer;
-			range->offset = (uint64_t)((const uint8_t *)pointer - (const uint8_t *)entry->host);
-			found = 1u;
+			const uint64_t offset = (uint64_t)((const uint8_t *)pointer - (const uint8_t *)entry->host);
+			if ( offset < entry->buffer.bytes && bytes <= entry->buffer.bytes - offset )
+			{
+				range->buffer = &entry->buffer;
+				range->offset = offset;
+				found = 1u;
+			}
 		}
 	pthread_mutex_unlock(&gpu_mutex);
 	return(found);
@@ -633,7 +662,11 @@ static SparkGpuError GpuFill(void *destination, int value, size_t bytes, SparkGp
 	if ( GpuStream(&stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(gpu_last_error);
 	if ( GpuRange(destination,bytes,&to) == 0u )
+	{
+		if ( stream->recording != 0 )
+			stream->recording->broken = 1u;
 		GPU_REFUSE_IN("fill",SPARK_STATUS_INVALID_ARGUMENT,"a fill needs memory this front allocated or registered");
+	}
 	GPU_TRY(SparkDeviceFill(stream,to,(uint8_t)value,bytes));
 	return(SPARK_GPU_SUCCESS);
 }

@@ -139,15 +139,31 @@ class Parser:
         params = []
         if not (self.cur().kind == "OP1" and self.cur().val == ")"):
             while True:
-                is_global = self.match("KW", "global")
-                ptype = self.eat("TYPE").val
-                is_ptr = self.match("OP1", "*")
-                pname = self.eat("IDENT").val
-                params.append({
-                    "name": pname,
-                    "type": ptype,
-                    "is_ptr": is_ptr or is_global,
-                })
+                if self.cur().kind == "IDENT" and self.cur().val == "blob":
+                    self.eat("IDENT", "blob")
+                    self.eat("OP1", "[")
+                    bbytes = int(eval_const_expr(self.parse_expr(), consts))
+                    self.eat("OP1", ",")
+                    balign = int(eval_const_expr(self.parse_expr(), consts))
+                    self.eat("OP1", "]")
+                    pname = self.eat("IDENT").val
+                    params.append({
+                        "name": pname,
+                        "type": "blob",
+                        "is_ptr": False,
+                        "blob_bytes": bbytes,
+                        "blob_align": balign,
+                    })
+                else:
+                    is_global = self.match("KW", "global")
+                    ptype = self.eat("TYPE").val
+                    is_ptr = self.match("OP1", "*")
+                    pname = self.eat("IDENT").val
+                    params.append({
+                        "name": pname,
+                        "type": ptype,
+                        "is_ptr": is_ptr or is_global,
+                    })
                 if not self.match("OP1", ","):
                     break
         self.eat("OP1", ")")
