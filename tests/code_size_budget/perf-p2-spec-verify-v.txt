@@ -1,0 +1,2 @@
++88
+Pillar 2 verify efficiency (1/V): dedicated multi-lane verify cost table with fast asymmetric EMA and midpoint anchor (`SparkSpeculationFrameObserveBatchFrame`, `SparkSpeculationFrameBatchObserved`), V-efficiency scoring (`SparkSpeculationFrameScore`), shared lookup hazard class inheritance (`SparkSpeculationFrameClassHazard`), prefill/batch cost isolation, graph-aligned candidate grid, and V-bounded run-doubling and batched draft planning (`runtime/model_batch_engine.c` +7 net).
