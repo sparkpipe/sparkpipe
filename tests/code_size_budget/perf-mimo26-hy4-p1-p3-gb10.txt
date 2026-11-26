@@ -1,0 +1,2 @@
++1445
+Blackwell sm_121a P1 decode and P3 batch (B1-B64) + PF1024 optimizations for model-families/mimo26/source/mimo26_stage.cuh (+437 net: SWA GQA decode kernel, persistent active-expert MXFP4 W1+W3+SiLU and W2 kernels, PDL finalize/residual, MMA thresholds) and model-families/hy4/source/hy4_stage.cuh (+1008 net: tiled 8-row HC dot kernel, PDL Q-norm, GPU multi-row dense-skip indexer projections, persistent active-expert FP8/MXFP8 decode MoE, and fused TILE_N=32 TILE_K=256 FP8/MXFP8 W1+W3+SwiGLU Tensor Core MMA grouped MoE).
