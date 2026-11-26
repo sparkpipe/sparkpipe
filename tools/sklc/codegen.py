@@ -177,6 +177,7 @@ class KernelCompiler:
         self.smem = {}
         self.smem_bytes = 0
         self.barriers = 0
+        self.bssy_depth = 0
         self.label_counter = 0
         self.batch_counter = 0
         self.ur_desc = 4
@@ -554,9 +555,11 @@ class KernelCompiler:
         lbl_else = self.new_label("ELSE")
         lbl_end = self.new_label("ENDIF")
         lbl_reconv = self.new_label("RECONV")
+        conv_bar = self.bssy_depth
+        self.bssy_depth += 1
         self.push_temps()
         self.emit(Op(
-            lambda delta, wr, rd, wait, stall: isa.encode_bssy(delta, bar=0, stall=stall, wait=wait),
+            lambda delta, wr, rd, wait, stall, b=conv_bar: isa.encode_bssy(delta, bar=b, stall=stall, wait=wait),
             is_branch=True,
             target_label=lbl_reconv,
         ))
@@ -583,10 +586,11 @@ class KernelCompiler:
             self.pop_scope()
         self.emit_label(lbl_end)
         self.emit(Op(
-            lambda wr, rd, wait, stall: isa.encode_bsync(bar=0, stall=stall, wait=wait),
+            lambda wr, rd, wait, stall, b=conv_bar: isa.encode_bsync(bar=b, stall=stall, wait=wait),
             is_bar=True,
         ))
         self.emit_label(lbl_reconv)
+        self.bssy_depth -= 1
 
     def emit_pred_store(self, name, args, pred):
         if name == "sts32":

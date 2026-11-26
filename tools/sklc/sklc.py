@@ -25,8 +25,20 @@ def main(argv=None):
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("--manifest", default=None)
     ap.add_argument("--arch", default="sm121", choices=["sm121", "sm121a", "sm120", "sm120a"])
+    ap.add_argument("--rename", action="append", default=[])
+    ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--stats", action="store_true")
     args = ap.parse_args(argv)
+
+    renames = {}
+    for spec in args.rename:
+        if "=" not in spec:
+            raise ValueError(f"invalid --rename spec (expected SRC=DST): {spec!r}")
+        src_name, dst_name = spec.split("=", 1)
+        if not src_name or not dst_name:
+            raise ValueError(f"invalid --rename spec (expected SRC=DST): {spec!r}")
+        renames[src_name] = dst_name
+    only_set = set(args.only)
 
     all_kernels = []
     combined_src = []
@@ -35,7 +47,14 @@ def main(argv=None):
             text = f.read()
         combined_src.append(text)
         prog = parse_skl(text)
+        if only_set:
+            prog["kernels"] = [k for k in prog["kernels"] if k["name"] in only_set]
+        for k in prog["kernels"]:
+            if k["name"] in renames:
+                k["name"] = renames[k["name"]]
         all_kernels.extend(compile_program(prog))
+    if not all_kernels:
+        raise ValueError("no kernels selected to compile")
 
     cubin = build_cubin(all_kernels, arch=args.arch)
     with open(args.output, "wb") as f:

@@ -25,6 +25,7 @@
 #define REGISTER_OWNER "registered kernels"
 #define REGISTER_PROVIDER_ENV "SPARKPIPE_KERNEL_PROVIDER"
 #define REGISTER_OVERLAY_DIR_ENV "SPARKPIPE_SKL_CUBIN_DIR"
+#define REGISTER_OVERLAY_STATS_ENV "SPARKPIPE_SKL_OVERLAY_STATS"
 
 typedef struct RegisterCubin
 {
@@ -37,6 +38,7 @@ typedef struct RegisterName
 	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
 	uint32_t overlay_cubin;
+	uint32_t overlay_index;
 	uint32_t overlaid;
 	const char *file;
 } RegisterName;
@@ -53,12 +55,15 @@ typedef struct RegisterOverlayName
 	uint32_t clustered;
 	uint32_t cluster[3];
 	uint32_t cluster_limit;
+	uint64_t direct_launches;
+	uint64_t program_launches;
 } RegisterOverlayName;
 
 typedef struct RegisterOverlay
 {
 	uint32_t loaded;
 	uint32_t active;
+	uint32_t stats_enabled;
 	RegisterCubin *cubins;
 	uint32_t cubin_count;
 	uint32_t cubin_capacity;
@@ -90,6 +95,7 @@ typedef struct RegisterEntry
 	SparkNvrmModule *module;
 	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
+	uint32_t overlay_index;
 	uint32_t overlaid;
 	uint32_t variable;
 	SparkDeviceKernel *kernel;
@@ -108,6 +114,7 @@ static RegisterEntry **register_table;
 static uint32_t register_capacity;
 static uint32_t register_count;
 static RegisterOverlay register_overlay;
+static uint32_t register_overlay_atexit;
 
 static SparkStatus RegisterRefuse(SparkStatus code, const char *operation, const char *owner, const char *text)
 {
@@ -260,8 +267,11 @@ static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directo
 		memcpy(slot->name,manifest.kernels[index].name,sizeof(slot->name));
 		slot->cubin = module->cubin_count;
 		slot->overlay_cubin = overlay != 0 ? overlay->cubin : 0u;
+		slot->overlay_index = overlay != 0 ? (uint32_t)(overlay - register_overlay.names) : 0u;
 		slot->overlaid = overlay != 0 ? 1u : 0u;
 		slot->file = module->cubins[module->cubin_count].path;
+		if ( overlay != 0 && register_overlay.stats_enabled != 0u )
+			fprintf(stderr,"nvrm: skl-overlay: bound %.64s -> %s\n",slot->name,overlay->file);
 	}
 	module->cubin_count++;
 	SparkNvrmManifestRelease(&manifest);
@@ -528,13 +538,15 @@ static SparkStatus RegisterOverlayScan(const char *directory)
 
 static SparkStatus RegisterOverlayEnsure(void)
 {
-	const char *provider,*directory;
+	const char *provider,*directory,*stats;
+	SparkStatus status = SPARK_STATUS_OK;
 	if ( register_overlay.loaded != 0u )
 		return(register_overlay.status);
 	register_overlay.loaded = 1u;
 	register_overlay.status = SPARK_STATUS_OK;
 	provider = getenv(REGISTER_PROVIDER_ENV);
 	directory = getenv(REGISTER_OVERLAY_DIR_ENV);
+	stats = getenv(REGISTER_OVERLAY_STATS_ENV);
 	if ( provider != 0 && provider[0] != '\0' )
 	{
 		if ( strcmp(provider,"default") == 0 )
@@ -543,11 +555,20 @@ static SparkStatus RegisterOverlayEnsure(void)
 			return(RegisterOverlayFail(SPARK_STATUS_INVALID_ARGUMENT,"unknown SPARKPIPE_KERNEL_PROVIDER; expected default or skl-overlay"));
 		if ( directory == 0 || directory[0] == '\0' )
 			return(RegisterOverlayFail(SPARK_STATUS_INVALID_ARGUMENT,"SPARKPIPE_KERNEL_PROVIDER=skl-overlay requires SPARKPIPE_SKL_CUBIN_DIR"));
-		return(RegisterOverlayScan(directory));
+		status = RegisterOverlayScan(directory);
 	}
-	if ( directory != 0 && directory[0] != '\0' )
-		return(RegisterOverlayScan(directory));
-	return(SPARK_STATUS_OK);
+	else if ( directory != 0 && directory[0] != '\0' )
+		status = RegisterOverlayScan(directory);
+	if ( status == SPARK_STATUS_OK && register_overlay.active != 0u && stats != 0 && stats[0] != '\0' && strcmp(stats,"0") != 0 )
+	{
+		__atomic_store_n(&register_overlay.stats_enabled,1u,__ATOMIC_RELEASE);
+		if ( register_overlay_atexit == 0u )
+		{
+			register_overlay_atexit = 1u;
+			(void)atexit(SparkNvrmOverlayStatsDump);
+		}
+	}
+	return(status);
 }
 
 static SparkStatus RegisterScan(SparkNvrmModule *module)
@@ -756,6 +777,7 @@ SparkStatus SparkNvrmRegisterFunction(SparkNvrmModule *module, const void *host,
 		if ( found != 0 )
 		{
 			entry->overlaid = found->overlaid;
+			entry->overlay_index = found->overlay_index;
 			entry->cubin = found->overlaid != 0u ? found->overlay_cubin : found->cubin;
 		}
 		else
@@ -824,6 +846,8 @@ static SparkStatus RegisterResolve(RegisterEntry *entry)
 		SPARK_FAIL(SparkDeviceLastError()->status);
 	if ( SparkDeviceKernelCreate(&entry->kernel,cubin->library,entry->name) != SPARK_STATUS_OK )
 		SPARK_FAIL(SparkDeviceLastError()->status);
+	if ( entry->overlaid != 0u )
+		SparkNvrmKernelSetOverlayIndex(entry->kernel,(int32_t)entry->overlay_index);
 	return(SPARK_STATUS_OK);
 }
 
@@ -900,6 +924,63 @@ SparkStatus SparkNvrmOverlayReload(void)
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
 	return(SPARK_STATUS_OK);
+}
+
+uint32_t SparkNvrmOverlayStatsEnabled(void)
+{
+	return(__atomic_load_n(&register_overlay.stats_enabled,__ATOMIC_ACQUIRE));
+}
+
+void SparkNvrmOverlayRecord(uint32_t overlay_index, uint64_t count, uint32_t in_program)
+{
+	if ( __atomic_load_n(&register_overlay.stats_enabled,__ATOMIC_ACQUIRE) == 0u || count == 0u )
+		return;
+	if ( overlay_index >= register_overlay.name_count )
+		return;
+	if ( in_program != 0u )
+		(void)__atomic_add_fetch(&register_overlay.names[overlay_index].program_launches,count,__ATOMIC_RELAXED);
+	else
+		(void)__atomic_add_fetch(&register_overlay.names[overlay_index].direct_launches,count,__ATOMIC_RELAXED);
+}
+
+SparkStatus SparkNvrmOverlayStats(const char *name, uint64_t *direct_launches, uint64_t *program_launches)
+{
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES];
+	const RegisterOverlayName *found;
+	if ( name == 0 || name[0] == '\0' )
+		return(RegisterRefuse(SPARK_STATUS_INVALID_ARGUMENT,"kernel_register",REGISTER_OWNER,"an overlay stats query needs a kernel name"));
+	SparkNvrmShortName(name,short_name);
+	pthread_mutex_lock(&register_mutex);
+	found = RegisterOverlayFind(short_name);
+	if ( found != 0 )
+	{
+		if ( direct_launches != 0 )
+			*direct_launches = __atomic_load_n(&found->direct_launches,__ATOMIC_ACQUIRE);
+		if ( program_launches != 0 )
+			*program_launches = __atomic_load_n(&found->program_launches,__ATOMIC_ACQUIRE);
+	}
+	pthread_mutex_unlock(&register_mutex);
+	if ( found == 0 )
+		return(RegisterRefuse(SPARK_STATUS_NOT_FOUND,"kernel_register",REGISTER_OWNER,"no overlaid kernel with that name"));
+	return(SPARK_STATUS_OK);
+}
+
+void SparkNvrmOverlayStatsDump(void)
+{
+	uint32_t index;
+	if ( __atomic_load_n(&register_overlay.stats_enabled,__ATOMIC_ACQUIRE) == 0u )
+		return;
+	pthread_mutex_lock(&register_mutex);
+	for (index = 0u; index < register_overlay.name_count; index++)
+	{
+		const RegisterOverlayName *item = &register_overlay.names[index];
+		const uint64_t direct = __atomic_load_n(&item->direct_launches,__ATOMIC_ACQUIRE);
+		const uint64_t program = __atomic_load_n(&item->program_launches,__ATOMIC_ACQUIRE);
+		fprintf(stderr,"nvrm: skl-overlay stats: kernel=%s direct=%llu program=%llu total=%llu\n",item->name,
+			(unsigned long long)direct,(unsigned long long)program,(unsigned long long)(direct + program));
+	}
+	fflush(stderr);
+	pthread_mutex_unlock(&register_mutex);
 }
 
 SparkStatus SparkNvrmRegisteredVariable(const void *host)
