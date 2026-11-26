@@ -1,0 +1,2 @@
++28
+Track full-staging (use_half=0) rounds in round_seq_prior bit 62 so subsequent half-staging rounds wait for ship completion instead of clobbering in-flight upper-half staging payloads and tails.
