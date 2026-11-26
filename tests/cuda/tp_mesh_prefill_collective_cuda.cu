@@ -891,6 +891,92 @@ static void Test2dCrossRankAndGateGx(LargeFixture *f)
     free(h_out0);
 }
 
+static void Test2dRows63DeadlockRegression(LargeFixture *f)
+{
+    const uint32_t degree = 16u;
+    const uint64_t sizes[2] = { 63ull * 4096ull, 63ull * 6144ull };
+    for ( uint32_t s = 0u; s < 2u; ++s )
+    {
+        const uint64_t elements = sizes[s];
+        EnsurePeerBufs(f, elements, 8100u + s * 37u);
+        uint16_t *h_ref = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+        uint16_t *h_out = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
+        for ( uint64_t i = 0u; i < elements; ++i )
+            h_ref[i] = Sum2d4x4Bf16(f->responder.peer_buf, i);
+        for ( uint32_t r = 0u; r < degree; ++r )
+        {
+            FixtureResetEpoch(f, r, degree, 1u, elements, 1u, 0u, 0u);
+            f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+            CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[r], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
+            CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)elements * sizeof(uint16_t)));
+            cudaGraph_t graph = 0;
+            cudaGraphExec_t exec = 0;
+            CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, r, degree, f->local_dev, f->out_dev, f->scratch,
+                elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+            CUDA_OK(cudaStreamEndCapture(f->stream, &graph));
+            CUDA_OK(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+            const uint32_t reps = (r == 0u || r == 6u || r == 7u || r == 15u) ? 16u : 4u;
+            for ( uint32_t iter = 0u; iter < reps; ++iter )
+                CUDA_OK(cudaGraphLaunch(exec, f->stream));
+            CUDA_OK(cudaStreamSynchronize(f->stream));
+            CUDA_OK(cudaMemcpy(h_out, f->out_dev, (size_t)elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+            SparkTpMeshRoundControl ctrl;
+            CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+            CHECK(ctrl.error_word == 0u && ctrl.rounds_done == reps &&
+                  memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0,
+                "2D 4x4 rows=63 CUDA graph replays match 0-ULP across all 16 TP ranks");
+            cudaGraphExecDestroy(exec);
+            cudaGraphDestroy(graph);
+        }
+        free(h_out);
+        free(h_ref);
+    }
+
+    const uint32_t fail_ranks[3] = { 6u, 7u, 15u };
+    for ( uint32_t i = 0u; i < 3u; ++i )
+    {
+        const uint32_t r = fail_ranks[i];
+        const uint32_t row_peer = (r & ~3u) | ((r + 1u) & 3u);
+        const uint32_t col_peer = (((r >> 2u) + 1u) & 3u) << 2u | (r & 3u);
+        SparkTpMeshRoundControl ctrl;
+        FixtureResetEpoch(f, r, degree, 1u, 63ull * 6144ull, 0u, 0u, 0u);
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        __atomic_store_n(&f->responder.drop_peer, row_peer, __ATOMIC_RELEASE);
+        CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, r, degree, f->local_dev, f->out_dev, f->scratch,
+            63ull * 6144ull, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+        CHECK(ctrl.error_word != 0u && ctrl.rounds_done == 0u,
+            "2D 4x4 rows=63 times out cleanly on dropped row peer without hanging any block");
+
+        FixtureResetEpoch(f, r, degree, 1u, 63ull * 4096ull, 0u, 0u, 0u);
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        __atomic_store_n(&f->responder.drop_peer, col_peer, __ATOMIC_RELEASE);
+        CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, r, degree, f->local_dev, f->out_dev, f->scratch,
+            63ull * 4096ull, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+        CHECK(ctrl.error_word != 0u && ctrl.rounds_done == 0u,
+            "2D 4x4 rows=63 times out cleanly on dropped col peer without hanging any block");
+    }
+
+    SparkTpMeshRoundControl ctrl;
+    FixtureResetEpoch(f, 7u, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, 16ull * 65536ull, 0u, 0u, 0u);
+    f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    __atomic_store_n(&f->responder.drop_peer, 2u, __ATOMIC_RELEASE);
+    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+        f->doorbell_dev, f->gate_dev, f->control, 7u, degree, f->share_dev, f->out_dev, f->scratch,
+        16ull * 65536ull, SPARK_TP_MESH_OPERATION_ALL_GATHER, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000ull, SPARK_TP_MESH_STAGE_ALL));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
+    CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+    CHECK(ctrl.error_word != 0u && ctrl.rounds_done == 0u,
+        "WideStreamGather non-zero rank times out cleanly on dropped peer without hanging");
+}
+
 int main(void)
 {
     LargeFixture fixture;
@@ -917,6 +1003,7 @@ int main(void)
     TestAllGatherExact(&fixture, 0u, 4096ull * 4096ull);
     TestE14R2Degree4AndScatterFastPaths(&fixture);
     Test2dCrossRankAndGateGx(&fixture);
+    Test2dRows63DeadlockRegression(&fixture);
     TestLargeCancelAndTimeout(&fixture);
 
     RunLargeBenchmarks(&fixture);

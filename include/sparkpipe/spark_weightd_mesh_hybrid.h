@@ -19,12 +19,6 @@ extern "C" {
 #define SPARK_WEIGHTD_MESH_HYBRID_FLAG_DBREC_IN_SHM 1u
 #define SPARK_WEIGHTD_MESH_HYBRID_FLAG_BF_UNIQUE 2u
 
-#if defined(__CUDACC__)
-#define SPARK_WEIGHTD_MESH_HYBRID_HD __host__ __device__ __forceinline__
-#else
-#define SPARK_WEIGHTD_MESH_HYBRID_HD inline
-#endif
-
 typedef struct SparkWeightdMeshHybridPeer
 {
     uint32_t sq_shm_off;
@@ -87,34 +81,15 @@ typedef struct SparkWeightdMeshHybridCtrl
     SparkWeightdMeshHybridPeer peers[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
 } SparkWeightdMeshHybridCtrl;
 
-static SPARK_WEIGHTD_MESH_HYBRID_HD uint64_t SparkWeightdMeshHybridMetaPack(
-    uint32_t peer_mask,uint32_t ds,uint32_t num_bb,uint32_t grant_gen)
-{
-    return (uint64_t)(peer_mask & 0xffffu) |
-        ((uint64_t)(ds & 0xffu) << 16u) |
-        ((uint64_t)(num_bb & 0xffu) << 24u) |
-        ((uint64_t)grant_gen << 32u);
-}
-
-static SPARK_WEIGHTD_MESH_HYBRID_HD uint32_t SparkWeightdMeshHybridMetaPeerMask(uint64_t meta)
-{
-    return (uint32_t)(meta & 0xffffu);
-}
-
-static SPARK_WEIGHTD_MESH_HYBRID_HD uint32_t SparkWeightdMeshHybridMetaDs(uint64_t meta)
-{
-    return (uint32_t)((meta >> 16u) & 0xffu);
-}
-
-static SPARK_WEIGHTD_MESH_HYBRID_HD uint32_t SparkWeightdMeshHybridMetaNumBb(uint64_t meta)
-{
-    return (uint32_t)((meta >> 24u) & 0xffu);
-}
-
-static SPARK_WEIGHTD_MESH_HYBRID_HD uint32_t SparkWeightdMeshHybridMetaGrantGen(uint64_t meta)
-{
-    return (uint32_t)(meta >> 32u);
-}
+#define SparkWeightdMeshHybridMetaPack(peer_mask,ds,num_bb,grant_gen) \
+    ((uint64_t)((uint32_t)(peer_mask) & 0xffffu) | \
+     ((uint64_t)((uint32_t)(ds) & 0xffu) << 16u) | \
+     ((uint64_t)((uint32_t)(num_bb) & 0xffu) << 24u) | \
+     ((uint64_t)(uint32_t)(grant_gen) << 32u))
+#define SparkWeightdMeshHybridMetaPeerMask(meta) ((uint32_t)((uint64_t)(meta) & 0xffffu))
+#define SparkWeightdMeshHybridMetaDs(meta) ((uint32_t)(((uint64_t)(meta) >> 16u) & 0xffu))
+#define SparkWeightdMeshHybridMetaNumBb(meta) ((uint32_t)(((uint64_t)(meta) >> 24u) & 0xffu))
+#define SparkWeightdMeshHybridMetaGrantGen(meta) ((uint32_t)((uint64_t)(meta) >> 32u))
 
 #if !defined(__cplusplus)
 _Static_assert(sizeof(SparkWeightdMeshHybridPeer) == 64u,
