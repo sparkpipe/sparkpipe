@@ -455,12 +455,14 @@ static void MimoAttnPrepStoreLocalKernel(const uint16_t *__restrict__ gathered, 
 }
 
 template<class Kv, uint32_t KVH, uint32_t HD, uint32_t VD>
-__global__ __launch_bounds__(MM_THREADS, 2)
+__global__ __launch_bounds__(MM_THREADS, 4)
 static void MimoPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row, uint32_t win_begin, uint32_t prior_keys,
 	uint32_t kv_first, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t HD_V = HD >> 3u, VD_V = VD >> 3u, SLOT_V = HD_V + VD_V, K_V = KVH * HD_V;
-	const uint32_t k_idx = blockIdx.x, lh = blockIdx.y;
+	constexpr uint32_t WARPS = MM_THREADS / LM_WARP_LANES;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t k_idx = blockIdx.x * WARPS + warp, lh = blockIdx.y;
 	LmDependentWait();
 	if ( k_idx < prior_keys && lh < local_kvh )
 	{
@@ -474,9 +476,9 @@ static void MimoPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__res
 			const uint4 *vs = (const uint4 *)slot + K_V + kh * VD_V;
 			uint4 *kd = (uint4 *)kv_prior + ((uint64_t)lh * prior_keys + k_idx) * SLOT_V;
 			uint4 *vd = kd + HD_V;
-			for ( uint32_t c = threadIdx.x; c < HD_V; c += MM_THREADS )
+			for ( uint32_t c = lane; c < HD_V; c += 32u )
 				kd[c] = __ldg(ks + c);
-			for ( uint32_t c = threadIdx.x; c < VD_V; c += MM_THREADS )
+			for ( uint32_t c = lane; c < VD_V; c += 32u )
 				vd[c] = __ldg(vs + c);
 		}
 	}
@@ -484,12 +486,14 @@ static void MimoPriorKvDirectKernel(LmKvShardView kv_view, const uint32_t *__res
 }
 
 template<class Kv, uint32_t KVH, uint32_t HD, uint32_t VD>
-__global__ __launch_bounds__(MM_THREADS, 2)
+__global__ __launch_bounds__(MM_THREADS, 4)
 static void MimoPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__restrict__ sequence_of_row, uint32_t win_begin, uint32_t old_ctx,
 	uint32_t b0, uint32_t max_peer_keys, uint32_t rank_heads, uint32_t group, uint32_t local_kvh, uint64_t a2a_stride_bytes, uint8_t *__restrict__ send_bytes)
 {
 	constexpr uint32_t HD_V = HD >> 3u, VD_V = VD >> 3u, SLOT_V = HD_V + VD_V, K_V = KVH * HD_V;
-	const uint32_t idx = blockIdx.x, peer = blockIdx.y;
+	constexpr uint32_t WARPS = MM_THREADS / LM_WARP_LANES;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t idx = blockIdx.x * WARPS + warp, peer = blockIdx.y;
 	const uint32_t degree = kv_view.shard.degree, grain = kv_view.shard.grain, my_rank = kv_view.shard.rank;
 	const uint32_t first_b = b0 + ((my_rank + degree - (b0 % degree)) % degree);
 	const uint32_t pos = (first_b + (idx / grain) * degree) * grain + (idx % grain);
@@ -509,9 +513,9 @@ static void MimoPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__restr
 				const uint4 *vs = (const uint4 *)slot + K_V + kh * VD_V;
 				uint4 *kd = peer_dst + ((uint64_t)lh * max_peer_keys + idx) * SLOT_V;
 				uint4 *vd = kd + HD_V;
-				for ( uint32_t c = threadIdx.x; c < HD_V; c += MM_THREADS )
+				for ( uint32_t c = lane; c < HD_V; c += 32u )
 					kd[c] = __ldg(ks + c);
-				for ( uint32_t c = threadIdx.x; c < VD_V; c += MM_THREADS )
+				for ( uint32_t c = lane; c < VD_V; c += 32u )
 					vd[c] = __ldg(vs + c);
 			}
 		}
@@ -520,12 +524,14 @@ static void MimoPriorKvPackKernel(LmKvShardView kv_view, const uint32_t *__restr
 }
 
 template<uint32_t HD, uint32_t VD>
-__global__ __launch_bounds__(MM_THREADS, 2)
+__global__ __launch_bounds__(MM_THREADS, 4)
 static void MimoPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restrict__ recv_bytes, uint64_t a2a_stride_bytes, uint32_t win_begin,
 	uint32_t old_ctx, uint32_t b0, uint32_t max_peer_keys, uint32_t prior_keys, uint32_t local_kvh, uint16_t *__restrict__ kv_prior)
 {
 	constexpr uint32_t SLOT_V = (HD + VD) >> 3u;
-	const uint32_t idx = blockIdx.x, src_rank = blockIdx.y;
+	constexpr uint32_t WARPS = MM_THREADS / LM_WARP_LANES;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t idx = blockIdx.x * WARPS + warp, src_rank = blockIdx.y;
 	const uint32_t degree = shard.degree, grain = shard.grain;
 	const uint32_t first_b = b0 + ((src_rank + degree - (b0 % degree)) % degree);
 	const uint32_t pos = (first_b + (idx / grain) * degree) * grain + (idx % grain);
@@ -538,7 +544,7 @@ static void MimoPriorKvUnpackKernel(SparkKvShard shard, const uint8_t *__restric
 		{
 			const uint4 *s4 = src_base + ((uint64_t)lh * max_peer_keys + idx) * SLOT_V;
 			uint4 *d4 = (uint4 *)kv_prior + ((uint64_t)lh * prior_keys + k_idx) * SLOT_V;
-			for ( uint32_t c = threadIdx.x; c < SLOT_V; c += MM_THREADS )
+			for ( uint32_t c = lane; c < SLOT_V; c += 32u )
 				d4[c] = __ldg(s4 + c);
 		}
 	}
@@ -571,7 +577,7 @@ static void MimoLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf16, 
 	__shared__ __align__(128) uint8_t mm_prefill_smem[K_TILE_BYTES + V_TILE_BYTES];
 	const uint32_t k_base = (uint32_t)__cvta_generic_to_shared(mm_prefill_smem);
 	const uint32_t v_base = (uint32_t)__cvta_generic_to_shared(mm_prefill_smem + K_TILE_BYTES);
-	const uint32_t local_h = blockIdx.x, q_block = blockIdx.y;
+	const uint32_t local_h = blockIdx.x, q_block = gridDim.y - 1u - blockIdx.y;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t row_first = q_block * Q_TILE;
@@ -1280,18 +1286,10 @@ static void MimoMoeFastW1W3SiluKernel(const uint8_t *__restrict__ w1, const uint
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const uint32_t c_off = c * 32u;
-					const uint4 vw1_0 = __ldcs(w1_0 + c);
-					const uint4 vw3_0 = __ldcs(w3_0 + c);
-					const uint4 vw1_1 = __ldcs(w1_1 + c);
-					const uint4 vw3_1 = __ldcs(w3_1 + c);
-					const float fs1_0 = LmUe8m0ToFloat(__ldg(sc1_0 + c));
-					const float fs3_0 = LmUe8m0ToFloat(__ldg(sc3_0 + c));
-					const float fs1_1 = LmUe8m0ToFloat(__ldg(sc1_1 + c));
-					const float fs3_1 = LmUe8m0ToFloat(__ldg(sc3_1 + c));
-					MimoMxfp4AccumRows<RG>(vw1_0, fs1_0, act_ptr, c_off, cnt, g0);
-					MimoMxfp4AccumRows<RG>(vw3_0, fs3_0, act_ptr, c_off, cnt, u0);
-					MimoMxfp4AccumRows<RG>(vw1_1, fs1_1, act_ptr, c_off, cnt, g1);
-					MimoMxfp4AccumRows<RG>(vw3_1, fs3_1, act_ptr, c_off, cnt, u1);
+					MimoMxfp4AccumRows<RG>(__ldcs(w1_0 + c), LmUe8m0ToFloat(__ldg(sc1_0 + c)), act_ptr, c_off, cnt, g0);
+					MimoMxfp4AccumRows<RG>(__ldcs(w3_0 + c), LmUe8m0ToFloat(__ldg(sc3_0 + c)), act_ptr, c_off, cnt, u0);
+					MimoMxfp4AccumRows<RG>(__ldcs(w1_1 + c), LmUe8m0ToFloat(__ldg(sc1_1 + c)), act_ptr, c_off, cnt, g1);
+					MimoMxfp4AccumRows<RG>(__ldcs(w3_1 + c), LmUe8m0ToFloat(__ldg(sc3_1 + c)), act_ptr, c_off, cnt, u1);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -1436,18 +1434,10 @@ static void MimoMoeFastW2Kernel(const uint8_t *__restrict__ w2, const uint8_t *_
 				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
 				{
 					const uint32_t c_off = c * 32u;
-					const uint4 vw0 = __ldcs(w0 + c);
-					const uint4 vw1 = __ldcs(w1p + c);
-					const uint4 vw2 = __ldcs(w2p + c);
-					const uint4 vw3 = __ldcs(w3p + c);
-					const float fs0 = LmUe8m0ToFloat(__ldg(sc0 + c));
-					const float fs1 = LmUe8m0ToFloat(__ldg(sc1 + c));
-					const float fs2 = LmUe8m0ToFloat(__ldg(sc2 + c));
-					const float fs3 = LmUe8m0ToFloat(__ldg(sc3 + c));
-					MimoMxfp4AccumRows<RG>(vw0, fs0, act_ptr, c_off, cnt, a0);
-					MimoMxfp4AccumRows<RG>(vw1, fs1, act_ptr, c_off, cnt, a1);
-					MimoMxfp4AccumRows<RG>(vw2, fs2, act_ptr, c_off, cnt, a2);
-					MimoMxfp4AccumRows<RG>(vw3, fs3, act_ptr, c_off, cnt, a3);
+					MimoMxfp4AccumRows<RG>(__ldcs(w0 + c), LmUe8m0ToFloat(__ldg(sc0 + c)), act_ptr, c_off, cnt, a0);
+					MimoMxfp4AccumRows<RG>(__ldcs(w1p + c), LmUe8m0ToFloat(__ldg(sc1 + c)), act_ptr, c_off, cnt, a1);
+					MimoMxfp4AccumRows<RG>(__ldcs(w2p + c), LmUe8m0ToFloat(__ldg(sc2 + c)), act_ptr, c_off, cnt, a2);
+					MimoMxfp4AccumRows<RG>(__ldcs(w3p + c), LmUe8m0ToFloat(__ldg(sc3 + c)), act_ptr, c_off, cnt, a3);
 				}
 				#pragma unroll
 				for ( uint32_t r = 0u; r < RG; ++r )
@@ -1558,10 +1548,10 @@ static void MimoMoeSmallW2FinalizeKernel(const uint8_t *__restrict__ w2, const u
 					const LmSkinnyQuad act = LmSkinnyFormat<LmMxfp4>::Load(a_row + c * 32u);
 					const uint4 vw0 = __ldcs(w0 + c);
 					const uint4 vw1 = __ldcs(w1 + c);
-					acc0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0, act), acc0);
-					acc1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1, act), acc1);
 					const uint4 vw2 = __ldcs(w2p + c);
 					const uint4 vw3 = __ldcs(w3p + c);
+					acc0 = fmaf(LmUe8m0ToFloat(__ldg(sc0 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw0, act), acc0);
+					acc1 = fmaf(LmUe8m0ToFloat(__ldg(sc1 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw1, act), acc1);
 					acc2 = fmaf(LmUe8m0ToFloat(__ldg(sc2 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw2, act), acc2);
 					acc3 = fmaf(LmUe8m0ToFloat(__ldg(sc3 + c)), LmSkinnyFormat<LmMxfp4>::Chunk(vw3, act), acc3);
 				}
@@ -1940,7 +1930,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const LmScaleTensor scale = LmScaleTensorBuild(weight.scale, LM_SCALE_ENCODING_F32, 1u, output_dimension, input_dimension, 1u, MM_FP8_GROUP);
-		if ( PrefillUnified(step) || (RowExact(step) == 0u && rows > 8u) || (input_dimension >= 4096u && output_dimension >= 1280u) )
+		if ( PrefillUnified(step) || (RowExact(step) == 0u && rows > 8u) )
 		{
 			const int32_t status = LmStreamGemmDense<LmFp8>(weight.weight, scale, source, destination, (float *)0, rows, input_dimension,
 				output_dimension, 0u, 0u, step->multiprocessors, stream);
@@ -1954,7 +1944,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	static int32_t Bf16(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
-		if ( PrefillUnified(step) || (destination_f32 == 0 && output_dimension >= 4096u) )
+		if ( PrefillUnified(step) || (RowExact(step) == 0u && (rows > 16u || (destination_f32 == 0 && rows > 8u && output_dimension >= 4096u))) )
 		{
 			const int32_t status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows,
 				input_dimension, output_dimension, 0u, 0u, step->multiprocessors, stream);
@@ -2056,7 +2046,8 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			{
 				if ( degree > 1u )
 				{
-					(void)LM_LAUNCH_DEPENDENT((MimoPriorKvPackKernel<Kv, KVH, G::kHeadDim, G::kValueDim>), dim3(max_peer_keys, degree), MM_THREADS, 0, stream,
+					const uint32_t pack_blocks = (max_peer_keys + WARPS - 1u) / WARPS;
+					(void)LM_LAUNCH_DEPENDENT((MimoPriorKvPackKernel<Kv, KVH, G::kHeadDim, G::kValueDim>), dim3(pack_blocks, degree), MM_THREADS, 0, stream,
 						*view, step->sequence_of_row, win_begin, old_ctx, b0, max_peer_keys, rank_heads, group, local_kvh, a2a_stride_bytes,
 						(uint8_t *)state->send);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
@@ -2064,7 +2055,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 					status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, a2a_units, 0u, state->send, state->received);
 					if ( status != SPARK_STATUS_OK )
 						return status;
-					(void)LM_LAUNCH_DEPENDENT((MimoPriorKvUnpackKernel<G::kHeadDim, G::kValueDim>), dim3(max_peer_keys, degree), MM_THREADS, 0, stream,
+					(void)LM_LAUNCH_DEPENDENT((MimoPriorKvUnpackKernel<G::kHeadDim, G::kValueDim>), dim3(pack_blocks, degree), MM_THREADS, 0, stream,
 						view->shard, (const uint8_t *)state->received, a2a_stride_bytes, win_begin, old_ctx, b0, max_peer_keys, prior_keys,
 						local_kvh, kv_prior);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
@@ -2072,7 +2063,8 @@ struct MimoModel : CudaStage<MimoModel<G>>
 				}
 				else
 				{
-					(void)LM_LAUNCH_DEPENDENT((MimoPriorKvDirectKernel<Kv, KVH, G::kHeadDim, G::kValueDim>), dim3(prior_keys, local_kvh), MM_THREADS, 0, stream,
+					const uint32_t direct_blocks = (prior_keys + WARPS - 1u) / WARPS;
+					(void)LM_LAUNCH_DEPENDENT((MimoPriorKvDirectKernel<Kv, KVH, G::kHeadDim, G::kValueDim>), dim3(direct_blocks, local_kvh), MM_THREADS, 0, stream,
 						*view, step->sequence_of_row, win_begin, prior_keys, kv_first, local_kvh, kv_prior);
 					if ( CudaStageLaunched() != SPARK_STATUS_OK )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -2324,12 +2316,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static SparkStatus Experts(State *state, const Frame &frame, const MimoLayer &entry)
 	{
-		const SparkStageRunnerStep *step = frame.step;
-		const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
-		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-			status = ExpertRows(state, &entry, step, first, step->rows - first < chunk ? step->rows - first : chunk, frame.stream);
-		return status;
+		return ExpertRows(state, &entry, frame.step, 0u, frame.step->rows, frame.stream);
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
