@@ -4207,12 +4207,14 @@ static uint32_t SparkModelBatchPlanBranches(
 		request->draft_node_classes[row] = row <= model_rows ? SparkSpeculationFrameModelClass(sampled) :
 			(model_rows != 0u ? SparkSpeculationFrameClass(request->draft_match,sampled) : request->draft_class);
 	}
+	token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
 	if ( node_budget > SPARK_SPECULATION_FRAME_MAX_DRAFTS )
 		node_budget = SPARK_SPECULATION_FRAME_MAX_DRAFTS;
+	if ( token_ns >= 50000000.0f && node_budget > SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS - 1u )
+		node_budget = SPARK_SPECULATION_FRAME_SINGLE_ROW_BUCKETS - 1u;
 	if ( engine->tree_capable == 0u || plan->lanes != 1u || request->sampling.logprobs != 0u || block_remaining < 3u || node_budget <= trunk )
 		return(0u);
 	branch_cap = block_remaining - 2u < depth_cap ? block_remaining - 2u : depth_cap;
-	token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
 	wait_ns = model_rows != 0u && engine->model_draft_rounds != 0u ? (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds : 0.0f;
 	trunk_survival[0] = 1.0f;
 	for (row=1u; row<=trunk; row++)
@@ -5003,11 +5005,22 @@ static void SparkModelBatchBuildDecodeRows(
 			engine->scratch_lanes[lane].cache_publish_token_count = 0u;
 			memset(&engine->scratch_lanes[lane].cache_publish_identity,0,sizeof(engine->scratch_lanes[lane].cache_publish_identity));
 		}
+		else if ( (engine->scratch_lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u && engine->adapter_descriptor->cache_checkpoint_token_count != 0u && lane_count > 8u )
+		{
+			engine->scratch_lanes[lane].flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS;
+			engine->scratch_lanes[lane].flags &= ~SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED;
+		}
 	}
 	step_ns = chain_tokens > 1u ? (lane_count > 1u ? SparkSpeculationFrameBatchStepCost(&engine->frame_model,lane_count,context) :
 		SparkSpeculationFrameTokenCost(&engine->frame_model,context)) : 0.0f;
 	if ( step_ns > 0.0f && (float)chain_tokens * step_ns > SPARK_MODEL_BATCH_CHAIN_BUDGET_NS )
 		chain_tokens = step_ns >= SPARK_MODEL_BATCH_CHAIN_BUDGET_NS ? 1u : (uint32_t)(SPARK_MODEL_BATCH_CHAIN_BUDGET_NS / step_ns);
+	if ( chain_tokens > 1u && engine->verify_capable != 0u && lane_count == 1u && step_ns >= 50000000.0f )
+	{
+		const SparkModelBatchRequestState *req = &engine->requests[engine->scratch_request_slots[0]];
+		if ( req->drafts_disabled == 0u && req->lookup.length >= 16u )
+			chain_tokens = 1u;
+	}
 	if ( chain_tokens > SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS && SparkModelBatchPrefillWaiting(engine) != 0u )
 		chain_tokens = SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS;
 	row = 0u;

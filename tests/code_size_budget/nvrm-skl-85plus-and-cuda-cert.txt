@@ -1,0 +1,2 @@
++65
+nvrm skl-overlay expansion and 1x-gb10 RAIS v1.1 tuning: sklc Itanium C++ short-name demangling matching SparkNvrmShortName for long templated overlay kernels, cold higher-match-class speculation inheritance, slow single-lane lookup single-stepping and 16-row tree budget cap, stateless burst mid-decode KV page publication on recurrent adapters, and static 128-chunk NVRM KV pool sizing.

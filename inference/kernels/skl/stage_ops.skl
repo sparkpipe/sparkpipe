@@ -1,0 +1,390 @@
+const BLOCK = 256;
+
+kernel[BLOCK, 64] gqa_split_reduce_sigmoid_gate_pdl_exact_bf16(
+    global u32* partials_f32, global u32* attn_local_bf16,
+    global u32* sequence_of_row, global u32* context_length,
+    global u32* row_position, global u32* merged_out_bf16,
+    u32 rows
+) {
+    pdl_wait();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 head = ctaid_x() * 8 + wid;
+    reg u32 row = ctaid_y();
+    if (row < rows) {
+        if (head < 24) {
+            reg u32 seq = ldg32_persist(ptr_add(sequence_of_row, row, 4));
+            reg u32 limit = ldg32_persist(ptr_add(context_length, seq, 4));
+            reg u32 rp_nz = row_position[0] | row_position[1];
+            if (rp_nz != 0) {
+                reg u32 rp = ldg32_persist(ptr_add(row_position, row, 4));
+                if (rp != 0xFFFFFFFF) {
+                    reg u32 rp1 = rp + 1;
+                    if (rp1 < limit) {
+                        limit = rp1;
+                    }
+                }
+            }
+            if (limit > 64) {
+                reg u32 slen = ((((limit + 767) >> 8) * 21846) >> 16) << 6;
+                if (slen < limit) {
+                    reg f32 gmax = u32_as_f32(0xFF800000);
+                    reg f32 gsum = 0.0f;
+                    reg f32 acc0 = 0.0f;
+                    reg f32 acc1 = 0.0f;
+                    reg f32 acc2 = 0.0f;
+                    reg f32 acc3 = 0.0f;
+                    reg f32 acc4 = 0.0f;
+                    reg f32 acc5 = 0.0f;
+                    reg f32 acc6 = 0.0f;
+                    reg f32 acc7 = 0.0f;
+                    reg u32 lane8 = lane << 3;
+                    for (reg u32 s = 0; s < 12; s += 1) {
+                        if (s * slen < limit) {
+                            reg u32 in_base = ((row * 12 + s) * 24 + head) * 260;
+                            reg f32 sm = u32_as_f32(ldg32_stream(ptr_add(partials_f32, in_base + 256, 4)));
+                            reg f32 sl = u32_as_f32(ldg32_stream(ptr_add(partials_f32, in_base + 257, 4)));
+                            reg f32 prev = gmax;
+                            gmax = maxf(prev, sm);
+                            reg f32 sc_old = 0.0f;
+                            if (f32_as_u32(prev) != 0xFF800000) {
+                                sc_old = exp2_ftz((prev - gmax) * 1.4426950408889634f);
+                            }
+                            reg f32 sc_new = 0.0f;
+                            if (f32_as_u32(sm) != 0xFF800000) {
+                                sc_new = exp2_ftz((sm - gmax) * 1.4426950408889634f);
+                            }
+                            gsum = fma(gsum, sc_old, sl * sc_new);
+                            reg u32x4 a0 = ldg128_stream(ptr_add(partials_f32, in_base + lane8, 4));
+                            reg u32x4 a1 = ldg128_stream(ptr_add(partials_f32, in_base + lane8 + 4, 4));
+                            acc0 = fma(acc0, sc_old, u32_as_f32(a0[0]) * sc_new);
+                            acc1 = fma(acc1, sc_old, u32_as_f32(a0[1]) * sc_new);
+                            acc2 = fma(acc2, sc_old, u32_as_f32(a0[2]) * sc_new);
+                            acc3 = fma(acc3, sc_old, u32_as_f32(a0[3]) * sc_new);
+                            acc4 = fma(acc4, sc_old, u32_as_f32(a1[0]) * sc_new);
+                            acc5 = fma(acc5, sc_old, u32_as_f32(a1[1]) * sc_new);
+                            acc6 = fma(acc6, sc_old, u32_as_f32(a1[2]) * sc_new);
+                            acc7 = fma(acc7, sc_old, u32_as_f32(a1[3]) * sc_new);
+                        }
+                    }
+                    reg f32 denom = maxf(gsum, 1.0e-20f);
+                    reg f32 inv_d = rcp(denom);
+                    inv_d = fma(inv_d, fma(-denom, inv_d, 1.0f), inv_d);
+                    reg u32x4 gv = ldg128_stream(ptr_add(attn_local_bf16, row * 1792 + (head * 2 + 1) * 32 + lane, 16));
+
+                    reg f32 q0 = acc0 * inv_d;
+                    q0 = fma(inv_d, fma(-denom, q0, acc0), q0);
+                    reg f32 q1 = acc1 * inv_d;
+                    q1 = fma(inv_d, fma(-denom, q1, acc1), q1);
+                    reg f32 r0 = bf16_lo(f32_to_bf16(q0));
+                    reg f32 r1 = bf16_lo(f32_to_bf16(q1));
+                    reg f32 d0 = exp2_ftz(bf16_lo(gv[0]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 d1 = exp2_ftz(bf16_hi(gv[0]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 s0 = rcp(d0);
+                    reg f32 s1 = rcp(d1);
+                    s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                    s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                    s0 = fma(s0, fma(-d0, s0, 1.0f), s0);
+                    s1 = fma(s1, fma(-d1, s1, 1.0f), s1);
+                    gv[0] = pack_bf16x2(r0 * s0, r1 * s1);
+
+                    reg f32 q2 = acc2 * inv_d;
+                    q2 = fma(inv_d, fma(-denom, q2, acc2), q2);
+                    reg f32 q3 = acc3 * inv_d;
+                    q3 = fma(inv_d, fma(-denom, q3, acc3), q3);
+                    reg f32 r2 = bf16_lo(f32_to_bf16(q2));
+                    reg f32 r3 = bf16_lo(f32_to_bf16(q3));
+                    reg f32 d2 = exp2_ftz(bf16_lo(gv[1]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 d3 = exp2_ftz(bf16_hi(gv[1]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 s2 = rcp(d2);
+                    reg f32 s3 = rcp(d3);
+                    s2 = fma(s2, fma(-d2, s2, 1.0f), s2);
+                    s3 = fma(s3, fma(-d3, s3, 1.0f), s3);
+                    s2 = fma(s2, fma(-d2, s2, 1.0f), s2);
+                    s3 = fma(s3, fma(-d3, s3, 1.0f), s3);
+                    gv[1] = pack_bf16x2(r2 * s2, r3 * s3);
+
+                    reg f32 q4 = acc4 * inv_d;
+                    q4 = fma(inv_d, fma(-denom, q4, acc4), q4);
+                    reg f32 q5 = acc5 * inv_d;
+                    q5 = fma(inv_d, fma(-denom, q5, acc5), q5);
+                    reg f32 r4 = bf16_lo(f32_to_bf16(q4));
+                    reg f32 r5 = bf16_lo(f32_to_bf16(q5));
+                    reg f32 d4 = exp2_ftz(bf16_lo(gv[2]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 d5 = exp2_ftz(bf16_hi(gv[2]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 s4 = rcp(d4);
+                    reg f32 s5 = rcp(d5);
+                    s4 = fma(s4, fma(-d4, s4, 1.0f), s4);
+                    s5 = fma(s5, fma(-d5, s5, 1.0f), s5);
+                    s4 = fma(s4, fma(-d4, s4, 1.0f), s4);
+                    s5 = fma(s5, fma(-d5, s5, 1.0f), s5);
+                    gv[2] = pack_bf16x2(r4 * s4, r5 * s5);
+
+                    reg f32 q6 = acc6 * inv_d;
+                    q6 = fma(inv_d, fma(-denom, q6, acc6), q6);
+                    reg f32 q7 = acc7 * inv_d;
+                    q7 = fma(inv_d, fma(-denom, q7, acc7), q7);
+                    reg f32 r6 = bf16_lo(f32_to_bf16(q6));
+                    reg f32 r7 = bf16_lo(f32_to_bf16(q7));
+                    reg f32 d6 = exp2_ftz(bf16_lo(gv[3]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 d7 = exp2_ftz(bf16_hi(gv[3]) * -1.4426950408889634f) + 1.0f;
+                    reg f32 s6 = rcp(d6);
+                    reg f32 s7 = rcp(d7);
+                    s6 = fma(s6, fma(-d6, s6, 1.0f), s6);
+                    s7 = fma(s7, fma(-d7, s7, 1.0f), s7);
+                    s6 = fma(s6, fma(-d6, s6, 1.0f), s6);
+                    s7 = fma(s7, fma(-d7, s7, 1.0f), s7);
+                    gv[3] = pack_bf16x2(r6 * s6, r7 * s7);
+
+                    stg128(ptr_add(merged_out_bf16, (row * 24 + head) * 32 + lane, 16), gv);
+                }
+            }
+        }
+    }
+    pdl_release();
+}
+
+kernel[BLOCK, 32] head_certified_reduce_f32(
+    global u32* partial_scores, global u32* partial_candidates,
+    global u32* output_token_id, global u32* output_score,
+    u32 candidate_offset
+) {
+    shared f32 best_score[8];
+    shared u32 best_cand[8];
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg f32 running_best = -3.0e38f;
+    reg u32 running_cand = 0xFFFFFFFF;
+    if (tid < 128) {
+        reg f32 score = u32_as_f32(ldg32_stream(ptr_add(partial_scores, tid, 4)));
+        reg u32 cand = ldg32_stream(ptr_add(partial_candidates, tid, 4));
+        if (score > running_best) {
+            running_best = score;
+            running_cand = cand;
+        } else {
+            if (score == running_best) {
+                if (cand < running_cand) {
+                    running_best = score;
+                    running_cand = cand;
+                }
+            }
+        }
+    }
+    reg f32 os16 = shfl_down(running_best, 16);
+    reg u32 oc16 = shfl_down(running_cand, 16);
+    if (os16 > running_best) {
+        running_best = os16;
+        running_cand = oc16;
+    } else {
+        if (os16 == running_best) {
+            if (oc16 < running_cand) {
+                running_best = os16;
+                running_cand = oc16;
+            }
+        }
+    }
+    reg f32 os8 = shfl_down(running_best, 8);
+    reg u32 oc8 = shfl_down(running_cand, 8);
+    if (os8 > running_best) {
+        running_best = os8;
+        running_cand = oc8;
+    } else {
+        if (os8 == running_best) {
+            if (oc8 < running_cand) {
+                running_best = os8;
+                running_cand = oc8;
+            }
+        }
+    }
+    reg f32 os4 = shfl_down(running_best, 4);
+    reg u32 oc4 = shfl_down(running_cand, 4);
+    if (os4 > running_best) {
+        running_best = os4;
+        running_cand = oc4;
+    } else {
+        if (os4 == running_best) {
+            if (oc4 < running_cand) {
+                running_best = os4;
+                running_cand = oc4;
+            }
+        }
+    }
+    reg f32 os2 = shfl_down(running_best, 2);
+    reg u32 oc2 = shfl_down(running_cand, 2);
+    if (os2 > running_best) {
+        running_best = os2;
+        running_cand = oc2;
+    } else {
+        if (os2 == running_best) {
+            if (oc2 < running_cand) {
+                running_best = os2;
+                running_cand = oc2;
+            }
+        }
+    }
+    reg f32 os1 = shfl_down(running_best, 1);
+    reg u32 oc1 = shfl_down(running_cand, 1);
+    if (os1 > running_best) {
+        running_best = os1;
+        running_cand = oc1;
+    } else {
+        if (os1 == running_best) {
+            if (oc1 < running_cand) {
+                running_best = os1;
+                running_cand = oc1;
+            }
+        }
+    }
+    if (lane == 0) {
+        sts32(best_score, wid, running_best);
+        sts32(best_cand, wid, running_cand);
+    }
+    barrier();
+    if (tid == 0) {
+        reg f32 fb = lds32(best_score, 0);
+        reg u32 fc = lds32(best_cand, 0);
+        unroll (w = 1..8) {
+            reg f32 ws = lds32(best_score, w);
+            reg u32 wc = lds32(best_cand, w);
+            if (ws > fb) {
+                fb = ws;
+                fc = wc;
+            } else {
+                if (ws == fb) {
+                    if (wc < fc) {
+                        fb = ws;
+                        fc = wc;
+                    }
+                }
+            }
+        }
+        stg32(output_token_id, fc + candidate_offset);
+        stg32(output_score, f32_as_u32(fb));
+    }
+}
+
+kernel[BLOCK, 32] stage_embedding_lookup_pdl_bf16x8(
+    global u32* embed_weight, global u32* token_ids, global u32* hidden_bf16,
+    u32 hidden, u32 vocab_slice_offset, u32 vocab_slice_rows
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 row = ctaid_y();
+    reg u32 tok = ldg32_stream(ptr_add(token_ids, row, 4));
+    reg u32 local = tok - vocab_slice_offset;
+    reg u32 row_bytes = hidden << 1;
+    ureg u64 target = ptr_add(hidden_bf16, row, row_bytes);
+    reg u32 tid = ctaid_x() * BLOCK + tid_x();
+    reg u32 stride = grid_x() * BLOCK;
+    reg u32 align_bad = (hidden & 7) | (target[0] & 15);
+    if (local < vocab_slice_rows) {
+        ureg u64 source = ptr_add(embed_weight, local, row_bytes);
+        reg u32 src_bad = align_bad | (source[0] & 15);
+        if (src_bad == 0) {
+            reg u32 vecs = hidden >> 3;
+            for (reg u32 v = tid; v < vecs; v += stride) {
+                reg u32x4 val = ldg128_persist(ptr_add(source, v, 16));
+                stg128(ptr_add(target, v, 16), val);
+            }
+            return;
+        }
+        for (reg u32 k = tid; k < hidden; k += stride) {
+            reg u32 val = ldg16_persist(ptr_add(source, k, 2));
+            stg16(ptr_add(target, k, 2), val);
+        }
+        return;
+    }
+    if (align_bad == 0) {
+        reg u32 vecs = hidden >> 3;
+        reg u32x4 zero = pack_u32x4(0, 0, 0, 0);
+        for (reg u32 v = tid; v < vecs; v += stride) {
+            stg128(ptr_add(target, v, 16), zero);
+        }
+        return;
+    }
+    for (reg u32 k = tid; k < hidden; k += stride) {
+        stg16(ptr_add(target, k, 2), 0);
+    }
+}
+
+kernel[BLOCK, 24] stage_store_outputs_u32_f32(
+    global u32* token_ids_out, global u32* scores_out,
+    global u32* tokens, global u32* scores,
+    global u32* chain_step, u32 rows
+) {
+    reg u32 row = ctaid_x() * ntid_x() + tid_x();
+    if (row >= rows) { return; }
+    reg u32 step = ldg32_stream(chain_step);
+    reg u32 base = step * rows + row;
+    reg u32 has_tok = token_ids_out[0] | token_ids_out[1];
+    if (has_tok != 0) {
+        reg u32 t = ldg32_stream(ptr_add(tokens, row, 4));
+        stg32(ptr_add(token_ids_out, base, 4), t);
+    }
+    reg u32 has_sc = scores_out[0] | scores_out[1];
+    if (has_sc != 0) {
+        reg u32 s = ldg32_stream(ptr_add(scores, row, 4));
+        stg32(ptr_add(scores_out, base, 4), s);
+    }
+}
+
+kernel[BLOCK, 24] stage_chain_advance_u32(
+    global u32* token_ids, global u32* tokens, global u32* positions,
+    global u32* context_length, global u32* sequence_of_row, u32 rows,
+    global u32* chain_step, global u32* distribution_positions, u32 distribution_count
+) {
+    reg u32 row = ctaid_x() * ntid_x() + tid_x();
+    if (row == 0) {
+        reg u32 cs = ldg32_stream(chain_step);
+        stg32(chain_step, cs + 1);
+    }
+    if (row < distribution_count) {
+        reg u32 dp = ldg32_stream(ptr_add(distribution_positions, row, 4));
+        stg32(ptr_add(distribution_positions, row, 4), dp + 1);
+    }
+    if (row >= rows) { return; }
+    reg u32 t = ldg32_stream(ptr_add(tokens, row, 4));
+    stg32(ptr_add(token_ids, row, 4), t);
+    reg u32 p = ldg32_stream(ptr_add(positions, row, 4)) + 1;
+    stg32(ptr_add(positions, row, 4), p);
+    reg u32 seq = ldg32_stream(ptr_add(sequence_of_row, row, 4));
+    stg32(ptr_add(context_length, seq, 4), p + 1);
+}
+
+kernel[BLOCK, 32] stage_last_rows_gather_pdl_bf16x8(
+    global u32* row_begin, global u32* row_indices,
+    global u32* hidden_bf16, global u32* out_bf16, u32 hidden
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 seq = ctaid_x();
+    reg u32 end_idx = ldg32_stream(ptr_add(row_begin, seq + 1, 4)) - 1;
+    reg u32 src_row = ldg32_stream(ptr_add(row_indices, end_idx, 4));
+    reg u32 row_bytes = hidden << 1;
+    ureg u64 src = ptr_add(hidden_bf16, src_row, row_bytes);
+    ureg u64 dst = ptr_add(out_bf16, seq, row_bytes);
+    reg u32 vecs = hidden >> 3;
+    reg u32 step = ntid_x();
+    for (reg u32 k = tid_x(); k < vecs; k += step) {
+        reg u32x4 v = ldg128_stream(ptr_add(src, k, 16));
+        stg128(ptr_add(dst, k, 16), v);
+    }
+}
+
+kernel[BLOCK, 24] stage_last_rows_scatter_pdl_u32_f32(
+    global u32* row_begin, global u32* row_indices,
+    global u32* token, global u32* score,
+    global u32* out_token, global u32* out_score, u32 sequences
+) {
+    pdl_wait();
+    pdl_release();
+    reg u32 seq = ctaid_x() * ntid_x() + tid_x();
+    if (seq >= sequences) { return; }
+    reg u32 end_idx = ldg32_stream(ptr_add(row_begin, seq + 1, 4)) - 1;
+    reg u32 row = ldg32_stream(ptr_add(row_indices, end_idx, 4));
+    reg u32 tok = ldg32_stream(ptr_add(token, seq, 4));
+    reg u32 sc = ldg32_stream(ptr_add(score, seq, 4));
+    stg32(ptr_add(out_token, row, 4), tok);
+    stg32(ptr_add(out_score, row, 4), sc);
+}

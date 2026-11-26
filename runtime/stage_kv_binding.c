@@ -1096,10 +1096,17 @@ static uint32_t SparkStageKvPoolMinimum(uint32_t minimum,uint32_t chunks)
 	return(SparkStageKvPoolMinimumChunks(minimum,chunks,properties != 0 ? properties->properties : 0u));
 }
 
+static uint32_t SparkStageKvPoolTargetChunks(void)
+{
+	const SparkDeviceProperties *properties = SparkDeviceGetProperties();
+	return(properties != 0 && (properties->properties & SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK) != 0u ?
+		SPARK_STAGE_KV_POOL_STATIC_TARGET_CHUNKS : SPARK_STAGE_KV_POOL_TARGET_CHUNKS);
+}
+
 static SparkStatus SparkStageKvBindingPoolLayout(SparkStageKvBinding *binding,uint64_t lane_entries,SparkWeightdKvPoolRequest *request,uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],uint64_t **offsets_out)
 {
 	SparkStageKvPoolSlot *slots;
-	uint64_t granularity = 0u,raw,chunk,table_span,cursor,spans[SPARK_STAGE_KV_MAX_REGIONS],*offsets;
+	uint64_t granularity = 0u,raw,chunk,table_span,cursor,spans[SPARK_STAGE_KV_MAX_REGIONS],*offsets,target_chunks;
 	uint32_t count,index,region,minimum = 0u;
 	SparkStatus status;
 	status = SparkWeightdKvPoolGranularity(&granularity);
@@ -1108,7 +1115,8 @@ static SparkStatus SparkStageKvBindingPoolLayout(SparkStageKvBinding *binding,ui
 	raw = lane_entries * sizeof(uint32_t);
 	for (region=0u; region<binding->region_count; region++)
 		raw += (uint64_t)binding->physical_page_count * binding->region_packed_page_bytes[region];
-	chunk = granularity * ((raw + granularity * SPARK_STAGE_KV_POOL_TARGET_CHUNKS - 1u) / (granularity * SPARK_STAGE_KV_POOL_TARGET_CHUNKS));
+	target_chunks = SparkStageKvPoolTargetChunks();
+	chunk = granularity * ((raw + granularity * target_chunks - 1u) / (granularity * target_chunks));
 	if ( chunk == 0u )
 		chunk = granularity;
 	cursor = SparkStageKvBindingRegionOffsets(binding,lane_entries,chunk,region_offsets,spans);
