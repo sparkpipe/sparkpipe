@@ -1,0 +1,2 @@
++1278
+GLM52 (glm-5.3 + a.x-k2) Blackwell sm_121a P1/P3 optimization: CUDA-graph-safe GPU dense-skip DSA/indexer kernels (GlmIndexQExactSkipKernel, GlmIndexQMmaSkipKernel, GlmIndexHeadSkipKernel, GlmIndexQueryRopeSkipKernel, GlmIndexScoreSkipKernel); vectorized NormGate, cp.async B1/chain kv_b_key & fused kv_b_value+gate, and small grouped route for a.x-k2; fused BF16+FP8 GlmMoeExactW1ActKernel, 2-col-group GlmMoeExactW2Kernel, tiled GlmSharedW1ActTileKernel, FragmentPair + __ldcs L2-pinned W1 MMA / __stcs W2 MMA kernels, and PDL dependent launches.
