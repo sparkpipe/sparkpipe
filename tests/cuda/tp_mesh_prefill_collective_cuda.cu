@@ -111,6 +111,19 @@ static void ResponderServiceGate(ResponderState *st, uint64_t *gate_seen)
     __atomic_store_n(&st->gate->ready, 1u, __ATOMIC_RELEASE);
 }
 
+static uint16_t Sum2d4x4Bf16(uint16_t *const peer_buf[16u], uint64_t idx)
+{
+    float col_acc = 0.0f;
+    for ( uint32_t r = 0u; r < 4u; ++r )
+    {
+        float row_acc = 0.0f;
+        for ( uint32_t c = 0u; c < 4u; ++c )
+            row_acc += Bf16ToFloat(peer_buf[(r << 2u) | c][idx]);
+        col_acc += Bf16ToFloat(FloatToBf16Rn(row_acc));
+    }
+    return FloatToBf16Rn(col_acc);
+}
+
 static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uint64_t tag)
 {
     uint64_t bytes = cell[1];
@@ -119,8 +132,9 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
     uint64_t ring = (tag - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u);
     uint32_t half = route.fields.half;
     uint64_t half_off = SPARK_WEIGHTD_MESH_HALF_OFFSET(half);
-    uint64_t tail_off = half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE ?
-        SPARK_WEIGHTD_MESH_TAIL_OFFSET(half) : (SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u);
+    uint64_t tail_off = route.fields.compact_tail != 0u ? bytes :
+        (half != SPARK_WEIGHTD_MESH_ROUTE_HALF_WHOLE ?
+            SPARK_WEIGHTD_MESH_TAIL_OFFSET(half) : (SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u));
     uint64_t t0 = NowNs();
     uint32_t cancel_ns = __atomic_load_n(&st->cancel_after_ns, __ATOMIC_ACQUIRE);
     if ( cancel_ns != 0u )
@@ -132,6 +146,7 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
     }
     uint32_t drop = __atomic_load_n(&st->drop_peer, __ATOMIC_ACQUIRE);
     uint32_t mask = (uint32_t)route.fields.peer_mask;
+    uint32_t is_2d = st->op_kind == 1u && st->degree == 16u && __builtin_popcount(mask) == 3 ? 1u : 0u;
     uint64_t wire_per_peer_ns = 0u;
     uint64_t xfer_bytes = route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? route.fields.slice_bytes : bytes;
     if ( st->wire_gbps_x10 != 0u )
@@ -153,6 +168,76 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
             while ( NowNs() - t0 < target_ns ) {}
         }
         uint8_t *dst = st->band + ((uint64_t)p * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ring) * SPARK_WEIGHTD_MESH_SLOT_BYTES + half_off;
+        uint64_t p_tail_off = tail_off;
+        if ( is_2d != 0u )
+        {
+            const uint64_t cap2d = 4u * (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t));
+            const uint64_t cidx = st->chunk_idx / 4u;
+            const uint64_t cbegin = cidx * cap2d;
+            const uint64_t ccount = st->total_elements > cbegin ? (st->total_elements - cbegin < cap2d ? st->total_elements - cbegin : cap2d) : 0u;
+            const uint64_t sub_slice = ((ccount + 15u) / 16u + 7u) & ~UINT64_C(7);
+            const uint64_t col_slice = 4u * sub_slice;
+            const uint32_t row = st->rank >> 2u, col = st->rank & 3u;
+            const uint32_t row_mask = (0xfu << (row << 2u)) & ~(1u << st->rank);
+            const uint32_t is_row = mask == row_mask ? 1u : 0u;
+            uint64_t first = 0u, len = 0u;
+            if ( route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER )
+            {
+                if ( is_row != 0u )
+                {
+                    first = (uint64_t)col * col_slice;
+                    len = ccount > first ? (ccount - first < col_slice ? ccount - first : col_slice) : 0u;
+                    if ( st->copy_payload != 0u && st->peer_buf[p] != 0 && len != 0u )
+                        memcpy(dst, st->peer_buf[p] + cbegin + first, (size_t)(len * sizeof(uint16_t)));
+                }
+                else
+                {
+                    const uint32_t p_row = p >> 2u;
+                    first = (uint64_t)col * col_slice + (uint64_t)row * sub_slice;
+                    len = ccount > first ? (ccount - first < sub_slice ? ccount - first : sub_slice) : 0u;
+                    if ( st->copy_payload != 0u && st->peer_buf[p] != 0 && len != 0u )
+                    {
+                        uint16_t *out16 = (uint16_t *)dst;
+                        for ( uint64_t i = 0u; i < len; ++i )
+                        {
+                            float acc = 0.0f;
+                            for ( uint32_t c = 0u; c < 4u; ++c )
+                                acc += Bf16ToFloat(st->peer_buf[(p_row << 2u) | c][cbegin + first + i]);
+                            out16[i] = FloatToBf16Rn(acc);
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if ( is_row == 0u )
+                {
+                    const uint32_t p_row = p >> 2u;
+                    first = (uint64_t)col * col_slice + (uint64_t)p_row * sub_slice;
+                    len = ccount > first ? (ccount - first < sub_slice ? ccount - first : sub_slice) : 0u;
+                }
+                else
+                {
+                    const uint32_t p_col = p & 3u;
+                    first = (uint64_t)p_col * col_slice;
+                    len = ccount > first ? (ccount - first < col_slice ? ccount - first : col_slice) : 0u;
+                }
+                if ( route.fields.compact_tail != 0u )
+                {
+                    uint64_t gb = (len * sizeof(uint16_t) + 7u) & ~UINT64_C(7);
+                    p_tail_off = gb != 0u ? gb : 8u;
+                }
+                if ( st->copy_payload != 0u && st->peer_buf[p] != 0 && len != 0u )
+                {
+                    uint16_t *out16 = (uint16_t *)dst;
+                    for ( uint64_t i = 0u; i < len; ++i )
+                        out16[i] = Sum2d4x4Bf16(st->peer_buf, cbegin + first + i);
+                }
+            }
+            __atomic_store_n((volatile uint64_t *)(st->band + ((uint64_t)p * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ring) * SPARK_WEIGHTD_MESH_SLOT_BYTES + p_tail_off),
+                tag, __ATOMIC_RELEASE);
+            continue;
+        }
         if ( st->copy_payload != 0u && st->peer_buf[p] != 0 )
         {
             if ( st->op_kind == 1u )
@@ -218,7 +303,18 @@ static void ResponderDeliverTag(ResponderState *st, volatile uint64_t *cell, uin
                     memcpy(dst, st->peer_buf[p] + (uint64_t)st->rank * per_peer + begin, (size_t)(count * sizeof(uint16_t)));
             }
         }
-        __atomic_store_n((volatile uint64_t *)(st->band + ((uint64_t)p * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ring) * SPARK_WEIGHTD_MESH_SLOT_BYTES + tail_off),
+        if ( st->op_kind == 1u && route.fields.compact_tail != 0u && route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_FULL &&
+             SparkTpMeshDirectPhasesPerChunk(st->total_elements, st->degree, 1u,
+                 SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) == 2u )
+        {
+            uint64_t slice = SparkTpMeshRsagSlice(st->total_elements, st->degree);
+            uint64_t first = (uint64_t)p * slice;
+            uint64_t len = st->total_elements > first ? st->total_elements - first : 0u;
+            if ( len > slice ) len = slice;
+            uint64_t gb = (len * sizeof(uint16_t) + 7u) & ~UINT64_C(7);
+            p_tail_off = gb != 0u ? gb : 8u;
+        }
+        __atomic_store_n((volatile uint64_t *)(st->band + ((uint64_t)p * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ring) * SPARK_WEIGHTD_MESH_SLOT_BYTES + p_tail_off),
             tag, __ATOMIC_RELEASE);
     }
     __atomic_store_n(st->shipped, tag, __ATOMIC_RELEASE);
@@ -430,17 +526,25 @@ static void EnsurePeerBufs(LargeFixture *f, uint64_t elems_per_peer, uint32_t sa
 static void TestRsagExact(LargeFixture *f, uint32_t rank, uint64_t elements, uint32_t inplace)
 {
     const uint32_t degree = 16u;
+    const uint32_t expect_2d = elements >= SPARK_TP_MESH_FAST_2D_MIN_ELEMENTS ? 1u : 0u;
     EnsurePeerBufs(f, elements, 1000u + rank + (uint32_t)(elements & 0xffffu) + inplace * 17u);
     uint16_t *h_ref = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
     uint16_t *h_out = (uint16_t *)malloc((size_t)elements * sizeof(uint16_t));
     for ( uint64_t i = 0u; i < elements; ++i )
     {
-        float acc = 0.0f;
-        for ( uint32_t p = 0u; p < degree; ++p )
-            acc += Bf16ToFloat(f->responder.peer_buf[p][i]);
-        h_ref[i] = FloatToBf16Rn(acc);
+        if ( expect_2d != 0u )
+            h_ref[i] = Sum2d4x4Bf16(f->responder.peer_buf, i);
+        else
+        {
+            float acc = 0.0f;
+            for ( uint32_t p = 0u; p < degree; ++p )
+                acc += Bf16ToFloat(f->responder.peer_buf[p][i]);
+            h_ref[i] = FloatToBf16Rn(acc);
+        }
     }
     FixtureResetEpoch(f, rank, degree, 1u, elements, 1u, 0u, 0u);
+    if ( expect_2d != 0u )
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
     CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[rank], (size_t)elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
     void *dst = inplace != 0u ? (void *)f->local_dev : (void *)f->out_dev;
     if ( inplace == 0u )
@@ -454,6 +558,13 @@ static void TestRsagExact(LargeFixture *f, uint32_t rank, uint64_t elements, uin
     CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
     CHECK(ctrl.error_word == 0u && ctrl.rounds_done == 1u, "RSAG large exact completed cleanly");
     CHECK(memcmp(h_ref, h_out, (size_t)elements * sizeof(uint16_t)) == 0, "RSAG large output is 0-ULP bitwise exact");
+    if ( expect_2d != 0u )
+    {
+        const uint64_t cap2d = 4u * (SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES / sizeof(uint16_t));
+        const uint64_t chunks = (elements + cap2d - 1u) / cap2d;
+        CHECK(__atomic_load_n(&f->responder.rounds_serviced, __ATOMIC_ACQUIRE) == 4u * chunks,
+            "2D 4x4 RS+AG executes 4 3-peer hops per chunk");
+    }
     free(h_out);
     free(h_ref);
 }
@@ -736,6 +847,50 @@ static void RunLargeBenchmarks(LargeFixture *f)
     }
 }
 
+static void Test2dCrossRankAndGateGx(LargeFixture *f)
+{
+    const uint32_t degree = 16u;
+    const uint64_t el_small = 64ull * 4096ull;
+    const uint64_t el_big = 256ull * 4096ull;
+    EnsurePeerBufs(f, el_big, 7777u);
+    uint16_t *h_out0 = (uint16_t *)malloc((size_t)el_small * sizeof(uint16_t));
+    uint16_t *h_out7 = (uint16_t *)malloc((size_t)el_small * sizeof(uint16_t));
+    uint16_t *h_out15 = (uint16_t *)malloc((size_t)el_small * sizeof(uint16_t));
+    uint16_t *h_big = (uint16_t *)malloc((size_t)el_big * sizeof(uint16_t));
+    uint32_t ranks[3] = { 0u, 7u, 15u };
+    uint16_t *outs[3] = { h_out0, h_out7, h_out15 };
+    for ( uint32_t r = 0u; r < 3u; ++r )
+    {
+        FixtureResetEpoch(f, ranks[r], degree, 1u, el_small, 1u, 0u, 0u);
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+        CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[ranks[r]], (size_t)el_small * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)el_small * sizeof(uint16_t)));
+        CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, ranks[r], degree, f->local_dev, f->out_dev, f->scratch,
+            el_small, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(outs[r], f->out_dev, (size_t)el_small * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    }
+    CHECK(memcmp(h_out0, h_out7, (size_t)el_small * sizeof(uint16_t)) == 0 &&
+          memcmp(h_out0, h_out15, (size_t)el_small * sizeof(uint16_t)) == 0,
+        "2D 4x4 RS+AG output is bit-identical across TP ranks 0, 7, 15");
+    FixtureResetEpoch(f, 0u, degree, 1u, el_big, 1u, 0u, 0u);
+    f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CUDA_OK(cudaMemcpy(f->local_dev, f->responder.peer_buf[0], (size_t)el_big * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    CUDA_OK(cudaMemset(f->out_dev, 0, (size_t)el_big * sizeof(uint16_t)));
+    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+        f->doorbell_dev, f->gate_dev, f->control, 0u, degree, f->local_dev, f->out_dev, f->scratch,
+        el_big, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 5000000000ull, SPARK_TP_MESH_STAGE_ALL));
+    CUDA_OK(cudaStreamSynchronize(f->stream));
+    CUDA_OK(cudaMemcpy(h_big, f->out_dev, (size_t)el_big * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+    CHECK(memcmp(h_out0, h_big, (size_t)el_small * sizeof(uint16_t)) == 0,
+        "2D 4x4 RS+AG Gate GX row-invariance: 64-row warm chunk matches 256-row cold chunk bit-for-bit");
+    free(h_big);
+    free(h_out15);
+    free(h_out7);
+    free(h_out0);
+}
+
 int main(void)
 {
     LargeFixture fixture;
@@ -761,6 +916,7 @@ int main(void)
     TestReduceScatterExact(&fixture, 0u, 4096ull * 4096ull);
     TestAllGatherExact(&fixture, 0u, 4096ull * 4096ull);
     TestE14R2Degree4AndScatterFastPaths(&fixture);
+    Test2dCrossRankAndGateGx(&fixture);
     TestLargeCancelAndTimeout(&fixture);
 
     RunLargeBenchmarks(&fixture);

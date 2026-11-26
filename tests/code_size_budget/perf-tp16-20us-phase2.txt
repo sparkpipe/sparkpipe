@@ -1,0 +1,2 @@
++1293
+TP16-20us Collective Engine Phase 2: fused single-kernel TP16 B1..B4 RS+AG (SparkTpMeshFastRsagFusedKernel), zero-branch precomputed SparkWeightdMeshLanePlan + SparkWeightdMeshPostCompactFast in node/weightd_mesh.c (and SparkWeightdMeshInitQps helper extraction keeping production max CCN at 73), and 2D 4x4 RS+AG chunking (SparkTpMeshFast2dStageKernel / SparkTpMeshFast2dReducePublishKernel / SparkTpMeshFast2dGatherKernel) for B64+ collectives.
