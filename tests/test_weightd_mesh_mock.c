@@ -3879,9 +3879,9 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         index * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES);
     CHECK(weightd_mesh.hybrid_active == 1u && ctrl->cpu_mode == 1u && ctrl->owner_lane == 0u &&
           ctrl->owner_band == 0u && ctrl->owner_rank == local_rank && ctrl->peer_count == SPARK_WEIGHTD_MESH_PEERS &&
-          ctrl->dbrec_in_shm == 1u && ctrl->grant_gen >= 1u &&
+          ctrl->dbrec_in_shm == 0u && ctrl->grant_gen >= 1u &&
           (req->capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ) != 0u,
-        "tp16-20us phase3: hybrid grant activates cpu_mode=1, advertises CAPABILITY_HYBRID_SQ, and populates 15 peers");
+        "tp16-20us phase3: hybrid grant activates cpu_mode=1, advertises CAPABILITY_HYBRID_SQ, and keeps CPU dbrec ownership");
 
     seq = weightd_mesh.issued[index] + 1u;
     slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
@@ -4043,6 +4043,50 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
               spark_stub_ibv_posted_count() - first == 2u * SPARK_WEIGHTD_MESH_PEERS,
             "tp16-20us phase3: hybrid poll yields to lower-seq CPU doorbell instead of skipping it");
         test_complete_range(first,spark_stub_ibv_posted_count());
+    }
+
+    {
+        uint64_t old_seq = ++seq;
+        uint64_t old_tag = (UINT64_C(0x72) << 32u) | old_seq;
+        uint64_t old_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((old_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint32_t old_first = spark_stub_ibv_posted_count(),old_last,k;
+        CHECK(test_hybrid_write_wqe(ctrl,band,old_slot,old_seq,old_tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7201000000000000)) == 1u,
+            "tp16-20us phase3: issue hybrid round whose record slot stays pending until CQ drains");
+        SparkWeightdMeshDoorbellPoll();
+        old_last = spark_stub_ibv_posted_count();
+        for (k = old_first; k < old_last; k++)
+        {
+            SparkStubIbvPostedWork w;
+            CHECK(spark_stub_ibv_posted(k,&w) == 0 && spark_stub_ibv_complete(w.wr_id,IBV_WC_SUCCESS) == 0,
+                "tp16-20us phase3: stage CQE for pending slot before revoke");
+        }
+        uint64_t hyb_seq = old_seq + SPARK_WEIGHTD_MESH_SLOTS_PER_RANK;
+        uint64_t hyb_tag = (UINT64_C(0x72) << 32u) | hyb_seq;
+        uint64_t hyb_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((hyb_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        uint64_t next_seq = hyb_seq + 1u;
+        uint64_t next_tag = (UINT64_C(0x72) << 32u) | next_seq;
+        uint64_t next_slot = (uint64_t)local_rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
+            ((next_seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u));
+        SparkWeightdMeshRoute next_route = {0};
+        next_route.fields.peer_mask = peer_mask;
+        next_route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+        *(volatile uint64_t *)((uint8_t *)weightd_mesh.recv_buffer +
+            ((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + next_slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES +
+            SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u) = next_tag;
+        CHECK(test_hybrid_write_wqe(ctrl,band,hyb_slot,hyb_seq,hyb_tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7202000000000000)) == 1u,
+            "tp16-20us phase3: queue hybrid trigger colliding with pending record slot before CPU revoke");
+        first = spark_stub_ibv_posted_count();
+        pthread_mutex_lock(&SparkWeightdMeshWireLock);
+        CHECK(SparkWeightdMeshPostSlot(band,local_rank,next_tag,next_slot,256u,next_route,SparkMonotonicNs()) == SPARK_STATUS_OK,
+            "tp16-20us phase3: CPU PostSlot revoke drains CQ and rings pending hybrid trigger before posting CPU round");
+        pthread_mutex_unlock(&SparkWeightdMeshWireLock);
+        CHECK(weightd_mesh.issued[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank] == next_tag &&
+              spark_stub_ibv_posted_count() - first == 3u * SPARK_WEIGHTD_MESH_PEERS,
+            "tp16-20us phase3: revoke preserved collided hybrid trigger (15 WQEs) + CPU round (30 WQEs)");
+        test_complete_range(first,spark_stub_ibv_posted_count());
+        seq = next_seq;
     }
 
     pthread_mutex_lock(&SparkWeightdMeshWireLock);

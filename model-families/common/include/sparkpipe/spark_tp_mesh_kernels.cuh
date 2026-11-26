@@ -1179,8 +1179,9 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
 
 static __device__ __forceinline__ uint32_t SparkTpMeshShippedAccepts(const SparkTpMeshRoundControl *control,uint64_t shipped,uint32_t prior)
 {
+    const uint64_t prior_seq = control->round_seq_prior & ~(UINT64_C(1) << 63u);
     return control->round_seq == 0u || shipped == control->round_seq ||
-        (prior != 0u && control->round_seq_prior != 0u && shipped == control->round_seq_prior) ? 1u : 0u;
+        (prior != 0u && prior_seq != 0u && shipped == prior_seq) ? 1u : 0u;
 }
 
 static __device__ uint32_t SparkTpMeshAlreadyShipped(const SparkTpMeshRoundControl *control,uint32_t prior)

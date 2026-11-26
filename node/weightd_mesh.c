@@ -46,7 +46,7 @@
 #define SPARK_WEIGHTD_MESH_DEFAULT_DIR "/tmp/weightd-mesh"
 #define SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS 250000000L
 #define SPARK_WEIGHTD_MESH_SQ_WAIT_POLLS 64u
-#define SPARK_WEIGHTD_MESH_HYBRID_REVOKE_NS UINT64_C(5000000)
+#define SPARK_WEIGHTD_MESH_HYBRID_REVOKE_NS UINT64_C(50000000)
 #define SPARK_WEIGHTD_MESH_HYBRID_ALLOC_MAX 128u
 
 static const char *weightd_mesh_dir = SPARK_WEIGHTD_MESH_DEFAULT_DIR;
@@ -3162,7 +3162,8 @@ static uint32_t SparkWeightdMeshHybridLaneCapable(uint32_t lane,uint32_t *dbrec_
             all_dbr = 0u;
     }
     if ( dbrec_in_shm_out != 0 )
-        *dbrec_in_shm_out = all_dbr;
+        *dbrec_in_shm_out = 0u;
+    (void)all_dbr;
     return 1u;
 }
 
@@ -3354,11 +3355,31 @@ static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
     return rung;
 }
 
+static uint32_t SparkWeightdMeshHybridPendingTriggerLocked(const SparkWeightdMeshHybridCtrl *ctrl)
+{
+    uint32_t owner_band = weightd_mesh.hybrid_owner_band,index;
+    uint64_t issued,s0,s1,cpu0,cpu1;
+    if ( ctrl == 0 || owner_band >= SPARK_WEIGHTD_MESH_BANDS || ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
+        return 0u;
+    index = owner_band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + ctrl->owner_rank;
+    if ( SparkWeightdMeshCellFailed(index) != 0u )
+        return 0u;
+    issued = weightd_mesh.issued[index];
+    s0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
+    s1 = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
+    cpu0 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,0u)[0],__ATOMIC_ACQUIRE);
+    cpu1 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,1u)[0],__ATOMIC_ACQUIRE);
+    if ( s0 > issued && !(cpu0 > issued && cpu0 < s0) && !(cpu1 > issued && cpu1 < s0) )
+        return 1u;
+    if ( s1 > issued && !(cpu0 > issued && cpu0 < s1) && !(cpu1 > issued && cpu1 < s1) )
+        return 1u;
+    return 0u;
+}
+
 static void SparkWeightdMeshHybridRevokeLocked(void)
 {
     SparkWeightdMeshHybridCtrl *ctrl = SparkWeightdMeshHybridCtrlPtr();
     uint64_t deadline;
-    uint32_t pass;
     if ( weightd_mesh.hybrid_active == 0u )
     {
         if ( ctrl != 0 )
@@ -3376,13 +3397,17 @@ static void SparkWeightdMeshHybridRevokeLocked(void)
                 break;
             SparkWeightdMeshCpuRelax();
         }
-        for (pass = 0u; pass < 4u; pass++)
+        deadline = SparkMonotonicNs() + SPARK_WEIGHTD_MESH_HYBRID_REVOKE_NS;
+        while ( SparkWeightdMeshHybridPendingTriggerLocked(ctrl) != 0u )
         {
             uint64_t now = SparkMonotonicNs();
-            uint32_t rung = SparkWeightdMeshHybridPollLocked(now);
-            if ( rung == 0u )
-                break;
             (void)SparkWeightdMeshDrainCqLocked(now);
+            if ( SparkWeightdMeshHybridPollLocked(now) != 0u )
+                (void)SparkWeightdMeshDrainCqLocked(SparkMonotonicNs());
+            else if ( SparkMonotonicNs() >= deadline )
+                break;
+            else
+                SparkWeightdMeshCpuRelax();
         }
     }
     weightd_mesh.hybrid_active = 0u;
