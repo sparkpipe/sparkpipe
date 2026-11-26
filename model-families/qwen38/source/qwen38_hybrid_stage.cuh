@@ -1616,6 +1616,798 @@ static void QwenGdnConvSplitTiledKernel(uint16_t *__restrict__ window, const uin
 	LmDependentRelease();
 }
 
+template<uint32_t KERNEL, uint32_t KEY_DIM>
+__global__ __launch_bounds__(LM_CAUSAL_CONV_TILE_THREADS, 2)
+static void QwenGdnConvPrefill2DKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count,
+	const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight, uint16_t *__restrict__ query_qk,
+	uint16_t *__restrict__ key_qk, uint16_t *__restrict__ value, uint32_t gdn_qk, uint32_t gdn_v,
+	uint32_t input_stride, uint32_t sequences, uint32_t commit_inline, const uint32_t *__restrict__ sequence_row_indices)
+{
+	constexpr uint32_t HALO = KERNEL - 1u;
+	constexpr uint32_t GROUPS = LM_CAUSAL_CONV_TILE_THREADS / LM_CAUSAL_CONV_TILE_CHANNELS;
+	__shared__ uint16_t tile[HALO + LM_CAUSAL_CONV_TILE_ROWS][LM_CAUSAL_CONV_TILE_CHANNELS];
+	const uint32_t channels = 2u * gdn_qk + gdn_v;
+	const uint32_t sequence = blockIdx.x, lane = threadIdx.x % LM_CAUSAL_CONV_TILE_CHANNELS, group = threadIdx.x / LM_CAUSAL_CONV_TILE_CHANNELS;
+	const uint32_t channel = blockIdx.y * LM_CAUSAL_CONV_TILE_CHANNELS + lane;
+	const uint32_t tile_idx = blockIdx.z;
+	const bool live = channel < channels;
+	float taps_weight[KERNEL];
+	if ( sequence >= sequences )
+	{
+		LmDependentWait();
+		LmDependentRelease();
+		return;
+	}
+	if ( live )
+		LmCausalConvLoadWeights<KERNEL, uint16_t>(weight, channel, taps_weight);
+	else
+		#pragma unroll
+		for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+			taps_weight[tap] = 0.0f;
+	LmDependentWait();
+	const uint32_t begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+	uint32_t end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
+	const uint32_t base = begin + tile_idx * LM_CAUSAL_CONV_TILE_ROWS;
+	if ( base >= end )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t count = end - base < LM_CAUSAL_CONV_TILE_ROWS ? end - base : LM_CAUSAL_CONV_TILE_ROWS;
+	uint16_t *slot = window + (uint64_t)state_index[sequence] * channels * KERNEL;
+	if ( group == 0u && live )
+	{
+		if ( tile_idx == 0u )
+		{
+			if constexpr ( KERNEL == 4u )
+			{
+				const uint2 w = *(const uint2 *)(slot + (uint64_t)channel * 4u);
+				tile[0][lane] = (uint16_t)(w.x >> 16u);
+				tile[1][lane] = (uint16_t)(w.y & 0xffffu);
+				tile[2][lane] = (uint16_t)(w.y >> 16u);
+			}
+			else
+				#pragma unroll
+				for ( uint32_t tap = 0u; tap < HALO; ++tap )
+					tile[tap][lane] = slot[(uint64_t)channel * KERNEL + 1u + tap];
+		}
+		else
+		{
+			#pragma unroll
+			for ( uint32_t tap = 0u; tap < HALO; ++tap )
+			{
+				const uint32_t h_ord = base - HALO + tap;
+				const uint32_t h_row = sequence_row_indices != 0 ? sequence_row_indices[h_ord] : h_ord;
+				tile[tap][lane] = __ldg(input_bf16 + (uint64_t)h_row * input_stride + channel);
+			}
+		}
+	}
+	for ( uint32_t offset = group; offset < count && live; offset += GROUPS )
+	{
+		const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[base + offset] : base + offset;
+		tile[HALO + offset][lane] = __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+	}
+	__syncthreads();
+	for ( uint32_t offset = group; offset < count && live; offset += GROUPS )
+	{
+		const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[base + offset] : base + offset;
+		float total = 0.0f;
+		#pragma unroll
+		for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+			total += LmBf16ToFloat(tile[offset + tap][lane]) * taps_weight[tap];
+		const uint16_t out = LmFloatToBf16(SparkMathSwishFast(LmBf16ToFloat(LmFloatToBf16(total))));
+		if ( channel < gdn_qk )
+			query_qk[(uint64_t)row * gdn_qk + channel] = out;
+		else if ( channel < 2u * gdn_qk )
+			key_qk[(uint64_t)row * gdn_qk + (channel - gdn_qk)] = out;
+		else
+			value[(uint64_t)row * gdn_v + (channel - 2u * gdn_qk)] = out;
+	}
+	if ( commit_inline != 0u && base + count == end )
+	{
+		__syncthreads();
+		if ( group == 0u && live )
+		{
+			if constexpr ( KERNEL == 4u )
+			{
+				uint2 w;
+				w.x = (uint32_t)tile[count - 1u][lane] | ((uint32_t)tile[count][lane] << 16u);
+				w.y = (uint32_t)tile[count + 1u][lane] | ((uint32_t)tile[count + 2u][lane] << 16u);
+				*(uint2 *)(slot + (uint64_t)channel * 4u) = w;
+			}
+			else
+				#pragma unroll
+				for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+					slot[(uint64_t)channel * KERNEL + tap] = tile[count - 1u + tap][lane];
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t KERNEL>
+__global__ __launch_bounds__(QH_THREADS, 4)
+static void QwenGdnConvWindowCommitKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count,
+	const uint16_t *__restrict__ input_bf16, uint32_t channels, uint32_t input_stride, uint32_t sequences,
+	const uint32_t *__restrict__ sequence_row_indices)
+{
+	const uint32_t sequence = blockIdx.x, channel = blockIdx.y * QH_THREADS + threadIdx.x;
+	LmDependentWait();
+	if ( sequence < sequences && channel < channels )
+	{
+		const uint32_t begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+		uint32_t end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+		if ( sequence_row_count != 0 )
+			end = begin + sequence_row_count[sequence];
+		const uint32_t count = end > begin ? end - begin : 0u;
+		if ( count != 0u )
+		{
+			uint16_t *slot = window + (uint64_t)state_index[sequence] * channels * KERNEL;
+			if constexpr ( KERNEL == 4u )
+			{
+				uint16_t o0, o1, o2, o3;
+				if ( count >= 4u )
+				{
+					const uint32_t r0 = sequence_row_indices != 0 ? sequence_row_indices[end - 4u] : (end - 4u);
+					const uint32_t r1 = sequence_row_indices != 0 ? sequence_row_indices[end - 3u] : (end - 3u);
+					const uint32_t r2 = sequence_row_indices != 0 ? sequence_row_indices[end - 2u] : (end - 2u);
+					const uint32_t r3 = sequence_row_indices != 0 ? sequence_row_indices[end - 1u] : (end - 1u);
+					o0 = __ldg(input_bf16 + (uint64_t)r0 * input_stride + channel);
+					o1 = __ldg(input_bf16 + (uint64_t)r1 * input_stride + channel);
+					o2 = __ldg(input_bf16 + (uint64_t)r2 * input_stride + channel);
+					o3 = __ldg(input_bf16 + (uint64_t)r3 * input_stride + channel);
+				}
+				else
+				{
+					const uint2 prev = *(const uint2 *)(slot + (uint64_t)channel * 4u);
+					const uint64_t p64 = (uint64_t)prev.x | ((uint64_t)prev.y << 32u);
+					auto pick = [&](uint32_t tap) -> uint16_t
+					{
+						if ( count + tap < 4u )
+							return (uint16_t)((p64 >> ((count + tap) * 16u)) & 0xffffu);
+						const uint32_t ord = begin + (count + tap - 4u);
+						const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
+						return __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+					};
+					o0 = pick(0u);
+					o1 = pick(1u);
+					o2 = pick(2u);
+					o3 = pick(3u);
+				}
+				uint2 w;
+				w.x = (uint32_t)o0 | ((uint32_t)o1 << 16u);
+				w.y = (uint32_t)o2 | ((uint32_t)o3 << 16u);
+				*(uint2 *)(slot + (uint64_t)channel * 4u) = w;
+			}
+			else
+			{
+				uint16_t out[KERNEL];
+				if ( count >= KERNEL )
+				{
+					#pragma unroll
+					for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+					{
+						const uint32_t ord = end - KERNEL + tap;
+						const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
+						out[tap] = __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+					}
+				}
+				else
+				{
+					#pragma unroll
+					for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+					{
+						if ( count + tap < KERNEL )
+							out[tap] = slot[(uint64_t)channel * KERNEL + count + tap];
+						else
+						{
+							const uint32_t ord = begin + (count + tap - KERNEL);
+							const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[ord] : ord;
+							out[tap] = __ldg(input_bf16 + (uint64_t)row * input_stride + channel);
+						}
+					}
+				}
+				#pragma unroll
+				for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
+					slot[(uint64_t)channel * KERNEL + tap] = out[tap];
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
+#define QH_GDN_CHUNK 32u
+
+template<uint32_t KEY_DIM, uint32_t COL_SLICE, uint32_t K_SPLIT>
+struct QwenGdnChunkShared
+{
+	static constexpr uint32_t V_GROUPS = COL_SLICE / 16u;
+	static constexpr uint32_t REDUCE_STRIDE = (QH_GDN_CHUNK / 8u) * 4u * 32u;
+	__align__(16) float k_hat[QH_GDN_CHUNK][KEY_DIM + 4u];
+	__align__(16) float q_hat[QH_GDN_CHUNK][KEY_DIM + 4u];
+	__align__(16) float val[QH_GDN_CHUNK][COL_SLICE + 4u];
+	float tri_a[QH_GDN_CHUNK][QH_GDN_CHUNK + 1u];
+	float tri_m[QH_GDN_CHUNK][QH_GDN_CHUNK + 1u];
+	float tri_x[QH_GDN_CHUNK][QH_GDN_CHUNK + 1u];
+	__align__(16) float g_cum[QH_GDN_CHUNK];
+	__align__(16) float exp_g[QH_GDN_CHUNK];
+	__align__(16) float exp_tail_diff[QH_GDN_CHUNK];
+	__align__(16) float beta[QH_GDN_CHUNK];
+	float tail_decay;
+	__align__(16) uint16_t raw_key[QH_GDN_CHUNK][KEY_DIM];
+	__align__(16) uint16_t raw_query[QH_GDN_CHUNK][KEY_DIM];
+	__align__(16) uint16_t raw_value[QH_GDN_CHUNK][COL_SLICE];
+	float reduce[K_SPLIT > 1u ? V_GROUPS * (K_SPLIT - 1u) * REDUCE_STRIDE : 1u];
+};
+
+template<uint32_t KEY_DIM, uint32_t VALUE_DIM, uint32_t COL_SLICE, uint32_t K_SPLIT, uint32_t THREADS>
+static __device__ __forceinline__ void QwenGdnChunkFetch(QwenGdnChunkShared<KEY_DIM, COL_SLICE, K_SPLIT> &sh,
+	const uint16_t *__restrict__ query_qk, const uint16_t *__restrict__ key_qk, const uint16_t *__restrict__ value_bf16,
+	const uint32_t *__restrict__ sequence_row_indices, uint32_t first_row, uint32_t rows, uint32_t qk_head, uint32_t qk_heads,
+	uint32_t head, uint32_t heads, uint32_t col_base)
+{
+	constexpr uint32_t KV = KEY_DIM / 8u, VV = COL_SLICE / 8u, PER = 2u * KV + VV;
+	for ( uint32_t index = threadIdx.x; index < rows * PER; index += THREADS )
+	{
+		const uint32_t t = index / PER, piece = index % PER;
+		const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[first_row + t] : first_row + t;
+		if ( piece < KV )
+		{
+			const uint64_t base = ((uint64_t)row * qk_heads + qk_head) * KEY_DIM + piece * 8u;
+			LmStreamCopy((uint32_t)__cvta_generic_to_shared(&sh.raw_key[t][piece * 8u]), key_qk + base, 16u);
+		}
+		else if ( piece < 2u * KV )
+		{
+			const uint32_t p = piece - KV;
+			const uint64_t base = ((uint64_t)row * qk_heads + qk_head) * KEY_DIM + p * 8u;
+			LmStreamCopy((uint32_t)__cvta_generic_to_shared(&sh.raw_query[t][p * 8u]), query_qk + base, 16u);
+		}
+		else
+		{
+			const uint32_t p = piece - 2u * KV;
+			const uint64_t base = ((uint64_t)row * heads + head) * VALUE_DIM + col_base + p * 8u;
+			LmStreamCopy((uint32_t)__cvta_generic_to_shared(&sh.raw_value[t][p * 8u]), value_bf16 + base, 16u);
+		}
+	}
+	LmStreamCommit();
+}
+
+template<uint32_t KEY_DIM, uint32_t COL_SLICE, uint32_t K_SPLIT>
+static __device__ __forceinline__ void QwenGdnChunkGramAndSolve(QwenGdnChunkShared<KEY_DIM, COL_SLICE, K_SPLIT> &sh,
+	uint32_t rows, uint32_t warp, uint32_t lane, uint32_t gid, uint32_t tg)
+{
+	if ( warp < 6u )
+	{
+		const uint32_t tr = warp < 2u ? 0u : 16u;
+		const uint32_t tc = warp < 2u ? (warp * 8u) : ((warp - 2u) * 8u);
+		float da[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, dm[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		const uint32_t a_r0 = tr + gid, a_r1 = a_r0 + 8u, b_r = tc + gid;
+		for ( uint32_t k0 = 0u; k0 < KEY_DIM; k0 += 8u )
+		{
+			const uint32_t kc0 = k0 + tg, kc1 = kc0 + 4u;
+			uint32_t akh[4], akl[4], aqh[4], aql[4], bkh[2], bkl[2];
+			LmDeltaSplitTf32(sh.k_hat[a_r0][kc0], akh[0], akl[0]);
+			LmDeltaSplitTf32(sh.k_hat[a_r1][kc0], akh[1], akl[1]);
+			LmDeltaSplitTf32(sh.k_hat[a_r0][kc1], akh[2], akl[2]);
+			LmDeltaSplitTf32(sh.k_hat[a_r1][kc1], akh[3], akl[3]);
+			LmDeltaSplitTf32(sh.q_hat[a_r0][kc0], aqh[0], aql[0]);
+			LmDeltaSplitTf32(sh.q_hat[a_r1][kc0], aqh[1], aql[1]);
+			LmDeltaSplitTf32(sh.q_hat[a_r0][kc1], aqh[2], aql[2]);
+			LmDeltaSplitTf32(sh.q_hat[a_r1][kc1], aqh[3], aql[3]);
+			LmDeltaSplitTf32(sh.k_hat[b_r][kc0], bkh[0], bkl[0]);
+			LmDeltaSplitTf32(sh.k_hat[b_r][kc1], bkh[1], bkl[1]);
+			LmDeltaMmaFp32(da, akh, akl, bkh, bkl);
+			LmDeltaMmaFp32(dm, aqh, aql, bkh, bkl);
+		}
+		auto store_g = [&](uint32_t r, uint32_t c, float va, float vm)
+		{
+			const bool in = r < rows && c <= r;
+			const float d = in ? expf(sh.g_cum[r] - sh.g_cum[c]) : 0.0f;
+			sh.tri_a[r][c] = (in && c < r) ? (sh.beta[r] * d * va) : 0.0f;
+			sh.tri_m[r][c] = in ? (d * vm) : 0.0f;
+		};
+		const uint32_t c0 = tc + 2u * tg, c1 = c0 + 1u;
+		store_g(a_r0, c0, da[0], dm[0]);
+		store_g(a_r0, c1, da[1], dm[1]);
+		store_g(a_r1, c0, da[2], dm[2]);
+		store_g(a_r1, c1, da[3], dm[3]);
+	}
+	else
+	{
+		const uint32_t tc = 16u + (warp - 6u) * 8u;
+		const uint32_t r0 = gid, r1 = gid + 8u, c0 = tc + 2u * tg, c1 = c0 + 1u;
+		sh.tri_a[r0][c0] = 0.0f; sh.tri_a[r0][c1] = 0.0f;
+		sh.tri_a[r1][c0] = 0.0f; sh.tri_a[r1][c1] = 0.0f;
+		sh.tri_m[r0][c0] = 0.0f; sh.tri_m[r0][c1] = 0.0f;
+		sh.tri_m[r1][c0] = 0.0f; sh.tri_m[r1][c1] = 0.0f;
+	}
+	__syncthreads();
+	if ( warp < 2u && lane < 16u )
+	{
+		const uint32_t blk = warp * 16u;
+		float x[16];
+		#pragma unroll
+		for ( uint32_t t = 0u; t < 16u; ++t )
+		{
+			float total = t == lane ? 1.0f : 0.0f;
+			#pragma unroll
+			for ( uint32_t j = 0u; j < t; ++j )
+				total = fmaf(-sh.tri_a[blk + t][blk + j], x[j], total);
+			x[t] = (blk + t < rows) ? total : 0.0f;
+		}
+		if ( warp == 0u )
+		{
+			const float bj = sh.beta[lane];
+			#pragma unroll
+			for ( uint32_t t = 0u; t < 16u; ++t )
+			{
+				sh.tri_x[t][lane] = x[t] * bj;
+				sh.tri_x[t][16u + lane] = 0.0f;
+			}
+		}
+		else
+		{
+			const float bj = sh.beta[16u + lane];
+			#pragma unroll
+			for ( uint32_t t = 0u; t < 16u; ++t )
+			{
+				sh.tri_a[t][16u + lane] = x[t];
+				sh.tri_x[16u + t][16u + lane] = x[t] * bj;
+			}
+		}
+	}
+	__syncthreads();
+	if ( warp < 2u )
+	{
+		const uint32_t tc = warp * 8u;
+		float tt[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		#pragma unroll
+		for ( uint32_t k0 = 0u; k0 < 16u; k0 += 8u )
+		{
+			uint32_t ah[4], al[4], bh[2], bl[2];
+			LmDeltaSplitTf32(sh.tri_a[16u + gid][k0 + tg], ah[0], al[0]);
+			LmDeltaSplitTf32(sh.tri_a[24u + gid][k0 + tg], ah[1], al[1]);
+			LmDeltaSplitTf32(sh.tri_a[16u + gid][k0 + tg + 4u], ah[2], al[2]);
+			LmDeltaSplitTf32(sh.tri_a[24u + gid][k0 + tg + 4u], ah[3], al[3]);
+			LmDeltaSplitTf32(sh.tri_x[k0 + tg][tc + gid], bh[0], bl[0]);
+			LmDeltaSplitTf32(sh.tri_x[k0 + tg + 4u][tc + gid], bh[1], bl[1]);
+			LmDeltaMmaFp32(tt, ah, al, bh, bl);
+		}
+		const uint32_t c0 = tc + 2u * tg, c1 = c0 + 1u;
+		sh.tri_x[16u + gid][c0] = tt[0];
+		sh.tri_x[16u + gid][c1] = tt[1];
+		sh.tri_x[24u + gid][c0] = tt[2];
+		sh.tri_x[24u + gid][c1] = tt[3];
+		__syncwarp();
+		float xx[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		#pragma unroll
+		for ( uint32_t k0 = 0u; k0 < 16u; k0 += 8u )
+		{
+			uint32_t ah[4], al[4], bh[2], bl[2];
+			LmDeltaSplitTf32(sh.tri_a[gid][16u + k0 + tg], ah[0], al[0]);
+			LmDeltaSplitTf32(sh.tri_a[8u + gid][16u + k0 + tg], ah[1], al[1]);
+			LmDeltaSplitTf32(sh.tri_a[gid][16u + k0 + tg + 4u], ah[2], al[2]);
+			LmDeltaSplitTf32(sh.tri_a[8u + gid][16u + k0 + tg + 4u], ah[3], al[3]);
+			LmDeltaSplitTf32(sh.tri_x[16u + k0 + tg][tc + gid], bh[0], bl[0]);
+			LmDeltaSplitTf32(sh.tri_x[16u + k0 + tg + 4u][tc + gid], bh[1], bl[1]);
+			LmDeltaMmaFp32(xx, ah, al, bh, bl);
+		}
+		__syncwarp();
+		sh.tri_x[16u + gid][c0] = -xx[0];
+		sh.tri_x[16u + gid][c1] = -xx[1];
+		sh.tri_x[24u + gid][c0] = -xx[2];
+		sh.tri_x[24u + gid][c1] = -xx[3];
+	}
+	__syncthreads();
+}
+
+template<uint32_t KEY_DIM, uint32_t VALUE_DIM, uint32_t COL_SLICE, uint32_t THREADS = 256u>
+__global__ __launch_bounds__(THREADS, 1)
+static void QwenGdnScalarChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count,
+	const uint16_t *__restrict__ query_qk, const uint16_t *__restrict__ key_qk, const uint16_t *__restrict__ value_bf16,
+	const uint16_t *__restrict__ ba_bf16, const float *__restrict__ a_log, const float *__restrict__ dt_bias,
+	uint16_t *__restrict__ output_bf16, uint32_t qk_heads, uint32_t heads, uint32_t sequences, uint32_t commit,
+	const uint32_t *__restrict__ sequence_row_indices)
+{
+	constexpr uint32_t C = QH_GDN_CHUNK, WARPS = THREADS / LM_WARP_LANES;
+	constexpr uint32_t V_GROUPS = COL_SLICE / 16u, K_SPLIT = WARPS / V_GROUPS;
+	constexpr uint32_t K_BLOCKS = (KEY_DIM / 8u) / K_SPLIT, C_BLOCKS = C / 8u;
+	constexpr uint32_t REDUCE_STRIDE = C_BLOCKS * 4u * 32u;
+	static_assert(V_GROUPS * K_SPLIT == WARPS && (KEY_DIM % (8u * K_SPLIT)) == 0u && (VALUE_DIM % COL_SLICE) == 0u && (COL_SLICE % 16u) == 0u,
+		"valid qwen scalar-decay GDN chunk-32 geometry");
+	static_assert(sizeof(QwenGdnChunkShared<KEY_DIM, COL_SLICE, K_SPLIT>) <= 98304u, "GDN chunk-32 shared memory fits on sm_121a");
+	extern __shared__ __align__(16) uint8_t qh_gdn_chunk_smem[];
+	QwenGdnChunkShared<KEY_DIM, COL_SLICE, K_SPLIT> &sh = *(QwenGdnChunkShared<KEY_DIM, COL_SLICE, K_SPLIT> *)qh_gdn_chunk_smem;
+	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+	const uint32_t warp_v = warp / K_SPLIT, warp_k = warp % K_SPLIT;
+	const uint32_t gid = lane >> 2u, tg = lane & 3u;
+	const uint32_t k_perm = (gid >> 1u) + ((gid & 1u) << 2u);
+	const uint32_t sequence = blockIdx.x, head = blockIdx.y, col_base = blockIdx.z * COL_SLICE;
+	const uint32_t k_base = warp_k * K_BLOCKS * 8u;
+	const uint32_t v0_local = warp_v * 16u + gid, v1_local = v0_local + 8u;
+	const uint32_t v0 = col_base + v0_local, v1 = col_base + v1_local;
+	if ( sequence >= sequences || head >= heads || col_base >= VALUE_DIM )
+	{
+		LmDependentWait();
+		LmDependentRelease();
+		return;
+	}
+	const float a_exp = expf(__ldg(a_log + head));
+	const float dt_b = __ldg(dt_bias + head);
+	LmDependentWait();
+	const uint32_t repeat = heads / qk_heads;
+	const uint32_t qk_head = head / repeat;
+	const uint32_t begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+	uint32_t end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
+	const uint32_t count = end > begin ? end - begin : 0u;
+	float *state = (float *)(state_pool + ((uint64_t)state_index[sequence] * slot_bytes) + ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(float)));
+	if ( count != 0u )
+		QwenGdnChunkFetch<KEY_DIM, VALUE_DIM, COL_SLICE, K_SPLIT, THREADS>(sh, query_qk, key_qk, value_bf16, sequence_row_indices,
+			begin, count < C ? count : C, qk_head, qk_heads, head, heads, col_base);
+	float s[K_BLOCKS][4];
+	#pragma unroll
+	for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
+	{
+		const uint32_t k0 = k_base + kb * 8u + tg, k1 = k0 + 4u;
+		s[kb][0] = __ldcs(state + k0 * VALUE_DIM + v0);
+		s[kb][1] = __ldcs(state + k1 * VALUE_DIM + v0);
+		s[kb][2] = __ldcs(state + k0 * VALUE_DIM + v1);
+		s[kb][3] = __ldcs(state + k1 * VALUE_DIM + v1);
+	}
+	const float q_scale = rsqrtf((float)KEY_DIM);
+	for ( uint32_t first = 0u; first < count; first += C )
+	{
+		const uint32_t rows = count - first < C ? count - first : C;
+		LmStreamWait<0u>();
+		__syncthreads();
+		{
+			const uint32_t c0 = lane * 4u;
+			#pragma unroll
+			for ( uint32_t row_w = warp; row_w < C; row_w += WARPS )
+			{
+				if ( row_w < rows )
+				{
+					const uint2 rk = *(const uint2 *)&sh.raw_key[row_w][c0];
+					const uint2 rq = *(const uint2 *)&sh.raw_query[row_w][c0];
+					const float ka = __uint_as_float(rk.x << 16u), kb_f = __uint_as_float(rk.x & 0xffff0000u);
+					const float kc = __uint_as_float(rk.y << 16u), kd = __uint_as_float(rk.y & 0xffff0000u);
+					const float qa = __uint_as_float(rq.x << 16u), qb = __uint_as_float(rq.x & 0xffff0000u);
+					const float qc = __uint_as_float(rq.y << 16u), qd = __uint_as_float(rq.y & 0xffff0000u);
+					const float kinv = rsqrtf(LmLinearWarpSum4(ka * ka, kb_f * kb_f, kc * kc, kd * kd) + 1e-6f);
+					const float qinv = rsqrtf(LmLinearWarpSum4(qa * qa, qb * qb, qc * qc, qd * qd) + 1e-6f) * q_scale;
+					*(float4 *)&sh.k_hat[row_w][c0] = make_float4(ka * kinv, kb_f * kinv, kc * kinv, kd * kinv);
+					*(float4 *)&sh.q_hat[row_w][c0] = make_float4(qa * qinv, qb * qinv, qc * qinv, qd * qinv);
+					if constexpr ( COL_SLICE == KEY_DIM )
+					{
+						const uint2 rv = *(const uint2 *)&sh.raw_value[row_w][c0];
+						*(float4 *)&sh.val[row_w][c0] = make_float4(__uint_as_float(rv.x << 16u), __uint_as_float(rv.x & 0xffff0000u),
+							__uint_as_float(rv.y << 16u), __uint_as_float(rv.y & 0xffff0000u));
+					}
+				}
+				else
+				{
+					const float4 z4 = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+					*(float4 *)&sh.k_hat[row_w][c0] = z4;
+					*(float4 *)&sh.q_hat[row_w][c0] = z4;
+				}
+			}
+		}
+		if constexpr ( COL_SLICE != KEY_DIM )
+			for ( uint32_t idx = threadIdx.x; idx < rows * COL_SLICE; idx += THREADS )
+				sh.val[idx / COL_SLICE][idx % COL_SLICE] = LmBf16ToFloat(sh.raw_value[idx / COL_SLICE][idx % COL_SLICE]);
+		if ( warp == 0u )
+		{
+			float log_g = 0.0f, bv = 0.0f;
+			if ( lane < rows )
+			{
+				const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[begin + first + lane] : begin + first + lane;
+				const uint64_t ba_base = (uint64_t)row * 2u * heads;
+				const float shifted = LmBf16ToFloat(__ldg(ba_bf16 + ba_base + heads + head)) + dt_b;
+				log_g = -a_exp * SparkMathSoftplus(shifted);
+				bv = SparkMathSigmoidFast(LmBf16ToFloat(__ldg(ba_bf16 + ba_base + head)));
+			}
+			float g_cum = log_g;
+			#pragma unroll
+			for ( uint32_t off = 1u; off < 32u; off <<= 1u )
+			{
+				const float prev = __shfl_up_sync(0xffffffffu, g_cum, off);
+				if ( lane >= off )
+					g_cum += prev;
+			}
+			const float tail_g = __shfl_sync(0xffffffffu, g_cum, rows - 1u);
+			sh.g_cum[lane] = g_cum;
+			sh.exp_g[lane] = lane < rows ? expf(g_cum) : 0.0f;
+			sh.exp_tail_diff[lane] = lane < rows ? expf(tail_g - g_cum) : 0.0f;
+			sh.beta[lane] = bv;
+			if ( lane == 0u )
+				sh.tail_decay = expf(tail_g);
+		}
+		__syncthreads();
+		if ( first + C < count )
+			QwenGdnChunkFetch<KEY_DIM, VALUE_DIM, COL_SLICE, K_SPLIT, THREADS>(sh, query_qk, key_qk, value_bf16, sequence_row_indices,
+				begin + first + C, count - first - C < C ? count - first - C : C, qk_head, qk_heads, head, heads, col_base);
+		QwenGdnChunkGramAndSolve<KEY_DIM, COL_SLICE, K_SPLIT>(sh, rows, warp, lane, gid, tg);
+		float p[C_BLOCKS][4], o[C_BLOCKS][4], u[C_BLOCKS][4];
+		#pragma unroll
+		for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+		{
+			p[ct][0] = p[ct][1] = p[ct][2] = p[ct][3] = 0.0f;
+			o[ct][0] = o[ct][1] = o[ct][2] = o[ct][3] = 0.0f;
+			u[ct][0] = u[ct][1] = u[ct][2] = u[ct][3] = 0.0f;
+		}
+		#pragma unroll
+		for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
+		{
+			uint32_t ah[4], al[4];
+			LmDeltaSplitTf32(s[kb][0], ah[0], al[0]);
+			LmDeltaSplitTf32(s[kb][2], ah[1], al[1]);
+			LmDeltaSplitTf32(s[kb][1], ah[2], al[2]);
+			LmDeltaSplitTf32(s[kb][3], ah[3], al[3]);
+			const uint32_t k0 = k_base + kb * 8u + tg, k1 = k0 + 4u;
+			#pragma unroll
+			for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+			{
+				const uint32_t c_row = ct * 8u + gid;
+				uint32_t bkh[2], bkl[2], bqh[2], bql[2];
+				LmDeltaSplitTf32(sh.k_hat[c_row][k0], bkh[0], bkl[0]);
+				LmDeltaSplitTf32(sh.k_hat[c_row][k1], bkh[1], bkl[1]);
+				LmDeltaSplitTf32(sh.q_hat[c_row][k0], bqh[0], bql[0]);
+				LmDeltaSplitTf32(sh.q_hat[c_row][k1], bqh[1], bql[1]);
+				LmDeltaMmaFp32(p[ct], ah, al, bkh, bkl);
+				LmDeltaMmaFp32(o[ct], ah, al, bqh, bql);
+			}
+		}
+		if constexpr ( K_SPLIT > 1u )
+		{
+			if ( warp_k > 0u )
+			{
+				float *rp = sh.reduce + (warp_v * (K_SPLIT - 1u) + (warp_k - 1u)) * REDUCE_STRIDE;
+				#pragma unroll
+				for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 4u; ++e )
+						rp[(ct * 4u + e) * 32u + lane] = p[ct][e];
+			}
+			__syncthreads();
+		}
+		if ( warp_k == 0u )
+		{
+			if constexpr ( K_SPLIT > 1u )
+			{
+				for ( uint32_t ks = 0u; ks < K_SPLIT - 1u; ++ks )
+				{
+					const float *rp = sh.reduce + (warp_v * (K_SPLIT - 1u) + ks) * REDUCE_STRIDE;
+					#pragma unroll
+					for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+						#pragma unroll
+						for ( uint32_t e = 0u; e < 4u; ++e )
+							p[ct][e] += rp[(ct * 4u + e) * 32u + lane];
+				}
+			}
+			#pragma unroll
+			for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+			{
+				const uint32_t c_ev = ct * 8u + 2u * tg, c_od = c_ev + 1u;
+				const float e_ev = sh.exp_g[c_ev], e_od = sh.exp_g[c_od];
+				p[ct][0] = c_ev < rows ? sh.val[c_ev][v0_local] - p[ct][0] * e_ev : 0.0f;
+				p[ct][1] = c_od < rows ? sh.val[c_od][v0_local] - p[ct][1] * e_od : 0.0f;
+				p[ct][2] = c_ev < rows ? sh.val[c_ev][v1_local] - p[ct][2] * e_ev : 0.0f;
+				p[ct][3] = c_od < rows ? sh.val[c_od][v1_local] - p[ct][3] * e_od : 0.0f;
+			}
+			#pragma unroll
+			for ( uint32_t c_in = 0u; c_in < C_BLOCKS; ++c_in )
+			{
+				uint32_t awh[4], awl[4];
+				LmDeltaSplitTf32(p[c_in][0], awh[0], awl[0]);
+				LmDeltaSplitTf32(p[c_in][2], awh[1], awl[1]);
+				LmDeltaSplitTf32(p[c_in][1], awh[2], awl[2]);
+				LmDeltaSplitTf32(p[c_in][3], awh[3], awl[3]);
+				const uint32_t j_ev = c_in * 8u + 2u * tg, j_od = j_ev + 1u;
+				#pragma unroll
+				for ( uint32_t c_out = c_in; c_out < C_BLOCKS; ++c_out )
+				{
+					const uint32_t r_out = c_out * 8u + k_perm;
+					uint32_t bxh[2], bxl[2];
+					LmDeltaSplitTf32(sh.tri_x[r_out][j_ev], bxh[0], bxl[0]);
+					LmDeltaSplitTf32(sh.tri_x[r_out][j_od], bxh[1], bxl[1]);
+					LmDeltaMmaFp32(u[c_out], awh, awl, bxh, bxl);
+				}
+			}
+			if constexpr ( K_SPLIT > 1u )
+			{
+				float *ru = sh.reduce + (warp_v * (K_SPLIT - 1u)) * REDUCE_STRIDE;
+				#pragma unroll
+				for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 4u; ++e )
+						ru[(ct * 4u + e) * 32u + lane] = u[ct][e];
+			}
+		}
+		if constexpr ( K_SPLIT > 1u )
+		{
+			__syncthreads();
+			if ( warp_k > 0u )
+			{
+				const float *ru = sh.reduce + (warp_v * (K_SPLIT - 1u)) * REDUCE_STRIDE;
+				#pragma unroll
+				for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 4u; ++e )
+						u[ct][e] = ru[(ct * 4u + e) * 32u + lane];
+			}
+			__syncthreads();
+			if ( warp_k > 0u )
+			{
+				float *ro = sh.reduce + (warp_v * (K_SPLIT - 1u) + (warp_k - 1u)) * REDUCE_STRIDE;
+				#pragma unroll
+				for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 4u; ++e )
+						ro[(ct * 4u + e) * 32u + lane] = o[ct][e];
+			}
+			__syncthreads();
+		}
+		if ( warp_k == 0u )
+		{
+			if constexpr ( K_SPLIT > 1u )
+			{
+				for ( uint32_t ks = 0u; ks < K_SPLIT - 1u; ++ks )
+				{
+					const float *ro = sh.reduce + (warp_v * (K_SPLIT - 1u) + ks) * REDUCE_STRIDE;
+					#pragma unroll
+					for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+						#pragma unroll
+						for ( uint32_t e = 0u; e < 4u; ++e )
+							o[ct][e] += ro[(ct * 4u + e) * 32u + lane];
+				}
+			}
+			#pragma unroll
+			for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+			{
+				const uint32_t c_ev = ct * 8u + 2u * tg, c_od = c_ev + 1u;
+				const float e_ev = sh.exp_g[c_ev], e_od = sh.exp_g[c_od];
+				o[ct][0] *= e_ev;
+				o[ct][1] *= e_od;
+				o[ct][2] *= e_ev;
+				o[ct][3] *= e_od;
+			}
+			#pragma unroll
+			for ( uint32_t c_in = 0u; c_in < C_BLOCKS; ++c_in )
+			{
+				uint32_t auh[4], aul[4];
+				LmDeltaSplitTf32(u[c_in][0], auh[0], aul[0]);
+				LmDeltaSplitTf32(u[c_in][2], auh[1], aul[1]);
+				LmDeltaSplitTf32(u[c_in][1], auh[2], aul[2]);
+				LmDeltaSplitTf32(u[c_in][3], auh[3], aul[3]);
+				const uint32_t j0 = c_in * 8u + tg, j1 = j0 + 4u;
+				#pragma unroll
+				for ( uint32_t ct = c_in; ct < C_BLOCKS; ++ct )
+				{
+					const uint32_t r_out = ct * 8u + gid;
+					uint32_t bmh[2], bml[2];
+					LmDeltaSplitTf32(sh.tri_m[r_out][j0], bmh[0], bml[0]);
+					LmDeltaSplitTf32(sh.tri_m[r_out][j1], bmh[1], bml[1]);
+					LmDeltaMmaFp32(o[ct], auh, aul, bmh, bml);
+				}
+			}
+			#pragma unroll
+			for ( uint32_t ct = 0u; ct < C_BLOCKS; ++ct )
+			{
+				const uint32_t c_ev = ct * 8u + 2u * tg, c_od = c_ev + 1u;
+				if ( c_ev < rows )
+				{
+					const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[begin + first + c_ev] : begin + first + c_ev;
+					const uint64_t out_row = (((uint64_t)row * heads) + head) * VALUE_DIM;
+					output_bf16[out_row + v0] = LmFloatToBf16(o[ct][0]);
+					output_bf16[out_row + v1] = LmFloatToBf16(o[ct][2]);
+				}
+				if ( c_od < rows )
+				{
+					const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[begin + first + c_od] : begin + first + c_od;
+					const uint64_t out_row = (((uint64_t)row * heads) + head) * VALUE_DIM;
+					output_bf16[out_row + v0] = LmFloatToBf16(o[ct][1]);
+					output_bf16[out_row + v1] = LmFloatToBf16(o[ct][3]);
+				}
+			}
+		}
+		if ( first + C >= count && commit == 0u )
+			break;
+		const float tail_sc = sh.tail_decay;
+		#pragma unroll
+		for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
+		{
+			s[kb][0] *= tail_sc;
+			s[kb][1] *= tail_sc;
+			s[kb][2] *= tail_sc;
+			s[kb][3] *= tail_sc;
+		}
+		#pragma unroll
+		for ( uint32_t c_in = 0u; c_in < C_BLOCKS; ++c_in )
+		{
+			const uint32_t j0 = c_in * 8u + tg, j1 = j0 + 4u;
+			const float e0 = sh.exp_tail_diff[j0], e1 = sh.exp_tail_diff[j1];
+			uint32_t auh[4], aul[4];
+			LmDeltaSplitTf32(u[c_in][0] * e0, auh[0], aul[0]);
+			LmDeltaSplitTf32(u[c_in][2] * e0, auh[1], aul[1]);
+			LmDeltaSplitTf32(u[c_in][1] * e1, auh[2], aul[2]);
+			LmDeltaSplitTf32(u[c_in][3] * e1, auh[3], aul[3]);
+			#pragma unroll
+			for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
+			{
+				const uint32_t k_col = k_base + kb * 8u + k_perm;
+				uint32_t bch[2], bcl[2];
+				LmDeltaSplitTf32(sh.k_hat[j0][k_col], bch[0], bcl[0]);
+				LmDeltaSplitTf32(sh.k_hat[j1][k_col], bch[1], bcl[1]);
+				LmDeltaMmaFp32(s[kb], auh, aul, bch, bcl);
+			}
+		}
+	}
+	LmStreamWait<0u>();
+	if ( commit != 0u )
+	{
+		#pragma unroll
+		for ( uint32_t kb = 0u; kb < K_BLOCKS; ++kb )
+		{
+			const uint32_t k0 = k_base + kb * 8u + tg, k1 = k0 + 4u;
+			LmLinearStoreCs(state + k0 * VALUE_DIM + v0, s[kb][0]);
+			LmLinearStoreCs(state + k1 * VALUE_DIM + v0, s[kb][1]);
+			LmLinearStoreCs(state + k0 * VALUE_DIM + v1, s[kb][2]);
+			LmLinearStoreCs(state + k1 * VALUE_DIM + v1, s[kb][3]);
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t KEY_DIM, uint32_t VALUE_DIM, uint32_t COL_SLICE>
+static inline SparkGpuError QwenGdnScalarChunkDispatch(uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index,
+	const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_qk, const uint16_t *key_qk,
+	const uint16_t *value_bf16, const uint16_t *ba_bf16, const float *a_log, const float *dt_bias, uint16_t *output_bf16,
+	uint32_t qk_heads, uint32_t heads, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, SparkGpuStream stream)
+{
+	constexpr uint32_t K_SPLIT = 8u / (COL_SLICE / 16u);
+	constexpr uint32_t shared = (uint32_t)sizeof(QwenGdnChunkShared<KEY_DIM, COL_SLICE, K_SPLIT>);
+	static bool granted = false;
+	if ( !granted )
+	{
+		const SparkGpuError err = SparkGpuFuncSetAttribute((const void *)QwenGdnScalarChunkKernel<KEY_DIM, VALUE_DIM, COL_SLICE, 256u>,
+			SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+		if ( err != SPARK_GPU_SUCCESS )
+			return err;
+		granted = true;
+	}
+	(void)LM_LAUNCH_DEPENDENT((QwenGdnScalarChunkKernel<KEY_DIM, VALUE_DIM, COL_SLICE, 256u>), dim3(sequences, heads, VALUE_DIM / COL_SLICE),
+		256u, shared, stream, state_pool, slot_bytes, state_index, sequence_row_begin, sequence_row_count, query_qk, key_qk, value_bf16,
+		ba_bf16, a_log, dt_bias, output_bf16, qk_heads, heads, sequences, commit, sequence_row_indices);
+	return SparkGpuPeekAtLastError();
+}
+
+template<uint32_t KEY_DIM, uint32_t VALUE_DIM>
+static inline SparkGpuError QwenGdnScalarChunkLaunch(uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index,
+	const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_qk, const uint16_t *key_qk,
+	const uint16_t *value_bf16, const uint16_t *ba_bf16, const float *a_log, const float *dt_bias, uint16_t *output_bf16,
+	uint32_t qk_heads, uint32_t heads, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, SparkGpuStream stream)
+{
+	if ( sequences == 0u || heads == 0u )
+		return SPARK_GPU_ERROR_INVALID_VALUE;
+	if ( heads <= 8u )
+		return QwenGdnScalarChunkDispatch<KEY_DIM, VALUE_DIM, 16u>(state_pool, slot_bytes, state_index, sequence_row_begin, sequence_row_count,
+			query_qk, key_qk, value_bf16, ba_bf16, a_log, dt_bias, output_bf16, qk_heads, heads, sequences, commit, sequence_row_indices, stream);
+	if ( heads <= 12u )
+		return QwenGdnScalarChunkDispatch<KEY_DIM, VALUE_DIM, 32u>(state_pool, slot_bytes, state_index, sequence_row_begin, sequence_row_count,
+			query_qk, key_qk, value_bf16, ba_bf16, a_log, dt_bias, output_bf16, qk_heads, heads, sequences, commit, sequence_row_indices, stream);
+	if ( heads <= 24u )
+		return QwenGdnScalarChunkDispatch<KEY_DIM, VALUE_DIM, 64u>(state_pool, slot_bytes, state_index, sequence_row_begin, sequence_row_count,
+			query_qk, key_qk, value_bf16, ba_bf16, a_log, dt_bias, output_bf16, qk_heads, heads, sequences, commit, sequence_row_indices, stream);
+	return QwenGdnScalarChunkDispatch<KEY_DIM, VALUE_DIM, 128u>(state_pool, slot_bytes, state_index, sequence_row_begin, sequence_row_count,
+		query_qk, key_qk, value_bf16, ba_bf16, a_log, dt_bias, output_bf16, qk_heads, heads, sequences, commit, sequence_row_indices, stream);
+}
+
 template<uint32_t KEY_DIM>
 __global__ __launch_bounds__(QH_THREADS, 4)
 static void QwenGdnGateOnlyKernel(const uint16_t *__restrict__ ba, const float *__restrict__ a_log,
@@ -2578,6 +3370,258 @@ static void QwenBf16SmallNMmaKernel(const uint16_t *__restrict__ weight, const u
 		{
 			const float v = smem.red[0][r][c] + smem.red[1][r][c] + smem.red[2][r][c] + smem.red[3][r][c];
 			output[(uint64_t)(row0 + r) * N + (col0 + c)] = LmFloatToBf16(v);
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t TILE_M>
+static __host__ __device__ constexpr uint32_t QwenBf16SmallNMmaWideSharedBytes(void)
+{
+	return 4u * 2u * (TILE_M + 16u) * 128u;
+}
+
+template<uint32_t TILE_M>
+__global__ __launch_bounds__(128u, 2)
+static void QwenBf16SmallNMmaWideKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ activation,
+	uint16_t *__restrict__ output, uint32_t rows, uint32_t K, uint32_t N)
+{
+	constexpr uint32_t TILE_N = 16u, TILE_K = 64u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
+	constexpr uint32_t WARPS_K = 4u, MF = TILE_M / 16u;
+	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, SLICE_BYTES = A_BYTES + B_BYTES;
+	constexpr uint32_t STAGES = 2u;
+	static_assert(TILE_M == 32u, "wide small-N MMA uses TILE_M=32 double-buffered");
+	extern __shared__ __align__(128) uint8_t qh_smalln_smem[];
+	float (*const red)[TILE_M][TILE_N] = (float (*)[TILE_M][TILE_N])qh_smalln_smem;
+	const uint32_t m_blocks = (rows + TILE_M - 1u) / TILE_M;
+	const uint32_t n_block = blockIdx.x / m_blocks, m_block = blockIdx.x % m_blocks;
+	const uint32_t row0 = m_block * TILE_M, col0 = n_block * TILE_N;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t lr0 = lane / ROW_CHUNKS, lc0 = lane % ROW_CHUNKS;
+	const uint32_t k_tiles = K / TILE_K;
+	const uint32_t warp_base = (uint32_t)__cvta_generic_to_shared(qh_smalln_smem + warp * STAGES * SLICE_BYTES);
+	LmDependentWait();
+	if ( row0 >= rows || col0 >= N )
+	{
+		LmDependentRelease();
+		return;
+	}
+	auto issue_slice = [&](uint32_t dst_base, uint32_t kt)
+	{
+		const uint32_t k_off = kt * TILE_K;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < TILE_M / 4u; ++q )
+		{
+			const uint32_t r = lr0 + q * 4u;
+			const bool va = row0 + r < rows;
+			LmStreamCopy(dst_base + r * ROW_BYTES + LmStreamSwizzle8(r, lc0) * 16u,
+				va ? activation + (uint64_t)(row0 + r) * K + k_off + lc0 * 8u : activation, va ? 16u : 0u);
+		}
+		#pragma unroll
+		for ( uint32_t q = 0u; q < 4u; ++q )
+		{
+			const uint32_t r = lr0 + q * 4u;
+			const bool vb = col0 + r < N;
+			LmStreamCopy(dst_base + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, lc0) * 16u,
+				vb ? weight + (uint64_t)(col0 + r) * K + k_off + lc0 * 8u : weight, vb ? 16u : 0u);
+		}
+		LmStreamCommit();
+	};
+	float acc[MF][2][4];
+	#pragma unroll
+	for ( uint32_t i = 0u; i < MF; ++i )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+			acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
+	uint32_t cur = 0u;
+	if ( warp < k_tiles )
+		issue_slice(warp_base, warp);
+	for ( uint32_t kt = warp; kt < k_tiles; kt += WARPS_K )
+	{
+		const uint32_t nxt_kt = kt + WARPS_K;
+		if ( nxt_kt < k_tiles )
+		{
+			issue_slice(warp_base + (cur ^ 1u) * SLICE_BYTES, nxt_kt);
+			LmStreamWait<1u>();
+		}
+		else
+			LmStreamWait<0u>();
+		__syncwarp();
+		const uint32_t my_base = warp_base + cur * SLICE_BYTES;
+		#pragma unroll
+		for ( uint32_t ks = 0u; ks < 4u; ++ks )
+		{
+			uint32_t bf[4];
+			const uint32_t br = (lane & 7u) + (((lane >> 4u) & 1u) * 8u), bc = ks * 2u + ((lane >> 3u) & 1u);
+			LmStreamLdMatrix4(bf, my_base + A_BYTES + br * ROW_BYTES + LmStreamSwizzle8(br, bc) * 16u);
+			const uint32_t b0[2] = { bf[0], bf[1] }, b1[2] = { bf[2], bf[3] };
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+			{
+				uint32_t af[4];
+				const uint32_t ar = i * 16u + (lane & 15u), ac = ks * 2u + ((lane >> 4u) & 1u);
+				LmStreamLdMatrix4(af, my_base + ar * ROW_BYTES + LmStreamSwizzle8(ar, ac) * 16u);
+				LmMmaBf16(acc[i][0], af, b0);
+				LmMmaBf16(acc[i][1], af, b1);
+			}
+		}
+		__syncwarp();
+		cur ^= 1u;
+	}
+	__syncthreads();
+	#pragma unroll
+	for ( uint32_t i = 0u; i < MF; ++i )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+		{
+			const uint32_t c = j * 8u + quad * 2u;
+			red[warp][i * 16u + quad_row][c] = acc[i][j][0];
+			red[warp][i * 16u + quad_row][c + 1u] = acc[i][j][1];
+			red[warp][i * 16u + quad_row + 8u][c] = acc[i][j][2];
+			red[warp][i * 16u + quad_row + 8u][c + 1u] = acc[i][j][3];
+		}
+	__syncthreads();
+	#pragma unroll
+	for ( uint32_t idx = threadIdx.x; idx < TILE_M * TILE_N; idx += 128u )
+	{
+		const uint32_t r = idx >> 4u, c = idx & 15u;
+		if ( row0 + r < rows && col0 + c < N )
+		{
+			const float v = red[0][r][c] + red[1][r][c] + red[2][r][c] + red[3][r][c];
+			output[(uint64_t)(row0 + r) * N + (col0 + c)] = LmFloatToBf16(v);
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t TILE_M>
+static __host__ __device__ constexpr uint32_t QwenSharedGateUpSwigluWideSharedBytes(void)
+{
+	return 4u * 2u * (TILE_M + 32u) * 128u;
+}
+
+template<uint32_t TILE_M>
+__global__ __launch_bounds__(128u, TILE_M <= 16u ? 2 : 1)
+static void QwenSharedGateUpSwigluWideKernel(const uint16_t *__restrict__ w_gate_up, const uint16_t *__restrict__ activation,
+	uint16_t *__restrict__ output, uint32_t rows, uint32_t K, uint32_t shared_rows)
+{
+	constexpr uint32_t TILE_N = 16u, TILE_K = 64u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
+	constexpr uint32_t WARPS_K = 4u, MF = TILE_M / 16u;
+	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, SLICE_BYTES = A_BYTES + 2u * B_BYTES;
+	constexpr uint32_t STAGES = 2u;
+	static_assert(TILE_M == 16u || TILE_M == 32u, "shared gate_up SwiGLU supports TILE_M 16 or 32");
+	extern __shared__ __align__(128) uint8_t qh_shgu_smem[];
+	float (*const red)[WARPS_K][TILE_M][TILE_N] = (float (*)[WARPS_K][TILE_M][TILE_N])qh_shgu_smem;
+	const uint32_t m_blocks = (rows + TILE_M - 1u) / TILE_M;
+	const uint32_t n_block = blockIdx.x / m_blocks, m_block = blockIdx.x % m_blocks;
+	const uint32_t row0 = m_block * TILE_M, col0 = n_block * TILE_N;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t lr0 = lane / ROW_CHUNKS, lc0 = lane % ROW_CHUNKS;
+	const uint32_t k_tiles = K / TILE_K;
+	const uint32_t warp_base = (uint32_t)__cvta_generic_to_shared(qh_shgu_smem + warp * STAGES * SLICE_BYTES);
+	LmDependentWait();
+	if ( row0 >= rows || col0 >= shared_rows )
+	{
+		LmDependentRelease();
+		return;
+	}
+	auto issue_slice = [&](uint32_t dst_base, uint32_t kt)
+	{
+		const uint32_t k_off = kt * TILE_K;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < TILE_M / 4u; ++q )
+		{
+			const uint32_t r = lr0 + q * 4u;
+			const bool va = row0 + r < rows;
+			LmStreamCopy(dst_base + r * ROW_BYTES + LmStreamSwizzle8(r, lc0) * 16u,
+				va ? activation + (uint64_t)(row0 + r) * K + k_off + lc0 * 8u : activation, va ? 16u : 0u);
+		}
+		#pragma unroll
+		for ( uint32_t q = 0u; q < 4u; ++q )
+		{
+			const uint32_t r = lr0 + q * 4u;
+			const bool vb = col0 + r < shared_rows;
+			const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, lc0) * 16u;
+			LmStreamCopy(dst_base + A_BYTES + sw,
+				vb ? w_gate_up + (uint64_t)(col0 + r) * K + k_off + lc0 * 8u : w_gate_up, vb ? 16u : 0u);
+			LmStreamCopy(dst_base + A_BYTES + B_BYTES + sw,
+				vb ? w_gate_up + (uint64_t)(shared_rows + col0 + r) * K + k_off + lc0 * 8u : w_gate_up, vb ? 16u : 0u);
+		}
+		LmStreamCommit();
+	};
+	float acc_g[MF][2][4], acc_u[MF][2][4];
+	#pragma unroll
+	for ( uint32_t i = 0u; i < MF; ++i )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+			acc_g[i][j][0] = acc_g[i][j][1] = acc_g[i][j][2] = acc_g[i][j][3] =
+				acc_u[i][j][0] = acc_u[i][j][1] = acc_u[i][j][2] = acc_u[i][j][3] = 0.0f;
+	uint32_t cur = 0u;
+	if ( warp < k_tiles )
+		issue_slice(warp_base, warp);
+	for ( uint32_t kt = warp; kt < k_tiles; kt += WARPS_K )
+	{
+		const uint32_t nxt_kt = kt + WARPS_K;
+		if ( nxt_kt < k_tiles )
+		{
+			issue_slice(warp_base + (cur ^ 1u) * SLICE_BYTES, nxt_kt);
+			LmStreamWait<1u>();
+		}
+		else
+			LmStreamWait<0u>();
+		__syncwarp();
+		const uint32_t my_base = warp_base + cur * SLICE_BYTES;
+		#pragma unroll
+		for ( uint32_t ks = 0u; ks < 4u; ++ks )
+		{
+			uint32_t bg[4], bu[4];
+			const uint32_t br = (lane & 7u) + (((lane >> 4u) & 1u) * 8u), bc = ks * 2u + ((lane >> 3u) & 1u);
+			const uint32_t boff = br * ROW_BYTES + LmStreamSwizzle8(br, bc) * 16u;
+			LmStreamLdMatrix4(bg, my_base + A_BYTES + boff);
+			LmStreamLdMatrix4(bu, my_base + A_BYTES + B_BYTES + boff);
+			const uint32_t g0[2] = { bg[0], bg[1] }, g1[2] = { bg[2], bg[3] };
+			const uint32_t u0[2] = { bu[0], bu[1] }, u1[2] = { bu[2], bu[3] };
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+			{
+				uint32_t af[4];
+				const uint32_t ar = i * 16u + (lane & 15u), ac = ks * 2u + ((lane >> 4u) & 1u);
+				LmStreamLdMatrix4(af, my_base + ar * ROW_BYTES + LmStreamSwizzle8(ar, ac) * 16u);
+				LmMmaBf16(acc_g[i][0], af, g0);
+				LmMmaBf16(acc_g[i][1], af, g1);
+				LmMmaBf16(acc_u[i][0], af, u0);
+				LmMmaBf16(acc_u[i][1], af, u1);
+			}
+		}
+		__syncwarp();
+		cur ^= 1u;
+	}
+	__syncthreads();
+	#pragma unroll
+	for ( uint32_t i = 0u; i < MF; ++i )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+		{
+			const uint32_t c = j * 8u + quad * 2u;
+			red[0][warp][i * 16u + quad_row][c] = acc_g[i][j][0];
+			red[0][warp][i * 16u + quad_row][c + 1u] = acc_g[i][j][1];
+			red[0][warp][i * 16u + quad_row + 8u][c] = acc_g[i][j][2];
+			red[0][warp][i * 16u + quad_row + 8u][c + 1u] = acc_g[i][j][3];
+			red[1][warp][i * 16u + quad_row][c] = acc_u[i][j][0];
+			red[1][warp][i * 16u + quad_row][c + 1u] = acc_u[i][j][1];
+			red[1][warp][i * 16u + quad_row + 8u][c] = acc_u[i][j][2];
+			red[1][warp][i * 16u + quad_row + 8u][c + 1u] = acc_u[i][j][3];
+		}
+	__syncthreads();
+	#pragma unroll
+	for ( uint32_t idx = threadIdx.x; idx < TILE_M * TILE_N; idx += 128u )
+	{
+		const uint32_t r = idx >> 4u, c = idx & 15u;
+		if ( row0 + r < rows && col0 + c < shared_rows )
+		{
+			const float gv = LmBf16ToFloat(LmFloatToBf16(red[0][0][r][c] + red[0][1][r][c] + red[0][2][r][c] + red[0][3][r][c]));
+			const float uv = LmBf16ToFloat(LmFloatToBf16(red[1][0][r][c] + red[1][1][r][c] + red[1][2][r][c] + red[1][3][r][c]));
+			output[(uint64_t)(row0 + r) * shared_rows + (col0 + c)] = LmFloatToBf16(SparkMathSiluFast(gv) * uv);
 		}
 	}
 	LmDependentRelease();
@@ -5989,6 +7033,155 @@ static void QwenIndexGatheredScoreKernel(const uint16_t *__restrict__ gathered_k
 }
 
 template<class G>
+__global__ __launch_bounds__(256u, 2)
+static void QwenIndexGatheredScoreMmaKernel(const uint16_t *__restrict__ gathered_keys, uint32_t max_local, uint32_t degree,
+	const uint16_t *__restrict__ query, const uint32_t *__restrict__ positions, uint32_t first_row, uint32_t chunk_rows,
+	uint32_t total_blocks, float *__restrict__ scores, float scale)
+{
+	using S = QwenHybridShape<G>;
+	constexpr uint32_t D = G::kIndexDim, H = G::kIndexHeads;
+	constexpr uint32_t TILE_Q = 32u, TILE_B = 64u, TILE_K = 64u, K_TILES = D / TILE_K;
+	constexpr uint32_t ROW_CHUNKS = 8u, ROW_BYTES = 128u;
+	constexpr uint32_t K_STAGE_BYTES = TILE_B * ROW_BYTES;
+	constexpr uint32_t Q_STAGE_BYTES = H * TILE_Q * ROW_BYTES;
+	constexpr uint32_t STAGE_BYTES = K_STAGE_BYTES + Q_STAGE_BYTES;
+	static_assert((D % TILE_K) == 0u && H <= 8u, "valid index score MMA geometry");
+	extern __shared__ __align__(128) uint8_t qh_idx_smem[];
+	const uint32_t q_base = blockIdx.y * TILE_Q, b_base = blockIdx.x * TILE_B;
+	const uint32_t q_end = q_base + TILE_Q < chunk_rows ? q_base + TILE_Q : chunk_rows;
+	LmDependentWait();
+	if ( q_base >= chunk_rows || b_base >= total_blocks )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t max_blocks = (__ldg(positions + first_row + q_end - 1u) + 1u) / G::kIndexRatio;
+	if ( max_blocks <= S::kIndexBlocks || b_base >= max_blocks )
+	{
+		LmDependentRelease();
+		return;
+	}
+	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(qh_idx_smem);
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
+	const uint32_t warp_q = warp >> 2u, warp_b = warp & 3u;
+	const uint32_t r0 = threadIdx.x / ROW_CHUNKS, c0 = threadIdx.x % ROW_CHUNKS;
+	auto issue_k = [&](uint32_t st, uint32_t kt)
+	{
+		const uint32_t stage = shared_base + st * STAGE_BYTES;
+		const uint32_t k_off = kt * TILE_K;
+		#pragma unroll
+		for ( uint32_t q = 0u; q < TILE_B / 32u; ++q )
+		{
+			const uint32_t rb = r0 + q * 32u;
+			const uint32_t b = b_base + rb;
+			const bool ok = b < max_blocks;
+			const uint32_t rk = degree > 1u ? (b % degree) : 0u;
+			const uint32_t loc = degree > 1u ? (b / degree) : b;
+			const uint16_t *src = ok ? (gathered_keys + ((uint64_t)rk * max_local + loc) * D + k_off + c0 * 8u) : gathered_keys;
+			LmStreamCopy(stage + rb * ROW_BYTES + LmStreamSwizzle8(rb, c0) * 16u, src, ok ? 16u : 0u);
+		}
+		#pragma unroll
+		for ( uint32_t h = 0u; h < H; ++h )
+		{
+			const uint32_t rq = r0;
+			const uint32_t lr = q_base + rq;
+			const bool ok = lr < q_end;
+			const uint16_t *src = ok ? (query + ((uint64_t)(first_row + lr) * H + h) * D + k_off + c0 * 8u) : query;
+			LmStreamCopy(stage + K_STAGE_BYTES + h * (TILE_Q * ROW_BYTES) + rq * ROW_BYTES + LmStreamSwizzle8(rq, c0) * 16u, src, ok ? 16u : 0u);
+		}
+		LmStreamCommit();
+	};
+	float dot[H][2][4];
+	#pragma unroll
+	for ( uint32_t h = 0u; h < H; ++h )
+		#pragma unroll
+		for ( uint32_t j = 0u; j < 2u; ++j )
+			dot[h][j][0] = dot[h][j][1] = dot[h][j][2] = dot[h][j][3] = 0.0f;
+	issue_k(0u, 0u);
+	for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
+	{
+		const uint32_t cur = kt & 1u;
+		if ( kt + 1u < K_TILES )
+		{
+			issue_k(cur ^ 1u, kt + 1u);
+			LmStreamWait<1u>();
+		}
+		else
+			LmStreamWait<0u>();
+		__syncthreads();
+		const uint32_t stage = shared_base + cur * STAGE_BYTES;
+		#pragma unroll
+		for ( uint32_t ks = 0u; ks < 4u; ++ks )
+		{
+			uint32_t bf[4];
+			const uint32_t br = warp_b * 16u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
+			const uint32_t bc = ks * 2u + ((lane >> 3u) & 1u);
+			LmStreamLdMatrix4(bf, stage + br * ROW_BYTES + LmStreamSwizzle8(br, bc) * 16u);
+			const uint32_t b0[2] = { bf[0], bf[1] }, b1[2] = { bf[2], bf[3] };
+			const uint32_t ar = warp_q * 16u + (lane & 15u), ac = ks * 2u + ((lane >> 4u) & 1u);
+			const uint32_t aoff = ar * ROW_BYTES + LmStreamSwizzle8(ar, ac) * 16u;
+			#pragma unroll
+			for ( uint32_t h = 0u; h < H; ++h )
+			{
+				uint32_t af[4];
+				LmStreamLdMatrix4(af, stage + K_STAGE_BYTES + h * (TILE_Q * ROW_BYTES) + aoff);
+				LmMmaBf16(dot[h][0], af, b0);
+				LmMmaBf16(dot[h][1], af, b1);
+			}
+		}
+		if ( kt + 1u < K_TILES )
+			__syncthreads();
+	}
+	const uint32_t lr0 = q_base + warp_q * 16u + quad_row, lr1 = lr0 + 8u;
+	const uint32_t blks0 = lr0 < q_end ? ((__ldg(positions + first_row + lr0) + 1u) / G::kIndexRatio) : 0u;
+	const uint32_t blks1 = lr1 < q_end ? ((__ldg(positions + first_row + lr1) + 1u) / G::kIndexRatio) : 0u;
+	#pragma unroll
+	for ( uint32_t j = 0u; j < 2u; ++j )
+	{
+		const uint32_t b0 = b_base + warp_b * 16u + j * 8u + quad * 2u, b1 = b0 + 1u;
+		if ( blks0 > S::kIndexBlocks )
+		{
+			if ( b0 < blks0 )
+			{
+				float s0 = 0.0f;
+				#pragma unroll
+				for ( uint32_t h = 0u; h < H; ++h )
+					s0 += fmaxf(dot[h][j][0], 0.0f);
+				scores[(uint64_t)lr0 * total_blocks + b0] = s0 * scale;
+			}
+			if ( b1 < blks0 )
+			{
+				float s1 = 0.0f;
+				#pragma unroll
+				for ( uint32_t h = 0u; h < H; ++h )
+					s1 += fmaxf(dot[h][j][1], 0.0f);
+				scores[(uint64_t)lr0 * total_blocks + b1] = s1 * scale;
+			}
+		}
+		if ( blks1 > S::kIndexBlocks )
+		{
+			if ( b0 < blks1 )
+			{
+				float s2 = 0.0f;
+				#pragma unroll
+				for ( uint32_t h = 0u; h < H; ++h )
+					s2 += fmaxf(dot[h][j][2], 0.0f);
+				scores[(uint64_t)lr1 * total_blocks + b0] = s2 * scale;
+			}
+			if ( b1 < blks1 )
+			{
+				float s3 = 0.0f;
+				#pragma unroll
+				for ( uint32_t h = 0u; h < H; ++h )
+					s3 += fmaxf(dot[h][j][3], 0.0f);
+				scores[(uint64_t)lr1 * total_blocks + b1] = s3 * scale;
+			}
+		}
+	}
+	LmDependentRelease();
+}
+
+template<class G>
 __global__ __launch_bounds__(QH_THREADS, 4)
 static void QwenIndexLocalMaskFromScoresKernel(const float *__restrict__ scores, uint32_t total_blocks,
 	const uint32_t *__restrict__ positions, uint32_t first_row, uint32_t chunk_rows, uint32_t *__restrict__ mask, uint32_t mask_words)
@@ -6194,9 +7387,24 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	{
 		if ( output_dimension < 512u && (input_dimension % 256u) == 0u )
 		{
-			const uint32_t mb = (rows + 15u) / 16u, nb = (output_dimension + 15u) / 16u;
-			(void)LM_LAUNCH_DEPENDENT((QwenBf16SmallNMmaKernel), mb * nb, 128u, 0, stream,
-				weight, source, destination, rows, input_dimension, output_dimension);
+			const uint32_t nb = (output_dimension + 15u) / 16u;
+			if ( rows > 16u && (output_dimension >= 16u || rows >= 1024u) )
+			{
+				constexpr uint32_t smem = QwenBf16SmallNMmaWideSharedBytes<32u>();
+				static bool granted_smalln32 = false;
+				if ( !granted_smalln32 )
+				{
+					if ( SparkGpuFuncSetAttribute((const void *)QwenBf16SmallNMmaWideKernel<32u>,
+						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
+						return LM_LAUNCH_ERR_LAUNCH;
+					granted_smalln32 = true;
+				}
+				(void)LM_LAUNCH_DEPENDENT((QwenBf16SmallNMmaWideKernel<32u>), ((rows + 31u) / 32u) * nb, 128u, smem, stream,
+					weight, source, destination, rows, input_dimension, output_dimension);
+			}
+			else
+				(void)LM_LAUNCH_DEPENDENT((QwenBf16SmallNMmaKernel), ((rows + 15u) / 16u) * nb, 128u, 0, stream,
+					weight, source, destination, rows, input_dimension, output_dimension);
 			return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 		}
 		if ( output_dimension < 512u || rows > 128u )
@@ -6214,6 +7422,25 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		else
 			(void)LM_LAUNCH_DEPENDENT((QwenBf16DenseMmaKernel<128u, 64u, 256u, 4u, 2u>), ((rows + 127u) / 128u) * nb, 256u, 0, stream,
 				weight, source, destination, rows, input_dimension, output_dimension);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	template<uint32_t TILE_M>
+	static int32_t LaunchSharedGateUpSwigluTile(const uint16_t *weight, const uint16_t *source, uint16_t *destination,
+		uint32_t rows, uint32_t input_dimension, uint32_t shared_rows, SparkGpuStream stream)
+	{
+		constexpr uint32_t smem = QwenSharedGateUpSwigluWideSharedBytes<TILE_M>();
+		static bool granted = false;
+		if ( !granted )
+		{
+			if ( SparkGpuFuncSetAttribute((const void *)QwenSharedGateUpSwigluWideKernel<TILE_M>,
+				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)smem) != SPARK_GPU_SUCCESS )
+				return LM_LAUNCH_ERR_LAUNCH;
+			granted = true;
+		}
+		const uint32_t blocks = ((rows + TILE_M - 1u) / TILE_M) * ((shared_rows + 15u) / 16u);
+		(void)LM_LAUNCH_DEPENDENT((QwenSharedGateUpSwigluWideKernel<TILE_M>), blocks, 128u, smem, stream,
+			weight, source, destination, rows, input_dimension, shared_rows);
 		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
@@ -6315,6 +7542,29 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const uint32_t tree = step->tree != 0u && commit == 0u ? 1u : 0u;
 		uint8_t *state_pool = state->gdn_state + (uint64_t)layer->recurrent_index * state->slots * state->gdn_state_bytes;
 		uint16_t *window = state->gdn_window + (uint64_t)layer->recurrent_index * state->slots * (state->gdn_window_bytes / sizeof(uint16_t));
+		if ( tree == 0u && commit != 0u && kept == 0 && PrefillWave(step) )
+		{
+			const uint32_t input_stride = qkv_stride != 0u ? qkv_stride : state->gdn_channels;
+			const uint32_t max_row_tiles = (rows + LM_CAUSAL_CONV_TILE_ROWS - 1u) / LM_CAUSAL_CONV_TILE_ROWS;
+			const uint32_t ch_tiles = (state->gdn_channels + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS;
+			(void)LM_LAUNCH_DEPENDENT((QwenGdnConvPrefill2DKernel<QH_CONV, QH_KEY_DIM>),
+				dim3(sequences, ch_tiles, max_row_tiles), LM_CAUSAL_CONV_TILE_THREADS, 0, stream,
+				window, step->recurrent_index, step->sequence_row_begin, kept, qkv, layer->gdn_conv,
+				state->query_heads, state->key_heads, state->value, state->gdn_qk, state->gdn_v,
+				input_stride, sequences, max_row_tiles == 1u ? 1u : 0u, step->sequence_row_indices);
+			if ( max_row_tiles > 1u )
+				(void)LM_LAUNCH_DEPENDENT((QwenGdnConvWindowCommitKernel<QH_CONV>),
+					dim3(sequences, (state->gdn_channels + QH_THREADS - 1u) / QH_THREADS), QH_THREADS, 0, stream,
+					window, step->recurrent_index, step->sequence_row_begin, kept, qkv,
+					state->gdn_channels, input_stride, sequences, step->sequence_row_indices);
+			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ||
+				QwenGdnScalarChunkLaunch<QH_KEY_DIM, QH_VALUE_DIM>(state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index,
+					step->sequence_row_begin, kept, state->query_heads, state->key_heads, state->value, ba,
+					layer->gdn_a_log, layer->gdn_dt_bias, state->mixed, state->gdn_qk / QH_KEY_DIM, heads,
+					sequences, commit, step->sequence_row_indices, stream) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			return CudaStageLaunched();
+		}
 		if ( tree == 0u )
 		{
 			const uint32_t input_stride = qkv_stride != 0u ? qkv_stride : state->gdn_channels;
@@ -6580,8 +7830,23 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			for ( uint32_t first = 0u; first < rows; first += chunk_rows )
 			{
 				const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
-				(void)LM_LAUNCH_DEPENDENT((QwenIndexGatheredScoreKernel<G>), dim3((total_blocks + QH_THREADS - 1u) / QH_THREADS, count), QH_THREADS, 0, stream,
-					keys_buf, max_local, degree, state->index_query, step->positions, first, count, total_blocks, scores_buf, scale);
+				if constexpr ( (G::kIndexDim % 64u) == 0u && G::kIndexHeads <= 8u )
+				{
+					constexpr uint32_t idx_smem = 2u * (64u + G::kIndexHeads * 32u) * 128u;
+					static bool granted_idx = false;
+					if ( !granted_idx )
+					{
+						if ( SparkGpuFuncSetAttribute((const void *)QwenIndexGatheredScoreMmaKernel<G>,
+							SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)idx_smem) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+						granted_idx = true;
+					}
+					(void)LM_LAUNCH_DEPENDENT((QwenIndexGatheredScoreMmaKernel<G>), dim3((total_blocks + 63u) / 64u, (count + 31u) / 32u),
+						256u, idx_smem, stream, keys_buf, max_local, degree, state->index_query, step->positions, first, count, total_blocks, scores_buf, scale);
+				}
+				else
+					(void)LM_LAUNCH_DEPENDENT((QwenIndexGatheredScoreKernel<G>), dim3((total_blocks + QH_THREADS - 1u) / QH_THREADS, count), QH_THREADS, 0, stream,
+						keys_buf, max_local, degree, state->index_query, step->positions, first, count, total_blocks, scores_buf, scale);
 				(void)LM_LAUNCH_DEPENDENT((QwenIndexLocalMaskFromScoresKernel<G>), count, QH_THREADS, 0, stream,
 					scores_buf, total_blocks, step->positions, first, count, state->index_mask, state->index_mask_words);
 			}
@@ -7199,9 +8464,19 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				stream, exact) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
+		bool shared_act_ready = false;
 		if ( !multi_shared_done )
 		{
-			if ( Project<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, exact, sms, stream, prefill_wave) !=
+			if constexpr ( G::kSharedRows <= 256u && (G::kHidden % 256u) == 0u )
+			{
+				const int32_t sh_st = rows > 16u ?
+					LaunchSharedGateUpSwigluTile<32u>(layer->moe_shared_gate_up, normed, state->shared_act, rows, G::kHidden, G::kSharedRows, stream) :
+					LaunchSharedGateUpSwigluTile<16u>(layer->moe_shared_gate_up, normed, state->shared_act, rows, G::kHidden, G::kSharedRows, stream);
+				if ( sh_st != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				shared_act_ready = true;
+			}
+			else if ( Project<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, exact, sms, stream, prefill_wave) !=
 				LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			(void)LM_LAUNCH_DEPENDENT((QwenHybridRowDotKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, normed, layer->moe_shared_gate, state->shared_logit, G::kHidden);
@@ -7220,7 +8495,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				return CudaStageLaunched();
 			}
 		}
-		(void)LM_LAUNCH_DEPENDENT((QwenSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows);
+		if ( !shared_act_ready )
+			(void)LM_LAUNCH_DEPENDENT((QwenSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Project<LmBf16Format>(layer->moe_shared_down, 0, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, exact, sms, stream, prefill_wave) !=
 				LM_LAUNCH_OK )

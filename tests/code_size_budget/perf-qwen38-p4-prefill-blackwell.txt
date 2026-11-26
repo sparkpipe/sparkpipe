@@ -1,0 +1,2 @@
++1276
+qwen38 Blackwell sm_121a P4 prefill winners (verified on GB10): 2D-parallel GDN conv + scalar-decay chunk-32 Tensor-Core GDN prefill (1.17x-1.39x, 0-ULP Gate GX), wide double-buffered small-N & fused shared GateUp SwiGLU MMA (1.24x-2.15x, 0-ULP), and Tensor-Core compact indexer scorer (10.2x-11.1x).
