@@ -130,6 +130,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t drafts_disabled;
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
+	uint32_t cache_point_min_advance;
 	uint32_t model_draft_rows;
 	uint32_t draft_class;
 	uint32_t draft_match;
@@ -2654,6 +2655,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
 	state->cache_point_count = 0u;
+	state->cache_point_min_advance = request->cache_point_min_advance;
 	for (uint32_t point=0u; point<request->cache_point_count && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
 		request->cache_points[point] < request->prompt_token_count; point++)
 	{
@@ -2786,7 +2788,7 @@ static void SparkModelBatchRefreshQueuedPrefix(
 {
 	SparkPrefixCacheLookup lookup;
 	SparkStatus status;
-	uint32_t aligned,slot,resume;
+	uint32_t aligned,slot,resume,branch_inserted = 0u;
 	if ( request->computed_prompt_token_count != 0u ||
 		request->cache_lookup_epoch == engine->cache_publication_epoch )
 		return;
@@ -2816,7 +2818,10 @@ static void SparkModelBatchRefreshQueuedPrefix(
 				lookup.matched_token_count + 1u < request->prompt_token_count &&
 				branch > resume && branch + 1u < request->prompt_token_count &&
 				branch % engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+			{
 				SparkModelBatchInsertCachePoint(request,branch);
+				branch_inserted = 1u;
+			}
 			status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
 			memset(&lookup,0,sizeof(lookup));
 			if ( status == SPARK_STATUS_OK && resume != 0u )
@@ -2833,6 +2838,16 @@ static void SparkModelBatchRefreshQueuedPrefix(
 	{
 		SparkModelBatchApplyPrefixLookup(engine,request,
 			SparkModelBatchRequestTokens(engine,slot),&lookup);
+		if ( branch_inserted == 0u && request->cache_point_min_advance != 0u && request->cache_prefix_token_count != 0u )
+		{
+			uint32_t kept = 0u;
+			for (uint32_t point=0u; point<request->cache_point_count; point++)
+				if ( request->cache_points[point] > request->cache_prefix_token_count &&
+					request->cache_points[point] - request->cache_prefix_token_count >= request->cache_point_min_advance )
+					request->cache_points[kept++] = request->cache_points[point];
+			request->cache_point_count = kept;
+			request->cache_point_min_advance = 0u;
+		}
 		if ( request->cache_prefix_token_count != 0u && request->restore_hint_sent == 0u )
 		{
 			request->restore_hint_sent = 1u;

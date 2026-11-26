@@ -2832,6 +2832,34 @@ static void TestScenarioDeclaredCachePoint(const SparkModelResidentDeployment *d
 		"declared cache point: a prompt that shares the prefix but diverges before the stride resumes at the point instead of recomputing");
 	TestDriveUntilTerminal(engine,&state,4u,800u);
 	CHECK(state.error_events[3] == 0u && state.error_events[4] == 0u && state.completed_events[4] == 1u,"declared cache point: both requests complete");
+	{
+		SparkModelBatchSubmitRequest warm = {0};
+		SparkModelBatchRequestHandle handle = {0};
+		uint32_t third[22],warm_ends[8],warm_stateful[8],warm_count,split_at_16 = 0u;
+		for (index=0u; index<22u; index++)
+			third[index] = index < 12u ? first[index] : 900u + index;
+		warm.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+		warm.descriptor_bytes = sizeof(warm);
+		warm.priority = SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE;
+		warm.top_p = 1.0f;
+		warm.request_id = 5u;
+		warm.sequence_id = 794u;
+		warm.prompt_token_ids = third;
+		warm.prompt_token_count = 22u;
+		warm.output_token_budget = 1u;
+		warm.drafts_disabled = TestDraftsDisabled;
+		warm.cache_point_count = 1u;
+		warm.cache_points[0] = 16u;
+		warm.cache_point_min_advance = 8u;
+		CHECK(SparkModelBatchEngineSubmit(engine,&warm,&handle) == SPARK_STATUS_OK,
+			"declared cache point: warm follow-up with soft min_advance submits");
+		TestDriveUntilTerminal(engine,&state,5u,800u);
+		warm_count = TestPrefillPublishes(5u,22u,warm_ends,warm_stateful,8u);
+		for (index=0u; index<warm_count; index++)
+			split_at_16 |= warm_ends[index] == 16u && warm_stateful[index] != 0u ? 1u : 0u;
+		CHECK(state.error_events[5] == 0u && state.completed_events[5] == 1u && state.cached_tokens[5] == 12u && split_at_16 == 0u,
+			"declared cache point: soft chat checkpoint within min_advance of resumed prefix does not force an extra prefill split");
+	}
 	SparkModelBatchEngineDestroy(engine);
 }
 

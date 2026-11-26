@@ -116,6 +116,7 @@ typedef struct SparkModelBatchSubmitRequest
 	const uint32_t *stop_token_ids;
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
+	uint32_t cache_point_min_advance;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView

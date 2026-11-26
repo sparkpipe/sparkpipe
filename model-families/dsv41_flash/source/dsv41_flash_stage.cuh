@@ -4286,6 +4286,8 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 	(void)lane;
 	const uint64_t sparse = D41_ROWS && !D41_ENGRAM_DISK && D41_OWN_ROWS_MIN <= r ? 1u : 0u;
 	const uint64_t own_max = (r + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
+	const uint64_t attn_rows = D41_ROWS && state->dump == 0 && (r % D41_OWN_ROWS_STEP) == 0u && D41_OWN_ROWS_MIN < r ?
+		(own_max > D41_OWN_ROWS_MIN ? own_max : (uint64_t)D41_OWN_ROWS_MIN) : r;
 	const CudaStageSlice persistent[] =
 	{
 		{ (void **)&state->streams, r * D41K_HC * D41_HIDDEN * 2u },
@@ -4333,10 +4335,12 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->gather_plan, (3u * s + 1u) * 4u },
 		{ (void **)&state->split_selected, spread_only * r * D41_INDEX_TOPK * 4u },
 		{ (void **)&state->split_offsets, spread_only * r * (D41_TP + 1u) * 4u },
-		{ (void **)&state->attn_merged, r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
+		{ (void **)&state->attn_merged, attn_rows * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->attn_gathered, exchanged * r * D41_LOCAL_HEADS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->partial, r * D41_HIDDEN * 2u },
+#if !D41_WHOLE
 		{ (void **)&state->expert_act, routes * D41_MOE_INTER * 2u },
+#endif
 		{ (void **)&state->moe_send, D41_TP * r * D41_MOE_ROW_ELEMENTS * 2u },
 		{ (void **)&state->moe_received, D41_TP * r * D41_MOE_ROW_ELEMENTS * 2u },
 		{ (void **)&state->moe_gathered, state->moe_whole != 0u ? D41_TP * (r < D41_OWN_ROWS_MIN ? r : D41_OWN_ROWS_MIN) * D41_HIDDEN * 2u :
@@ -4360,7 +4364,7 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 	{
 		{ (void **)&state->q_latent, r * D41_QLORA * 2u },
 		{ (void **)&state->qrq, r * D41_QLORA * 2u },
-		{ (void **)&state->q_local, r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
+		{ (void **)&state->q_local, attn_rows * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->q_gathered, q_gathered_bytes },
 		{ (void **)&state->idx_key, r * D41_INDEX_DIM * 2u },
 		{ (void **)&state->idx_pack_local, r * D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM * 2u },
@@ -4396,6 +4400,9 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->tile_prefix_up, (D41_EXPERTS + 1u) * 4u },
 		{ (void **)&state->tile_prefix_down, (D41_EXPERTS + 1u) * 4u },
 		{ (void **)&state->expert_gate_up, state->moe_whole != 0u ? 0u : routes * 2u * D41_EXPERT_SLICE * 2u },
+#if D41_WHOLE
+		{ (void **)&state->expert_act, routes * D41_MOE_INTER * 2u },
+#endif
 		{ (void **)&state->expert_slice, routes * (state->moe_whole != 0u ? D41_HIDDEN : D41_HIDDEN_SLICE) * 2u },
 		{ (void **)&state->moe_final, r * (state->moe_whole != 0u ? D41_HIDDEN : D41_HIDDEN_SLICE) * 2u },
 		{ (void **)&state->shared_gate, r * D41_MOE_INTER * 2u },

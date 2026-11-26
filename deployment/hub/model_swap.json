@@ -168,7 +168,7 @@
   {
    "id": "deepseek-v4.1-flash",
    "kv_label": "dsv41_flash_rows16_stage",
-   "node_memory_bytes": 105226698752,
+   "node_memory_bytes": 83751862272,
    "node_reclaim": "$HOME/stage-lanes/dsv41_flash_rows16/lane1/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/dsv41_flash_rows16/lane1/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/dsv41_flash_rows16/lane1/root/lane.sh ready {run_id}",

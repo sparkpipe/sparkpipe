@@ -134,7 +134,7 @@ DSV41_FLASH_ROWS16 = {
     "swap_id": "deepseek-v4.1-flash",
     "api_port": 8463,
     "kv_label": "dsv41_flash_rows16_stage",
-    "node_memory_bytes": 98 << 30,
+    "node_memory_bytes": 78 << 30,
     "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16p/packs/rank{rank}.spstage",
     "pack_siblings": DSV41_FLASH["pack_siblings"] + ("expert_placement.bin",),
     "adapter": "libdsv41_flash_rows16_serving_adapter.so",

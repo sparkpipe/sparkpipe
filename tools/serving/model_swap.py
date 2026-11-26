@@ -124,20 +124,27 @@ class Swapper:
                 raise SwapError(f"memory probe on {self.nodes[rank]} printed {text[-80:]!r}, not a byte count")
         return values
 
+    async def reclaim_all(self, models):
+        if not models:
+            return
+        if len(models) == 1:
+            self.check(await self.fan(models[0]["node_reclaim"], 120, {}), f"{models[0]['id']} cold arena release")
+            return
+        joined = " && ".join(f"( {model['node_reclaim']} )" for model in models)
+        self.check(await self.fan(joined, 120, {}), f"{len(models)} models' cold arena release")
+
     async def admit(self, model):
         before = await self.available()
         need = int(model["node_memory_bytes"]) + self.memory_margin
         if any(value < need for value in before):
-            for other in self.models.values():
-                if other["id"] != model["id"]:
-                    self.check(await self.fan(other["node_reclaim"], 120, {}), f"{other['id']} cold arena release")
+            await self.reclaim_all([other for other in self.models.values() if other["id"] != model["id"]])
             before = await self.available()
         if any(value < need for value in before):
             self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} own cold arena release")
             before = await self.available()
         deadline = time.time() + self.release_seconds
         while any(value < need for value in before) and time.time() < deadline:
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
             before = await self.available()
         short = [f"{self.nodes[rank]} {value / 2**30:.1f}" for rank, value in enumerate(before) if value < need]
         if short:
@@ -166,7 +173,7 @@ class Swapper:
         status, payload = await self.health(model)
         return status == 200 and payload.get("connected_ranks") == len(self.nodes)
 
-    async def drain(self, model):
+    async def drain(self, model, initial=None):
         started = time.time()
         deadline = started + self.drain_seconds
         quiet_since = None
@@ -176,7 +183,11 @@ class Swapper:
                     self.forced = True
                     print(json.dumps({"event": "swap_forced", "model": model["id"], "waited_s": round(time.time() - started, 1)}), file=sys.stderr, flush=True)
                     return
-                status, payload = await self.health(model)
+                if initial is not None:
+                    status, payload = initial
+                    initial = None
+                else:
+                    status, payload = await self.health(model)
                 if status == 0:
                     return
                 live = payload.get("live_requests") or 0
@@ -210,19 +221,31 @@ class Swapper:
                 raise SwapError(f"{model['id']} hub service stop exit {code}: {text[-300:]}")
 
     async def stop_all(self, models):
-        for model in models:
-            await self.drain(model)
+        if not models:
+            return
+        probes = await asyncio.gather(*(self.health(model) for model in models))
+        for model, probe in zip(models, probes):
+            if probe[0] != 0:
+                await self.drain(model, initial=probe)
         for model, (code, text) in zip(models, await asyncio.gather(*(self.local(model["api_stop"], 60) for model in models))):
             if code != 0:
                 raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
-        joined = " && ".join(f"( {model['node_stop']} )" for model in models)
-        self.check(await self.fan(joined, self.node_seconds, {}), f"{len(models)} models' engine stop")
+        if len(models) == 1:
+            self.check(await self.fan(models[0]["node_stop"], self.node_seconds, {}), f"{models[0]['id']} engine stop")
+        else:
+            joined = " && ".join(f"( {model['node_stop']} )" for model in models)
+            self.check(await self.fan(joined, self.node_seconds, {}), f"{len(models)} models' engine stop")
         stopping = [model for model in models if model.get("hub_stop")]
         for model, (code, text) in zip(stopping, await asyncio.gather(*(self.local(model["hub_stop"], self.hub_seconds) for model in stopping))):
             if code != 0:
                 raise SwapError(f"{model['id']} hub service stop exit {code}: {text[-300:]}")
 
     async def release(self, labels):
+        if not labels:
+            return
+        if len(labels) == 1:
+            self.check(await self.fan(substitute(self.drop_kv, {"label": labels[0]}), 60, {}), f"KV pool release of {labels[0]}")
+            return
         joined = " && ".join(f"( {substitute(self.drop_kv, {'label': label})} )" for label in labels)
         self.check(await self.fan(joined, 60, {}), f"KV pool release of {', '.join(labels)}")
 
@@ -260,7 +283,7 @@ class Swapper:
         while not await self.ready(model):
             if time.time() > deadline:
                 raise SwapError(f"{model['id']} api did not connect all {len(self.nodes)} ranks within {self.api_seconds:g} s")
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
 
     async def wait_for_ranks(self, model, run_id):
         self.enter("waiting for ranks")
@@ -276,7 +299,7 @@ class Swapper:
             if time.time() > deadline:
                 waiting = [self.nodes[rank] for rank, state in enumerate(states) if state != "READY"]
                 raise SwapError(f"{model['id']} ranks not ready after {self.ready_seconds:g} s: {', '.join(waiting)}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.25)
 
     async def swap(self, target):
         model = self.models[target]
@@ -293,9 +316,7 @@ class Swapper:
                 self.active = None
                 others = [other for other in self.models.values() if other["id"] != target]
                 self.enter("stopping engines")
-                await self.stop_all(others)
-                self.enter(f"clearing {target}")
-                await self.stop(model)
+                await self.stop_all(others + [model])
                 self.enter("releasing KV pools")
                 await self.release(list(dict.fromkeys(other["kv_label"] for other in others)))
                 self.enter("checking memory")
@@ -334,9 +355,8 @@ class Swapper:
             await self.stop_all(list(self.models.values()))
             self.enter("releasing KV pools")
             await self.release(list(dict.fromkeys(model["kv_label"] for model in self.models.values())))
-            for model in self.models.values():
-                self.enter(f"reclaiming {model['id']} cold arenas")
-                self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
+            self.enter("reclaiming cold arenas")
+            await self.reclaim_all(list(self.models.values()))
             self.state = "idle"
         except SwapError as error:
             self.state = "failed"
@@ -422,8 +442,10 @@ class Swapper:
 
     async def startup(self, app):
         self.session = aiohttp.ClientSession()
-        for model in self.models.values():
-            if await self.ready(model):
+        models = list(self.models.values())
+        ready = await asyncio.gather(*(self.ready(model) for model in models))
+        for model, up in zip(models, ready):
+            if up:
                 self.active = model["id"]
                 break
         print(json.dumps({"event": "model_swap_ready", "active": self.active, "models": sorted(self.models)}), file=sys.stderr, flush=True)

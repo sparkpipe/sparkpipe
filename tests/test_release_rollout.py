@@ -86,6 +86,8 @@ def build(fleet, wd_bytes):
     (hub / "sparkpipe-swap").mkdir(parents=True)
     (hub / "sparkpipe-swap" / "model_swap.json").write_text("live controller\n")
     (hub / "sparkpipe-swap" / f"model_swap.json.prev-{STAMP}").write_text("previous controller\n")
+    (hub / "sparkpipe-swap" / "model_swap.py").write_text("live controller script\n")
+    (hub / "sparkpipe-swap" / f"model_swap.py.prev-{STAMP}").write_text("previous controller script\n")
     (hub / "release-staging" / "weightd-rollback").mkdir(parents=True)
     (hub / "release" / "core" / "bin").mkdir(parents=True)
     old_wd = hashlib.sha256(wd_bytes).hexdigest()[:16]
@@ -166,6 +168,8 @@ def complete_rollback(work, fleet, state, model_lanes, extra, old_wd):
         check((fleet / "rtx5090" / api / "bin" / "api").read_text() == "old", f"hub {api} was not restored", result)
     check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").read_text() == "previous controller\n",
           "rollback did not restore the controller config", result)
+    check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.py").read_text() == "previous controller script\n",
+          "rollback did not restore the controller script", result)
     calls = (fleet / "curl.log").read_text() if (fleet / "curl.log").exists() else ""
     check(result.returncode != 0, "rollback exited 0 although the old weightd never became ready", result)
     check("/activate" not in calls, "rollback activated a model on a weightd that is not ready", result)
@@ -193,6 +197,7 @@ def backup(free_kib):
         hub = fleet / "rtx5090"
         (hub / "sparkpipe-swap").mkdir(parents=True, exist_ok=True)
         (hub / "sparkpipe-swap" / "model_swap.json").write_text("{}")
+        (hub / "sparkpipe-swap" / "model_swap.py").write_text("script\n")
         for index in range(16):
             weightd = fleet / f"spark{HEX[index]}" / "sparkdata" / "weightd"
             weightd.mkdir(parents=True, exist_ok=True)
@@ -210,6 +215,8 @@ def backup(free_kib):
         for _, api in model_lanes:
             copy = fleet / "srv-workspace" / "backups" / f"{api}.prev-{stamp}" / "bin" / "api"
             check(copy.exists() and copy.read_text() == "new", f"hub {api} was not backed up on the workspace volume", result)
+        check((hub / "sparkpipe-swap" / f"model_swap.py.prev-{stamp}").read_text() == "script\n",
+              "backup did not copy model_swap.py", result)
         check(sorted(path.name for path in hub.iterdir()) == home_before, "backup wrote into the hub home", result)
     return body
 
@@ -352,6 +359,8 @@ exit {3 if host == busy_host else 0}
                 check(line[0].split()[3:5] == ["/tmp/spark_weightd.sock", "--reclaim-pack"], f"{host} freed {record}'s pack with {line[0]}, not --reclaim-pack", result)
         check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").read_text() == (ROOT / "deployment" / "hub" / "model_swap.json").read_text(),
               "records did not install the release's controller config", result)
+        check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.py").read_text() == (ROOT / "tools" / "serving" / "model_swap.py").read_text(),
+              "records did not install the release's controller script", result)
         check("model_swap.py --config model_swap.json" in (fleet / "systemd-run.log").read_text(), "records did not restart the controller", result)
     return body
 
@@ -471,6 +480,8 @@ fleet_case("rollback refuses when a hub API backup is missing",
            refusal(lambda fleet, state, lanes: shutil.rmtree(fleet / "srv-workspace" / "backups" / f"{lanes[0][1]}.prev-{STAMP}")))
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
+fleet_case("rollback refuses when the hub controller script backup is missing",
+           refusal(lambda fleet, state, lanes: (fleet / "rtx5090" / "sparkpipe-swap" / f"model_swap.py.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
 fleet_case("restart stops and starts a serving API, waits for every rank, and compares two prompts with the capture before it", restart(16, 0))
 fleet_case("restart fails without capturing when the API does not reach every rank", restart(15, 0))
