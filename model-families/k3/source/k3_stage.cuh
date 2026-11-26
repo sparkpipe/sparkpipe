@@ -508,9 +508,23 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, SparkG
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16, K3_RUNNER_STAGE_ALL);
 	if ( count != 0u )
 	{
-		K3PartialRows(b, state->row_share_device, first, count, base == 0u && (layer % K3_ATTNRES_BLOCK_SIZE) == 0u, stream);
-		K3AttnResRows(b, base == 0u ? b->attnres_mlp_weight : b->attnres_next_weight,
-			(layer / K3_ATTNRES_BLOCK_SIZE) + 2u, rows, first, count, state->row_share_device, stream);
+		const void *score_weight = base == 0u ? b->attnres_mlp_weight : b->attnres_next_weight;
+		uint32_t sources = (layer / K3_ATTNRES_BLOCK_SIZE) + 2u;
+		const uint32_t set_partial = base == 0u && (layer % K3_ATTNRES_BLOCK_SIZE) == 0u ? 1u : 0u;
+		if ( sources > K3_ATTNRES_MAX_SOURCES )
+			sources = K3_ATTNRES_MAX_SOURCES;
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+		if ( score_weight != 0 && LmIsAligned16(b->attnres_bank_bf16) && LmIsAligned16(b->attnres_partial_bf16) &&
+			LmIsAligned16(state->row_share_device) && LmIsAligned16(score_weight) )
+			LM_LAUNCH_DEPENDENT((K3PartialAddAttnResSliceKernel), count, 256u, 0, stream,
+				b->attnres_bank_bf16, b->attnres_partial_bf16, state->row_share_device, (const uint16_t *)score_weight,
+				sources, rows, first, count, set_partial, K3_RMS_EPSILON);
+		else
+#endif
+		{
+			K3PartialRows(b, state->row_share_device, first, count, set_partial, stream);
+			K3AttnResRows(b, score_weight, sources, rows, first, count, state->row_share_device, stream);
+		}
 	}
 	K3RunnerRound(state, stream, share, state->row_share_device, landing, 0u,
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
@@ -658,14 +672,17 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	{
 		const uint16_t *primary = base == 0u ? phase0_source : b->hidden_bf16;
 		const uint32_t row_shard = (phase & K3_COLLECTIVE_ROWS) != 0u ? 1u : 0u;
-		const uint32_t need_pack = (base != 0u && segments == 2u) ||
+		const uint32_t shared_fused = base != 0u && segments == 2u && K3CanFuseRoutedUpShared(b, rows) != 0u ? 1u : 0u;
+		b->fuse_shared_out = 0u;
+		const uint32_t pack_segments = shared_fused != 0u ? 1u : segments;
+		const uint32_t need_pack = (base != 0u && pack_segments == 2u) ||
 			(row_shard != 0u && ((rows + state->tp_degree - 1u) / state->tp_degree) * state->tp_degree != rows) ? 1u : 0u;
 		const uint16_t *send_buf = need_pack != 0u ? state->fused_device : primary;
 		if ( need_pack != 0u )
-			LM_LAUNCH_DEPENDENT((K3RunnerFusedPackKernel), K3VecGrid(elements, primary, state->fused_device, base != 0u && segments == 2u ? b->shared_out_bf16 : 0),
+			LM_LAUNCH_DEPENDENT((K3RunnerFusedPackKernel), K3VecGrid(elements, primary, state->fused_device, base != 0u && pack_segments == 2u ? b->shared_out_bf16 : 0),
 				256u, 0, stream,
 				phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
-				state->fused_device,rows,base,segments,0u);
+				state->fused_device,rows,base,pack_segments,0u);
 		if ( row_shard != 0u )
 		{
 			K3RunnerRowShard(state, b, stream, rows, layer, base,
@@ -1155,6 +1172,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	geometry->lease_tensor_base = (uint32_t)(state->dispatch.buffers->routed_down_rows % K3_LAYER_TILE_N != 0u);
 	state->dispatch.slice_state->layer_collective = K3RunnerLayerCollective;
 	state->dispatch.slice_state->collective_published = K3ModelPublished;
+	state->dispatch.slice_state->fuse_shared_out = 1u;
 	state->lanes[0].state = state;
 	state->lanes[0].index = 0u;
 	state->lanes[1].state = state;
@@ -1187,6 +1205,7 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		state->dispatch.slice_state->collective_context = state->layer_collective_context;
 		state->dispatch.slice_state->collective_pair_context = 0;
 		state->dispatch.slice_state->collective_published = 0;
+		state->dispatch.slice_state->fuse_shared_out = 0u;
 	}
 	if ( state->has_collective != 0u )
 	{
