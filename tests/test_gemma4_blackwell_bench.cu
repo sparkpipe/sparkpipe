@@ -15,8 +15,8 @@
 #define GB_MAX_ROWS 512u
 #define GB_SLOTS 64u
 #define GB_PAGES 16u
-#define GB_GRAIN 256u
-#define GB_PREFIX 64u
+#define GB_GRAIN 4u
+#define GB_PREFIX 4u
 
 struct Bench31b : Gemma4_31bGeometry<16u>
 {

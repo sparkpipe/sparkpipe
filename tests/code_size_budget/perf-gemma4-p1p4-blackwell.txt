@@ -1,2 +1,2 @@
-+1469
-Gemma4 Blackwell P1-P4 kernels (gemma4_fast.cuh + gemma4_stage.cuh): exact 0-ULP dense/split-K/gate-up-act-router/gate-out/MoE verify & decode kernels, L2-pinned MoE W1/W2 MMA with global tile prefix and cross-tile K=128 pipeline, fused dense Gate+Up+Act+Router MMA, adaptive half-Q prefill attention with fused OutputGate/HeadGate epilogue, 1-warp/key prior KV gather, and fused <=256-route routing.
++1533
+Gemma4 Blackwell P1-P4 kernels (gemma4_fast.cuh + gemma4_stage.cuh): exact 0-ULP dense/split-K/gate-up-act-router/gate-out/MoE verify & decode kernels (MAX_R=4/8 occupancy split, RT=1 BN_GU=1 split-K), L2-pinned/cp.async MoE W1/W2 MMA (3-stage general + cross-tile K=128 pipeline), fused FP32-router Gate+Up+Act MMA, adaptive half-Q prefill attention with fused OutputGate/HeadGate epilogue, 1-warp/key prior KV gather, and fused <=256-route routing.
