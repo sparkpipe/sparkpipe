@@ -16,6 +16,8 @@ import model_swap  # noqa: E402
 
 GIB = 2 ** 30
 FAKE_SSH = """import os, re, sys, time
+with open(os.path.join(os.path.dirname(sys.argv[0]), "raw.log"), "a") as raw:
+    raw.write(sys.argv[1] + "\\t" + sys.argv[2] + "\\n")
 for command in re.findall(r"[(] (.+?) [)]", sys.argv[2]) or [sys.argv[2]]:
     words = command.split()
     with open(os.path.join(os.path.dirname(sys.argv[0]), "ssh.log"), "a") as log:
@@ -85,7 +87,10 @@ async def scenario():
             results["record"] = swapper.history[-1] if swapper.history else None
             results["old_api_up"] = pathlib.Path(state, "api-started-old").exists()
             results["log"] = log.read_text().splitlines()
+            raw = pathlib.Path(state, "raw.log")
+            results["raw"] = raw.read_text().splitlines()
             log.write_text("")
+            raw.write_text("")
             async with session.post(base + "/deactivate") as response:
                 results["again"] = response.status
             await asyncio.sleep(0.05)
@@ -93,6 +98,7 @@ async def scenario():
                 results["activate_during"] = response.status
             await wait_idle(swapper, 20)
             results["final"] = (swapper.state, swapper.active, swapper.error)
+            results["final_raw"] = raw.read_text().splitlines()
             results["final_history"] = [(entry["from"], entry["to"], entry["ok"]) for entry in swapper.history]
         await control_runner.cleanup()
         await engine_runner.cleanup()
@@ -112,6 +118,13 @@ def main():
             assert f"{node} {command}" in r["log"], (node, command, r["log"])
     assert max(r["log"].index(f"n0 STOP {name}") for name in ("old", "target")) < min(r["log"].index(f"n0 DROP {name}_stage") for name in ("old", "target")), r["log"]
     assert max(r["log"].index(f"n0 DROP {name}_stage") for name in ("old", "target")) < min(r["log"].index(f"n0 RECLAIM {name}") for name in ("old", "target")), r["log"]
+    assert [line.split("\t", 1)[1] for line in r["raw"] if line.startswith("n0\t")] == [
+        "( STOP old ) && ( STOP target )",
+        "( DROP old_stage ) && ( DROP target_stage )",
+        "( RECLAIM old ) && ( RECLAIM target )",
+    ], r["raw"]
+    swap_stops = [line for line in r["final_raw"] if line.startswith("n0\t") and "STOP" in line]
+    assert len(swap_stops) == 2 and all(line == "n0\t( STOP old ) && ( STOP target )" for line in swap_stops), swap_stops
     assert r["again"] == 202 and r["activate_during"] == 202, r
     assert r["final"] == ("idle", "target", None), r
     assert r["final_history"][-2:] == [(None, None, True), (None, "target", True)], r["final_history"]

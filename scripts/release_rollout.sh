@@ -33,6 +33,7 @@ backups_present() {
   done
   fan_all "backup weightd_warm.prev-$U" "test -s \$HOME/sparkdata/swap/weightd_warm.prev-$U" || missing=1
   hub "test -s ~/sparkpipe-swap/model_swap.json.prev-$U" || { echo "backup hub model_swap.json.prev-$U missing"; missing=1; }
+  hub "test -s ~/sparkpipe-swap/model_swap.py.prev-$U" || { echo "backup hub model_swap.py.prev-$U missing"; missing=1; }
   hub "test \"\$(sha256sum < ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD | cut -c1-16)\" = $OLD_WD" || { echo "backup hub weightd $OLD_WD missing"; missing=1; }
   return $missing
 }
@@ -138,7 +139,7 @@ case "$step" in
       hub "[ -e $BK/$(field $id api).prev-$U ] || cp -a ~/$(field $id api) $BK/$(field $id api).prev-$U" || { echo "BACKUP-FAILED hub $(field $id api)"; exit 1; }
     done
     fan_all "backup weightd" "cp -p \$HOME/sparkdata/swap/weightd_warm \$HOME/sparkdata/swap/weightd_warm.prev-$U && cp -p \$HOME/sparkdata/weightd/sparkpipe_weightd \$HOME/sparkdata/weightd/sparkpipe_weightd.prev-$U" || exit 1
-    hub "mkdir -p ~/release-staging/weightd-rollback && r=~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WD && cp -p ~/sparkpipe-swap/model_swap.json ~/sparkpipe-swap/model_swap.json.prev-$U && echo hub backups ok" || { echo "BACKUP-FAILED hub"; exit 1; } ;;
+    hub "mkdir -p ~/release-staging/weightd-rollback && r=~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD && { [ -f \$r ] || cp ~/release/core/bin/sparkpipe_weightd \$r; } && test \"\$(sha256sum < \$r | cut -c1-16)\" = $OLD_WD && cp -p ~/sparkpipe-swap/model_swap.json ~/sparkpipe-swap/model_swap.json.prev-$U && cp -p ~/sparkpipe-swap/model_swap.py ~/sparkpipe-swap/model_swap.py.prev-$U && echo hub backups ok" || { echo "BACKUP-FAILED hub"; exit 1; } ;;
   down)
     stamp "down: stop every model's engines and any API that answers, no residentd anywhere"
     for id in $MODELS; do
@@ -172,7 +173,7 @@ case "$step" in
       echo "$released" | grep -q ' 16 reclaim=0$' || { echo "$released"; echo "RECORDS-FAILED $id: weightd did not free the cold arena of the pack this lane names, which no lane names once its record changes the pack"; exit 1; }
       python3 "$KIT/../tools/lane_config.py" push "$id" || { echo "RECORDS-FAILED $id"; exit 1; }
     done
-    scp -q "$KIT/../deployment/hub/model_swap.json" rtx5090:sparkpipe-swap/model_swap.json.release-$SHA && hub "cd ~/sparkpipe-swap && mv model_swap.json.release-$SHA model_swap.json && echo controller config $SHA" && controller_restart || { echo "RECORDS-FAILED controller config"; exit 1; } ;;
+    scp -q "$KIT/../deployment/hub/model_swap.json" rtx5090:sparkpipe-swap/model_swap.json.release-$SHA && scp -q "$KIT/../tools/serving/model_swap.py" rtx5090:sparkpipe-swap/model_swap.py.release-$SHA && hub "cd ~/sparkpipe-swap && chmod 755 model_swap.py.release-$SHA && mv model_swap.json.release-$SHA model_swap.json && mv model_swap.py.release-$SHA model_swap.py && echo controller $SHA" && controller_restart || { echo "RECORDS-FAILED controller config"; exit 1; } ;;
   qualify)
     for id in ${ONLY:-$MODELS}; do
       stamp "qualify $id"
@@ -211,7 +212,7 @@ case "$step" in
       fan_all "restore $L" "cd \$HOME/$L && $(restore_root $U) && { rmdir root/kvsnapshot root/kvcache 2>/dev/null; mv root.failed-$U/kvsnapshot root.failed-$U/kvcache root/ 2>/dev/null; true; }" || restored=0
       hub "test -d $BK/$(field $id api).prev-$U && rm -rf $BK/$(field $id api).failed-$U && mv ~/$(field $id api) $BK/$(field $id api).failed-$U && { cp -a $BK/$(field $id api).prev-$U ~/$(field $id api) || { rm -rf ~/$(field $id api); mv $BK/$(field $id api).failed-$U ~/$(field $id api); false; }; } && rm -f ~/$(field $id api)/runtime/prefix_index.spi" || { echo "restore hub $(field $id api) FAILED"; restored=0; }
     done
-    hub "cp -p ~/sparkpipe-swap/model_swap.json.prev-$U ~/sparkpipe-swap/model_swap.json" && controller_restart || restored=0
+    hub "cp -p ~/sparkpipe-swap/model_swap.json.prev-$U ~/sparkpipe-swap/model_swap.json && cp -p ~/sparkpipe-swap/model_swap.py.prev-$U ~/sparkpipe-swap/model_swap.py" && controller_restart || restored=0
     fan_all "restore weightd_warm" "cp -p \$HOME/sparkdata/swap/weightd_warm.prev-$U \$HOME/sparkdata/swap/weightd_warm" || restored=0
     [ "$restored" = 1 ] || { echo "ROLLBACK-INCOMPLETE: a restore failed; weightd and the models were left down for a manual repair"; exit 1; }
     hub "cd ~/release/core && exec 9>\$HOME/release/.core.publish.lock && flock 9 && cp ~/release-staging/weightd-rollback/sparkpipe_weightd.$OLD_WD bin/sparkpipe_weightd.new && chmod 755 bin/sparkpipe_weightd.new && mv bin/sparkpipe_weightd.new bin/sparkpipe_weightd && test \"\$(sha256sum < bin/sparkpipe_weightd | cut -c1-16)\" = $OLD_WD && find bin -type f | sort | xargs sha256sum > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST && printf '%s\n' $OLD_WD > WEIGHTSD_BIN.tmp && mv WEIGHTSD_BIN.tmp WEIGHTSD_BIN && echo announced \$(cat WEIGHTSD_BIN)"

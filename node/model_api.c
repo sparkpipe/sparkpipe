@@ -77,6 +77,7 @@ typedef struct ApiOptions
 	uint32_t explicit_cache_points;
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
+	uint32_t cache_point_min_advance;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -123,6 +124,7 @@ typedef struct ApiRequest
 	uint32_t drafts_disabled;
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
+	uint32_t cache_point_min_advance;
 	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -552,6 +554,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.drafts_disabled = r->drafts_disabled;
 	sub.cache_point_count = r->cache_point_count;
 	memcpy(sub.cache_points,r->cache_points,sizeof(sub.cache_points));
+	sub.cache_point_min_advance = r->cache_point_min_advance;
 	sub.stop_token_count = r->stop_token_count;
 	sub.stop_token_ids = r->stop_tokens;
 	sub.output_token_budget = r->max_tokens;
@@ -1621,6 +1624,8 @@ static void api_maybe_set_chat_cache_point(const char *prompt_text, uint32_t pro
 		{
 			options->cache_points[0] = aligned + prefix_count;
 			options->cache_point_count = 1u;
+			if (S.prefix_checkpoint_interval == 0u)
+				options->cache_point_min_advance = min_body;
 		}
 	}
 }
@@ -1982,6 +1987,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->drafts_disabled = options.drafts_disabled;
 	req->cache_point_count = options.cache_point_count;
 	memcpy(req->cache_points,options.cache_points,sizeof(req->cache_points));
+	req->cache_point_min_advance = options.cache_point_min_advance;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
