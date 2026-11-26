@@ -852,7 +852,57 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 	b->shard_gather_value_keys = 0u;
 	b->shard_gather_history = 0u;
 	b->shard_gather_prefetched = 0u;
-	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u || (indexed != 0u && units > landing_units) )
+	b->shard_gather_prior_ctx = 0u;
+	b->shard_gather_total_ctx = 0u;
+	b->shard_gather_direct = 0u;
+	if ( d->gather_plan == 0 || sequence >= d->sequences || most == 0u )
+		return 0;
+	const uint32_t prior_ctx = context > rows ? context - rows : 0u;
+	const uint32_t prior_most = prior_ctx != 0u ? SparkKvShardGatherKeys(b->kv_shard, prior_ctx) : 0u;
+	const uint64_t prior_units = prior_most != 0u ? ((uint64_t)prior_most * key_bytes + unit - 1u) / unit : 0u;
+	const uint64_t kv_all_bytes = (uint64_t)context * key_bytes;
+	const uint64_t query_cap_bytes = (uint64_t)degree * SparkK3KvShardQueryStride(d->attention_rows, degree) * sizeof(uint16_t);
+	const uint64_t recv_cap_bytes = b->shard_received_floats * sizeof(float);
+	const uint32_t heads = K3_RANK_DIM(b, mla_heads_rank, K3_MLA_HEADS);
+	const uint32_t union_blocks = (rows + 7u) / 8u;
+	const uint64_t union_cap = 8u * K3_INDEX_TOPK;
+	const uint64_t union_bytes = (uint64_t)union_blocks * union_cap * sizeof(uint32_t) +
+		(((uint64_t)union_blocks * union_cap + 15u) & ~UINT64_C(15)) + (uint64_t)union_blocks * sizeof(uint32_t);
+	const uint32_t can_direct = (rows <= d->attention_rows || indexed == 0u) && (heads & 1u) == 0u &&
+		(first == 0u || first == prior_ctx) &&
+		kv_all_bytes <= query_cap_bytes &&
+		prior_units * unit <= send_bytes &&
+		(uint64_t)degree * prior_units * unit <= recv_cap_bytes &&
+		(indexed == 0u || union_bytes <= recv_cap_bytes) ? 1u : 0u;
+	if ( can_direct != 0u )
+	{
+		scatter_rounds = SparkTpMeshDirectChunks(query_units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES) +
+			SparkTpMeshAllToAllChunks(partial_units * K3_HIDDEN, degree, SPARK_WEIGHTD_MESH_SLOT_BYTES);
+		gather_rounds = prior_units != 0u ?
+			SparkTpMeshDirectChunks(prior_units * K3_HIDDEN * degree, degree, SPARK_TP_MESH_OPERATION_ALL_GATHER, SPARK_WEIGHTD_MESH_SLOT_BYTES) : 0u;
+		if ( prior_units != 0u && SparkKvShardExchangeCostNs(gather_rounds, (uint64_t)(degree - 1u) * prior_units * unit) >=
+			SparkKvShardExchangeCostNs(scatter_rounds, (uint64_t)(degree - 1u) * (query_units + partial_units) * unit) )
+			return 0;
+		LM_LAUNCH((K3DispatchGatherPlanKernel), 1u, 1u, 0, stream, d->gather_plan, d->sequences, sequence, prior_ctx);
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(-1);
+		b->shard_gather = 1u;
+		b->shard_gather_direct = 1u;
+		b->shard_gather_prior_ctx = prior_ctx;
+		b->shard_gather_total_ctx = context;
+		b->shard_gather_most_keys = prior_most;
+		b->shard_gather_windows = prior_ctx != 0u ? 1u : 0u;
+		b->shard_gather_window_keys = 0u;
+		b->shard_gather_buffer_bytes = 0u;
+		b->shard_gather_running = 0;
+		b->shard_gather_stride = prior_units * unit;
+		b->shard_gather_window = 0u;
+		b->shard_gather_list = d->gather_plan;
+		b->shard_gather_offset = d->gather_plan + d->sequences;
+		b->shard_gather_context = d->gather_plan + 2u * d->sequences;
+		return 1;
+	}
+	if ( indexed != 0u && units > landing_units )
 		return 0;
 	if ( units <= landing_units )
 	{
@@ -970,6 +1020,9 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->shard_gather_expanded = 0u;
 	b->shard_gather_history = 0u;
 	b->shard_gather_prefetched = 0u;
+	b->shard_gather_prior_ctx = 0u;
+	b->shard_gather_total_ctx = 0u;
+	b->shard_gather_direct = 0u;
 	b->shard_mha = 0u;
 	if ( rows > d->attention_rows && (b->kv_shard.degree < 2u || sequences != 1u || commit == 0u || in->pair_rows == 0u ||
 		in->pair_rows > d->attention_rows || rows - in->pair_rows > d->attention_rows || in->gather_context == 0u ||

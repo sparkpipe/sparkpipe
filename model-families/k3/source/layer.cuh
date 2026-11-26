@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include "runtime/gemm.cuh"
 #include "runtime/launch.h"
 #include "inference/kernels/norm.cuh"
@@ -25,6 +26,7 @@
 #include "model-families/k3/source/generated_config.h"
 #include "sparkpipe/spark_gpu.h"
 #if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+#include "inference/kernels/attn_prefill.cuh"
 #include "model-families/k3/source/k3_fast.cuh"
 #endif
 
@@ -251,6 +253,9 @@ struct K3LayerBuffers
 	uint32_t shard_gather_value_keys;
 	uint32_t shard_gather_history;
 	uint32_t shard_gather_prefetched;
+	uint32_t shard_gather_prior_ctx;
+	uint32_t shard_gather_total_ctx;
+	uint32_t shard_gather_direct;
 	uint32_t shard_mha;
 	uint8_t *shard_mha_keys;
 	uint64_t shard_mha_keys_bytes;
@@ -973,18 +978,21 @@ void K3RmsNormSliceKernel(const uint16_t *__restrict__ input_bf16, const uint16_
 
 template<class Geometry, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void K3RmsNormKvShardStoreKernel(LmKvShardView view, const uint16_t *__restrict__ rows_bf16, const uint16_t *__restrict__ norm_weight, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ position_of_row, uint32_t row_count, float epsilon)
+void K3RmsNormKvShardStoreKernel(LmKvShardView view, const uint16_t *__restrict__ rows_bf16, const uint16_t *__restrict__ norm_weight, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ position_of_row, uint32_t row_count, float epsilon, uint16_t *__restrict__ kv_all = 0, uint32_t total_ctx = 0u)
 {
 	__shared__ float reduction[LmBlockWarps<THREADS>()];
 	const uint32_t row = blockIdx.x;
 	LmDependentWait();
-	if ( row >= row_count || SparkKvShardOwns(view.shard, position_of_row[row]) == 0u )
+	if ( row >= row_count )
 	{
 		LmDependentRelease();
 		return;
 	}
-	uint16_t *slot = (uint16_t *)LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], position_of_row[row], row, LM_KV_ACCESS_WRITE);
-	if ( slot == 0 )
+	const uint32_t pos = position_of_row[row];
+	uint16_t *dst_all = kv_all != 0 && pos < total_ctx ? kv_all + (uint64_t)pos * K3_MLA_KV_A_DIM : (uint16_t *)0;
+	uint16_t *slot = SparkKvShardOwns(view.shard, pos) != 0u
+		? (uint16_t *)LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], pos, row, LM_KV_ACCESS_WRITE) : (uint16_t *)0;
+	if ( slot == 0 && dst_all == 0 )
 	{
 		LmDependentRelease();
 		return;
@@ -998,9 +1006,21 @@ void K3RmsNormKvShardStoreKernel(LmKvShardView view, const uint16_t *__restrict_
 	}
 	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)K3_KV_LORA_RANK, epsilon);
 	for (uint32_t index = threadIdx.x; index < K3_KV_LORA_RANK; index += THREADS)
-		slot[index] = LmFloatToBf16(SparkMathNormGainRounded(LmBf16ToFloat(src[index]) * scale, LmBf16ToFloat(norm_weight[index])));
+	{
+		const uint16_t out = LmFloatToBf16(SparkMathNormGainRounded(LmBf16ToFloat(src[index]) * scale, LmBf16ToFloat(norm_weight[index])));
+		if ( slot != 0 )
+			slot[index] = out;
+		if ( dst_all != 0 )
+			dst_all[index] = out;
+	}
 	for (uint32_t index = threadIdx.x; index < K3_QK_UNROTATED_DIM; index += THREADS)
-		slot[K3_KV_LORA_RANK + index] = src[K3_KV_LORA_RANK + index];
+	{
+		const uint16_t out = src[K3_KV_LORA_RANK + index];
+		if ( slot != 0 )
+			slot[K3_KV_LORA_RANK + index] = out;
+		if ( dst_all != 0 )
+			dst_all[K3_KV_LORA_RANK + index] = out;
+	}
 	LmDependentRelease();
 }
 
@@ -1116,13 +1136,13 @@ static int32_t K3LayerKdaPrepare(const K3LayerBuffers *b, uint32_t rows, uint32_
 		{rank_qk, rank_qk, rank_v}};
 	if ( LmCausalConvStreamsLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(conv,b->kda_state_index,b->sequence_row_begin,0,sequences,commit,b->sequence_row_indices,rows,stream,b->parent_rows) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	float *retention = b->replay_retention != 0 ? b->replay_retention : b->kda_retention;
+	float *write_gate = b->replay_write_gate != 0 ? b->replay_write_gate : b->kda_write_gate_out;
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->kda_decay_up_weight,0,
 		b->decay_logit_bf16,rows,K3_KDA_KEY_DIM,
 		K3_RANK_DIM(b,kda_decay_up_rows,K3_KDA_QK_DIM),multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	float *retention = b->replay_retention != 0 ? b->replay_retention : b->kda_retention;
-	float *write_gate = b->replay_write_gate != 0 ? b->replay_write_gate : b->kda_write_gate_out;
 	constexpr uint32_t prep_threads = K3_LAYER_THREADS < K3_KDA_KEY_DIM ? K3_LAYER_THREADS : K3_KDA_KEY_DIM;
 	LM_LAUNCH_DEPENDENT((K3KdaPrepFinishKernel<prep_threads,K3_KDA_KEY_DIM>), dim3(rows,rank_heads), prep_threads, 0, stream,
 		b->query_bf16,b->key_bf16,b->decay_logit_bf16,b->kda_decay_bias + ((uint64_t)head_base * K3_KDA_KEY_DIM),
@@ -1302,7 +1322,9 @@ static int32_t K3LayerMlaUp(const K3LayerBuffers *b, uint32_t rows, uint32_t mul
 	const uint32_t *write_slots = b->slots != 0 ? b->slots : b->positions;
 	if ( b->kv_shard.degree > 1u )
 		LM_LAUNCH_DEPENDENT((K3RmsNormKvShardStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-			b->cache_shard,b->kv_slot_bf16,(const uint16_t *)b->mla_kv_a_norm_weight,b->sequence_of_row,write_slots,rows,K3_LORA_RMS_EPSILON);
+			b->cache_shard,b->kv_slot_bf16,(const uint16_t *)b->mla_kv_a_norm_weight,b->sequence_of_row,write_slots,rows,K3_LORA_RMS_EPSILON,
+			b->shard_gather_direct != 0u ? b->shard_query_gathered_bf16 : (uint16_t *)0,
+			b->shard_gather_direct != 0u ? b->shard_gather_total_ctx : 0u);
 	else
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_KV_LORA_RANK + 8u) * sizeof(float), stream,
@@ -1579,6 +1601,8 @@ static uint64_t K3LayerMlaWindowStride(const K3LayerBuffers *b, uint32_t window)
 
 static const uint8_t *K3LayerMlaWindowLanding(const K3LayerBuffers *b, uint32_t window)
 {
+	if ( b->shard_gather_direct != 0u )
+		return((const uint8_t *)b->shard_partials_received_f32);
 	return(b->shard_gather_keys + (b->shard_gather_windows <= 1u ? 0u : (uint64_t)(window & 1u) * b->shard_gather_buffer_bytes));
 }
 
@@ -1591,11 +1615,12 @@ static const uint8_t *K3LayerMlaWindowSend(const K3LayerBuffers *b, uint32_t win
 static uint32_t K3LayerMlaGatherReady(const K3LayerBuffers *b, uint32_t rows)
 {
 	const uint64_t key_bytes = (uint64_t)K3_MLA_KV_A_DIM * sizeof(uint16_t);
+	const uint32_t cold_direct = b->shard_gather_direct != 0u && b->shard_gather_prior_ctx == 0u ? 1u : 0u;
 	return(K3LayerMlaShardReady(b,rows) != 0u && b->shard_gather != 0u && rows > LM_SKINNY_ROWS_WIDE && b->row_invariant == 0u &&
 		b->shard_gather_list != 0 && b->shard_gather_offset != 0 && b->shard_gather_context != 0 &&
-		b->shard_gather_send != 0 && b->shard_gather_keys != 0 && b->shard_gather_most_keys != 0u &&
+		b->shard_gather_send != 0 && b->shard_gather_keys != 0 && (b->shard_gather_most_keys != 0u || cold_direct != 0u) &&
 		(b->shard_gather_windows <= 1u
-			? b->shard_gather_stride >= (uint64_t)b->shard_gather_most_keys * key_bytes
+			? (cold_direct != 0u || b->shard_gather_stride >= (uint64_t)b->shard_gather_most_keys * key_bytes)
 			: b->shard_gather_window_keys != 0u && b->shard_gather_running != 0 && b->shard_gather_buffer_bytes != 0u &&
 				b->shard_gather_stride >= (uint64_t)b->shard_gather_window_keys * key_bytes &&
 				(uint64_t)(b->shard_gather_windows - 1u) * b->shard_gather_window_keys < b->shard_gather_most_keys &&
@@ -1653,12 +1678,345 @@ static uint32_t K3LayerMlaGatherIndexReady(const K3LayerBuffers *b)
 	return(K3LayerIndexed(b) == 0u || (b->shard_gather_windows <= 1u && b->shard_gather_expanded == 0u && b->shard_gather_prefetched == 0u) ? 1u : 0u);
 }
 
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+static __global__ __launch_bounds__(128u, 4)
+void K3UnpackPriorKvKernel(SparkKvShard shard, const uint8_t *__restrict__ gathered_bytes, uint64_t rank_stride,
+	uint32_t prior_local_keys, uint32_t old_ctx, uint16_t *__restrict__ kv_all)
+{
+	constexpr uint32_t SLOT_V = K3_MLA_KV_A_DIM >> 3u;
+	static_assert(SLOT_V == 72u && SLOT_V <= 128u, "one thread per 16-byte vector of a K3 latent KV slot");
+	const uint32_t local = blockIdx.x, src_rank = blockIdx.y;
+	SparkKvShard src_shard = shard;
+	src_shard.rank = src_rank;
+	const uint32_t pos = SparkKvShardLocalPosition(src_shard, local);
+	LmDependentWait();
+	if ( local < prior_local_keys && src_rank < shard.degree && pos < old_ctx && threadIdx.x < SLOT_V )
+	{
+		const uint4 *s4 = (const uint4 *)(gathered_bytes + (uint64_t)src_rank * rank_stride) + (uint64_t)local * SLOT_V;
+		uint4 *d4 = (uint4 *)(kv_all + (uint64_t)pos * K3_MLA_KV_A_DIM);
+		d4[threadIdx.x] = __ldg(s4 + threadIdx.x);
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t TOPK>
+__global__ __launch_bounds__(K3_LAYER_THREADS, 2)
+void K3FillDenseSelectedKernel(const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length,
+	const uint32_t *__restrict__ positions, uint32_t *__restrict__ selected)
+{
+	const uint32_t row = blockIdx.x;
+	LmDependentWait();
+	const uint32_t pos = positions[row];
+	uint32_t bound = context_length[sequence_of_row[row]];
+	if ( pos + 1u < bound )
+		bound = pos + 1u;
+	if ( bound <= TOPK )
+	{
+		uint32_t *dst = selected + (uint64_t)row * TOPK;
+		for ( uint32_t i = threadIdx.x; i < TOPK; i += K3_LAYER_THREADS )
+			dst[i] = i < bound ? i : LM_INDEX_SHARD_NO_POSITION;
+	}
+	LmDependentRelease();
+}
+
+template<bool SPARSE>
+__global__ __launch_bounds__(LM_PREFILL_ATTN_THREADS, 1)
+void K3MlaGatherPrefillKernel(
+	const uint16_t *__restrict__ query_bf16,
+	const uint16_t *__restrict__ kv_all,
+	const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ context_length,
+	const uint32_t *__restrict__ row_position,
+	float qk_scale,
+	uint16_t *__restrict__ output_bf16,
+	uint32_t rows,
+	uint32_t total_heads,
+	uint32_t total_ctx,
+	const uint32_t *__restrict__ union_positions,
+	const uint8_t *__restrict__ union_masks,
+	const uint32_t *__restrict__ union_counts,
+	uint32_t union_capacity)
+{
+	constexpr uint32_t HEADS = 2u;
+	constexpr uint32_t LATENT = K3_KV_LORA_RANK;
+	constexpr uint32_t DIM = K3_MLA_KV_A_DIM;
+	constexpr uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES;
+	constexpr uint32_t ROW_BYTES = DIM * 2u;
+	constexpr uint32_t CHUNKS = DIM / 8u;
+	constexpr uint32_t TILE = LM_PREFILL_ATTN_TILE;
+	constexpr uint32_t K_STEPS = DIM / 16u;
+	constexpr uint32_t HALF_STEPS = K_STEPS / 2u;
+	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / HEADS;
+	constexpr uint32_t KEY_GROUPS = LM_PREFILL_ATTN_WARPS / 2u;
+	constexpr uint32_t KEY_FRAGS = TILE / (KEY_GROUPS * 8u);
+	constexpr uint32_t WARP_COLUMNS = LATENT / LM_PREFILL_ATTN_WARPS;
+	constexpr uint32_t COLUMN_FRAGS = WARP_COLUMNS / 8u;
+	constexpr uint32_t QUERY_KEYS = QUERIES * TILE / LM_PREFILL_ATTN_THREADS;
+	constexpr uint32_t QUERY_THREADS = TILE / QUERY_KEYS;
+	static_assert(HEADS == 2u && ROWS_PER_BLOCK == 8u && QUERIES == 16u && KEY_FRAGS == 1u && QUERY_KEYS == 2u,
+		"2-head 8-row grouped prefill fills one 16-query MMA tile per CTA");
+	static_assert(LmPrefillAttnSharedBytes<DIM, QUERIES>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "K3 prefill tiles fit SM shared memory");
+	extern __shared__ __align__(128) uint8_t k3_prefill_smem[];
+	uint8_t *keys = k3_prefill_smem;
+	float *score_parts = (float *)(keys + 2u * TILE * ROW_BYTES);
+	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QUERIES * LM_PREFILL_ATTN_PARTIAL_STRIDE);
+	float *running_max = (float *)(weight_high + QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
+	float *running_sum = running_max + QUERIES;
+	float *rescale = running_sum + QUERIES;
+	const uint8_t **slots = (const uint8_t **)(rescale + QUERIES);
+	uint32_t *key_rows = (uint32_t *)(slots + 2u * TILE);
+	LmDependentWait();
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	const uint32_t matrix = lane >> 3u, within = lane & 7u;
+	const uint32_t half = (warp / KEY_GROUPS) & 1u, key_group = warp % KEY_GROUPS;
+	const uint32_t table = gridDim.x - 1u - blockIdx.x;
+	const uint32_t head_base = blockIdx.y * HEADS;
+	const uint32_t *tile_positions = SPARSE ? union_positions + (uint64_t)table * union_capacity : (const uint32_t *)0;
+	const uint8_t *tile_masks = SPARSE ? union_masks + (uint64_t)table * union_capacity : (const uint8_t *)0;
+	const uint32_t first_row = table * ROWS_PER_BLOCK;
+	const uint32_t row_end = LmPrefillMin(rows, first_row + ROWS_PER_BLOCK);
+	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
+	const uint32_t query_base = key_base + TILE * ROW_BYTES;
+	uint32_t query_frag[HALF_STEPS][4];
+	float output[COLUMN_FRAGS][4];
+	uint32_t row_limit[ROWS_PER_BLOCK];
+	const float scale_log2 = qk_scale * 1.4426950408889634f;
+	const uint32_t sequence = __ldg(sequence_of_row + first_row);
+	const uint32_t seq_ctx = __ldg(context_length + sequence);
+	const uint32_t ctx_cap = seq_ctx < total_ctx ? seq_ctx : total_ctx;
+	uint32_t first_position_min = 0xffffffffu, last_position = 0u;
+	for ( uint32_t r = first_row; r < row_end; ++r )
+	{
+		const uint32_t rpos = __ldg(row_position + r);
+		const uint32_t lim = rpos + 1u < ctx_cap ? rpos : (ctx_cap > 0u ? ctx_cap - 1u : 0u);
+		first_position_min = lim < first_position_min ? lim : first_position_min;
+		last_position = lim > last_position ? lim : last_position;
+	}
+	const uint32_t listed_keys = ctx_cap == 0u ? 0u : (SPARSE ? __ldg(union_counts + table) : last_position + 1u);
+	const uint32_t tiles = (listed_keys + TILE - 1u) / TILE;
+	#pragma unroll
+	for ( uint32_t r = 0u; r < ROWS_PER_BLOCK; ++r )
+	{
+		const uint32_t rpos = first_row + r < row_end ? __ldg(row_position + first_row + r) : 0u;
+		row_limit[r] = rpos + 1u < ctx_cap ? rpos : (ctx_cap > 0u ? ctx_cap - 1u : 0u);
+	}
+	auto listing = [&](uint32_t which, uint32_t &position, uint32_t &members)
+	{
+		const uint32_t listed = which * TILE + threadIdx.x;
+		position = !SPARSE ? listed : (listed < listed_keys ? __ldg(tile_positions + listed) : 0xffffffffu);
+		members = !SPARSE ? 0xffffffffu : (listed < listed_keys ? (uint32_t)__ldg(tile_masks + listed) : 0u);
+	};
+	auto resolve = [&](uint32_t position, uint32_t members, uint32_t &valid) -> const uint8_t *
+	{
+		valid = 0u;
+		#pragma unroll
+		for ( uint32_t r = 0u; r < ROWS_PER_BLOCK; ++r )
+			valid |= (first_row + r < row_end && ((members >> r) & 1u) != 0u && position <= row_limit[r] ? 1u : 0u) << r;
+		return position <= last_position && position < total_ctx ? (const uint8_t *)(kv_all + (uint64_t)position * DIM) : (const uint8_t *)0;
+	};
+	auto copy = [&](uint32_t which)
+	{
+		const uint32_t buffer = which & 1u;
+		constexpr uint32_t SLOTS_PER_WARP = TILE / LM_PREFILL_ATTN_WARPS;
+		constexpr uint32_t WARP_ITERS = (SLOTS_PER_WARP * CHUNKS) / 32u;
+		const uint8_t *s0 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 0u];
+		const uint8_t *s1 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 1u];
+		const uint8_t *s2 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 2u];
+		const uint8_t *s3 = slots[buffer * TILE + warp * SLOTS_PER_WARP + 3u];
+		#pragma unroll
+		for ( uint32_t iter = 0u; iter < WARP_ITERS; ++iter )
+		{
+			const uint32_t k = iter * 32u + lane;
+			const uint32_t s = (k >= CHUNKS) + (k >= 2u * CHUNKS) + (k >= 3u * CHUNKS);
+			const uint32_t piece = k - s * CHUNKS;
+			const uint32_t slot_index = warp * SLOTS_PER_WARP + s;
+			const uint8_t *slot = s == 0u ? s0 : (s == 1u ? s1 : (s == 2u ? s2 : s3));
+			LmPrefillCopy(key_base + (buffer * TILE + slot_index) * ROW_BYTES + LmPrefillSwizzle(slot_index, piece) * 16u,
+				slot != 0 ? (const void *)(slot + piece * 16u) : (const void *)query_bf16, slot != 0 ? 16u : 0u);
+		}
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+	};
+	for ( uint32_t idx = threadIdx.x; idx < QUERIES * CHUNKS; idx += LM_PREFILL_ATTN_THREADS )
+	{
+		const uint32_t q = idx / CHUNKS, chunk = idx % CHUNKS;
+		const uint32_t row = first_row + q / HEADS;
+		const uint16_t *src = row >= row_end ? query_bf16 : query_bf16 + ((uint64_t)row * total_heads + head_base + q % HEADS) * DIM + chunk * 8u;
+		LmPrefillCopy(query_base + q * ROW_BYTES + LmPrefillSwizzle(q, chunk) * 16u, src, row >= row_end ? 0u : 16u);
+	}
+	asm volatile("cp.async.commit_group;\n" ::: "memory");
+	uint32_t next_position = 0xffffffffu, next_members = 0u;
+	if ( threadIdx.x < TILE )
+	{
+		uint32_t valid, p0, m0, p1 = 0xffffffffu, m1 = 0u;
+		if ( tiles > 0u ) listing(0u, p0, m0);
+		if ( tiles > 1u ) listing(1u, p1, m1);
+		if ( tiles > 2u ) listing(2u, next_position, next_members);
+		if ( tiles > 0u ) { slots[threadIdx.x] = resolve(p0, m0, valid); key_rows[threadIdx.x] = valid; }
+		if ( tiles > 1u ) { slots[TILE + threadIdx.x] = resolve(p1, m1, valid); key_rows[TILE + threadIdx.x] = valid; }
+	}
+	__syncthreads();
+	if ( tiles > 0u )
+	{
+		copy(0u);
+		asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+	}
+	else
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+	__syncthreads();
+	{
+		const uint32_t a_row = (matrix & 1u) * 8u + within;
+		#pragma unroll
+		for ( uint32_t step = 0u; step < HALF_STEPS; ++step )
+			LmPrefillLoadX4(query_base + a_row * ROW_BYTES + LmPrefillSwizzle(a_row, (half * HALF_STEPS + step) * 2u + (matrix >> 1u)) * 16u,
+				query_frag[step]);
+	}
+	if ( threadIdx.x < QUERIES )
+	{
+		running_max[threadIdx.x] = -INFINITY;
+		running_sum[threadIdx.x] = 0.0f;
+	}
+	#pragma unroll
+	for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; ++frag )
+		output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
+	__syncthreads();
+	for ( uint32_t tile = 0u; tile < tiles; ++tile )
+	{
+		const uint32_t buffer = tile & 1u;
+		const uint32_t tile_base = key_base + buffer * TILE * ROW_BYTES;
+		uint32_t ahead_position = 0xffffffffu, ahead_members = 0u;
+		if ( tile + 1u < tiles )
+		{
+			copy(tile + 1u);
+			asm volatile("cp.async.wait_group 1;\n" ::: "memory");
+		}
+		else
+			asm volatile("cp.async.wait_group 0;\n" ::: "memory");
+		if ( threadIdx.x < TILE && tile + 3u < tiles )
+			listing(tile + 3u, ahead_position, ahead_members);
+		__syncthreads();
+		{
+			float score[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			uint32_t b[2];
+			const uint32_t b_row = key_group * 8u + within;
+			#pragma unroll
+			for ( uint32_t step = 0u; step < HALF_STEPS; ++step )
+			{
+				const uint32_t b_chunk = (half * HALF_STEPS + step) * 2u + (matrix & 1u);
+				LmPrefillLoadX2(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row, b_chunk) * 16u, b);
+				LmMmaBf16(score, query_frag[step], b);
+			}
+			const uint32_t base_col = key_group * 8u + (lane & 3u) * 2u;
+			const uint32_t row_lo = half * QUERIES + (lane >> 2u);
+			*(float2 *)(score_parts + row_lo * LM_PREFILL_ATTN_PARTIAL_STRIDE + base_col) = make_float2(score[0], score[1]);
+			*(float2 *)(score_parts + (row_lo + 8u) * LM_PREFILL_ATTN_PARTIAL_STRIDE + base_col) = make_float2(score[2], score[3]);
+		}
+		__syncthreads();
+		{
+			const uint32_t own = threadIdx.x / QUERY_THREADS, part = threadIdx.x % QUERY_THREADS;
+			const uint32_t key_base_idx = part * QUERY_KEYS, own_row = own / HEADS;
+			const bool full_dense_tile = !SPARSE && (first_row + own_row < row_end) && ((tile + 1u) * TILE - 1u <= first_position_min);
+			const float2 a = *(const float2 *)(score_parts + own * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+			const float2 b = *(const float2 *)(score_parts + (QUERIES + own) * LM_PREFILL_ATTN_PARTIAL_STRIDE + key_base_idx);
+			float v0 = a.x + b.x, v1 = a.y + b.y;
+			if ( !full_dense_tile )
+			{
+				v0 = ((key_rows[buffer * TILE + key_base_idx] >> own_row) & 1u) != 0u ? v0 : -INFINITY;
+				v1 = ((key_rows[buffer * TILE + key_base_idx + 1u] >> own_row) & 1u) != 0u ? v1 : -INFINITY;
+			}
+			float peak = fmaxf(v0, v1);
+			#pragma unroll
+			for ( uint32_t shift = 1u; shift < QUERY_THREADS; shift <<= 1u )
+				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
+			const float previous_max = running_max[own];
+			const float next_max = fmaxf(previous_max, peak);
+			const float scale = previous_max == -INFINITY ? 0.0f : SparkMathExp2Fast((previous_max - next_max) * scale_log2);
+			const float shift_val = next_max == -INFINITY ? 0.0f : next_max * scale_log2;
+			const float w0 = full_dense_tile ? SparkMathExp2Fast(fmaf(v0, scale_log2, -shift_val)) :
+				(next_max == -INFINITY || v0 == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(v0, scale_log2, -shift_val)));
+			const float w1 = full_dense_tile ? SparkMathExp2Fast(fmaf(v1, scale_log2, -shift_val)) :
+				(next_max == -INFINITY || v1 == -INFINITY ? 0.0f : SparkMathExp2Fast(fmaf(v1, scale_log2, -shift_val)));
+			*(uint32_t *)(weight_high + own * LM_PREFILL_ATTN_WEIGHT_STRIDE + key_base_idx) = LmPackBf16Pair(w0, w1);
+			float total = w0 + w1;
+			#pragma unroll
+			for ( uint32_t shift = 1u; shift < QUERY_THREADS; shift <<= 1u )
+				total += __shfl_xor_sync(0xffffffffu, total, shift);
+			if ( part == 0u )
+			{
+				running_sum[own] = fmaf(running_sum[own], scale, total);
+				running_max[own] = next_max;
+				rescale[own] = scale;
+			}
+		}
+		__syncthreads();
+		{
+			uint32_t a_high[4], b[4], first[2], second[2];
+			const float low_scale = rescale[lane >> 2u], high_scale = rescale[(lane >> 2u) + 8u];
+			if ( low_scale != 1.0f || high_scale != 1.0f )
+			{
+				#pragma unroll
+				for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; ++frag )
+				{
+					output[frag][0] *= low_scale;
+					output[frag][1] *= low_scale;
+					output[frag][2] *= high_scale;
+					output[frag][3] *= high_scale;
+				}
+			}
+			#pragma unroll
+			for ( uint32_t step = 0u; step < TILE / 16u; ++step )
+			{
+				const uint32_t a_row = (matrix & 1u) * 8u + within, a_col = step * 16u + (matrix >> 1u) * 8u;
+				LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_col), a_high);
+				#pragma unroll
+				for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; frag += 2u )
+				{
+					const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
+					const uint32_t b_chunk = (warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
+					LmPrefillLoadX4Trans(tile_base + b_row * ROW_BYTES + LmPrefillSwizzle(b_row, b_chunk) * 16u, b);
+					first[0] = b[0]; first[1] = b[1];
+					second[0] = b[2]; second[1] = b[3];
+					LmMmaBf16(output[frag], a_high, first);
+					LmMmaBf16(output[frag + 1u], a_high, second);
+				}
+			}
+		}
+		if ( threadIdx.x < TILE && tile + 2u < tiles )
+		{
+			uint32_t valid;
+			slots[buffer * TILE + threadIdx.x] = resolve(next_position, next_members, valid);
+			key_rows[buffer * TILE + threadIdx.x] = valid;
+		}
+		next_position = ahead_position;
+		next_members = ahead_members;
+		__syncthreads();
+	}
+	const uint32_t q_lo = lane >> 2u, q_hi = q_lo + 8u;
+	const uint32_t row_lo = first_row + q_lo / HEADS, row_hi = first_row + q_hi / HEADS;
+	const float inv_lo = row_lo < row_end && running_sum[q_lo] > 0.0f ? 1.0f / running_sum[q_lo] : 0.0f;
+	const float inv_hi = row_hi < row_end && running_sum[q_hi] > 0.0f ? 1.0f / running_sum[q_hi] : 0.0f;
+	#pragma unroll
+	for ( uint32_t frag = 0u; frag < COLUMN_FRAGS; ++frag )
+	{
+		const uint32_t col = warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u;
+		if ( row_lo < row_end )
+			__stcs((uint32_t *)(output_bf16 + ((uint64_t)row_lo * total_heads + head_base + q_lo % HEADS) * LATENT + col),
+				LmPackBf16Pair(output[frag][0] * inv_lo, output[frag][1] * inv_lo));
+		if ( row_hi < row_end )
+			__stcs((uint32_t *)(output_bf16 + ((uint64_t)row_hi * total_heads + head_base + q_hi % HEADS) * LATENT + col),
+				LmPackBf16Pair(output[frag][2] * inv_hi, output[frag][3] * inv_hi));
+	}
+	LmDependentRelease();
+}
+#endif
+
 template<class Geometry>
 static int32_t K3LayerMlaGatherPack(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
 	static_assert(Geometry::kSlotBytes == K3_MLA_KV_A_DIM * sizeof(uint16_t), "gathered keys are packed at the latent row width the value expansion reads");
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || K3LayerMlaGatherIndexReady(b) == 0u )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( b->shard_gather_direct != 0u && b->shard_gather_prior_ctx == 0u )
+		return(LM_LAUNCH_OK);
 	if ( b->shard_gather_prefetched != 0u )
 	{
 		if ( !((uint64_t)b->shard_gather_prefetched * b->shard_gather_window_keys < b->shard_gather_most_keys && LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset, b->shard_gather_context,1u,b->shard_gather_prefetched * b->shard_gather_window_keys,b->shard_gather_most_keys, b->shard_gather_send,stream) == SPARK_GPU_SUCCESS) )
@@ -1705,9 +2063,71 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 	const uint32_t begin = K3LayerMlaPassBegin(b,window), keys = K3LayerMlaPassKeys(b,window);
 	const uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
 	uint32_t rank;
-	if ( K3LayerMlaGatherReady(b,rows) == 0u || window >= K3LayerMlaPasses(b) || keys == 0u ||
+	if ( K3LayerMlaGatherReady(b,rows) == 0u || window >= K3LayerMlaPasses(b) || (keys == 0u && (b->shard_gather_direct == 0u || b->shard_gather_prior_ctx != 0u)) ||
 		(expanded != 0u && K3LayerMlaExpandedReady(b,rows) == 0u) || K3LayerMlaGatherIndexReady(b) == 0u )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( b->shard_gather_direct != 0u )
+	{
+		if ( window != 0u || K3LayerMlaPasses(b) != 1u || (heads & 1u) != 0u )
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+#if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
+		constexpr uint32_t ROWS_PER_BLOCK = 8u;
+		constexpr uint32_t SHARED_BYTES = LmPrefillAttnSharedBytes<K3_MLA_KV_A_DIM, LM_PREFILL_ATTN_QUERIES>();
+		const uint32_t blocks = (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK;
+		uint16_t *kv_all = b->shard_query_gathered_bf16;
+		if ( b->shard_gather_prior_ctx != 0u )
+		{
+			LM_LAUNCH_DEPENDENT((K3UnpackPriorKvKernel), dim3(b->shard_gather_most_keys, b->kv_shard.degree), 128u, 0, stream,
+				b->kv_shard, (const uint8_t *)b->shard_partials_received_f32, b->shard_gather_stride,
+				b->shard_gather_most_keys, b->shard_gather_prior_ctx, kv_all);
+			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		}
+		if ( b->index_active != 0u )
+		{
+			constexpr uint32_t UNION_CAP = ROWS_PER_BLOCK * K3_INDEX_TOPK;
+			const uint64_t pos_bytes = (uint64_t)blocks * UNION_CAP * sizeof(uint32_t);
+			const uint64_t mask_bytes = (((uint64_t)blocks * UNION_CAP + 15u) & ~UINT64_C(15));
+			const uint64_t need_bytes = pos_bytes + mask_bytes + (uint64_t)blocks * sizeof(uint32_t);
+			static std::atomic<bool> configured_sparse(false);
+			if ( b->index_selected == 0 || need_bytes > b->shard_received_floats * sizeof(float) )
+				SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+			if ( !configured_sparse.load(std::memory_order_acquire) )
+			{
+				if ( SparkGpuFuncSetAttribute((const void *)K3MlaGatherPrefillKernel<true>,
+						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)SHARED_BYTES) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
+				configured_sparse.store(true, std::memory_order_release);
+			}
+			uint8_t *union_base = (uint8_t *)b->shard_partials_received_f32;
+			uint32_t *union_pos = (uint32_t *)union_base;
+			uint8_t *union_masks = union_base + pos_bytes;
+			uint32_t *union_counts = (uint32_t *)(union_base + pos_bytes + mask_bytes);
+			LM_LAUNCH_DEPENDENT((K3FillDenseSelectedKernel<K3_INDEX_TOPK>), rows, K3_LAYER_THREADS, 0, stream,
+				b->sequence_of_row, b->context_length, b->positions, b->index_selected);
+			LM_LAUNCH_DEPENDENT((LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, K3_INDEX_TOPK>), blocks, LM_PREFILL_UNION_THREADS, 0, stream,
+				b->index_selected, b->positions, rows, (const uint32_t *)0, UNION_CAP, union_pos, union_masks, union_counts);
+			LM_LAUNCH_DEPENDENT((K3MlaGatherPrefillKernel<true>), dim3(blocks, heads / 2u), LM_PREFILL_ATTN_THREADS, SHARED_BYTES, stream,
+				b->query_bf16, kv_all, b->sequence_of_row, b->context_length, b->positions, K3_MLA_QK_SCALE, b->attention_out_bf16,
+				rows, heads, b->shard_gather_total_ctx, union_pos, union_masks, union_counts, UNION_CAP);
+		}
+		else
+		{
+			LmKvShardGatherAllView all_view;
+			SparkKvShard flat_owner = {1u, 0u, 1u};
+			if ( LmKvShardGatherAllViewInitialize<Geometry>(&all_view,b->cache_shard.pages,flat_owner,(const uint8_t *)kv_all,0u,
+					b->shard_gather_offset,b->context_length) != 0 )
+				SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+			if ( LmLatentGatherPrefillLaunch<Geometry,LmKvShardGatherAllView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(all_view,b->query_bf16,
+					heads,b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,b->shard_partials_received_f32,rows,stream) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+			return(LM_LAUNCH_OK);
+		}
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+#endif
+		return(LM_LAUNCH_OK);
+	}
 	if ( b->index_active != 0u )
 	{
 		LmKvShardGatherAllView all_view;
@@ -1858,6 +2278,8 @@ static int32_t K3LayerMhaMerge(const K3LayerBuffers *b, uint32_t rows, SparkGpuS
 
 static int32_t K3LayerMlaGatherMerge(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
+	if ( b->shard_gather_direct != 0u && b->index_active != 0u )
+		return(LM_LAUNCH_OK);
 	if ( b->shard_gather_expanded == 0u )
 	{
 		if ( K3LayerMlaShardReady(b,rows) == 0u || K3LayerMlaPasses(b) != 1u )
