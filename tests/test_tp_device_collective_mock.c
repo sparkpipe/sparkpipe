@@ -1432,6 +1432,36 @@ static void TestFastB1CollectiveHostPaths(SparkTpDeviceCollectiveConfig config,v
             "hardware stats after graph settle reuse cached round control snapshot");
     }
     SparkTpDeviceCollectiveDestroy(&collective);
+    if ( PairCollective(config,mesh,4u,0u,2u,64u,SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE,&collective) != 0u )
+    {
+        TestDeferredSubmission(&submission,local,output);
+        submission.active_sequence_count = 1u;
+        submission.logical_sequence_count = 1u;
+        submission.row_elements = 64u;
+        submission.cuda_stream = (void *)2;
+        CHECK(SparkTpDeviceCollectiveChainKeyQueue(&collective,8801u,(void *)1) == SPARK_STATUS_OK,
+            "fresh collective queues chain seed on stream 1");
+        syncs = cuda_stub_stream_sync_calls;
+        cuda_stub_stream_query_result = cudaErrorNotReady;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) == SPARK_STATUS_OK &&
+            cuda_stub_stream_sync_calls == syncs + 1u &&
+            cuda_stub_mesh_hardware_control != 0 &&
+            ((const SparkTpMeshRoundControl *)cuda_stub_mesh_hardware_control)->epoch == SparkTpDeviceCollectiveChainEpoch(&collective),
+            "first gather on stream 2 synchronizes queued chain seed on stream 1 and observes seeded epoch");
+        cuda_stub_stream_query_result = cudaSuccess;
+        CHECK(SparkTpDeviceCollectiveEndChain(&collective,(void *)2) == SPARK_STATUS_OK,
+            "end chain clears active stream");
+        CHECK(SparkTpDeviceCollectiveChainKeyQueue(&collective,8802u,(void *)1) == SPARK_STATUS_OK,
+            "post-EndChain queued seed sets active stream 1");
+        submission.cuda_stream = (void *)1;
+        syncs = cuda_stub_stream_sync_calls;
+        cuda_stub_stream_query_result = cudaErrorNotReady;
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER) == SPARK_STATUS_OK &&
+            cuda_stub_stream_sync_calls == syncs,
+            "same-stream gather after queued seed adds no stream sync");
+        cuda_stub_stream_query_result = cudaSuccess;
+        SparkTpDeviceCollectiveDestroy(&collective);
+    }
 }
 
 int main(void)
