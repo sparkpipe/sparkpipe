@@ -41,6 +41,8 @@ int32_t SparkNvrmKernelOverlayIndex(const SparkDeviceKernel *kernel);
 SparkStatus SparkNvrmRegisteredVariable(const void *host);
 SparkStatus SparkNvrmRegisteredRelease(void);
 SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes, uint32_t *shared_bytes);
+typedef struct SparkNvrmMemoryImage { const uint8_t *cubin; uint64_t cubin_bytes; const char *manifest; uint64_t manifest_bytes; } SparkNvrmMemoryImage;
+void SparkNvrmMemoryLibrarySet(const SparkNvrmMemoryImage *image);
 
 void **__cudaRegisterFatBinary(void *fat_binary);
 void __cudaRegisterFatBinaryEnd(void **handle);

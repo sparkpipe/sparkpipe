@@ -383,6 +383,17 @@ def test_full_cubin_emission_and_cli():
                 assert cc_run.returncode == 0, f"C99 runtime policy test failed to compile:\n{cc_run.stderr}"
                 exec_res = subprocess.run([str(c_bin)], capture_output=True, text=True, check=False)
                 assert exec_res.returncode == 0, f"C99 runtime policy test failed:\n{exec_res.stderr}"
+                emb_hdr = pathlib.Path(tmp) / "embedded.h"
+                emb_res = subprocess.run(
+                    [sys.executable, str(SKL2C), "--arch", "sm_121a", "--only", "qwen_bf16_dense_mma_16x64", "--prefix", "TestEmb", "--emit-embedded-h", str(emb_hdr), str(SKL2_DIR / "kernels" / "mma_gemm.skl2")],
+                    capture_output=True, text=True, check=False,
+                )
+                assert emb_res.returncode == 0, f"--emit-embedded-h failed:\n{emb_res.stderr}"
+                etxt = emb_hdr.read_text(encoding="utf-8")
+                for tok in ("TESTEMB_qwen_bf16_dense_mma_16x64 = 0", "kTestEmbNames[1]", "kTestEmbCubin[", "0x7f,0x45,0x4c,0x46", "kTestEmbManifest["):
+                    assert tok in etxt, f"missing {tok!r} in embedded header"
+                emb_cc = subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-x", "c", str(emb_hdr)], capture_output=True, text=True, check=False)
+                assert emb_cc.returncode == 0, f"embedded header failed cc:\n{emb_cc.stderr}"
 
 
 def main():
