@@ -26,9 +26,10 @@ if REQUIRED_COMPUTE_CAPABILITY not in capabilities:
     raise SystemExit(0)
 if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_k3_streamed_slice_cuda: an sm_121 device is present but nvcc is unavailable")
+subprocess.run(["make", "-s", "build/skl2_k3_embedded.h"], cwd=ROOT, check=True)
 with tempfile.TemporaryDirectory(prefix="k3-streamed-slice-cuda-") as directory:
     binary = str(pathlib.Path(directory) / "probe")
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
-                    "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
+                    "-I.", "-Ibuild", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
                     "tests/cuda/k3_streamed_slice_cuda.cu", "-o", binary, "-lpthread", "-lcuda"], cwd=ROOT, check=True)
     subprocess.run([binary], check=True, timeout=900)

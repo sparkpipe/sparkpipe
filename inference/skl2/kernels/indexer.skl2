@@ -270,24 +270,8 @@ kernel[IDX_BLK128, 96] index_qk_exact_skip_128(
     reg u32 chunks = hidden >> 3;
     reg u64 w0 = ptr_add(weight, col0 * chunks, 16);
     reg u64 w1 = ptr_add(w0, chunks, 16);
-    reg u64 a_ptr[8];
     reg f32 a0[8]; reg f32 a1[8];
-    unroll (r = 0..8) {
-        reg u32 sr = (r < act_cnt) ? lds32(s_rows, r) : 0;
-        a_ptr[r] = ptr_add(activation, sr * chunks, 16);
-        a0[r] = 0.0f; a1[r] = 0.0f;
-    }
-    for (reg u32 c = lane; c < chunks; c += 32) {
-        reg u32x4 vw0 = ldg128_stream(ptr_add(w0, c, 16));
-        reg u32x4 vw1 = ldg128_stream(ptr_add(w1, c, 16));
-        unroll (r = 0..8) {
-            if (r < act_cnt) {
-                reg u32x4 va = ldg128_persist(ptr_add(a_ptr[r], c, 16));
-                bf16_dot8_acc(a0[r], vw0, va);
-                bf16_dot8_acc(a1[r], vw1, va);
-            }
-        }
-    }
+    bf16_exact_2col_rows8(act_cnt, s_rows, activation, w0, w1, chunks, lane, a0, a1);
     unroll (r = 0..8) {
         if (r < act_cnt) {
             a0[r] = warp_sum(a0[r]);

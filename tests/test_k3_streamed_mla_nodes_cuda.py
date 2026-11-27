@@ -27,11 +27,12 @@ if REQUIRED_COMPUTE_CAPABILITY not in capabilities:
 if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_k3_streamed_mla_nodes_cuda: an sm_121 device is present but nvcc is unavailable")
 RAGGED_TOKENS = (None, 203, 130)
+subprocess.run(["make", "-s", "build/skl2_k3_embedded.h"], cwd=ROOT, check=True)
 with tempfile.TemporaryDirectory(prefix="k3-streamed-mla-nodes-cuda-") as directory:
     for tokens in RAGGED_TOKENS:
         binary = str(pathlib.Path(directory) / f"probe-{tokens or 'full'}")
         defines = [] if tokens is None else [f"-DML_TOKENS={tokens}u"]
         subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a", *defines,
-                        "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
+                        "-I.", "-Ibuild", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include",
                         "tests/cuda/k3_streamed_mla_nodes_cuda.cu", "-o", binary, "-lpthread", "-lcuda"], cwd=ROOT, check=True)
         subprocess.run([binary], check=True, timeout=900)

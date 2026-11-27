@@ -335,6 +335,13 @@ def test_full_cubin_emission_and_cli():
                 "d41_exchange_pack_256", "d41_exchange_unpack_r16", "d41_shuffle_sum_r16",
                 "d41_hc_post_fused_m1_256", "d41_moe_send_vec_256", "d41_finalize_slice_256",
                 "d41_moe_finalize_f32_bf16_256", "d41_whole_block_max_256", "d41_compact_active_experts_256",
+                "k3_splitk_mma_32x32", "k3_wide_mma_32x32", "k3_kda_proj_mma_32x32",
+                "k3_index_head_mma_skip_32x32", "k3_index_q_mma_wide_skip_128x128",
+                "k3_kda_proj_prefill_mma_128x128", "k3_moe_down_route_prefill_mma_64x64",
+                "k3_shared_w1_situ_prefill_mma_128x128", "k3_routed_up_add_prefill_mma_128x128",
+                "k3_topk_route_build_row1_256", "k3_route_build_fast_256",
+                "k3_partial_add_attnres_norm_256", "k3_moe_finalize_token224_224",
+                "k3_kda_norm_gate_out_r1", "k3_mla_gate_out_r1",
             ):
                 assert f"kernel {required} " in mtxt, f"missing {required} in {arch} manifest"
             assert "spill_stores 0 spill_loads 0" in mtxt
@@ -358,7 +365,7 @@ def test_full_cubin_emission_and_cli():
             assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
             for tok in (
                 "#define SKL2_QWEN38_27B_HIDDEN 5120u",
-                "SKL2_ORD_COUNT = 294",
+                "SKL2_ORD_COUNT = 332",
                 "Skl2ModuleLoad",
                 "Skl2KernelLayout",
                 "Skl2Launch_qwen_bf16_dense_mma_16x64",

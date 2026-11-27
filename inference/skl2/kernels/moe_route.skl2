@@ -32,36 +32,6 @@ macro moe_router_softmax_row(logits, row, experts, tid, wid, lane, s_probs, redu
     }
 }
 
-macro moe_topk_key(val_f, out_key) {
-    reg u32 b = f32_as_u32(val_f);
-    if ((b & 0x7F800000) == 0x7F800000) {
-        out_key = 0;
-    } else {
-        out_key = b ^ (((b >> 31) != 0) ? 0xFFFFFFFF : 0x80000000);
-    }
-}
-
-macro moe_u32_argmax_step(ck, ci, bk, bi) {
-    if (ck > bk) {
-        bk = ck; bi = ci;
-    } else if (ck == bk) {
-        if (ci > bi) { bk = ck; bi = ci; }
-    }
-}
-
-macro moe_warp_argmax_u32(bk, bi) {
-    reg u32 ok16 = shfl_xor(bk, 16); reg u32 oi16 = shfl_xor(bi, 16);
-    moe_u32_argmax_step(ok16, oi16, bk, bi);
-    reg u32 ok8 = shfl_xor(bk, 8); reg u32 oi8 = shfl_xor(bi, 8);
-    moe_u32_argmax_step(ok8, oi8, bk, bi);
-    reg u32 ok4 = shfl_xor(bk, 4); reg u32 oi4 = shfl_xor(bi, 4);
-    moe_u32_argmax_step(ok4, oi4, bk, bi);
-    reg u32 ok2 = shfl_xor(bk, 2); reg u32 oi2 = shfl_xor(bi, 2);
-    moe_u32_argmax_step(ok2, oi2, bk, bi);
-    reg u32 ok1 = shfl_xor(bk, 1); reg u32 oi1 = shfl_xor(bi, 1);
-    moe_u32_argmax_step(ok1, oi1, bk, bi);
-}
-
 macro moe_topk_warp_select(s_probs, experts, top_k, lane, fault, out_chosen, out_weight) {
     reg u32 ck[16];
     unroll (sl = 0..16) {
@@ -69,7 +39,7 @@ macro moe_topk_warp_select(s_probs, experts, top_k, lane, fault, out_chosen, out
         ck[sl] = 0;
         if (idx < experts) {
             reg f32 pv = lds32(s_probs, idx);
-            moe_topk_key(pv, ck[sl]);
+            route_f32_sort_key(pv, ck[sl]);
         }
     }
     reg u32 chosen = 0;
@@ -78,9 +48,9 @@ macro moe_topk_warp_select(s_probs, experts, top_k, lane, fault, out_chosen, out
         reg u32 bk = 0; reg u32 bi = 0;
         unroll (sl = 0..16) {
             reg u32 inv_i = 0xFFFFFFFF - (lane + (sl << 5));
-            moe_u32_argmax_step(ck[sl], inv_i, bk, bi);
+            u32_argmax_step(ck[sl], inv_i, bk, bi);
         }
-        moe_warp_argmax_u32(bk, bi);
+        warp_argmax_u32(bk, bi);
         last_k = bk;
         reg u32 win_idx = 0xFFFFFFFF - bi;
         if (lane == rd) { chosen = win_idx; }
@@ -91,17 +61,8 @@ macro moe_topk_warp_select(s_probs, experts, top_k, lane, fault, out_chosen, out
     if (lane == 0 && last_k == 0) { stg32(fault, 1); }
     reg f32 val = 0.0f;
     if (lane < top_k) { val = lds32(s_probs, chosen); }
-    reg f32 tree = val;
-    reg f32 o16 = shfl_down(tree, 16); if (lane < 16) { tree = tree + o16; }
-    reg f32 o8 = shfl_down(tree, 8); if (lane < 8) { tree = tree + o8; }
-    reg f32 o4 = shfl_down(tree, 4); if (lane < 4) { tree = tree + o4; }
-    reg f32 o2 = shfl_down(tree, 2); if (lane < 2) { tree = tree + o2; }
-    reg f32 o1 = shfl_down(tree, 1); if (lane < 1) { tree = tree + o1; }
-    reg f32 total = shfl_idx(tree, 0) + 1.0e-20f;
-    reg f32 inv_t = 0.0f;
-    rcp_nr1_f32(total, inv_t);
     out_chosen = chosen;
-    div_nr1_f32(val, total, inv_t, out_weight);
+    warp_norm_sum_f32(val, lane, out_weight);
 }
 
 macro moe_route_small_rank(s_exp, tile_inc, s_pr, routes, top_k, tile_m, tid, route_packed_row, route_source_token) {
@@ -333,19 +294,8 @@ kernel[MOE_BLK256, 80] moe_route_build_packed_256(
     reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
     for (reg u32 i = tid; i < 8 * num_groups; i += MOE_BLK256) { sts32(w_hist, i, 0); }
     barrier();
-    reg u32 slice = (routes + 7) >> 3;
-    reg u32 w_beg = wid * slice;
-    reg u32 w_end = (w_beg + slice < routes) ? (w_beg + slice) : routes;
-    if (lane == 0) {
-        for (reg u32 i = w_beg; i < w_end; i += 1) {
-            reg u32 e = ldg32_persist(ptr_add(route_expert, i, 4));
-            if (e < num_groups) {
-                reg u32 idx = wid * num_groups + e;
-                sts32(w_hist, idx, lds32(w_hist, idx) + 1);
-            }
-        }
-    }
-    barrier();
+    reg u32 w_beg = 0; reg u32 w_end = 0;
+    route_warp_hist_count(route_expert, routes, num_groups, wid, lane, w_hist, w_beg, w_end);
     for (reg u32 e = tid; e < num_groups; e += MOE_BLK256) {
         reg u32 c = 0;
         unroll (w = 0..8) {
@@ -363,22 +313,7 @@ kernel[MOE_BLK256, 80] moe_route_build_packed_256(
         unroll (w = 0..8) { sts32(w_hist, w * num_groups + e, base_off + lds32(w_hist, w * num_groups + e)); }
     }
     barrier();
-    if (lane == 0) {
-        for (reg u32 i = w_beg; i < w_end; i += 1) {
-            reg u32 e = ldg32_persist(ptr_add(route_expert, i, 4));
-            if (e < num_groups) {
-                reg u32 idx = wid * num_groups + e;
-                reg u32 packed = lds32(w_hist, idx);
-                sts32(w_hist, idx, packed + 1);
-                stg32(ptr_add(route_packed_row, i, 4), packed);
-                reg u32 src_tok = 0; reg u32 sr = 0;
-                u32_divmod(i, top_k, src_tok, sr);
-                stg32(ptr_add(route_source_token, packed, 4), src_tok);
-                stg32(ptr_add(packed_weight, packed, 4), ldg32_persist(ptr_add(route_weight, i, 4)));
-                stg32(ptr_add(packed_expert, packed, 4), e);
-            }
-        }
-    }
+    route_warp_scatter(1, route_expert, route_weight, num_groups, top_k, wid, lane, w_beg, w_end, w_hist, route_packed_row, route_source_token, packed_expert, packed_weight);
     preexit();
 }
 
