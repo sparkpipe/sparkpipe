@@ -312,12 +312,12 @@ macro generic_rms_vec_pass(HAS_RES_ARGS, W_F32, ROUND_MID, CENTERED, in_row, res
     reg f32 scale = 0.0f;
     rsqrt_exact_div(b, u32_to_f32(dimension), epsilon, scale);
     for (reg u32 v = tid; v < vecs; v += BLOCK) {
-        reg u32x4 sv = ldg128_persist(ptr_add(in_row, v, 16));
+        reg u32x4 sv = ldg128_stream(ptr_add(in_row, v, 16));
         if constexpr (HAS_RES_ARGS == 1) {
             if (has_res_out != 0) {
-                sv = ldg128_persist(ptr_add(ptr_add(residual_out_bf16, row, row_bytes), v, 16));
+                sv = ldg128_stream(ptr_add(ptr_add(residual_out_bf16, row, row_bytes), v, 16));
             } else if (has_res != 0) {
-                reg u32x4 rv = ldg128_persist(ptr_add(ptr_add(residual_bf16, row, row_bytes), v, 16));
+                reg u32x4 rv = ldg128_stream(ptr_add(ptr_add(residual_bf16, row, row_bytes), v, 16));
                 add_bf16x4(sv, rv);
             }
         }
@@ -378,12 +378,12 @@ template kernel[BLOCK, 64] generic_rmsnorm_pdl<HAS_RES_ARGS, W_F32, ROUND_MID, C
     reg f32 scale_s = 0.0f;
     rsqrt_exact_div(bs, u32_to_f32(dimension), epsilon, scale_s);
     for (reg u32 idx = tid; idx < dimension; idx += BLOCK) {
-        reg f32 val = bf16_lo(ldg16_persist(ptr_add(in_row, idx, 2)));
+        reg f32 val = bf16_lo(ldg16_stream(ptr_add(in_row, idx, 2)));
         if constexpr (HAS_RES_ARGS == 1) {
             if (has_res_out != 0) {
-                val = bf16_lo(ldg16_persist(ptr_add(ptr_add(residual_out_bf16, row, row_bytes), idx, 2)));
+                val = bf16_lo(ldg16_stream(ptr_add(ptr_add(residual_out_bf16, row, row_bytes), idx, 2)));
             } else if (has_res != 0) {
-                val = bf16_lo(f32_to_bf16(val + bf16_lo(ldg16_persist(ptr_add(ptr_add(residual_bf16, row, row_bytes), idx, 2)))));
+                val = bf16_lo(f32_to_bf16(val + bf16_lo(ldg16_stream(ptr_add(ptr_add(residual_bf16, row, row_bytes), idx, 2)))));
             }
         }
         rmsnorm_apply_scalar(W_F32, ROUND_MID, CENTERED, val, weight_ptr, idx, scale_s, out_row);

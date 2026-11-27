@@ -1,2 +1,0 @@
-+424
-qwen38 hybrid stage optimizations: Split-K TP1 GQA decode with fused output gate (QwenGqaSplitDecodeKernel and QwenGqaSplitReduceGateKernel), fused TP1 and multi-rank attention merge+gate kernels, fused GDN conv+split+gate kernels (QwenGdnConvSplitSerialKernel, QwenGdnConvSplitTiledKernel, QwenGdnGateOnlyKernel) enabling fused gdn_qkvz projection across all qwen38 geometries, fast-path batched verify for >=8 sequences, TP1 collective skip, and overlaid sublayer scratch Plan() reducing qwen3.8-27b scratch arena by 597 MiB.

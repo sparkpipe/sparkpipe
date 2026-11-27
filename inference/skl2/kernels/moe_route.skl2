@@ -1,0 +1,945 @@
+import "stdlib/math.skl2";
+
+const MOE_BLK256 = 256;
+const MOE_BLK128 = 128;
+
+macro moe_router_softmax_row(logits, row, experts, tid, wid, lane, s_probs, reduction) {
+    reg u32 base = row * experts;
+    reg f32 s0 = u32_as_f32(0xFF800000);
+    reg f32 s1 = u32_as_f32(0xFF800000);
+    if (tid < experts) { s0 = bf16_lo(ldg16_persist(ptr_add(logits, base + tid, 2))); }
+    if (tid + 256 < experts) { s1 = bf16_lo(ldg16_persist(ptr_add(logits, base + tid + 256, 2))); }
+    reg f32 mx = maxf(s0, s1);
+    reg f32 top = 0.0f;
+    block_reduce_max_exact(mx, reduction, wid, lane, top);
+    barrier();
+    reg f32 e0 = (tid < experts) ? exp2_ftz((s0 - top) * 1.4426950408889634f) : 0.0f;
+    reg f32 e1 = (tid + 256 < experts) ? exp2_ftz((s1 - top) * 1.4426950408889634f) : 0.0f;
+    reg f32 sm = e0 + e1;
+    reg f32 sum = 0.0f;
+    block_reduce_sum_exact(sm, reduction, wid, lane, sum);
+    reg f32 inv_s = 0.0f;
+    rcp_nr1_f32(sum, inv_s);
+    if (tid < experts) {
+        reg f32 p0 = 0.0f;
+        div_nr1_f32(e0, sum, inv_s, p0);
+        sts32(s_probs, tid, p0);
+    }
+    if (tid + 256 < experts) {
+        reg f32 p1 = 0.0f;
+        div_nr1_f32(e1, sum, inv_s, p1);
+        sts32(s_probs, tid + 256, p1);
+    }
+}
+
+macro moe_topk_key(val_f, out_key) {
+    reg u32 b = f32_as_u32(val_f);
+    if ((b & 0x7F800000) == 0x7F800000) {
+        out_key = 0;
+    } else {
+        out_key = b ^ (((b >> 31) != 0) ? 0xFFFFFFFF : 0x80000000);
+    }
+}
+
+macro moe_u32_argmax_step(ck, ci, bk, bi) {
+    if (ck > bk) {
+        bk = ck; bi = ci;
+    } else if (ck == bk) {
+        if (ci > bi) { bk = ck; bi = ci; }
+    }
+}
+
+macro moe_warp_argmax_u32(bk, bi) {
+    reg u32 ok16 = shfl_xor(bk, 16); reg u32 oi16 = shfl_xor(bi, 16);
+    moe_u32_argmax_step(ok16, oi16, bk, bi);
+    reg u32 ok8 = shfl_xor(bk, 8); reg u32 oi8 = shfl_xor(bi, 8);
+    moe_u32_argmax_step(ok8, oi8, bk, bi);
+    reg u32 ok4 = shfl_xor(bk, 4); reg u32 oi4 = shfl_xor(bi, 4);
+    moe_u32_argmax_step(ok4, oi4, bk, bi);
+    reg u32 ok2 = shfl_xor(bk, 2); reg u32 oi2 = shfl_xor(bi, 2);
+    moe_u32_argmax_step(ok2, oi2, bk, bi);
+    reg u32 ok1 = shfl_xor(bk, 1); reg u32 oi1 = shfl_xor(bi, 1);
+    moe_u32_argmax_step(ok1, oi1, bk, bi);
+}
+
+macro moe_topk_warp_select(s_probs, experts, top_k, lane, fault, out_chosen, out_weight) {
+    reg u32 ck[16];
+    unroll (sl = 0..16) {
+        reg u32 idx = lane + (sl << 5);
+        ck[sl] = 0;
+        if (idx < experts) {
+            reg f32 pv = lds32(s_probs, idx);
+            moe_topk_key(pv, ck[sl]);
+        }
+    }
+    reg u32 chosen = 0;
+    reg u32 last_k = 0;
+    for (reg u32 rd = 0; rd < top_k; rd += 1) {
+        reg u32 bk = 0; reg u32 bi = 0;
+        unroll (sl = 0..16) {
+            reg u32 inv_i = 0xFFFFFFFF - (lane + (sl << 5));
+            moe_u32_argmax_step(ck[sl], inv_i, bk, bi);
+        }
+        moe_warp_argmax_u32(bk, bi);
+        last_k = bk;
+        reg u32 win_idx = 0xFFFFFFFF - bi;
+        if (lane == rd) { chosen = win_idx; }
+        unroll (sl = 0..16) {
+            if (lane + (sl << 5) == win_idx) { ck[sl] = 0; }
+        }
+    }
+    if (lane == 0 && last_k == 0) { stg32(fault, 1); }
+    reg f32 val = 0.0f;
+    if (lane < top_k) { val = lds32(s_probs, chosen); }
+    reg f32 tree = val;
+    reg f32 o16 = shfl_down(tree, 16); if (lane < 16) { tree = tree + o16; }
+    reg f32 o8 = shfl_down(tree, 8); if (lane < 8) { tree = tree + o8; }
+    reg f32 o4 = shfl_down(tree, 4); if (lane < 4) { tree = tree + o4; }
+    reg f32 o2 = shfl_down(tree, 2); if (lane < 2) { tree = tree + o2; }
+    reg f32 o1 = shfl_down(tree, 1); if (lane < 1) { tree = tree + o1; }
+    reg f32 total = shfl_idx(tree, 0) + 1.0e-20f;
+    reg f32 inv_t = 0.0f;
+    rcp_nr1_f32(total, inv_t);
+    out_chosen = chosen;
+    div_nr1_f32(val, total, inv_t, out_weight);
+}
+
+macro moe_route_small_rank(s_exp, tile_inc, s_pr, routes, top_k, tile_m, tid, route_packed_row, route_source_token) {
+    if (tid < routes) {
+        reg u32 mine = lds32(s_exp, tid);
+        reg u32 packed = 0; reg u32 first = 1; reg u32 eq_cnt = 0;
+        for (reg u32 j = 0; j < routes; j += 1) {
+            reg u32 other = lds32(s_exp, j);
+            if (other < mine) {
+                packed = packed + 1;
+            } else if (other == mine) {
+                eq_cnt = eq_cnt + 1;
+                if (j < tid) { packed = packed + 1; first = 0; }
+            }
+        }
+        sts32(s_pr, tid, packed);
+        stg32(ptr_add(route_packed_row, tid, 4), packed);
+        reg u32 src_tok = 0; reg u32 sr = 0;
+        u32_divmod(tid, top_k, src_tok, sr);
+        stg32(ptr_add(route_source_token, packed, 4), src_tok);
+        reg u32 tinc = 0;
+        if (first != 0) {
+            reg u32 tr = 0;
+            u32_divmod(eq_cnt + tile_m - 1, tile_m, tinc, tr);
+        }
+        sts32(tile_inc, tid, tinc);
+    }
+}
+
+macro moe_route_small_offsets(s_exp, tile_inc, routes, num_groups, n_up, n_down, tid, group_row_offset, tile_prefix_up, tile_prefix_down) {
+    reg u32 has_tp = ((tile_prefix_up[0] | tile_prefix_up[1]) != 0) ? 1 : 0;
+    if ((tile_prefix_down[0] | tile_prefix_down[1]) == 0) { has_tp = 0; }
+    for (reg u32 e = tid; e <= num_groups; e += MOE_BLK256) {
+        reg u32 before = 0; reg u32 tiles = 0;
+        for (reg u32 j = 0; j < routes; j += 1) {
+            if (lds32(s_exp, j) < e) {
+                before = before + 1;
+                tiles = tiles + lds32(tile_inc, j);
+            }
+        }
+        stg32(ptr_add(group_row_offset, e, 4), before);
+        if (has_tp != 0) {
+            stg32(ptr_add(tile_prefix_up, e, 4), tiles * n_up);
+            stg32(ptr_add(tile_prefix_down, e, 4), tiles * n_down);
+        }
+    }
+}
+
+@pdl
+@concept(route_topk)
+kernel[MOE_BLK256, 96] moe_route_small_256(
+    global u32* logits, u32 rows, u32 experts, u32 top_k,
+    u32 expert_first, u32 local_experts, global u32* fault,
+    global u32* route_expert, global f32* route_weight, global u32* route_global,
+    global u32* group_row_offset, global u32* route_packed_row, global u32* route_source_token,
+    global u32* packed_expert, global f32* packed_weight,
+    u32 tile_m, u32 n_up, global u32* tile_prefix_up, u32 n_down, global u32* tile_prefix_down
+) {
+    shared f32 s_probs[512];
+    shared f32 reduction[8];
+    shared u32 s_exp[32];
+    shared f32 s_wt[32];
+    shared u32 tile_inc[32];
+    shared u32 s_pr[32];
+    acqbulk();
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 routes = rows * top_k;
+    for (reg u32 r = 0; r < rows; r += 1) {
+        moe_router_softmax_row(logits, r, experts, tid, wid, lane, s_probs, reduction);
+        barrier();
+        if (wid == 0) {
+            reg u32 ch = 0; reg f32 wt = 0.0f;
+            moe_topk_warp_select(s_probs, experts, top_k, lane, fault, ch, wt);
+            if (lane < top_k) {
+                sts32(s_exp, r * top_k + lane, ch);
+                sts32(s_wt, r * top_k + lane, wt);
+            }
+        }
+        barrier();
+    }
+    if (tid < routes) {
+        reg u32 ge = lds32(s_exp, tid);
+        reg f32 gw = lds32(s_wt, tid);
+        stg32(ptr_add(route_global, tid, 4), ge);
+        reg u32 le = local_experts;
+        reg f32 out_w = 0.0f;
+        if (ge >= expert_first && ge < expert_first + local_experts) { le = ge - expert_first; out_w = gw; }
+        sts32(s_exp, tid, le); sts32(s_wt, tid, out_w);
+        stg32(ptr_add(route_expert, tid, 4), le);
+        stg32(ptr_add(route_weight, tid, 4), f32_as_u32(out_w));
+    }
+    barrier();
+    moe_route_small_rank(s_exp, tile_inc, s_pr, routes, top_k, tile_m, tid, route_packed_row, route_source_token);
+    barrier();
+    moe_route_small_offsets(s_exp, tile_inc, routes, local_experts + 1, n_up, n_down, tid, group_row_offset, tile_prefix_up, tile_prefix_down);
+    barrier();
+    if (tid < routes) {
+        reg u32 pr = lds32(s_pr, tid);
+        stg32(ptr_add(packed_weight, pr, 4), f32_as_u32(lds32(s_wt, tid)));
+        stg32(ptr_add(packed_expert, pr, 4), lds32(s_exp, tid));
+    }
+    preexit();
+}
+
+@pdl
+@concept(route_topk)
+kernel[MOE_BLK256, 80] moe_softmax_topk_local_256(
+    global u32* logits, u32 experts, u32 top_k,
+    u32 expert_first, u32 local_experts, global u32* fault,
+    global u32* route_expert, global f32* route_weight, global u32* route_global
+) {
+    shared f32 s_probs[512];
+    shared f32 reduction[8];
+    acqbulk();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    moe_router_softmax_row(logits, row, experts, tid, wid, lane, s_probs, reduction);
+    barrier();
+    if (wid == 0) {
+        reg u32 ch = 0; reg f32 wt = 0.0f;
+        moe_topk_warp_select(s_probs, experts, top_k, lane, fault, ch, wt);
+        if (lane < top_k) {
+            reg u32 idx = row * top_k + lane;
+            stg32(ptr_add(route_global, idx, 4), ch);
+            reg u32 le = local_experts;
+            reg f32 out_w = 0.0f;
+            if (ch >= expert_first && ch < expert_first + local_experts) { le = ch - expert_first; out_w = wt; }
+            stg32(ptr_add(route_expert, idx, 4), le);
+            stg32(ptr_add(route_weight, idx, 4), f32_as_u32(out_w));
+        }
+    }
+    preexit();
+}
+
+macro moe_scan3_u32(v0, v1, v2, warp_sum, wid, lane) {
+    unroll (sh = 0..5) {
+        reg u32 a0 = shfl_up(v0, 1 << sh); reg u32 a1 = shfl_up(v1, 1 << sh); reg u32 a2 = shfl_up(v2, 1 << sh);
+        if (lane >= (1 << sh)) { v0 = v0 + a0; v1 = v1 + a1; v2 = v2 + a2; }
+    }
+    if (lane == 31) {
+        sts32(warp_sum, wid, v0); sts32(warp_sum, 8 + wid, v1); sts32(warp_sum, 16 + wid, v2);
+    }
+    barrier();
+    if (wid == 0) {
+        reg u32 w0 = 0; reg u32 w1 = 0; reg u32 w2 = 0;
+        if (lane < 8) {
+            w0 = lds32(warp_sum, lane);
+            w1 = lds32(warp_sum, 8 + lane);
+            w2 = lds32(warp_sum, 16 + lane);
+        }
+        reg u32 o0 = w0; reg u32 o1 = w1; reg u32 o2 = w2;
+        unroll (sh = 0..3) {
+            reg u32 b0 = shfl_up(w0, 1 << sh); reg u32 b1 = shfl_up(w1, 1 << sh); reg u32 b2 = shfl_up(w2, 1 << sh);
+            if (lane >= (1 << sh)) { w0 = w0 + b0; w1 = w1 + b1; w2 = w2 + b2; }
+        }
+        if (lane < 8) {
+            sts32(warp_sum, lane, w0 - o0); sts32(warp_sum, 8 + lane, w1 - o1); sts32(warp_sum, 16 + lane, w2 - o2);
+        }
+    }
+    barrier();
+    v0 = v0 + lds32(warp_sum, wid);
+    v1 = v1 + lds32(warp_sum, 8 + wid);
+    v2 = v2 + lds32(warp_sum, 16 + wid);
+}
+
+macro moe_route_prefix_step(e, num_groups, held, tile_m, n_up, n_down, has_tp, count, group_row_offset, tile_prefix_up, tile_prefix_down, r0, r1, r2) {
+    if (e < num_groups) {
+        stg32(ptr_add(group_row_offset, e, 4), r0);
+        sts32(count, e, r0);
+        if (has_tp != 0) {
+            stg32(ptr_add(tile_prefix_up, e, 4), r1);
+            stg32(ptr_add(tile_prefix_down, e, 4), r2);
+        }
+        reg u32 tl = 0; reg u32 tr = 0;
+        u32_divmod(held + tile_m - 1, tile_m, tl, tr);
+        r0 = r0 + held; r1 = r1 + tl * n_up; r2 = r2 + tl * n_down;
+        if (e + 1 == num_groups) {
+            stg32(ptr_add(group_row_offset, num_groups, 4), r0);
+            if (has_tp != 0) {
+                stg32(ptr_add(tile_prefix_up, num_groups, 4), r1);
+                stg32(ptr_add(tile_prefix_down, num_groups, 4), r2);
+            }
+        }
+    }
+}
+
+macro moe_route_build_prefix(count, warp_sum, num_groups, tile_m, n_up, n_down, tid, wid, lane, group_row_offset, tile_prefix_up, tile_prefix_down) {
+    reg u32 per_t = (num_groups + 255) >> 8;
+    reg u32 first = tid * per_t;
+    reg u32 held[3]; held[0] = 0; held[1] = 0; held[2] = 0;
+    reg u32 v0 = 0; reg u32 v1 = 0; reg u32 v2 = 0;
+    unroll (i = 0..3) {
+        if (i < per_t) {
+            reg u32 e = first + i;
+            if (e < num_groups) {
+                reg u32 h = lds32(count, e);
+                held[i] = h;
+                reg u32 tl = 0; reg u32 tr = 0;
+                u32_divmod(h + tile_m - 1, tile_m, tl, tr);
+                v0 = v0 + h; v1 = v1 + tl * n_up; v2 = v2 + tl * n_down;
+            }
+        }
+    }
+    reg u32 o0 = v0; reg u32 o1 = v1; reg u32 o2 = v2;
+    moe_scan3_u32(v0, v1, v2, warp_sum, wid, lane);
+    reg u32 r0 = v0 - o0; reg u32 r1 = v1 - o1; reg u32 r2 = v2 - o2;
+    barrier();
+    reg u32 has_tp = ((tile_prefix_up[0] | tile_prefix_up[1]) != 0) ? 1 : 0;
+    if ((tile_prefix_down[0] | tile_prefix_down[1]) == 0) { has_tp = 0; }
+    unroll (i = 0..3) {
+        if (i < per_t) {
+            moe_route_prefix_step(first + i, num_groups, held[i], tile_m, n_up, n_down, has_tp, count, group_row_offset, tile_prefix_up, tile_prefix_down, r0, r1, r2);
+        }
+    }
+}
+
+@pdl
+@concept(route_topk)
+kernel[MOE_BLK256, 80] moe_route_build_packed_256(
+    global u32* route_expert, global f32* route_weight, u32 routes, u32 top_k, u32 num_groups,
+    global u32* group_row_offset, global u32* route_packed_row, global u32* route_source_token,
+    global u32* packed_expert, global f32* packed_weight,
+    u32 tile_m, u32 n_up, global u32* tile_prefix_up, u32 n_down, global u32* tile_prefix_down
+) {
+    shared u32 w_hist[4160];
+    shared u32 count[520];
+    shared u32 warp_sum[24];
+    acqbulk();
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    for (reg u32 i = tid; i < 8 * num_groups; i += MOE_BLK256) { sts32(w_hist, i, 0); }
+    barrier();
+    reg u32 slice = (routes + 7) >> 3;
+    reg u32 w_beg = wid * slice;
+    reg u32 w_end = (w_beg + slice < routes) ? (w_beg + slice) : routes;
+    if (lane == 0) {
+        for (reg u32 i = w_beg; i < w_end; i += 1) {
+            reg u32 e = ldg32_persist(ptr_add(route_expert, i, 4));
+            if (e < num_groups) {
+                reg u32 idx = wid * num_groups + e;
+                sts32(w_hist, idx, lds32(w_hist, idx) + 1);
+            }
+        }
+    }
+    barrier();
+    for (reg u32 e = tid; e < num_groups; e += MOE_BLK256) {
+        reg u32 c = 0;
+        unroll (w = 0..8) {
+            reg u32 v = lds32(w_hist, w * num_groups + e);
+            sts32(w_hist, w * num_groups + e, c);
+            c = c + v;
+        }
+        sts32(count, e, c);
+    }
+    barrier();
+    moe_route_build_prefix(count, warp_sum, num_groups, tile_m, n_up, n_down, tid, wid, lane, group_row_offset, tile_prefix_up, tile_prefix_down);
+    barrier();
+    for (reg u32 e = tid; e < num_groups; e += MOE_BLK256) {
+        reg u32 base_off = lds32(count, e);
+        unroll (w = 0..8) { sts32(w_hist, w * num_groups + e, base_off + lds32(w_hist, w * num_groups + e)); }
+    }
+    barrier();
+    if (lane == 0) {
+        for (reg u32 i = w_beg; i < w_end; i += 1) {
+            reg u32 e = ldg32_persist(ptr_add(route_expert, i, 4));
+            if (e < num_groups) {
+                reg u32 idx = wid * num_groups + e;
+                reg u32 packed = lds32(w_hist, idx);
+                sts32(w_hist, idx, packed + 1);
+                stg32(ptr_add(route_packed_row, i, 4), packed);
+                reg u32 src_tok = 0; reg u32 sr = 0;
+                u32_divmod(i, top_k, src_tok, sr);
+                stg32(ptr_add(route_source_token, packed, 4), src_tok);
+                stg32(ptr_add(packed_weight, packed, 4), ldg32_persist(ptr_add(route_weight, i, 4)));
+                stg32(ptr_add(packed_expert, packed, 4), e);
+            }
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(moe)
+kernel[MOE_BLK256, 64] moe_swiglu_packed_256(
+    global u32* gate, global u32* up, global f32* weight,
+    global u32* group_row_offset, u32 local_experts, global u32* output, u32 width
+) {
+    acqbulk();
+    preexit();
+    reg u32 row = ctaid_y();
+    if (row >= ldg32_persist(ptr_add(group_row_offset, local_experts, 4))) { return; }
+    reg f32 wt = u32_as_f32(ldg32_persist(ptr_add(weight, row, 4)));
+    reg u32 gtid = ctaid_x() * MOE_BLK256 + tid_x();
+    reg u32 gstr = grid_x() * MOE_BLK256;
+    reg u64 gr = ptr_add(gate, row * width, 2);
+    reg u64 ur = ptr_add(up, row * width, 2);
+    reg u64 orow = ptr_add(output, row * width, 2);
+    if ((width & 7) == 0) {
+        reg u32 chunks = width >> 3;
+        for (reg u32 c = gtid; c < chunks; c += gstr) {
+            reg u32x4 gv = ldg128_persist(ptr_add(gr, c, 16));
+            reg u32x4 uv = ldg128_persist(ptr_add(ur, c, 16));
+            reg u32x4 ov;
+            unroll (k = 0..4) {
+                reg f32 s0 = 0.0f; reg f32 s1 = 0.0f;
+                silu_exact_f32(bf16_lo(gv[k]), s0);
+                silu_exact_f32(bf16_hi(gv[k]), s1);
+                ov[k] = pack_bf16x2((s0 * bf16_lo(uv[k])) * wt, (s1 * bf16_hi(uv[k])) * wt);
+            }
+            stg128(ptr_add(orow, c, 16), ov);
+        }
+    } else {
+        for (reg u32 e = gtid; e < width; e += gstr) {
+            reg f32 s = 0.0f;
+            silu_exact_f32(bf16_lo(ldg16_persist(ptr_add(gr, e, 2))), s);
+            reg f32 u = bf16_lo(ldg16_persist(ptr_add(ur, e, 2)));
+            stg16(ptr_add(orow, e, 2), f32_to_bf16((s * u) * wt));
+        }
+    }
+}
+
+macro moe_collect_active_rows(route_expert, route_packed_row, row, top_k, local_experts, active_rows, active_count) {
+    reg u32 cnt = 0;
+    for (reg u32 k = 0; k < top_k; k += 1) {
+        reg u32 route = row * top_k + k;
+        if (ldg32_persist(ptr_add(route_expert, route, 4)) < local_experts) {
+            sts32(active_rows, cnt, ldg32_persist(ptr_add(route_packed_row, route, 4)));
+            cnt = cnt + 1;
+        }
+    }
+    sts32(active_count, 0, cnt);
+}
+
+@pdl
+@concept(moe)
+kernel[MOE_BLK256, 64] moe_local_finalize_gated_256(
+    global u32* packed, global u32* route_packed_row, global u32* route_expert,
+    global u32* shared_buf, global u32* shared_logit, global u32* output,
+    u32 top_k, u32 local_experts, u32 width
+) {
+    shared u32 active_rows[32];
+    shared u32 active_count[1];
+    acqbulk();
+    preexit();
+    reg u32 row = ctaid_y();
+    reg u32 tid = tid_x();
+    if (tid == 0) { moe_collect_active_rows(route_expert, route_packed_row, row, top_k, local_experts, active_rows, active_count); }
+    barrier();
+    reg u32 count = lds32(active_count, 0);
+    reg f32 gate = 0.0f;
+    sigmoid_exact_f32(bf16_lo(ldg16_persist(ptr_add(shared_logit, row, 2))), gate);
+    reg u32 gtid = ctaid_x() * MOE_BLK256 + tid;
+    reg u32 gstr = grid_x() * MOE_BLK256;
+    reg u64 srow = ptr_add(shared_buf, row * width, 2);
+    reg u64 orow = ptr_add(output, row * width, 2);
+    if ((width & 7) == 0) {
+        reg u32 chunks = width >> 3;
+        for (reg u32 c = gtid; c < chunks; c += gstr) {
+            reg f32 acc[8];
+            unroll (i = 0..8) { acc[i] = 0.0f; }
+            for (reg u32 k = 0; k < count; k += 1) {
+                reg u32 ar = lds32(active_rows, k);
+                reg u32x4 pv = ldg128_persist(ptr_add(packed, ar * chunks + c, 16));
+                unroll (i = 0..4) {
+                    acc[i * 2] = acc[i * 2] + bf16_lo(pv[i]);
+                    acc[i * 2 + 1] = acc[i * 2 + 1] + bf16_hi(pv[i]);
+                }
+            }
+            reg u32x4 sv = ldg128_persist(ptr_add(srow, c, 16));
+            reg u32x4 ov;
+            unroll (i = 0..4) {
+                acc[i * 2] = acc[i * 2] + bf16_lo(f32_to_bf16(bf16_lo(sv[i]) * gate));
+                acc[i * 2 + 1] = acc[i * 2 + 1] + bf16_lo(f32_to_bf16(bf16_hi(sv[i]) * gate));
+                ov[i] = pack_bf16x2(acc[i * 2], acc[i * 2 + 1]);
+            }
+            stg128(ptr_add(orow, c, 16), ov);
+        }
+    } else {
+        for (reg u32 e = gtid; e < width; e += gstr) {
+            reg f32 total = 0.0f;
+            for (reg u32 k = 0; k < count; k += 1) {
+                reg u32 ar = lds32(active_rows, k);
+                total = total + bf16_lo(ldg16_persist(ptr_add(packed, ar * width + e, 2)));
+            }
+            total = total + bf16_lo(f32_to_bf16(bf16_lo(ldg16_persist(ptr_add(srow, e, 2))) * gate));
+            stg16(ptr_add(orow, e, 2), f32_to_bf16(total));
+        }
+    }
+}
+
+@pdl
+@concept(moe)
+template kernel[MOE_BLK128, REGS] moe_shared_down_finalize_tpl<LANES, REGS>(
+    global u32* packed, global u32* route_packed_row, global u32* route_expert,
+    global u32* shared_gate_up, global u32* shared_down, global u32* shared_logit,
+    global u32* output, u32 rows, u32 hidden, u32 shared_rows, u32 top_k, u32 local_experts
+) {
+    shared u32 s_act[64];
+    shared u32 active_rows[32];
+    shared u32 active_count[1];
+    acqbulk();
+    reg u32 row = ctaid_y();
+    if (row >= rows) { preexit(); return; }
+    reg u32 tid = tid_x();
+    reg u32 chunks = shared_rows >> 3;
+    if (tid < chunks) {
+        reg u64 gu_base = ptr_add(shared_gate_up, row * (shared_rows << 1), 2);
+        reg u32x4 gv = ldg128_persist(ptr_add(gu_base, tid, 16));
+        reg u32x4 uv = ldg128_persist(ptr_add(ptr_add(gu_base, shared_rows, 2), tid, 16));
+        reg u32x4 av;
+        unroll (k = 0..4) {
+            reg f32 s0 = 0.0f; reg f32 s1 = 0.0f;
+            silu_exact_f32(bf16_lo(gv[k]), s0);
+            silu_exact_f32(bf16_hi(gv[k]), s1);
+            av[k] = pack_bf16x2(s0 * bf16_lo(uv[k]), s1 * bf16_hi(uv[k]));
+        }
+        sts128(s_act, tid << 2, av);
+    }
+    if (tid == 0) { moe_collect_active_rows(route_expert, route_packed_row, row, top_k, local_experts, active_rows, active_count); }
+    barrier();
+    reg u32 col = ctaid_x() * (MOE_BLK128 / LANES) + (tid >> ((LANES == 16) ? 4 : 3));
+    reg u32 sub = tid & (LANES - 1);
+    if (col < hidden) {
+        reg u64 w = ptr_add(shared_down, col * chunks, 16);
+        reg f32 acc = 0.0f;
+        for (reg u32 c = sub; c < chunks; c += LANES) {
+            reg u32x4 wv = ldg128_stream(ptr_add(w, c, 16));
+            reg u32x4 av = lds128(s_act, c << 2);
+            bf16_dot8_acc(acc, wv, av);
+        }
+        lanes_reduce_sum(LANES, acc);
+        if (sub == 0) {
+            reg u32 count = lds32(active_count, 0);
+            reg f32 total = 0.0f;
+            for (reg u32 k = 0; k < count; k += 1) {
+                reg u32 ar = lds32(active_rows, k);
+                total = total + bf16_lo(ldg16_persist(ptr_add(packed, ar * hidden + col, 2)));
+            }
+            reg f32 gate = 0.0f;
+            sigmoid_exact_f32(bf16_lo(ldg16_persist(ptr_add(shared_logit, row, 2))), gate);
+            total = total + bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(acc)) * gate));
+            stg16(ptr_add(output, row * hidden + col, 2), f32_to_bf16(total));
+        }
+    }
+    preexit();
+}
+
+instantiate moe_shared_down_finalize_tpl<8, 64> as moe_shared_down_finalize_l8;
+instantiate moe_shared_down_finalize_tpl<16, 64> as moe_shared_down_finalize_l16;
+
+macro moe_store_swiglu_wt(out_act, p_row, inter, n, acc1, acc3, packed_weight) {
+    reg f32 g = bf16_lo(f32_to_bf16(acc1));
+    reg f32 u = bf16_lo(f32_to_bf16(acc3));
+    reg f32 sg = 0.0f;
+    silu_exact_f32(g, sg);
+    reg f32 wt = u32_as_f32(ldg32_persist(ptr_add(packed_weight, p_row, 4)));
+    stg16(ptr_add(out_act, p_row * inter + n, 2), f32_to_bf16((sg * u) * wt));
+}
+
+macro moe_bf16_w1w3_batch4(pw1, pw3, act, route_src, packed_weight, out_act, p0, count, chunks, inter, n, lane) {
+    reg u64 pa[4];
+    reg f32 a1[4]; reg f32 a3[4];
+    reg u32 r0_src = ldg32_persist(ptr_add(route_src, p0, 4));
+    unroll (r = 0..4) {
+        reg u32 sr = r0_src;
+        if (r < count) { sr = ldg32_persist(ptr_add(route_src, p0 + r, 4)); }
+        pa[r] = ptr_add(act, sr * chunks, 16);
+        a1[r] = 0.0f; a3[r] = 0.0f;
+    }
+    for (reg u32 c = lane; c < chunks; c += 32) {
+        reg u32x4 vw1 = ldg128_stream(ptr_add(pw1, c, 16));
+        reg u32x4 vw3 = ldg128_stream(ptr_add(pw3, c, 16));
+        unroll (r = 0..4) {
+            reg u32x4 va = ldg128_persist(ptr_add(pa[r], c, 16));
+            bf16_dot8_acc(a1[r], vw1, va);
+            bf16_dot8_acc(a3[r], vw3, va);
+        }
+    }
+    unroll (r = 0..4) { a1[r] = warp_sum(a1[r]); a3[r] = warp_sum(a3[r]); }
+    if (lane == 0) {
+        unroll (r = 0..4) {
+            if (r < count) { moe_store_swiglu_wt(out_act, p0 + r, inter, n, a1[r], a3[r], packed_weight); }
+        }
+    }
+}
+
+macro moe_bf16_w1w3_one(pw1, pw3, pa, packed_weight, out_act, p_row, chunks, inter, n, lane) {
+    reg f32 acc1 = 0.0f; reg f32 acc3 = 0.0f;
+    for (reg u32 c = lane; c < chunks; c += 32) {
+        reg u32x4 va = ldg128_persist(ptr_add(pa, c, 16));
+        bf16_dot8_acc(acc1, ldg128_stream(ptr_add(pw1, c, 16)), va);
+        bf16_dot8_acc(acc3, ldg128_stream(ptr_add(pw3, c, 16)), va);
+    }
+    acc1 = warp_sum(acc1); acc3 = warp_sum(acc3);
+    if (lane == 0) { moe_store_swiglu_wt(out_act, p_row, inter, n, acc1, acc3, packed_weight); }
+}
+
+@pdl
+@concept(moe)
+template kernel[MOE_BLK128, REGS] moe_bf16_skinny_w1w3_tpl<IS_BATCHED, REGS>(
+    global u32* w1, global u32* w3, global u32* act, global f32* packed_weight,
+    global u32* group_row_offset, global u32* row_map, global u32* out_act,
+    u32 hidden, u32 inter, u32 local_experts
+) {
+    acqbulk();
+    reg u32 chunks = hidden >> 3;
+    reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 n = ctaid_x() * 4 + wid;
+    reg u32 by = ctaid_y();
+    if constexpr (IS_BATCHED == 0) {
+        if (by >= ldg32_persist(ptr_add(group_row_offset, local_experts, 4)) || n >= inter) { preexit(); return; }
+        reg u32 e = ldg32_persist(ptr_add(row_map, by, 4));
+        reg u32 roff = (e * inter + n) * chunks;
+        moe_bf16_w1w3_one(ptr_add(w1, roff, 16), ptr_add(w3, roff, 16), act, packed_weight, out_act, by, chunks, inter, n, lane);
+    } else {
+        if (by >= local_experts || n >= inter) { preexit(); return; }
+        reg u32 beg = ldg32_persist(ptr_add(group_row_offset, by, 4));
+        reg u32 end = ldg32_persist(ptr_add(group_row_offset, by + 1, 4));
+        if (beg >= end) { preexit(); return; }
+        reg u32 roff = (by * inter + n) * chunks;
+        reg u64 pw1 = ptr_add(w1, roff, 16);
+        reg u64 pw3 = ptr_add(w3, roff, 16);
+        for (reg u32 p0 = beg; p0 < end; p0 += 4) {
+            reg u32 cnt = (end - p0 < 4) ? (end - p0) : 4;
+            if (cnt == 1) {
+                reg u32 sr = ldg32_persist(ptr_add(row_map, p0, 4));
+                moe_bf16_w1w3_one(pw1, pw3, ptr_add(act, sr * chunks, 16), packed_weight, out_act, p0, chunks, inter, n, lane);
+            } else {
+                moe_bf16_w1w3_batch4(pw1, pw3, act, row_map, packed_weight, out_act, p0, cnt, chunks, inter, n, lane);
+            }
+        }
+    }
+    preexit();
+}
+
+instantiate moe_bf16_skinny_w1w3_tpl<0, 64> as moe_bf16_skinny_w1w3_single;
+instantiate moe_bf16_skinny_w1w3_tpl<1, 80> as moe_bf16_skinny_w1w3_batched;
+
+macro moe_bf16_w2_batch4(LANES, pw, expert_act, out, p0, count, chunks, hidden, n, sub) {
+    reg u64 pa[4]; reg f32 acc[4];
+    unroll (r = 0..4) {
+        pa[r] = ptr_add(expert_act, ((r < count) ? (p0 + r) : p0) * chunks, 16);
+        acc[r] = 0.0f;
+    }
+    for (reg u32 c = sub; c < chunks; c += LANES) {
+        reg u32x4 vw = ldg128_stream(ptr_add(pw, c, 16));
+        unroll (r = 0..4) { bf16_dot8_acc(acc[r], vw, ldg128_persist(ptr_add(pa[r], c, 16))); }
+    }
+    unroll (r = 0..4) { lanes_reduce_sum(LANES, acc[r]); }
+    if (sub == 0) {
+        unroll (r = 0..4) {
+            if (r < count) { stg16(ptr_add(out, (p0 + r) * hidden + n, 2), f32_to_bf16(acc[r])); }
+        }
+    }
+}
+
+macro moe_bf16_w2_one(LANES, pw, pa, out, p_row, chunks, hidden, n, sub) {
+    reg f32 acc = 0.0f;
+    for (reg u32 c = sub; c < chunks; c += LANES) {
+        bf16_dot8_acc(acc, ldg128_stream(ptr_add(pw, c, 16)), ldg128_persist(ptr_add(pa, c, 16)));
+    }
+    lanes_reduce_sum(LANES, acc);
+    if (sub == 0) { stg16(ptr_add(out, p_row * hidden + n, 2), f32_to_bf16(acc)); }
+}
+
+@pdl
+@concept(moe)
+template kernel[MOE_BLK128, REGS] moe_bf16_skinny_w2_tpl<IS_BATCHED, LANES, REGS>(
+    global u32* w2, global u32* expert_act, global u32* group_row_offset,
+    if (IS_BATCHED == 0) global u32* packed_expert,
+    global u32* out, u32 inter, u32 hidden, u32 local_experts
+) {
+    acqbulk();
+    reg u32 chunks = inter >> 3;
+    reg u32 tid = tid_x();
+    reg u32 n = ctaid_x() * (MOE_BLK128 / LANES) + (tid >> ((LANES == 32) ? 5 : ((LANES == 16) ? 4 : 3)));
+    reg u32 sub = tid & (LANES - 1);
+    reg u32 by = ctaid_y();
+    if constexpr (IS_BATCHED == 0) {
+        if (by >= ldg32_persist(ptr_add(group_row_offset, local_experts, 4)) || n >= hidden) { preexit(); return; }
+        reg u32 e = ldg32_persist(ptr_add(packed_expert, by, 4));
+        moe_bf16_w2_one(LANES, ptr_add(w2, (e * hidden + n) * chunks, 16), ptr_add(expert_act, by * chunks, 16), out, by, chunks, hidden, n, sub);
+    } else {
+        if (by >= local_experts || n >= hidden) { preexit(); return; }
+        reg u32 beg = ldg32_persist(ptr_add(group_row_offset, by, 4));
+        reg u32 end = ldg32_persist(ptr_add(group_row_offset, by + 1, 4));
+        if (beg >= end) { preexit(); return; }
+        reg u64 pw = ptr_add(w2, (by * hidden + n) * chunks, 16);
+        for (reg u32 p0 = beg; p0 < end; p0 += 4) {
+            reg u32 cnt = (end - p0 < 4) ? (end - p0) : 4;
+            if (cnt == 1) {
+                moe_bf16_w2_one(LANES, pw, ptr_add(expert_act, p0 * chunks, 16), out, p0, chunks, hidden, n, sub);
+            } else {
+                moe_bf16_w2_batch4(LANES, pw, expert_act, out, p0, cnt, chunks, hidden, n, sub);
+            }
+        }
+    }
+    preexit();
+}
+
+instantiate moe_bf16_skinny_w2_tpl<0, 8, 64> as moe_bf16_skinny_w2_single_l8;
+instantiate moe_bf16_skinny_w2_tpl<0, 16, 64> as moe_bf16_skinny_w2_single_l16;
+instantiate moe_bf16_skinny_w2_tpl<0, 32, 64> as moe_bf16_skinny_w2_single_l32;
+instantiate moe_bf16_skinny_w2_tpl<1, 8, 80> as moe_bf16_skinny_w2_batched_l8;
+instantiate moe_bf16_skinny_w2_tpl<1, 16, 80> as moe_bf16_skinny_w2_batched_l16;
+instantiate moe_bf16_skinny_w2_tpl<1, 32, 80> as moe_bf16_skinny_w2_batched_l32;
+
+macro moe_nvfp4_w1w3_dot_row(vw1, vw3, s10, s11, s30, s31, act_row, c, acc1, acc3) {
+    reg u32x4 b0 = ldg128_persist(ptr_add(act_row, c << 2, 16));
+    reg u32x4 b1 = ldg128_persist(ptr_add(act_row, (c << 2) + 1, 16));
+    reg f32 d10 = 0.0f; reg f32 d30 = 0.0f;
+    nvfp4_e2m1_dot16(vw1[0], vw1[1], b0, b1, d10);
+    nvfp4_e2m1_dot16(vw3[0], vw3[1], b0, b1, d30);
+    acc1 = fma(s10, d10, acc1); acc3 = fma(s30, d30, acc3);
+    reg u32x4 b2 = ldg128_persist(ptr_add(act_row, (c << 2) + 2, 16));
+    reg u32x4 b3 = ldg128_persist(ptr_add(act_row, (c << 2) + 3, 16));
+    reg f32 d11 = 0.0f; reg f32 d31 = 0.0f;
+    nvfp4_e2m1_dot16(vw1[2], vw1[3], b2, b3, d11);
+    nvfp4_e2m1_dot16(vw3[2], vw3[3], b2, b3, d31);
+    acc1 = fma(s11, d11, acc1); acc3 = fma(s31, d31, acc3);
+}
+
+macro moe_nvfp4_w1w3_load_ws(w1_ptr, s1_ptr, g1, w3_ptr, s3_ptr, g3, c, vw1, vw3, s10, s11, s30, s31) {
+    vw1 = ldg128_stream(ptr_add(w1_ptr, c, 16));
+    vw3 = ldg128_stream(ptr_add(w3_ptr, c, 16));
+    reg u32 sc1_raw = ldg16_persist(ptr_add(s1_ptr, c, 2));
+    reg u32 sc3_raw = ldg16_persist(ptr_add(s3_ptr, c, 2));
+    nvfp4_ue4m3_decode(sc1_raw, g1, s10); nvfp4_ue4m3_decode(sc1_raw >> 8, g1, s11);
+    nvfp4_ue4m3_decode(sc3_raw, g3, s30); nvfp4_ue4m3_decode(sc3_raw >> 8, g3, s31);
+}
+
+macro moe_nvfp4_chunk_w1w3_one(w1_ptr, s1_ptr, g1, w3_ptr, s3_ptr, g3, act_row, c, acc1, acc3) {
+    reg u32x4 vw1; reg u32x4 vw3;
+    reg f32 s10 = 0.0f; reg f32 s11 = 0.0f; reg f32 s30 = 0.0f; reg f32 s31 = 0.0f;
+    moe_nvfp4_w1w3_load_ws(w1_ptr, s1_ptr, g1, w3_ptr, s3_ptr, g3, c, vw1, vw3, s10, s11, s30, s31);
+    moe_nvfp4_w1w3_dot_row(vw1, vw3, s10, s11, s30, s31, act_row, c, acc1, acc3);
+}
+
+macro moe_nvfp4_w1w3_batch4(LANES, w1_ptr, s1_ptr, g1, w3_ptr, s3_ptr, g3, act, route_src, packed_weight, out, p0, cnt, chunks, n_dim, neuron, sub) {
+    reg u64 pa[4]; reg f32 a1[4]; reg f32 a3[4];
+    reg u32 s0 = ldg32_persist(ptr_add(route_src, p0, 4));
+    unroll (r = 0..4) {
+        reg u32 sr = s0;
+        if (r < cnt) { sr = ldg32_persist(ptr_add(route_src, p0 + r, 4)); }
+        pa[r] = ptr_add(act, sr * (chunks << 2), 16);
+        a1[r] = 0.0f; a3[r] = 0.0f;
+    }
+    for (reg u32 c = sub; c < chunks; c += LANES) {
+        reg u32x4 vw1; reg u32x4 vw3;
+        reg f32 s10 = 0.0f; reg f32 s11 = 0.0f; reg f32 s30 = 0.0f; reg f32 s31 = 0.0f;
+        moe_nvfp4_w1w3_load_ws(w1_ptr, s1_ptr, g1, w3_ptr, s3_ptr, g3, c, vw1, vw3, s10, s11, s30, s31);
+        unroll (r = 0..4) {
+            moe_nvfp4_w1w3_dot_row(vw1, vw3, s10, s11, s30, s31, pa[r], c, a1[r], a3[r]);
+        }
+    }
+    unroll (r = 0..4) { lanes_reduce_sum(LANES, a1[r]); lanes_reduce_sum(LANES, a3[r]); }
+    if (sub == 0) {
+        unroll (r = 0..4) {
+            if (r < cnt) { moe_store_swiglu_wt(out, p0 + r, n_dim, neuron, a1[r], a3[r], packed_weight); }
+        }
+    }
+}
+
+@pdl
+@concept(moe)
+template kernel[MOE_BLK256, REGS] moe_nvfp4_skinny_w1w3_tpl<IS_BATCHED, LANES, REGS>(
+    global u32* w1, global u8* w1_scale_blob, global u32* w3, global u8* w3_scale_blob,
+    global u32* act, global f32* packed_weight, global u32* group_row_offset,
+    global u32* row_map, global u32* output, u32 k_dim, u32 n_dim, u32 groups
+) {
+    acqbulk();
+    reg u32 chunks = k_dim >> 5;
+    reg u32 tid = tid_x();
+    reg u32 neuron = ctaid_x() * (MOE_BLK256 / LANES) + (tid >> ((LANES == 32) ? 5 : ((LANES == 16) ? 4 : 3)));
+    reg u32 sub = tid & (LANES - 1);
+    reg u32 by = ctaid_y();
+    if constexpr (IS_BATCHED == 0) {
+        if (by >= ldg32_persist(ptr_add(group_row_offset, groups, 4)) || neuron >= n_dim) { preexit(); return; }
+        reg u32 grp = ldg32_persist(ptr_add(row_map, by, 4));
+        reg u32 roff = (grp * n_dim + neuron) * chunks;
+        reg u64 w1p = ptr_add(w1, roff, 16); reg u64 w3p = ptr_add(w3, roff, 16);
+        reg u64 s1p = ptr_add(ptr_add(w1_scale_blob, groups, 4), roff, 2);
+        reg u64 s3p = ptr_add(ptr_add(w3_scale_blob, groups, 4), roff, 2);
+        reg f32 g1 = u32_as_f32(ldg32_persist(ptr_add(w1_scale_blob, grp, 4)));
+        reg f32 g3 = u32_as_f32(ldg32_persist(ptr_add(w3_scale_blob, grp, 4)));
+        reg f32 acc1 = 0.0f; reg f32 acc3 = 0.0f;
+        for (reg u32 c = sub; c < chunks; c += LANES) {
+            moe_nvfp4_chunk_w1w3_one(w1p, s1p, g1, w3p, s3p, g3, act, c, acc1, acc3);
+        }
+        lanes_reduce_sum(LANES, acc1); lanes_reduce_sum(LANES, acc3);
+        if (sub == 0) { moe_store_swiglu_wt(output, by, n_dim, neuron, acc1, acc3, packed_weight); }
+    } else {
+        reg u32 beg = ldg32_persist(ptr_add(group_row_offset, by, 4));
+        reg u32 end = ldg32_persist(ptr_add(group_row_offset, by + 1, 4));
+        if (beg >= end || neuron >= n_dim) { preexit(); return; }
+        reg u32 roff = (by * n_dim + neuron) * chunks;
+        reg u64 w1p = ptr_add(w1, roff, 16); reg u64 w3p = ptr_add(w3, roff, 16);
+        reg u64 s1p = ptr_add(ptr_add(w1_scale_blob, groups, 4), roff, 2);
+        reg u64 s3p = ptr_add(ptr_add(w3_scale_blob, groups, 4), roff, 2);
+        reg f32 g1 = u32_as_f32(ldg32_persist(ptr_add(w1_scale_blob, by, 4)));
+        reg f32 g3 = u32_as_f32(ldg32_persist(ptr_add(w3_scale_blob, by, 4)));
+        for (reg u32 first = beg; first < end; first += 4) {
+            reg u32 cnt = (end - first < 4) ? (end - first) : 4;
+            if (cnt == 1) {
+                reg u64 arow = ptr_add(act, ldg32_persist(ptr_add(row_map, first, 4)) * (chunks << 2), 16);
+                reg f32 acc1 = 0.0f; reg f32 acc3 = 0.0f;
+                for (reg u32 c = sub; c < chunks; c += LANES) {
+                    moe_nvfp4_chunk_w1w3_one(w1p, s1p, g1, w3p, s3p, g3, arow, c, acc1, acc3);
+                }
+                lanes_reduce_sum(LANES, acc1); lanes_reduce_sum(LANES, acc3);
+                if (sub == 0) { moe_store_swiglu_wt(output, first, n_dim, neuron, acc1, acc3, packed_weight); }
+            } else {
+                moe_nvfp4_w1w3_batch4(LANES, w1p, s1p, g1, w3p, s3p, g3, act, row_map, packed_weight, output, first, cnt, chunks, n_dim, neuron, sub);
+            }
+        }
+    }
+    preexit();
+}
+
+instantiate moe_nvfp4_skinny_w1w3_tpl<0, 8, 80> as moe_nvfp4_skinny_w1w3_single_l8;
+instantiate moe_nvfp4_skinny_w1w3_tpl<0, 16, 80> as moe_nvfp4_skinny_w1w3_single_l16;
+instantiate moe_nvfp4_skinny_w1w3_tpl<0, 32, 80> as moe_nvfp4_skinny_w1w3_single_l32;
+instantiate moe_nvfp4_skinny_w1w3_tpl<1, 8, 168> as moe_nvfp4_skinny_w1w3_batched_l8;
+instantiate moe_nvfp4_skinny_w1w3_tpl<1, 16, 168> as moe_nvfp4_skinny_w1w3_batched_l16;
+instantiate moe_nvfp4_skinny_w1w3_tpl<1, 32, 168> as moe_nvfp4_skinny_w1w3_batched_l32;
+
+macro moe_nvfp4_w2_n4_one(LANES, w_base, s_base, glob, act_row, out, p_row, chunks, n_dim, n0, sub) {
+    reg f32 acc[4];
+    unroll (k = 0..4) { acc[k] = 0.0f; }
+    for (reg u32 c = sub; c < chunks; c += LANES) {
+        reg u32x4 a0 = ldg128_persist(ptr_add(act_row, c << 2, 16));
+        reg u32x4 a1 = ldg128_persist(ptr_add(act_row, (c << 2) + 1, 16));
+        reg u32x4 a2 = ldg128_persist(ptr_add(act_row, (c << 2) + 2, 16));
+        reg u32x4 a3 = ldg128_persist(ptr_add(act_row, (c << 2) + 3, 16));
+        unroll (k = 0..4) {
+            if (n0 + k < n_dim) {
+                reg u32x4 vw = ldg128_stream(ptr_add(w_base, k * chunks + c, 16));
+                reg u32 sr = ldg16_persist(ptr_add(s_base, k * chunks + c, 2));
+                reg f32 sc0 = 0.0f; reg f32 sc1 = 0.0f;
+                nvfp4_ue4m3_decode(sr, glob, sc0); nvfp4_ue4m3_decode(sr >> 8, glob, sc1);
+                reg f32 d0 = 0.0f; reg f32 d1 = 0.0f;
+                nvfp4_e2m1_dot16(vw[0], vw[1], a0, a1, d0);
+                nvfp4_e2m1_dot16(vw[2], vw[3], a2, a3, d1);
+                acc[k] = fma(sc1, d1, fma(sc0, d0, acc[k]));
+            }
+        }
+    }
+    unroll (k = 0..4) { lanes_reduce_sum(LANES, acc[k]); }
+    if (sub == 0) {
+        unroll (k = 0..4) {
+            if (n0 + k < n_dim) { stg16(ptr_add(out, p_row * n_dim + n0 + k, 2), f32_to_bf16(acc[k])); }
+        }
+    }
+}
+
+macro moe_nvfp4_w2_n1_batch4(LANES, wk, sk, glob, act, out, first, cnt, chunks, n_dim, col, sub) {
+    reg u64 pa[4]; reg f32 acc[4];
+    unroll (r = 0..4) {
+        pa[r] = ptr_add(act, ((r < cnt) ? (first + r) : first) * (chunks << 2), 16);
+        acc[r] = 0.0f;
+    }
+    for (reg u32 c = sub; c < chunks; c += LANES) {
+        reg u32x4 vw = ldg128_stream(ptr_add(wk, c, 16));
+        reg u32 sr = ldg16_persist(ptr_add(sk, c, 2));
+        reg f32 sc0 = 0.0f; reg f32 sc1 = 0.0f;
+        nvfp4_ue4m3_decode(sr, glob, sc0); nvfp4_ue4m3_decode(sr >> 8, glob, sc1);
+        unroll (r = 0..4) {
+            reg u32x4 a0 = ldg128_persist(ptr_add(pa[r], c << 2, 16));
+            reg u32x4 a1 = ldg128_persist(ptr_add(pa[r], (c << 2) + 1, 16));
+            reg f32 d0 = 0.0f;
+            nvfp4_e2m1_dot16(vw[0], vw[1], a0, a1, d0);
+            acc[r] = fma(sc0, d0, acc[r]);
+            reg u32x4 a2 = ldg128_persist(ptr_add(pa[r], (c << 2) + 2, 16));
+            reg u32x4 a3 = ldg128_persist(ptr_add(pa[r], (c << 2) + 3, 16));
+            reg f32 d1 = 0.0f;
+            nvfp4_e2m1_dot16(vw[2], vw[3], a2, a3, d1);
+            acc[r] = fma(sc1, d1, acc[r]);
+        }
+    }
+    unroll (r = 0..4) { lanes_reduce_sum(LANES, acc[r]); }
+    if (sub == 0) {
+        unroll (r = 0..4) {
+            if (r < cnt) { stg16(ptr_add(out, (first + r) * n_dim + col, 2), f32_to_bf16(acc[r])); }
+        }
+    }
+}
+
+macro moe_nvfp4_w2_n4_batch4(LANES, wb, sb, glob, act, output, first, cnt, chunks, n_dim, n0, sub) {
+    for (reg u32 k = 0; k < 4; k += 1) {
+        if (n0 + k < n_dim) {
+            moe_nvfp4_w2_n1_batch4(LANES, ptr_add(wb, k * chunks, 16), ptr_add(sb, k * chunks, 2), glob, act, output, first, cnt, chunks, n_dim, n0 + k, sub);
+        }
+    }
+}
+
+@pdl
+@concept(moe)
+template kernel[MOE_BLK256, REGS] moe_nvfp4_skinny_w2_tpl<IS_BATCHED, LANES, REGS>(
+    global u32* w2, global u8* w2_scale_blob, global u32* act, global u32* group_row_offset,
+    if (IS_BATCHED == 0) global u32* packed_expert,
+    global u32* output, u32 k_dim, u32 n_dim, u32 groups
+) {
+    acqbulk();
+    reg u32 chunks = k_dim >> 5;
+    reg u32 tid = tid_x();
+    reg u32 n0 = (ctaid_x() * (MOE_BLK256 / LANES) + (tid >> ((LANES == 32) ? 5 : ((LANES == 16) ? 4 : 3)))) << 2;
+    reg u32 sub = tid & (LANES - 1);
+    reg u32 by = ctaid_y();
+    if constexpr (IS_BATCHED == 0) {
+        if (by >= ldg32_persist(ptr_add(group_row_offset, groups, 4)) || n0 >= n_dim) { preexit(); return; }
+        reg u32 grp = ldg32_persist(ptr_add(packed_expert, by, 4));
+        reg u32 off0 = (grp * n_dim + n0) * chunks;
+        reg u64 wb = ptr_add(w2, off0, 16);
+        reg u64 sb = ptr_add(ptr_add(w2_scale_blob, groups, 4), off0, 2);
+        reg f32 glob = u32_as_f32(ldg32_persist(ptr_add(w2_scale_blob, grp, 4)));
+        moe_nvfp4_w2_n4_one(LANES, wb, sb, glob, ptr_add(act, by * (chunks << 2), 16), output, by, chunks, n_dim, n0, sub);
+    } else {
+        reg u32 beg = ldg32_persist(ptr_add(group_row_offset, by, 4));
+        reg u32 end = ldg32_persist(ptr_add(group_row_offset, by + 1, 4));
+        if (beg >= end || n0 >= n_dim) { preexit(); return; }
+        reg u32 off0 = (by * n_dim + n0) * chunks;
+        reg u64 wb = ptr_add(w2, off0, 16);
+        reg u64 sb = ptr_add(ptr_add(w2_scale_blob, groups, 4), off0, 2);
+        reg f32 glob = u32_as_f32(ldg32_persist(ptr_add(w2_scale_blob, by, 4)));
+        for (reg u32 first = beg; first < end; first += 4) {
+            reg u32 cnt = (end - first < 4) ? (end - first) : 4;
+            if (cnt == 1) {
+                moe_nvfp4_w2_n4_one(LANES, wb, sb, glob, ptr_add(act, first * (chunks << 2), 16), output, first, chunks, n_dim, n0, sub);
+            } else {
+                moe_nvfp4_w2_n4_batch4(LANES, wb, sb, glob, act, output, first, cnt, chunks, n_dim, n0, sub);
+            }
+        }
+    }
+    preexit();
+}
+
+instantiate moe_nvfp4_skinny_w2_tpl<0, 8, 96> as moe_nvfp4_skinny_w2_single_l8;
+instantiate moe_nvfp4_skinny_w2_tpl<0, 16, 96> as moe_nvfp4_skinny_w2_single_l16;
+instantiate moe_nvfp4_skinny_w2_tpl<0, 32, 96> as moe_nvfp4_skinny_w2_single_l32;
+instantiate moe_nvfp4_skinny_w2_tpl<1, 8, 144> as moe_nvfp4_skinny_w2_batched_l8;
+instantiate moe_nvfp4_skinny_w2_tpl<1, 16, 144> as moe_nvfp4_skinny_w2_batched_l16;
+instantiate moe_nvfp4_skinny_w2_tpl<1, 32, 144> as moe_nvfp4_skinny_w2_batched_l32;

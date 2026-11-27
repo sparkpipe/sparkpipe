@@ -234,3 +234,86 @@ macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
         }
     }
 }
+
+@export
+macro bf16_dot8_acc(acc, wv, av) {
+    reg f32 p0 = fma(bf16_lo(wv[0]), bf16_lo(av[0]), 0.0f);
+    reg f32 p1 = bf16_hi(wv[0]) * bf16_hi(av[0]);
+    unroll (k = 1..4) {
+        p0 = fma(bf16_lo(wv[k]), bf16_lo(av[k]), p0);
+        p1 = fma(bf16_hi(wv[k]), bf16_hi(av[k]), p1);
+    }
+    acc = fma(1.0f, p0 + p1, acc);
+}
+
+@export
+macro lanes_reduce_sum(LANES, val) {
+    if constexpr (LANES == 32) { val = warp_sum(val); }
+    else if constexpr (LANES == 16) {
+        val = val + shfl_xor(val, 8);
+        val = val + shfl_xor(val, 4);
+        val = val + shfl_xor(val, 2);
+        val = val + shfl_xor(val, 1);
+    } else {
+        val = oct_sum(val);
+    }
+}
+
+@export
+macro nvfp4_ue4m3_decode(byte_val, gscale, out_sc) {
+    reg u32 m = byte_val & 0x7F;
+    m = m - (((m + 1) >> 7) & 1);
+    out_sc = ue4m3_to_f32(m) * gscale;
+}
+
+@export
+macro nvfp4_e2m1_dot16(w_lo, w_hi, a_lo, a_hi, out_dot) {
+    reg f32x4 d0 = cvt_e2m1x4_f32x4(w_lo, 0);
+    reg f32 a0 = d0.x * bf16_lo(a_lo[0]);
+    reg f32 a1 = d0.y * bf16_hi(a_lo[0]);
+    reg f32 a2 = d0.z * bf16_lo(a_lo[1]);
+    reg f32 a3 = d0.w * bf16_hi(a_lo[1]);
+    reg f32x4 d1 = cvt_e2m1x4_f32x4(w_lo, 16);
+    a0 = fma(d1.x, bf16_lo(a_lo[2]), a0);
+    a1 = fma(d1.y, bf16_hi(a_lo[2]), a1);
+    a2 = fma(d1.z, bf16_lo(a_lo[3]), a2);
+    a3 = fma(d1.w, bf16_hi(a_lo[3]), a3);
+    reg f32x4 d2 = cvt_e2m1x4_f32x4(w_hi, 0);
+    a0 = fma(d2.x, bf16_lo(a_hi[0]), a0);
+    a1 = fma(d2.y, bf16_hi(a_hi[0]), a1);
+    a2 = fma(d2.z, bf16_lo(a_hi[1]), a2);
+    a3 = fma(d2.w, bf16_hi(a_hi[1]), a3);
+    reg f32x4 d3 = cvt_e2m1x4_f32x4(w_hi, 16);
+    a0 = fma(d3.x, bf16_lo(a_hi[2]), a0);
+    a1 = fma(d3.y, bf16_hi(a_hi[2]), a1);
+    a2 = fma(d3.z, bf16_lo(a_hi[3]), a2);
+    a3 = fma(d3.w, bf16_hi(a_hi[3]), a3);
+    out_dot = (a0 + a1) + (a2 + a3);
+}
+
+@export
+macro hyper_gate_f32(v0, s_f, inv_s, out_v) {
+    reg f32 sc = 0.0f;
+    div_nr1_f32(v0, s_f, inv_s, sc);
+    sc = bf16_lo(f32_to_bf16(sc));
+    reg f32 sg = 0.0f;
+    sigmoid_exact_f32(sc, sg);
+    out_v = sc * sg;
+}
+
+@export
+macro hyper_inject_weight_f32(v0, s_f, inv_s, out_v) {
+    reg f32 sc = 0.0f;
+    div_nr1_f32(v0, s_f, inv_s, sc);
+    sc = bf16_lo(f32_to_bf16(sc));
+    reg f32 sg = 0.0f;
+    sigmoid_exact_f32(sc, sg);
+    out_v = bf16_lo(f32_to_bf16(2.0f * bf16_lo(f32_to_bf16(sg))));
+}
+
+@export
+macro hyper_mix_term_f32(u_val, n_val, out_v) {
+    reg f32 sg = 0.0f;
+    sigmoid_exact_f32(u_val, sg);
+    out_v = bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(sg)) * n_val));
+}

@@ -1,0 +1,430 @@
+import "stdlib/math.skl2";
+import "stdlib/mma.skl2";
+
+const NV4_BLK256 = 256;
+
+macro gmma_prefix_scan(TILE_M, group_row_offset, prefix, groups, n_tiles, tid) {
+    if (tid < 32) {
+        reg u32 msh = (TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : 6);
+        reg u32 per_l = (groups + 31) >> 5;
+        reg u32 first = tid * per_l;
+        reg u32 own = 0;
+        for (reg u32 gi = 0; gi < per_l; gi += 1) {
+            reg u32 g = first + gi;
+            if (g < groups) {
+                reg u32 r = ldg32_persist(ptr_add(group_row_offset, g + 1, 4)) - ldg32_persist(ptr_add(group_row_offset, g, 4));
+                own = own + (((r + TILE_M - 1) >> msh) * n_tiles);
+            }
+        }
+        reg u32 run = own;
+        unroll (sh = 0..5) {
+            reg u32 ot = shfl_up(run, 1 << sh);
+            if (tid >= (1 << sh)) { run = run + ot; }
+        }
+        reg u32 off = run - own;
+        for (reg u32 gi = 0; gi < per_l; gi += 1) {
+            reg u32 g = first + gi;
+            if (g < groups) {
+                sts32(prefix, g, off);
+                reg u32 r = ldg32_persist(ptr_add(group_row_offset, g + 1, 4)) - ldg32_persist(ptr_add(group_row_offset, g, 4));
+                off = off + (((r + TILE_M - 1) >> msh) * n_tiles);
+            }
+        }
+        if (tid == 31) { sts32(prefix, groups, run); }
+    }
+    barrier();
+}
+
+macro gmma_tile_lookup(TILE_M, group_row_offset, prefix, groups, tile, n_tiles, grp, row_base, row_limit, nt) {
+    reg u32 lo = 0; reg u32 hi = groups;
+    for (reg u32 st = 0; st < 9; st += 1) {
+        if (lo + 1 < hi) {
+            reg u32 mid = (lo + hi) >> 1;
+            if (lds32(prefix, mid) <= tile) { lo = mid; } else { hi = mid; }
+        }
+    }
+    grp = lo;
+    reg u32 first = ldg32_persist(ptr_add(group_row_offset, grp, 4));
+    row_limit = ldg32_persist(ptr_add(group_row_offset, grp + 1, 4));
+    reg u32 within = tile - lds32(prefix, grp);
+    reg u32 mt = 0;
+    u32_divmod(within, n_tiles, mt, nt);
+    row_base = first + mt * TILE_M;
+}
+
+macro gmma_tile_scan(TILE_M, group_row_offset, groups, tile, n_tiles, grp, row_base, row_limit, nt) {
+    reg u32 msh = (TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : 6);
+    reg u32 off = 0; reg u32 found = 0;
+    grp = 0; row_base = 0; row_limit = 0; nt = 0;
+    for (reg u32 g = 0; g < groups; g += 1) {
+        if (found == 0) {
+            reg u32 first = ldg32_persist(ptr_add(group_row_offset, g, 4));
+            reg u32 end = ldg32_persist(ptr_add(group_row_offset, g + 1, 4));
+            reg u32 cnt = ((end - first + TILE_M - 1) >> msh) * n_tiles;
+            if (tile < off + cnt) {
+                grp = g; row_limit = end; found = 1;
+                reg u32 mt = 0;
+                u32_divmod(tile - off, n_tiles, mt, nt);
+                row_base = first + mt * TILE_M;
+            }
+            off = off + cnt;
+        }
+    }
+}
+
+macro gmma_init_tile_ptrs(FUSED, TILE_M, TILE_N, THREADS, A_PER_T, B_PER_T, act, src_map, w_gate, w_up, grp, row_base, row_limit, col_base, k_dim, n_dim, tid, a_sm, b_sm, a_src, b_src, a_mask, b_mask) {
+    reg u32 r0 = tid >> 3; reg u32 c0 = tid & 7;
+    a_mask = 0; b_mask = 0;
+    unroll (q = 0..A_PER_T) {
+        reg u32 r = r0 + q * (THREADS >> 3);
+        reg u32 pr = row_base + r;
+        reg u32 va = (pr < row_limit) ? 1 : 0;
+        reg u32 sr = 0;
+        if (va != 0) {
+            if constexpr (FUSED == 1) { sr = ldg32_persist(ptr_add(src_map, pr, 4)); }
+            else { sr = pr; }
+        }
+        a_sm[q] = (r << 7) | ((c0 ^ (((r & 1) << 2) | ((r >> 1) & 3))) << 4);
+        a_src[q] = ptr_add(act, sr * k_dim + (c0 << 3), 2);
+        a_mask = a_mask | (va << q);
+    }
+    unroll (q = 0..B_PER_T) {
+        reg u32 br = r0 + q * (THREADS >> 3);
+        reg u32 is_u = 0;
+        if constexpr (FUSED == 1) { is_u = (br >= TILE_N) ? 1 : 0; }
+        reg u32 gn = col_base + ((is_u != 0) ? (br - TILE_N) : br);
+        reg u32 vb = (gn < n_dim) ? 1 : 0;
+        reg u64 wp = (is_u != 0) ? w_up : w_gate;
+        b_sm[q] = (TILE_M << 7) + ((br << 7) | ((c0 ^ (((br & 1) << 2) | ((br >> 1) & 3))) << 4));
+        b_src[q] = ptr_add(wp, ((vb != 0) ? ((grp * n_dim + gn) * k_dim + (c0 << 3)) : 0), 2);
+        b_mask = b_mask | (vb << q);
+    }
+}
+
+macro gmma_store_pair(FUSED, out_ptr, packed_weight, r, col, row_limit, n_dim, g0, g1, u0, u1) {
+    if (r < row_limit && col < n_dim) {
+        if constexpr (FUSED == 1) {
+            reg f32 wt = u32_as_f32(ldg32_persist(ptr_add(packed_weight, r, 4)));
+            reg f32 s0 = 0.0f; reg f32 s1 = 0.0f;
+            silu_exact_f32(bf16_lo(f32_to_bf16(g0)), s0);
+            silu_exact_f32(bf16_lo(f32_to_bf16(g1)), s1);
+            reg f32 v0 = (s0 * bf16_lo(f32_to_bf16(u0))) * wt;
+            reg f32 v1 = (s1 * bf16_lo(f32_to_bf16(u1))) * wt;
+            stg32(ptr_add(ptr_add(out_ptr, r, n_dim << 1), col, 2), pack_bf16x2(v0, v1));
+        } else {
+            stg32(ptr_add(ptr_add(out_ptr, r, n_dim << 1), col, 2), pack_bf16x2(g0, g1));
+        }
+    }
+}
+
+macro gmma_run_one_tile(FUSED, TILE_M, TILE_N, THREADS, WARPS_M, STAGES, smem, act, src_map, w_gate, w_up, packed_weight, out_ptr, grp, row_base, row_limit, col_base, k_dim, n_dim, tid, lane, wm_r0, wn_n0, a_off, bg_off, bu_off) {
+    reg u32 a_sm[(TILE_M * 8) / THREADS]; reg u32 b_sm[((1 + FUSED) * TILE_N * 8) / THREADS];
+    reg u64 a_src[(TILE_M * 8) / THREADS]; reg u64 b_src[((1 + FUSED) * TILE_N * 8) / THREADS];
+    reg u32 a_mask = 0; reg u32 b_mask = 0;
+    gmma_init_tile_ptrs(FUSED, TILE_M, TILE_N, THREADS, (TILE_M * 8) / THREADS, ((1 + FUSED) * TILE_N * 8) / THREADS, act, src_map, w_gate, w_up, grp, row_base, row_limit, col_base, k_dim, n_dim, tid, a_sm, b_sm, a_src, b_src, a_mask, b_mask);
+    reg u32x4 a0[(TILE_M / WARPS_M) / 16]; reg u32x4 a1[(TILE_M / WARPS_M) / 16];
+    reg u32x4 bg0[(TILE_N / ((THREADS / 32) / WARPS_M)) / 16]; reg u32x4 bg1[(TILE_N / ((THREADS / 32) / WARPS_M)) / 16];
+    reg u32x4 bu0[FUSED == 1 ? ((TILE_N / ((THREADS / 32) / WARPS_M)) / 16) : 1];
+    reg u32x4 bu1[FUSED == 1 ? ((TILE_N / ((THREADS / 32) / WARPS_M)) / 16) : 1];
+    reg f32x4 acc_g[((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8)];
+    reg f32x4 acc_u[FUSED == 1 ? (((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8)) : 1];
+    unroll (z = 0..(((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8))) {
+        acc_g[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+        if constexpr (FUSED == 1) { acc_u[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
+    }
+    if constexpr (FUSED == 0) { acc_u[0] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
+    qmma_run_pipeline(STAGES, FUSED, (TILE_M / WARPS_M) / 16, (TILE_N / ((THREADS / 32) / WARPS_M)) / 16, (TILE_M * 8) / THREADS, ((1 + FUSED) * TILE_N * 8) / THREADS, (TILE_M + (1 + FUSED) * TILE_N) * 128, k_dim >> 6, smem_base(smem), a_sm, b_sm, a_src, b_src, a_mask, b_mask, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
+    reg u32 gid = lane >> 2; reg u32 tg = lane & 3;
+    unroll (i = 0..((TILE_M / WARPS_M) / 16)) {
+        unroll (j = 0..((TILE_N / ((THREADS / 32) / WARPS_M)) / 8)) {
+            reg u32 rl = row_base + wm_r0 + (i << 4) + gid;
+            reg u32 col = col_base + wn_n0 + (j << 3) + (tg << 1);
+            if constexpr (FUSED == 1) {
+                gmma_store_pair(1, out_ptr, packed_weight, rl, col, row_limit, n_dim, acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][0], acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][1], acc_u[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][0], acc_u[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][1]);
+                gmma_store_pair(1, out_ptr, packed_weight, rl + 8, col, row_limit, n_dim, acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][2], acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][3], acc_u[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][2], acc_u[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][3]);
+            } else {
+                gmma_store_pair(0, out_ptr, packed_weight, rl, col, row_limit, n_dim, acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][0], acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][1], acc_u[0][0], acc_u[0][1]);
+                gmma_store_pair(0, out_ptr, packed_weight, rl + 8, col, row_limit, n_dim, acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][2], acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j][3], acc_u[0][2], acc_u[0][3]);
+            }
+        }
+    }
+}
+
+@pdl
+@concept(moe)
+template kernel[THREADS, REGS] moe_bf16_mma_tpl<FUSED, TILE_M, TILE_N, THREADS, WARPS_M, STAGES, USE_PREFIX, REGS>(
+    global u32* w_gate,
+    if (FUSED == 1) global u32* w_up,
+    global u32* act,
+    if (FUSED == 1) global f32* packed_weight,
+    global u32* group_row_offset,
+    if (FUSED == 1) global u32* source_row_map,
+    global u32* out_ptr,
+    u32 groups, u32 k_dim, u32 n_dim
+) {
+    shared u32 smem[STAGES * (TILE_M + (1 + FUSED) * TILE_N) * 32];
+    if constexpr (USE_PREFIX == 1) { shared u32 prefix[257]; }
+    acqbulk();
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 wm = (((THREADS / 32) / WARPS_M) == 4) ? (wid >> 2) : (wid >> 1);
+    reg u32 wn = wid & (((THREADS / 32) / WARPS_M) - 1);
+    reg u32 wm_r0 = wm * (TILE_M / WARPS_M);
+    reg u32 wn_n0 = wn * (TILE_N / ((THREADS / 32) / WARPS_M));
+    reg u32 n_tiles = (n_dim + TILE_N - 1) >> ((TILE_N == 64) ? 6 : 7);
+    reg u32 total_tiles = 0;
+    if constexpr (USE_PREFIX == 1) {
+        gmma_prefix_scan(TILE_M, group_row_offset, prefix, groups, n_tiles, tid);
+        total_tiles = lds32(prefix, groups);
+    } else {
+        reg u32 msh = (TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : 6);
+        for (reg u32 g = 0; g < groups; g += 1) {
+            reg u32 r = ldg32_persist(ptr_add(group_row_offset, g + 1, 4)) - ldg32_persist(ptr_add(group_row_offset, g, 4));
+            total_tiles = total_tiles + (((r + TILE_M - 1) >> msh) * n_tiles);
+        }
+    }
+    reg u32 a_off[(TILE_M / WARPS_M) / 16];
+    reg u32 bg_off[(TILE_N / ((THREADS / 32) / WARPS_M)) / 16];
+    reg u32 bu_off[FUSED == 1 ? ((TILE_N / ((THREADS / 32) / WARPS_M)) / 16) : 1];
+    qmma_init_foffs(FUSED, (TILE_M / WARPS_M) / 16, (TILE_N / ((THREADS / 32) / WARPS_M)) / 16, TILE_M, TILE_N, wm_r0, wn_n0, lane, a_off, bg_off, bu_off);
+    reg u32 gdim = grid_x();
+    for (reg u32 tile = ctaid_x(); tile < total_tiles; tile += gdim) {
+        reg u32 grp = 0; reg u32 row_base = 0; reg u32 row_limit = 0; reg u32 nt = 0;
+        if constexpr (USE_PREFIX == 1) {
+            gmma_tile_lookup(TILE_M, group_row_offset, prefix, groups, tile, n_tiles, grp, row_base, row_limit, nt);
+        } else {
+            gmma_tile_scan(TILE_M, group_row_offset, groups, tile, n_tiles, grp, row_base, row_limit, nt);
+        }
+        if constexpr (FUSED == 1) {
+            gmma_run_one_tile(1, TILE_M, TILE_N, THREADS, WARPS_M, STAGES, smem, act, source_row_map, w_gate, w_up, packed_weight, out_ptr, grp, row_base, row_limit, nt * TILE_N, k_dim, n_dim, tid, lane, wm_r0, wn_n0, a_off, bg_off, bu_off);
+        } else {
+            gmma_run_one_tile(0, TILE_M, TILE_N, THREADS, WARPS_M, STAGES, smem, act, group_row_offset, w_gate, w_gate, group_row_offset, out_ptr, grp, row_base, row_limit, nt * TILE_N, k_dim, n_dim, tid, lane, wm_r0, wn_n0, a_off, bg_off, bu_off);
+        }
+        if (tile + gdim < total_tiles) { barrier(); }
+    }
+    preexit();
+}
+
+instantiate moe_bf16_mma_tpl<1, 16, 64, 128, 1, 2, 1, 128> as moe_bf16_mma_w1w3_16x64;
+instantiate moe_bf16_mma_tpl<1, 32, 64, 256, 2, 2, 1, 128> as moe_bf16_mma_w1w3_32x64;
+instantiate moe_bf16_mma_tpl<1, 64, 64, 256, 2, 2, 0, 168> as moe_bf16_mma_w1w3_64x64;
+instantiate moe_bf16_mma_tpl<0, 16, 64, 128, 1, 3, 1, 112> as moe_bf16_mma_w2_16x64;
+instantiate moe_bf16_mma_tpl<0, 32, 64, 256, 2, 3, 1, 112> as moe_bf16_mma_w2_32x64;
+instantiate moe_bf16_mma_tpl<0, 64, 128, 256, 2, 2, 0, 168> as moe_bf16_mma_w2_64x128;
+
+macro nv4_stage_sc_words(FUSED, SCALE_TILES, s_sc, w1_sc, w3_sc, grp, n_base, output_dim, scale_pitch, sc_grp_str, kt, tid) {
+    reg u32 sc_off_b = kt << 3;
+    reg u32 avail_w = (sc_off_b < scale_pitch) ? ((scale_pitch - sc_off_b) >> 2) : 0;
+    reg u32 sb_slot = (kt >> ((SCALE_TILES == 4) ? 2 : 1)) & 1;
+    reg u32 wpr = SCALE_TILES << 1;
+    reg u32 wsh = (SCALE_TILES == 4) ? 3 : 2;
+    unroll (u = 0..SCALE_TILES) {
+        reg u32 idx = tid + (u << 8);
+        reg u32 wr = idx >> wsh;
+        reg u32 wi = idx & (wpr - 1);
+        reg u32 mat = 0; reg u32 nr = n_base + wr;
+        if constexpr (FUSED == 1) { mat = wr >> 6; nr = n_base + (wr & 63); }
+        reg u32 val = 0;
+        if (nr < output_dim && wi < avail_w) {
+            reg u64 sb = (mat == 0) ? w1_sc : w3_sc;
+            val = ldg32_stream(ptr_add(sb, (grp * sc_grp_str + nr * scale_pitch + sc_off_b) + (wi << 2), 1));
+        }
+        sts32(s_sc, ((sb_slot << 7) + wr) * wpr + wi, val);
+    }
+}
+
+macro nv4_stage_tile(MAX_M_TILES, FUSED, SCALE_TILES, sa_base, sb_base, s_sc, a_ptrs, a_valid, w1, w3, w1_sc, w3_sc, grp, n_base, output_dim, pay_pitch, scale_pitch, sc_grp_str, a_row0, a_vec, tid, st, kt) {
+    unroll (i = 0..MAX_M_TILES) {
+        reg u32 lr = a_row0 + (i << 4);
+        reg u32 swz = (a_vec & 8) | ((a_vec & 7) ^ (((lr & 1) << 2) | ((lr >> 1) & 3)));
+        reg u32 dst = sa_base + st * (MAX_M_TILES << 12) + (lr << 8) + (swz << 4);
+        ldgsts128_z(dst, ptr_add(a_ptrs[i], kt, 256), (a_valid >> i) & 1);
+    }
+    unroll (u = 0..2) {
+        reg u32 idx = tid + (u << 8);
+        reg u32 wr = idx >> 2; reg u32 bv = idx & 3;
+        reg u32 mat = 0; reg u32 nr = n_base + wr;
+        if constexpr (FUSED == 1) { mat = wr >> 6; nr = n_base + (wr & 63); }
+        reg u32 ok = (nr < output_dim) ? 1 : 0;
+        reg u64 wb = (mat == 0) ? w1 : w3;
+        reg u64 src = (ok != 0) ? ptr_add(wb, (grp * output_dim + nr) * pay_pitch + (kt << 6) + (bv << 4), 1) : wb;
+        ldgsts128_z(sb_base + (st << 13) + (wr << 6) + (bv << 4), src, ok);
+    }
+    if ((kt & (SCALE_TILES - 1)) == 0) {
+        nv4_stage_sc_words(FUSED, SCALE_TILES, s_sc, w1_sc, w3_sc, grp, n_base, output_dim, scale_pitch, sc_grp_str, kt, tid);
+    }
+    ldgdepbar();
+}
+
+macro nv4_e2m1_bfrag(s_b, cur, b_row, ks, c, s_bf16, out_b) {
+    reg u32 w0 = lds32(s_b, (cur << 11) + (b_row << 4) + (ks << 1));
+    reg u32 w1 = lds32(s_b, (cur << 11) + (b_row << 4) + (ks << 1) + 1);
+    reg f32x2 p0 = cvt_e2m1x2_f32x2((w0 >> (c << 3)) & 0xFF);
+    reg f32x2 p1 = cvt_e2m1x2_f32x2((w1 >> (c << 3)) & 0xFF);
+    out_b = pack_u32x2(pack_bf16x2(p0.x * s_bf16, p0.y * s_bf16), pack_bf16x2(p1.x * s_bf16, p1.y * s_bf16));
+}
+
+macro nv4_mma_kstep(MAX_M_TILES, s_b, cur, stage_a, b_row0, b_row1, ks, c, lane, s0_bf16, s1_bf16, m_live, acc0, acc1) {
+    reg u32x2 b0; reg u32x2 b1;
+    nv4_e2m1_bfrag(s_b, cur, b_row0, ks, c, s0_bf16, b0);
+    nv4_e2m1_bfrag(s_b, cur, b_row1, ks, c, s1_bf16, b1);
+    reg u32 kh = (ks & 4) << 1;
+    reg u32 kc = ((ks & 3) << 1) + ((lane >> 4) & 1);
+    unroll (m = 0..MAX_M_TILES) {
+        if (m < m_live) {
+            reg u32 ar = (m << 4) + (lane & 15);
+            reg u32 ac = kh | (kc ^ (((ar & 1) << 2) | ((ar >> 1) & 3)));
+            reg u32x4 af = ldsm_x4(stage_a + (ar << 8) + (ac << 4));
+            acc0[m] = hmma16816_bf16(af, b0, acc0[m]);
+            acc1[m] = hmma16816_bf16(af, b1, acc1[m]);
+        }
+    }
+}
+
+macro nv4_compute_ktile(MAX_M_TILES, SCALE_TILES, s_b, s_sc, cur, kt, stage_a, b_row0, b_row1, g0, g1, c, lane, m_live, acc0, acc1) {
+    reg u32 sb_slot = (kt >> ((SCALE_TILES == 4) ? 2 : 1)) & 1;
+    reg u32 sb_sub = (kt & (SCALE_TILES - 1)) << 1;
+    reg u32 wpr = SCALE_TILES << 1;
+    reg u32 sc0_lo = lds32(s_sc, ((sb_slot << 7) + b_row0) * wpr + sb_sub);
+    reg u32 sc0_hi = lds32(s_sc, ((sb_slot << 7) + b_row0) * wpr + sb_sub + 1);
+    reg u32 sc1_lo = lds32(s_sc, ((sb_slot << 7) + b_row1) * wpr + sb_sub);
+    reg u32 sc1_hi = lds32(s_sc, ((sb_slot << 7) + b_row1) * wpr + sb_sub + 1);
+    unroll (ks = 0..8) {
+        reg u32 b0_byte = (ks < 4) ? ((sc0_lo >> ((ks & 3) << 3)) & 0xFF) : ((sc0_hi >> ((ks & 3) << 3)) & 0xFF);
+        reg u32 b1_byte = (ks < 4) ? ((sc1_lo >> ((ks & 3) << 3)) & 0xFF) : ((sc1_hi >> ((ks & 3) << 3)) & 0xFF);
+        reg f32 f0 = 0.0f; reg f32 f1 = 0.0f;
+        nvfp4_ue4m3_decode(b0_byte, g0, f0);
+        nvfp4_ue4m3_decode(b1_byte, g1, f1);
+        nv4_mma_kstep(MAX_M_TILES, s_b, cur, stage_a, b_row0, b_row1, ks, c, lane, bf16_lo(f32_to_bf16(f0)), bf16_lo(f32_to_bf16(f1)), m_live, acc0, acc1);
+    }
+}
+
+macro nv4_store_fused_half(output, packed_weight, pr, row_end, col, output_dim, a0, a1, u0, u1) {
+    if (pr < row_end) {
+        reg f32 wt = u32_as_f32(ldg32_persist(ptr_add(packed_weight, pr, 4)));
+        reg f32 s0 = 0.0f; reg f32 s1 = 0.0f;
+        silu_exact_f32(bf16_lo(f32_to_bf16(a0)), s0);
+        silu_exact_f32(bf16_lo(f32_to_bf16(a1)), s1);
+        reg f32 v0 = (s0 * bf16_lo(f32_to_bf16(u0))) * wt;
+        reg f32 v1 = (s1 * bf16_lo(f32_to_bf16(u1))) * wt;
+        stg32(ptr_add(ptr_add(output, pr, output_dim << 1), col, 2), pack_bf16x2(v0, v1));
+    }
+}
+
+macro nv4_store_plain_half(output, pr, row_end, col0, col1, output_dim, a0, a1, b0, b1) {
+    if (pr < row_end) {
+        if (col0 < output_dim) { stg32(ptr_add(ptr_add(output, pr, output_dim << 1), col0, 2), pack_bf16x2(a0, a1)); }
+        if (col1 < output_dim) { stg32(ptr_add(ptr_add(output, pr, output_dim << 1), col1, 2), pack_bf16x2(b0, b1)); }
+    }
+}
+
+macro nv4_store_epilogue(MAX_M_TILES, FUSED, output, packed_weight, first, row_end, m_live, n_base, output_dim, wid, g, c, acc0, acc1) {
+    if constexpr (FUSED == 1) {
+        reg u32 col = n_base + (wid << 3) + (c << 1);
+        if (col < output_dim) {
+            unroll (m = 0..MAX_M_TILES) {
+                if (m < m_live) {
+                    nv4_store_fused_half(output, packed_weight, first + (m << 4) + g, row_end, col, output_dim, acc0[m][0], acc0[m][1], acc1[m][0], acc1[m][1]);
+                    nv4_store_fused_half(output, packed_weight, first + (m << 4) + g + 8, row_end, col, output_dim, acc0[m][2], acc0[m][3], acc1[m][2], acc1[m][3]);
+                }
+            }
+        }
+    } else {
+        reg u32 col0 = n_base + (wid << 4) + (c << 1);
+        reg u32 col1 = col0 + 8;
+        unroll (m = 0..MAX_M_TILES) {
+            if (m < m_live) {
+                nv4_store_plain_half(output, first + (m << 4) + g, row_end, col0, col1, output_dim, acc0[m][0], acc0[m][1], acc1[m][0], acc1[m][1]);
+                nv4_store_plain_half(output, first + (m << 4) + g + 8, row_end, col0, col1, output_dim, acc0[m][2], acc0[m][3], acc1[m][2], acc1[m][3]);
+            }
+        }
+    }
+}
+
+macro nv4_run_mblock(MAX_M_TILES, ACTIVATION_PACKED, FUSED, SCALE_TILES, s_a, s_b, s_sc, w1, w3, w1_sc, w3_sc, act, packed_weight, route_src, output, grp, first, row_end, n_base, k_tiles, input_dim, output_dim, pay_pitch, scale_pitch, sc_grp_str, g0, g1, b_row0, b_row1, tid, wid, lane, g, c) {
+    reg u32 count = (row_end - first < (MAX_M_TILES << 4)) ? (row_end - first) : (MAX_M_TILES << 4);
+    reg u32 m_live = (count + 15) >> 4;
+    reg u32 a_vec = tid & 15; reg u32 a_row0 = tid >> 4;
+    reg u64 a_ptrs[MAX_M_TILES];
+    reg u32 a_valid = 0;
+    unroll (i = 0..MAX_M_TILES) {
+        reg u32 lr = a_row0 + (i << 4);
+        if (lr < count) {
+            reg u32 pr = first + lr;
+            reg u32 sr = pr;
+            if constexpr (ACTIVATION_PACKED == 0) { sr = ldg32_persist(ptr_add(route_src, pr, 4)); }
+            a_ptrs[i] = ptr_add(act, sr * input_dim + (a_vec << 3), 2);
+            a_valid = a_valid | (1 << i);
+        } else {
+            a_ptrs[i] = act;
+        }
+    }
+    reg u32 sa_base = smem_base(s_a);
+    reg u32 sb_base = smem_base(s_b);
+    nv4_stage_tile(MAX_M_TILES, FUSED, SCALE_TILES, sa_base, sb_base, s_sc, a_ptrs, a_valid, w1, w3, w1_sc, w3_sc, grp, n_base, output_dim, pay_pitch, scale_pitch, sc_grp_str, a_row0, a_vec, tid, 0, 0);
+    reg f32x4 acc0[MAX_M_TILES]; reg f32x4 acc1[MAX_M_TILES];
+    unroll (m = 0..MAX_M_TILES) {
+        acc0[m] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+        acc1[m] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    for (reg u32 kt = 0; kt < k_tiles; kt += 1) {
+        reg u32 cur = kt & 1;
+        if (kt + 1 < k_tiles) {
+            nv4_stage_tile(MAX_M_TILES, FUSED, SCALE_TILES, sa_base, sb_base, s_sc, a_ptrs, a_valid, w1, w3, w1_sc, w3_sc, grp, n_base, output_dim, pay_pitch, scale_pitch, sc_grp_str, a_row0, a_vec, tid, cur ^ 1, kt + 1);
+            depbar_le(1);
+        } else {
+            depbar_le(0);
+        }
+        barrier();
+        nv4_compute_ktile(MAX_M_TILES, SCALE_TILES, s_b, s_sc, cur, kt, sa_base + cur * (MAX_M_TILES << 12), b_row0, b_row1, g0, g1, c, lane, m_live, acc0, acc1);
+        barrier();
+    }
+    nv4_store_epilogue(MAX_M_TILES, FUSED, output, packed_weight, first, row_end, m_live, n_base, output_dim, wid, g, c, acc0, acc1);
+}
+
+@pdl
+@concept(moe)
+template kernel[NV4_BLK256, REGS] moe_nvfp4_experts_mma_tpl<MAX_M_TILES, ACTIVATION_PACKED, FUSED, SCALE_TILES, REGS>(
+    global u8* w1, global u8* w1_scale_blob,
+    global u8* w3, global u8* w3_scale_blob,
+    global u32* act, global f32* packed_weight, global u32* output,
+    global u32* group_row_offset, global u32* route_src,
+    u32 groups, u32 input_dim, u32 output_dim
+) {
+    shared u32 s_a[2 * MAX_M_TILES * 1024];
+    shared u32 s_b[4096];
+    shared u32 s_sc[256 * SCALE_TILES * 2];
+    acqbulk();
+    reg u32 tile_n = (FUSED == 1) ? 64 : 128;
+    reg u32 n_blocks = (output_dim + tile_n - 1) >> ((FUSED == 1) ? 6 : 7);
+    reg u32 grp = 0; reg u32 n_blk = 0;
+    u32_divmod(ctaid_x(), n_blocks, grp, n_blk);
+    if (grp >= groups) { preexit(); return; }
+    reg u32 row_begin = ldg32_persist(ptr_add(group_row_offset, grp, 4));
+    reg u32 row_end = ldg32_persist(ptr_add(group_row_offset, grp + 1, 4));
+    if (row_begin >= row_end) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 g = lane >> 2; reg u32 c = lane & 3;
+    reg u32 n_base = n_blk * tile_n;
+    reg u32 k_tiles = input_dim >> 7;
+    reg u32 pay_pitch = input_dim >> 1;
+    reg u32 scale_pitch = input_dim >> 4;
+    reg u32 sc_grp_str = output_dim * scale_pitch;
+    reg u64 w1_sc = ptr_add(w1_scale_blob, groups, 4);
+    reg u64 w3_sc = (FUSED == 1) ? ptr_add(w3_scale_blob, groups, 4) : w1_sc;
+    reg f32 g0 = u32_as_f32(ldg32_persist(ptr_add(w1_scale_blob, grp, 4)));
+    reg f32 g1 = g0;
+    if constexpr (FUSED == 1) { g1 = u32_as_f32(ldg32_persist(ptr_add(w3_scale_blob, grp, 4))); }
+    reg u32 b_row0 = (FUSED == 1) ? ((wid << 3) + g) : ((wid << 4) + g);
+    reg u32 b_row1 = (FUSED == 1) ? (64 + (wid << 3) + g) : ((wid << 4) + 8 + g);
+    for (reg u32 first = row_begin; first < row_end; first += (MAX_M_TILES << 4)) {
+        nv4_run_mblock(MAX_M_TILES, ACTIVATION_PACKED, FUSED, SCALE_TILES, s_a, s_b, s_sc, w1, w3, w1_sc, w3_sc, act, packed_weight, route_src, output, grp, first, row_end, n_base, k_tiles, input_dim, output_dim, pay_pitch, scale_pitch, sc_grp_str, g0, g1, b_row0, b_row1, tid, wid, lane, g, c);
+    }
+    preexit();
+}
+
+instantiate moe_nvfp4_experts_mma_tpl<1, 0, 1, 4, 128> as moe_nvfp4_w1w3_m16;
+instantiate moe_nvfp4_experts_mma_tpl<1, 1, 0, 4, 128> as moe_nvfp4_w2_m16;
+instantiate moe_nvfp4_experts_mma_tpl<2, 0, 1, 4, 144> as moe_nvfp4_w1w3_m32;
+instantiate moe_nvfp4_experts_mma_tpl<2, 1, 0, 4, 144> as moe_nvfp4_w2_m32;
+instantiate moe_nvfp4_experts_mma_tpl<3, 0, 1, 2, 176> as moe_nvfp4_w1w3_m48;
+instantiate moe_nvfp4_experts_mma_tpl<3, 1, 0, 2, 176> as moe_nvfp4_w2_m48;

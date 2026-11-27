@@ -2344,7 +2344,7 @@ $(K31_PRO_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(K31_PRO_TP16_SERVING_ADAPTER)
 
 SKL2_BUILD_DIR := build
 SKL2_QWEN38_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_qwen38_embedded.h
-SKL2_QWEN38_SOURCES := inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/recurrent.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/stage_mem.skl2
+SKL2_QWEN38_SOURCES := inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/recurrent.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/stage_mem.skl2 inference/skl2/kernels/hyperconn.skl2 inference/skl2/kernels/moe_route.skl2 inference/skl2/kernels/moe_mma.skl2
 SKL2_QWEN38_KERNELS := qwen_exact_bf16_multi_w1x4_r4_n4 qwen_exact_bf16_multi_w2x4_r4_n4 qwen_exact_bf16_multi_w4x2_r4_n4 qwen_exact_bf16_multi_w4x2_r8_n2 \
 	qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2 \
 	qwen_bf16_dense_mma_16x64 qwen_bf16_dense_mma_32x64 qwen_bf16_dense_mma_64x64 qwen_bf16_dense_mma_128x64 \
@@ -2362,7 +2362,26 @@ SKL2_QWEN38_KERNELS := qwen_exact_bf16_multi_w1x4_r4_n4 qwen_exact_bf16_multi_w2
 	qwen_prior_kv_direct_gen qwen_prior_kv_pack_gen qwen_prior_kv_unpack_gen qwen_local_prefill_attn_gen_256 \
 	qwen_gqa_split_decode_gen_128 qwen_gqa_split_decode_gen_192 qwen_gqa_split_decode_gen_512 \
 	qwen_gqa_direct_decode_gate_gen_128 qwen_gqa_direct_decode_gate_gen_192 qwen_gqa_direct_decode_gate_gen_512 \
-	qwen_gqa_split_reduce_gate_gen qwen_hybrid_tp1_merge_gate_gen qwen_hybrid_multi_merge_gate_gen
+	qwen_gqa_split_reduce_gate_gen qwen_hybrid_tp1_merge_gate_gen qwen_hybrid_multi_merge_gate_gen \
+	hc_inject_norm_256_w2048 hc_inject_norm_256_w4096 hc_inject_norm_256_w8192 \
+	hc_down_gate_inject_skinny_t256_r1 hc_down_gate_inject_skinny_t256_r4 hc_down_gate_inject_skinny_t256_r8 \
+	hc_down_gate_inject_skinny_t128_r1 hc_down_gate_inject_skinny_t128_r4 hc_down_gate_inject_skinny_t128_r8 \
+	hc_down_gate_inject_skinny_t32_r1 hc_down_gate_inject_skinny_t32_r4 hc_down_gate_inject_skinny_t32_r8 \
+	hc_up_mix_skinny_r1_l8 hc_up_mix_skinny_r1_l16 hc_up_mix_skinny_r1_l32 \
+	hc_up_mix_skinny_r4_l8 hc_up_mix_skinny_r4_l16 hc_up_mix_skinny_r4_l32 \
+	hc_mix_vec_256 hc_inject_weights_vec_256 \
+	moe_route_small_256 moe_softmax_topk_local_256 moe_route_build_packed_256 \
+	moe_swiglu_packed_256 moe_local_finalize_gated_256 moe_shared_down_finalize_l8 moe_shared_down_finalize_l16 \
+	moe_bf16_skinny_w1w3_single moe_bf16_skinny_w1w3_batched \
+	moe_bf16_skinny_w2_single_l8 moe_bf16_skinny_w2_single_l16 moe_bf16_skinny_w2_single_l32 \
+	moe_bf16_skinny_w2_batched_l8 moe_bf16_skinny_w2_batched_l16 moe_bf16_skinny_w2_batched_l32 \
+	moe_nvfp4_skinny_w1w3_single_l8 moe_nvfp4_skinny_w1w3_single_l16 moe_nvfp4_skinny_w1w3_single_l32 \
+	moe_nvfp4_skinny_w1w3_batched_l8 moe_nvfp4_skinny_w1w3_batched_l16 moe_nvfp4_skinny_w1w3_batched_l32 \
+	moe_nvfp4_skinny_w2_single_l8 moe_nvfp4_skinny_w2_single_l16 moe_nvfp4_skinny_w2_single_l32 \
+	moe_nvfp4_skinny_w2_batched_l8 moe_nvfp4_skinny_w2_batched_l16 moe_nvfp4_skinny_w2_batched_l32 \
+	moe_bf16_mma_w1w3_16x64 moe_bf16_mma_w1w3_32x64 moe_bf16_mma_w1w3_64x64 \
+	moe_bf16_mma_w2_16x64 moe_bf16_mma_w2_32x64 moe_bf16_mma_w2_64x128 \
+	moe_nvfp4_w1w3_m16 moe_nvfp4_w2_m16 moe_nvfp4_w1w3_m32 moe_nvfp4_w2_m32 moe_nvfp4_w1w3_m48 moe_nvfp4_w2_m48
 
 $(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
