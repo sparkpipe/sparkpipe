@@ -339,7 +339,7 @@ def test_full_cubin_emission_and_cli():
             assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
             for tok in (
                 "#define SKL2_QWEN38_27B_HIDDEN 5120u",
-                "SKL2_ORD_COUNT = 150",
+                "SKL2_ORD_COUNT = 209",
                 "Skl2ModuleLoad",
                 "Skl2KernelLayout",
                 "Skl2Launch_qwen_bf16_dense_mma_16x64",

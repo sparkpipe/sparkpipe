@@ -163,28 +163,6 @@ static inline SparkGpuError QwenGdnScalarChunkLaunch(uint8_t *state_pool, uint32
 	return err;
 }
 
-static __device__ __forceinline__ uint32_t QwenE2m1PairToBf16(uint32_t byte_val, uint32_t scale_bf16x2)
-{
-	uint32_t widened, bits, out;
-	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
-		: "=r"(widened) : "r"(byte_val));
-	bits = ((widened >> 3u) & 0x0fff0fffu) | (widened & 0x80008000u);
-	asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
-	return out;
-}
-
-static __device__ __forceinline__ void QwenCpAsync16(void *dst, const void *src, uint32_t bytes)
-{
-	const uint32_t smem = (uint32_t)__cvta_generic_to_shared(dst);
-	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
-}
-
-static __device__ __forceinline__ void QwenCpAsync16Ca(void *dst, const void *src, uint32_t bytes)
-{
-	const uint32_t smem = (uint32_t)__cvta_generic_to_shared(dst);
-	asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;\n" :: "r"(smem), "l"(src), "r"(bytes) : "memory");
-}
-
 typedef struct QwenBf16Part
 {
 	const uint16_t *weight;
@@ -202,1879 +180,6 @@ typedef struct QwenBf16MultiArgs
 	uint32_t rows;
 	uint32_t input_dim;
 } QwenBf16MultiArgs;
-
-template<uint32_t MAX_M_TILES, uint32_t WARPS, bool ACTIVATION_PACKED, bool FUSED_GATE_UP, uint32_t SCALE_TILES = 4u>
-__global__ __launch_bounds__(WARPS * 32u, MAX_M_TILES <= 2u ? 2 : 1)
-static void QwenNvfp4ExpertsKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
-	const uint8_t *__restrict__ w3, const uint8_t *__restrict__ w3_scale_blob, const uint16_t *__restrict__ activation,
-	const float *__restrict__ packed_weight, uint16_t *__restrict__ output, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ route_source_token, uint32_t groups, uint32_t input_dim, uint32_t output_dim)
-{
-	constexpr uint32_t THREADS = WARPS * 32u;
-	constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
-	constexpr uint32_t TILE_K = 128u;
-	constexpr uint32_t STAGES = 2u;
-	constexpr uint32_t N_PER_WARP = FUSED_GATE_UP ? 8u : 16u;
-	constexpr uint32_t TILE_N = WARPS * N_PER_WARP;
-	constexpr uint32_t W_MATS = FUSED_GATE_UP ? 2u : 1u;
-	constexpr uint32_t W_ROWS_TOTAL = W_MATS * TILE_N;
-	constexpr uint32_t B_ROW_BYTES = TILE_K / 2u;
-	constexpr uint32_t SC_BYTES = SCALE_TILES * 8u;
-	constexpr uint32_t SC_VECS = SC_BYTES / 16u;
-	constexpr uint32_t SC_SHIFT = SCALE_TILES == 4u ? 2u : 1u;
-	__shared__ __align__(128) uint16_t s_a[STAGES][TILE_M][TILE_K];
-	__shared__ __align__(16) uint8_t s_b[STAGES][W_ROWS_TOTAL][B_ROW_BYTES];
-	__shared__ __align__(16) uint8_t s_sc[2][W_ROWS_TOTAL][SC_BYTES];
-	const uint32_t s_a_base = (uint32_t)__cvta_generic_to_shared(s_a);
-	const uint32_t n_blocks = (output_dim + TILE_N - 1u) / TILE_N;
-	const uint32_t group = blockIdx.x / n_blocks;
-	const uint32_t n_block = blockIdx.x % n_blocks;
-	LmDependentWait();
-	if ( group >= groups )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t row_begin = group_row_offset[group];
-	const uint32_t row_end = group_row_offset[group + 1u];
-	if ( row_begin >= row_end )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, g = lane >> 2u, c = lane & 3u;
-	const uint32_t n_base = n_block * TILE_N, k_tiles = input_dim / TILE_K;
-	const uint64_t payload_pitch = (uint64_t)(input_dim >> 1u);
-	const uint64_t scale_pitch = (uint64_t)(input_dim >> 4u);
-	const uint64_t scale_group_stride = (uint64_t)output_dim * scale_pitch;
-	const uint8_t *w1_sc_data = w1_scale_blob + (uint64_t)groups * sizeof(float);
-	const uint8_t *w3_sc_data = FUSED_GATE_UP ? (w3_scale_blob + (uint64_t)groups * sizeof(float)) : (const uint8_t *)0;
-	const float g1_scaled = ((const float *)w1_scale_blob)[group] * 5.1922968585348276e33f;
-	const float g3_scaled = FUSED_GATE_UP ? (((const float *)w3_scale_blob)[group] * 5.1922968585348276e33f) : 0.0f;
-	const uint32_t b_row0 = FUSED_GATE_UP ? (warp * 8u + g) : (warp * 16u + g);
-	const uint32_t b_row1 = FUSED_GATE_UP ? (TILE_N + warp * 8u + g) : (warp * 16u + 8u + g);
-	for ( uint32_t first = row_begin; first < row_end; first += TILE_M )
-	{
-		const uint32_t count = row_end - first < TILE_M ? row_end - first : TILE_M;
-		const uint32_t m_tiles_live = (count + 15u) >> 4u;
-		constexpr uint32_t A_VEC_THREADS = TILE_K / 8u;
-		constexpr uint32_t A_ROW_STEP = THREADS / A_VEC_THREADS;
-		constexpr uint32_t A_COPIES = (TILE_M + A_ROW_STEP - 1u) / A_ROW_STEP;
-		const uint32_t a_vec = threadIdx.x % A_VEC_THREADS, a_row0 = threadIdx.x / A_VEC_THREADS;
-		const uint16_t *a_ptrs[A_COPIES];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < A_COPIES; ++i )
-		{
-			const uint32_t lr = a_row0 + i * A_ROW_STEP;
-			if ( lr < count )
-			{
-				const uint32_t pr = first + lr;
-				a_ptrs[i] = activation + (uint64_t)(ACTIVATION_PACKED ? pr : route_source_token[pr]) * input_dim + (uint64_t)a_vec * 8u;
-			}
-			else
-				a_ptrs[i] = 0;
-		}
-		auto stage_tile = [&](uint32_t st, uint32_t kt) {
-			#pragma unroll
-			for ( uint32_t i = 0u; i < A_COPIES; ++i )
-			{
-				const uint32_t lr = a_row0 + i * A_ROW_STEP;
-				if ( lr < TILE_M && a_ptrs[i] != 0 )
-				{
-					const uint32_t swz = (a_vec & 8u) | LmStreamSwizzle8(lr, a_vec & 7u);
-					QwenCpAsync16Ca(&s_a[st][lr][swz * 8u], a_ptrs[i] + (uint64_t)kt * TILE_K, 16u);
-				}
-			}
-			constexpr uint32_t B_VECS_PER_ROW = B_ROW_BYTES / 16u;
-			constexpr uint32_t B_TOTAL_VECS = W_ROWS_TOTAL * B_VECS_PER_ROW;
-			#pragma unroll
-			for ( uint32_t idx = threadIdx.x; idx < B_TOTAL_VECS; idx += THREADS )
-			{
-				const uint32_t wr = idx / B_VECS_PER_ROW, bv = idx % B_VECS_PER_ROW;
-				const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-				const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-				const bool ok = neuron < output_dim;
-				const uint8_t *wbase = (mat == 0u ? w1 : w3);
-				const uint8_t *src = ok ? wbase + ((uint64_t)group * output_dim + neuron) * payload_pitch + (uint64_t)kt * B_ROW_BYTES + (uint64_t)bv * 16u : wbase;
-				QwenCpAsync16(&s_b[st][wr][bv * 16u], src, ok ? 16u : 0u);
-			}
-			if ( (kt & (SCALE_TILES - 1u)) == 0u )
-			{
-				const uint32_t sc_off = kt * 8u, avail = sc_off < scale_pitch ? (uint32_t)(scale_pitch - sc_off) : 0u;
-				const uint32_t sb_slot = (kt >> SC_SHIFT) & 1u;
-				#pragma unroll
-				for ( uint32_t idx = threadIdx.x; idx < W_ROWS_TOTAL * SC_VECS; idx += THREADS )
-				{
-					const uint32_t wr = idx / SC_VECS, half = idx % SC_VECS;
-					const uint32_t mat = FUSED_GATE_UP ? (wr / TILE_N) : 0u;
-					const uint32_t neuron = n_base + (FUSED_GATE_UP ? (wr % TILE_N) : wr);
-					const uint32_t h_off = half * 16u;
-					const uint32_t bytes = (neuron < output_dim && h_off < avail) ? (avail - h_off >= 16u ? 16u : avail - h_off) : 0u;
-					const uint8_t *sbase = (mat == 0u ? w1_sc_data : w3_sc_data);
-					const uint8_t *src = bytes != 0u ? sbase + (uint64_t)group * scale_group_stride + (uint64_t)neuron * scale_pitch + sc_off + h_off : sbase;
-					QwenCpAsync16(&s_sc[sb_slot][wr][h_off], src, bytes);
-				}
-			}
-			asm volatile("cp.async.commit_group;\n" ::: "memory");
-		};
-		stage_tile(0u, 0u);
-		float acc0[MAX_M_TILES][4], acc1[MAX_M_TILES][4];
-		#pragma unroll
-		for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-			acc0[m][0] = acc0[m][1] = acc0[m][2] = acc0[m][3] = acc1[m][0] = acc1[m][1] = acc1[m][2] = acc1[m][3] = 0.0f;
-		const float g1_b = FUSED_GATE_UP ? g3_scaled : g1_scaled;
-		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-		{
-			const uint32_t cur = kt & 1u;
-			if ( kt + 1u < k_tiles )
-				stage_tile(cur ^ 1u, kt + 1u);
-			if ( kt + 1u < k_tiles )
-				asm volatile("cp.async.wait_group 1;\n" ::: "memory");
-			else
-				asm volatile("cp.async.wait_group 0;\n" ::: "memory");
-			__syncthreads();
-			const uint32_t sb_slot = (kt >> SC_SHIFT) & 1u, sb_sub = (kt & (SCALE_TILES - 1u)) * 8u;
-			const uint64_t sc0_all = *(const uint64_t *)&s_sc[sb_slot][b_row0][sb_sub];
-			const uint64_t sc1_all = *(const uint64_t *)&s_sc[sb_slot][b_row1][sb_sub];
-			const uint32_t stage_a = s_a_base + cur * TILE_M * 256u;
-			#pragma unroll
-			for ( uint32_t kp = 0u; kp < 4u; ++kp )
-			{
-				const float2 f0 = LmSkinnyDecodeUe4m3Raw(LmSkinnyUe4m3Raw{ (uint8_t)(sc0_all >> (kp * 16u)), (uint8_t)(sc0_all >> (kp * 16u + 8u)) }, g1_scaled);
-				const float2 f1 = LmSkinnyDecodeUe4m3Raw(LmSkinnyUe4m3Raw{ (uint8_t)(sc1_all >> (kp * 16u)), (uint8_t)(sc1_all >> (kp * 16u + 8u)) }, g1_b);
-				uint32_t s0_pair[2], s1_pair[2];
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s0_pair[0]) : "f"(f0.x));
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s0_pair[1]) : "f"(f0.y));
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s1_pair[0]) : "f"(f1.x));
-				asm("cvt.rn.bf16x2.f32 %0, %1, %1;\n" : "=r"(s1_pair[1]) : "f"(f1.y));
-				#pragma unroll
-				for ( uint32_t sub = 0u; sub < 2u; ++sub )
-				{
-					const uint32_t ks = kp * 2u + sub;
-					const uint32_t s0_2 = s0_pair[sub], s1_2 = s1_pair[sub];
-					const uint32_t byte_off = ks * 8u + c;
-					const uint32_t b0[2] = { QwenE2m1PairToBf16(s_b[cur][b_row0][byte_off], s0_2), QwenE2m1PairToBf16(s_b[cur][b_row0][byte_off + 4u], s0_2) };
-					const uint32_t b1[2] = { QwenE2m1PairToBf16(s_b[cur][b_row1][byte_off], s1_2), QwenE2m1PairToBf16(s_b[cur][b_row1][byte_off + 4u], s1_2) };
-					const uint32_t k_half = (ks & 4u) << 1u;
-					const uint32_t k_c = (ks & 3u) * 2u + ((lane >> 4u) & 1u);
-					#pragma unroll
-					for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-					{
-						if ( m < m_tiles_live )
-						{
-							const uint32_t ar = m * 16u + (lane & 15u);
-							const uint32_t ac = k_half | LmStreamSwizzle8(ar, k_c);
-							uint32_t af[4];
-							LmStreamLdMatrix4(af, stage_a + ar * 256u + ac * 16u);
-							LmMmaBf16(acc0[m], af, b0);
-							LmMmaBf16(acc1[m], af, b1);
-						}
-					}
-				}
-			}
-			__syncthreads();
-		}
-		if constexpr ( FUSED_GATE_UP )
-		{
-			const uint32_t col = n_base + warp * 8u + c * 2u;
-			if ( col < output_dim )
-				#pragma unroll
-				for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-					if ( m < m_tiles_live )
-						#pragma unroll
-						for ( uint32_t h = 0u; h < 2u; ++h )
-						{
-							const uint32_t pr = first + m * 16u + g + h * 8u;
-							if ( pr < row_end )
-							{
-								const float w = packed_weight[pr];
-								const float v0 = SparkMathSiluFast(LmBf16ToFloat(LmFloatToBf16(acc0[m][h * 2u]))) * LmBf16ToFloat(LmFloatToBf16(acc1[m][h * 2u])) * w;
-								const float v1 = SparkMathSiluFast(LmBf16ToFloat(LmFloatToBf16(acc0[m][h * 2u + 1u]))) * LmBf16ToFloat(LmFloatToBf16(acc1[m][h * 2u + 1u])) * w;
-								*(uint32_t *)(output + (uint64_t)pr * output_dim + col) = LmPackBf16Pair(v0, v1);
-							}
-						}
-		}
-		else
-		{
-			const uint32_t col0 = n_base + warp * 16u + c * 2u, col1 = col0 + 8u;
-			#pragma unroll
-			for ( uint32_t m = 0u; m < MAX_M_TILES; ++m )
-				if ( m < m_tiles_live )
-					#pragma unroll
-					for ( uint32_t h = 0u; h < 2u; ++h )
-					{
-						const uint32_t pr = first + m * 16u + g + h * 8u;
-						if ( pr < row_end )
-						{
-							if ( col0 < output_dim )
-								*(uint32_t *)(output + (uint64_t)pr * output_dim + col0) = LmPackBf16Pair(acc0[m][h * 2u], acc0[m][h * 2u + 1u]);
-							if ( col1 < output_dim )
-								*(uint32_t *)(output + (uint64_t)pr * output_dim + col1) = LmPackBf16Pair(acc1[m][h * 2u], acc1[m][h * 2u + 1u]);
-						}
-					}
-		}
-	}
-	LmDependentRelease();
-}
-
-static __device__ __forceinline__ float QwenNvfp4HalfDot(const LmSkinnyE2m1HalfDecoded &d, const uint16_t *act, uint32_t half, float sc, float acc)
-{
-	const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act, half);
-	float af[16];
-	LmSkinnyUnpackBf16x8(a.low, af);
-	LmSkinnyUnpackBf16x8(a.high, af + 8);
-	return fmaf(sc, LmSkinnyDotPairs16(d.pair, af), acc);
-}
-
-static __device__ __forceinline__ LmSkinnyE2m1HalfDecoded QwenNvfp4DecodeHalf(uint4 vw, uint32_t half)
-{
-	return half == 0u ? LmSkinnyDecodeE2m1Half(vw.x, vw.y) : LmSkinnyDecodeE2m1Half(vw.z, vw.w);
-}
-
-static __device__ __forceinline__ float2 QwenNvfp4LoadSc(const uint8_t *s_ptr, uint32_t c, float g)
-{
-	return LmSkinnyDecodeUe4m3Raw(LmSkinnyUe4m3Raw{ __ldg(s_ptr + 2u * c), __ldg(s_ptr + 2u * c + 1u) }, g);
-}
-
-template<uint32_t K, uint32_t N, uint32_t GROUPS>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenNvfp4SkinnyW1W3SingleKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
-	const uint8_t *__restrict__ w3, const uint8_t *__restrict__ w3_scale_blob, const uint16_t *__restrict__ activation,
-	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ packed_expert, uint16_t *__restrict__ output)
-{
-	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES;
-	const uint32_t pr = blockIdx.y, neuron = blockIdx.x * PER_BLK + (threadIdx.x / LANES), sub = threadIdx.x & (LANES - 1u);
-	LmDependentWait();
-	if ( pr >= __ldg(group_row_offset + GROUPS) || neuron >= N )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t group = __ldg(packed_expert + pr);
-	const uint64_t row_off = ((uint64_t)group * N + neuron) * CHUNKS;
-	const uint4 *w1_ptr = (const uint4 *)w1 + row_off, *w3_ptr = (const uint4 *)w3 + row_off;
-	const uint8_t *s1_ptr = w1_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
-	const uint8_t *s3_ptr = w3_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
-	const float g1 = __ldg((const float *)w1_scale_blob + group), g3 = __ldg((const float *)w3_scale_blob + group);
-	float acc1 = 0.0f, acc3 = 0.0f;
-	for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-	{
-		const uint4 vw1 = __ldcs(w1_ptr + c), vw3 = __ldcs(w3_ptr + c);
-		const float2 sc1 = QwenNvfp4LoadSc(s1_ptr, c, g1), sc3 = QwenNvfp4LoadSc(s3_ptr, c, g3);
-		#pragma unroll
-		for ( uint32_t half = 0u; half < 2u; ++half )
-		{
-			const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(activation + c * 32u, half);
-			float af[16];
-			LmSkinnyUnpackBf16x8(a.low, af);
-			LmSkinnyUnpackBf16x8(a.high, af + 8);
-			acc1 = fmaf(half == 0u ? sc1.x : sc1.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw1, half).pair, af), acc1);
-			acc3 = fmaf(half == 0u ? sc3.x : sc3.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw3, half).pair, af), acc3);
-		}
-	}
-	#pragma unroll
-	for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-	{
-		acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, LANES);
-		acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, LANES);
-	}
-	if ( sub == 0u )
-		output[(uint64_t)pr * N + neuron] = LmFloatToBf16(
-			SparkMathGateLimitedGlu(LmBf16ToFloat(LmFloatToBf16(acc1)), LmBf16ToFloat(LmFloatToBf16(acc3)), INFINITY) * __ldg(packed_weight + pr));
-	LmDependentRelease();
-}
-
-template<uint32_t K, uint32_t N, uint32_t GROUPS>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenNvfp4SkinnyW1W3BatchedKernel(const uint8_t *__restrict__ w1, const uint8_t *__restrict__ w1_scale_blob,
-	const uint8_t *__restrict__ w3, const uint8_t *__restrict__ w3_scale_blob, const uint16_t *__restrict__ activation,
-	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ route_source_token, uint16_t *__restrict__ output)
-{
-	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES;
-	const uint32_t group = blockIdx.y, neuron = blockIdx.x * PER_BLK + (threadIdx.x / LANES), sub = threadIdx.x & (LANES - 1u);
-	LmDependentWait();
-	const uint32_t row_begin = __ldg(group_row_offset + group), row_end = __ldg(group_row_offset + group + 1u);
-	if ( row_begin >= row_end || neuron >= N )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint64_t row_off = ((uint64_t)group * N + neuron) * CHUNKS;
-	const uint4 *w1_ptr = (const uint4 *)w1 + row_off, *w3_ptr = (const uint4 *)w3 + row_off;
-	const uint8_t *s1_ptr = w1_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
-	const uint8_t *s3_ptr = w3_scale_blob + (uint64_t)GROUPS * sizeof(float) + row_off * 2u;
-	const float g1 = __ldg((const float *)w1_scale_blob + group), g3 = __ldg((const float *)w3_scale_blob + group);
-	for ( uint32_t first = row_begin; first < row_end; )
-	{
-		const uint32_t rem = row_end - first;
-		if ( rem == 1u )
-		{
-			const uint16_t *act = activation + (uint64_t)__ldg(route_source_token + first) * K;
-			float acc1 = 0.0f, acc3 = 0.0f;
-			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-			{
-				const uint4 vw1 = __ldcs(w1_ptr + c), vw3 = __ldcs(w3_ptr + c);
-				const float2 sc1 = QwenNvfp4LoadSc(s1_ptr, c, g1), sc3 = QwenNvfp4LoadSc(s3_ptr, c, g3);
-				#pragma unroll
-				for ( uint32_t half = 0u; half < 2u; ++half )
-				{
-					const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act + c * 32u, half);
-					float af[16];
-					LmSkinnyUnpackBf16x8(a.low, af);
-					LmSkinnyUnpackBf16x8(a.high, af + 8);
-					acc1 = fmaf(half == 0u ? sc1.x : sc1.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw1, half).pair, af), acc1);
-					acc3 = fmaf(half == 0u ? sc3.x : sc3.y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw3, half).pair, af), acc3);
-				}
-			}
-			#pragma unroll
-			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-			{
-				acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, LANES);
-				acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, LANES);
-			}
-			if ( sub == 0u )
-				output[(uint64_t)first * N + neuron] = LmFloatToBf16(
-					SparkMathGateLimitedGlu(LmBf16ToFloat(LmFloatToBf16(acc1)), LmBf16ToFloat(LmFloatToBf16(acc3)), INFINITY) * __ldg(packed_weight + first));
-			first += 1u;
-		}
-		else
-		{
-			const uint32_t cnt = rem < 4u ? rem : 4u;
-			uint32_t src[4];
-			float acc1[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, acc3[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			#pragma unroll
-			for ( uint32_t r = 0u; r < 4u; ++r )
-				src[r] = __ldg(route_source_token + first + (r < cnt ? r : 0u));
-			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-			{
-				const uint4 vw1 = __ldcs(w1_ptr + c), vw3 = __ldcs(w3_ptr + c);
-				const float2 sc1 = QwenNvfp4LoadSc(s1_ptr, c, g1), sc3 = QwenNvfp4LoadSc(s3_ptr, c, g3);
-				#pragma unroll
-				for ( uint32_t half = 0u; half < 2u; ++half )
-				{
-					const LmSkinnyE2m1HalfDecoded d1 = QwenNvfp4DecodeHalf(vw1, half);
-					#pragma unroll
-					for ( uint32_t r = 0u; r < 4u; ++r )
-						acc1[r] = QwenNvfp4HalfDot(d1, activation + (uint64_t)src[r] * K + c * 32u, half, half == 0u ? sc1.x : sc1.y, acc1[r]);
-					const LmSkinnyE2m1HalfDecoded d3 = QwenNvfp4DecodeHalf(vw3, half);
-					#pragma unroll
-					for ( uint32_t r = 0u; r < 4u; ++r )
-						acc3[r] = QwenNvfp4HalfDot(d3, activation + (uint64_t)src[r] * K + c * 32u, half, half == 0u ? sc3.x : sc3.y, acc3[r]);
-				}
-			}
-			#pragma unroll
-			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-				{
-					acc1[r] += __shfl_xor_sync(0xffffffffu, acc1[r], step, LANES);
-					acc3[r] += __shfl_xor_sync(0xffffffffu, acc3[r], step, LANES);
-				}
-			if ( sub == 0u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-					if ( r < cnt )
-						output[(uint64_t)(first + r) * N + neuron] = LmFloatToBf16(
-							SparkMathGateLimitedGlu(LmBf16ToFloat(LmFloatToBf16(acc1[r])), LmBf16ToFloat(LmFloatToBf16(acc3[r])), INFINITY) * __ldg(packed_weight + first + r));
-			first += cnt;
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t K, uint32_t N, uint32_t GROUPS>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenNvfp4SkinnyW2SingleKernel(const uint8_t *__restrict__ w2, const uint8_t *__restrict__ w2_scale_blob,
-	const uint16_t *__restrict__ activation, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ packed_expert, uint16_t *__restrict__ output)
-{
-	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES, NPG = 4u;
-	const uint32_t pr = blockIdx.y, n0 = (blockIdx.x * PER_BLK + (threadIdx.x / LANES)) * NPG, sub = threadIdx.x & (LANES - 1u);
-	LmDependentWait();
-	if ( pr >= __ldg(group_row_offset + GROUPS) || n0 >= N )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t group = __ldg(packed_expert + pr);
-	const uint64_t off0 = ((uint64_t)group * N + n0) * CHUNKS;
-	const uint4 *w_ptr[NPG];
-	const uint8_t *s_ptr[NPG];
-	bool live[NPG];
-	#pragma unroll
-	for ( uint32_t k = 0u; k < NPG; ++k )
-	{
-		live[k] = (n0 + k) < N;
-		const uint64_t off = live[k] ? (off0 + (uint64_t)k * CHUNKS) : off0;
-		w_ptr[k] = (const uint4 *)w2 + off;
-		s_ptr[k] = w2_scale_blob + (uint64_t)GROUPS * sizeof(float) + off * 2u;
-	}
-	const float glob = __ldg((const float *)w2_scale_blob + group);
-	const uint16_t *act = activation + (uint64_t)pr * K;
-	float acc[NPG] = { 0.0f, 0.0f, 0.0f, 0.0f };
-	for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-	{
-		uint4 vw[NPG];
-		float2 sc[NPG];
-		#pragma unroll
-		for ( uint32_t k = 0u; k < NPG; ++k )
-		{
-			vw[k] = live[k] ? __ldcs(w_ptr[k] + c) : make_uint4(0u, 0u, 0u, 0u);
-			sc[k] = live[k] ? QwenNvfp4LoadSc(s_ptr[k], c, glob) : make_float2(0.0f, 0.0f);
-		}
-		#pragma unroll
-		for ( uint32_t half = 0u; half < 2u; ++half )
-		{
-			const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act + c * 32u, half);
-			float af[16];
-			LmSkinnyUnpackBf16x8(a.low, af);
-			LmSkinnyUnpackBf16x8(a.high, af + 8);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < NPG; ++k )
-				if ( live[k] )
-					acc[k] = fmaf(half == 0u ? sc[k].x : sc[k].y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw[k], half).pair, af), acc[k]);
-		}
-	}
-	#pragma unroll
-	for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-		#pragma unroll
-		for ( uint32_t k = 0u; k < NPG; ++k )
-			if ( live[k] )
-				acc[k] += __shfl_xor_sync(0xffffffffu, acc[k], step, LANES);
-	if ( sub == 0u )
-		#pragma unroll
-		for ( uint32_t k = 0u; k < NPG; ++k )
-			if ( live[k] )
-				output[(uint64_t)pr * N + n0 + k] = LmFloatToBf16(acc[k]);
-	LmDependentRelease();
-}
-
-template<uint32_t K, uint32_t N, uint32_t GROUPS>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenNvfp4SkinnyW2BatchedKernel(const uint8_t *__restrict__ w2, const uint8_t *__restrict__ w2_scale_blob,
-	const uint16_t *__restrict__ activation, const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ output)
-{
-	constexpr uint32_t CHUNKS = K >> 5u, LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u), PER_BLK = QH_THREADS / LANES, NPG = 4u;
-	const uint32_t group = blockIdx.y, n0 = (blockIdx.x * PER_BLK + (threadIdx.x / LANES)) * NPG, sub = threadIdx.x & (LANES - 1u);
-	LmDependentWait();
-	const uint32_t row_begin = __ldg(group_row_offset + group), row_end = __ldg(group_row_offset + group + 1u);
-	if ( row_begin >= row_end || n0 >= N )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint64_t off0 = ((uint64_t)group * N + n0) * CHUNKS;
-	const uint4 *w_base = (const uint4 *)w2 + off0;
-	const uint8_t *s_base = w2_scale_blob + (uint64_t)GROUPS * sizeof(float) + off0 * 2u;
-	const float glob = __ldg((const float *)w2_scale_blob + group);
-	for ( uint32_t first = row_begin; first < row_end; )
-	{
-		const uint32_t rem = row_end - first;
-		if ( rem == 1u )
-		{
-			const uint16_t *act = activation + (uint64_t)first * K;
-			float acc[NPG] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-			{
-				uint4 vw[NPG];
-				float2 sc[NPG];
-				#pragma unroll
-				for ( uint32_t k = 0u; k < NPG; ++k )
-				{
-					const bool live = (n0 + k) < N;
-					vw[k] = live ? __ldcs(w_base + (uint64_t)k * CHUNKS + c) : make_uint4(0u, 0u, 0u, 0u);
-					sc[k] = live ? QwenNvfp4LoadSc(s_base + (uint64_t)k * CHUNKS * 2u, c, glob) : make_float2(0.0f, 0.0f);
-				}
-				#pragma unroll
-				for ( uint32_t half = 0u; half < 2u; ++half )
-				{
-					const LmSkinnyWide a = LmSkinnyFormat<LmNvfp4>::LoadHalf(act + c * 32u, half);
-					float af[16];
-					LmSkinnyUnpackBf16x8(a.low, af);
-					LmSkinnyUnpackBf16x8(a.high, af + 8);
-					#pragma unroll
-					for ( uint32_t k = 0u; k < NPG; ++k )
-						if ( (n0 + k) < N )
-							acc[k] = fmaf(half == 0u ? sc[k].x : sc[k].y, LmSkinnyDotPairs16(QwenNvfp4DecodeHalf(vw[k], half).pair, af), acc[k]);
-				}
-			}
-			#pragma unroll
-			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-				#pragma unroll
-				for ( uint32_t k = 0u; k < NPG; ++k )
-					if ( (n0 + k) < N )
-						acc[k] += __shfl_xor_sync(0xffffffffu, acc[k], step, LANES);
-			if ( sub == 0u )
-				#pragma unroll
-				for ( uint32_t k = 0u; k < NPG; ++k )
-					if ( (n0 + k) < N )
-						output[(uint64_t)first * N + n0 + k] = LmFloatToBf16(acc[k]);
-			first += 1u;
-		}
-		else
-		{
-			const uint32_t cnt = rem < 4u ? rem : 4u;
-			#pragma unroll 1
-			for ( uint32_t k = 0u; k < NPG; ++k )
-			{
-				if ( n0 + k >= N )
-					break;
-				const uint4 *wk = w_base + (uint64_t)k * CHUNKS;
-				const uint8_t *sk = s_base + (uint64_t)k * CHUNKS * 2u;
-				float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
-				for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-				{
-					const uint4 vw = __ldcs(wk + c);
-					const float2 sc = QwenNvfp4LoadSc(sk, c, glob);
-					#pragma unroll
-					for ( uint32_t half = 0u; half < 2u; ++half )
-					{
-						const LmSkinnyE2m1HalfDecoded dec = QwenNvfp4DecodeHalf(vw, half);
-						const float s = half == 0u ? sc.x : sc.y;
-						acc0 = QwenNvfp4HalfDot(dec, activation + (uint64_t)first * K + c * 32u, half, s, acc0);
-						if ( cnt > 1u )
-							acc1 = QwenNvfp4HalfDot(dec, activation + (uint64_t)(first + 1u) * K + c * 32u, half, s, acc1);
-						if ( cnt > 2u )
-							acc2 = QwenNvfp4HalfDot(dec, activation + (uint64_t)(first + 2u) * K + c * 32u, half, s, acc2);
-						if ( cnt > 3u )
-							acc3 = QwenNvfp4HalfDot(dec, activation + (uint64_t)(first + 3u) * K + c * 32u, half, s, acc3);
-					}
-				}
-				#pragma unroll
-				for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-				{
-					acc0 += __shfl_xor_sync(0xffffffffu, acc0, step, LANES);
-					acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, LANES);
-					acc2 += __shfl_xor_sync(0xffffffffu, acc2, step, LANES);
-					acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, LANES);
-				}
-				if ( sub == 0u )
-				{
-					output[(uint64_t)first * N + n0 + k] = LmFloatToBf16(acc0);
-					if ( cnt > 1u )
-						output[(uint64_t)(first + 1u) * N + n0 + k] = LmFloatToBf16(acc1);
-					if ( cnt > 2u )
-						output[(uint64_t)(first + 2u) * N + n0 + k] = LmFloatToBf16(acc2);
-					if ( cnt > 3u )
-						output[(uint64_t)(first + 3u) * N + n0 + k] = LmFloatToBf16(acc3);
-				}
-			}
-			first += cnt;
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t THREADS, uint32_t EXPERTS>
-__global__ __launch_bounds__(THREADS, 1)
-static void QwenRouteBuildPackedKernel(const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint32_t routes,
-	uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
-	uint32_t *__restrict__ packed_expert, float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up,
-	uint32_t n_down, uint32_t *__restrict__ tile_prefix_down)
-{
-	LmDependentWait();
-	LmRouteBuildBlock<THREADS, EXPERTS>(route_expert, routes, top_k, group_row_offset, route_packed_row, route_source_token, tile_m,
-		n_up, tile_prefix_up, n_down, tile_prefix_down);
-	__syncthreads();
-	for ( uint32_t route = threadIdx.x; route < routes; route += THREADS )
-	{
-		const uint32_t pr = route_packed_row[route];
-		packed_weight[pr] = route_weight[route];
-		packed_expert[pr] = route_expert[route];
-	}
-	LmDependentRelease();
-}
-
-template<class G>
-static __device__ __forceinline__ void QwenRouterSoftmaxShared(const uint16_t *__restrict__ logits, uint32_t row, float *__restrict__ s_probs, float *__restrict__ reduction)
-{
-	constexpr uint32_t WIDTH = G::kExperts;
-	constexpr uint32_t per_thread = (WIDTH + QH_THREADS - 1u) / QH_THREADS;
-	const uint64_t row_base = (uint64_t)row * WIDTH;
-	float top = -INFINITY, sum = 0.0f;
-	float staged[per_thread];
-	#pragma unroll
-	for ( uint32_t slot = 0u; slot < per_thread; ++slot )
-	{
-		const uint32_t index = threadIdx.x + slot * QH_THREADS;
-		staged[slot] = index < WIDTH ? LmBf16ToFloat(logits[row_base + index]) : -INFINITY;
-		top = fmaxf(top, staged[slot]);
-	}
-	top = LmBlockMax<QH_THREADS>(top, reduction);
-	#pragma unroll
-	for ( uint32_t slot = 0u; slot < per_thread; ++slot )
-	{
-		staged[slot] = threadIdx.x + slot * QH_THREADS < WIDTH ? expf(staged[slot] - top) : 0.0f;
-		sum += staged[slot];
-	}
-	sum = LmBlockSumOnce<QH_THREADS>(sum, reduction);
-	#pragma unroll
-	for ( uint32_t slot = 0u; slot < per_thread; ++slot )
-		if ( threadIdx.x + slot * QH_THREADS < WIDTH )
-			s_probs[threadIdx.x + slot * QH_THREADS] = staged[slot] / sum;
-}
-
-template<class G>
-__global__ __launch_bounds__(QH_THREADS, 1)
-static void QwenMoeRouteSmallKernel(const uint16_t *__restrict__ logits, uint32_t rows, uint32_t expert_first, uint32_t *__restrict__ fault,
-	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
-	uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token,
-	uint32_t *__restrict__ packed_expert, float *__restrict__ packed_weight, uint32_t tile_m, uint32_t n_up, uint32_t *__restrict__ tile_prefix_up,
-	uint32_t n_down, uint32_t *__restrict__ tile_prefix_down)
-{
-	__shared__ float s_probs[G::kExperts];
-	__shared__ float reduction[LmBlockWarps<QH_THREADS>()];
-	__shared__ uint32_t s_exp[32];
-	__shared__ float s_wt[32];
-	const uint32_t routes = rows * G::kTopK;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	LmDependentWait();
-	for ( uint32_t r = 0u; r < rows; ++r )
-	{
-		QwenRouterSoftmaxShared<G>(logits, r, s_probs, reduction);
-		__syncthreads();
-		if ( warp == 0u )
-			LmTopkWarpRow<G::kTopK, true, LM_TOPK_SCORE_IDENTITY>(s_probs, G::kExperts, s_exp + r * G::kTopK, s_wt + r * G::kTopK,
-				(const float *)0, (const uint16_t *)0, 1.0f, fault, 0u, lane);
-		__syncthreads();
-	}
-	if ( threadIdx.x < routes )
-	{
-		const uint32_t global_exp = s_exp[threadIdx.x];
-		route_global[threadIdx.x] = global_exp;
-		if ( global_exp >= expert_first && global_exp < expert_first + G::kLocalExperts )
-			s_exp[threadIdx.x] = global_exp - expert_first;
-		else
-		{
-			s_exp[threadIdx.x] = G::kLocalExperts;
-			s_wt[threadIdx.x] = 0.0f;
-		}
-		route_expert[threadIdx.x] = s_exp[threadIdx.x];
-		route_weight[threadIdx.x] = s_wt[threadIdx.x];
-	}
-	__syncthreads();
-	LmRouteBuildSmallBody<QH_THREADS, G::kLocalExperts + 1u>(s_exp, routes, G::kTopK, group_row_offset, route_packed_row, route_source_token,
-		tile_m, n_up, tile_prefix_up, n_down, tile_prefix_down);
-	__syncthreads();
-	if ( threadIdx.x < routes )
-	{
-		const uint32_t pr = route_packed_row[threadIdx.x];
-		packed_weight[pr] = s_wt[threadIdx.x];
-		packed_expert[pr] = s_exp[threadIdx.x];
-	}
-	LmDependentRelease();
-}
-
-template<class G>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenMoeSoftmaxTopkLocalKernel(const uint16_t *__restrict__ logits, uint32_t expert_first, uint32_t *__restrict__ fault,
-	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global)
-{
-	__shared__ float s_probs[G::kExperts];
-	__shared__ float reduction[LmBlockWarps<QH_THREADS>()];
-	const uint32_t row = blockIdx.x, warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	LmDependentWait();
-	QwenRouterSoftmaxShared<G>(logits, row, s_probs, reduction);
-	__syncthreads();
-	if ( warp == 0u )
-	{
-		const uint64_t base = (uint64_t)row * G::kTopK;
-		LmTopkWarpRow<G::kTopK, true, LM_TOPK_SCORE_IDENTITY>(s_probs, G::kExperts, route_expert + base, route_weight + base,
-			(const float *)0, (const uint16_t *)0, 1.0f, fault, 0u, lane);
-		if ( lane < G::kTopK )
-		{
-			const uint32_t global_exp = route_expert[base + lane];
-			route_global[base + lane] = global_exp;
-			if ( global_exp >= expert_first && global_exp < expert_first + G::kLocalExperts )
-				route_expert[base + lane] = global_exp - expert_first;
-			else
-			{
-				route_expert[base + lane] = G::kLocalExperts;
-				route_weight[base + lane] = 0.0f;
-			}
-		}
-	}
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenMoeSwigluPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight,
-	const uint32_t *__restrict__ group_row_offset, uint32_t local_experts, uint16_t *__restrict__ output, uint32_t width)
-{
-	LmDependentWait();
-	LmDependentRelease();
-	if ( blockIdx.y >= group_row_offset[local_experts] )
-		return;
-	LmPackedGateUpBody(gate, up, output, width, LmSwigluPackedOp{weight[blockIdx.y], INFINITY});
-}
-
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenMoeLocalFinalizeGatedKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, const uint16_t *__restrict__ shared, const uint16_t *__restrict__ shared_logit,
-	uint16_t *__restrict__ output, uint32_t top_k, uint32_t local_experts, uint32_t width)
-{
-	__shared__ uint32_t active_rows[LM_MOE_LOCAL_MAX_TOPK], active_count;
-	const uint32_t row = blockIdx.y;
-	const uint64_t row_base = (uint64_t)row * width;
-	const uint16_t *shared_row = shared + row_base;
-	uint16_t *out_row = output + row_base;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( threadIdx.x == 0u )
-	{
-		uint32_t count = 0u;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] < local_experts )
-				active_rows[count++] = route_packed_row[route];
-		}
-		active_count = count;
-	}
-	__syncthreads();
-	const uint32_t count = active_count;
-	const float gate = SparkMathSigmoid(LmBf16ToFloat(shared_logit[row]));
-	if ( (width & 7u) == 0u && LmIsAligned16(packed) && LmIsAligned16(out_row) && LmIsAligned16(shared_row) )
-	{
-		const uint32_t chunks = width >> 3u;
-		const uint4 *packed4 = (const uint4 *)packed, *shared4 = (const uint4 *)shared_row;
-		uint4 *out4 = (uint4 *)out_row;
-		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += gridDim.x * blockDim.x )
-		{
-			float acc[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-			for ( uint32_t k = 0u; k < count; ++k )
-				LmAddBf16x8(acc, packed4[(uint64_t)active_rows[k] * chunks + c]);
-			float s[8];
-			LmLoadBf16x8AsFloat(shared4[c], s);
-			#pragma unroll
-			for ( uint32_t i = 0u; i < 8u; ++i )
-				acc[i] += SparkMathRoundBf16(s[i] * gate);
-			out4[c] = LmPackUint4FloatToBf16(acc);
-		}
-		return;
-	}
-	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
-	{
-		float total = 0.0f;
-		for ( uint32_t k = 0u; k < count; ++k )
-			total += LmBf16ToFloat(packed[(uint64_t)active_rows[k] * width + element]);
-		total += SparkMathRoundBf16(LmBf16ToFloat(shared_row[element]) * gate);
-		out_row[element] = LmFloatToBf16(total);
-	}
-}
-
-template<uint32_t HIDDEN, uint32_t SHARED_ROWS, uint32_t TOP_K, uint32_t LOCAL_EXPERTS>
-__global__ __launch_bounds__(128u, 4)
-static void QwenMoeSharedDownFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, const uint16_t *__restrict__ shared_gate_up, const uint16_t *__restrict__ shared_down,
-	const uint16_t *__restrict__ shared_logit, uint16_t *__restrict__ output, uint32_t rows)
-{
-	static_assert((SHARED_ROWS & 7u) == 0u && SHARED_ROWS <= 128u && TOP_K <= LM_MOE_LOCAL_MAX_TOPK, "valid fused shared down finalize");
-	constexpr uint32_t CHUNKS = SHARED_ROWS >> 3u;
-	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = 128u / LANES;
-	__shared__ __align__(16) uint4 s_act[CHUNKS];
-	__shared__ uint32_t active_rows[LM_MOE_LOCAL_MAX_TOPK], active_count;
-	const uint32_t col = blockIdx.x * GROUPS + (threadIdx.x / LANES);
-	const uint32_t sub = threadIdx.x & (LANES - 1u);
-	const uint32_t row = blockIdx.y;
-	LmDependentWait();
-	if ( row >= rows )
-	{
-		LmDependentRelease();
-		return;
-	}
-	if ( threadIdx.x < CHUNKS )
-	{
-		const uint64_t gu_base = (uint64_t)row * 2u * SHARED_ROWS;
-		float g[8], u[8], a[8];
-		LmLoadBf16x8AsFloat(((const uint4 *)(shared_gate_up + gu_base))[threadIdx.x], g);
-		LmLoadBf16x8AsFloat(((const uint4 *)(shared_gate_up + gu_base + SHARED_ROWS))[threadIdx.x], u);
-		#pragma unroll
-		for ( uint32_t i = 0u; i < 8u; ++i )
-			a[i] = SparkMathSiluFast(g[i]) * u[i];
-		s_act[threadIdx.x] = LmPackUint4FloatToBf16(a);
-	}
-	if ( threadIdx.x == 0u )
-	{
-		uint32_t count = 0u;
-		for ( uint32_t k = 0u; k < TOP_K; ++k )
-		{
-			const uint32_t route = row * TOP_K + k;
-			if ( route_expert[route] < LOCAL_EXPERTS )
-				active_rows[count++] = route_packed_row[route];
-		}
-		active_count = count;
-	}
-	__syncthreads();
-	if ( col < HIDDEN )
-	{
-		const uint4 *w = (const uint4 *)(shared_down + (uint64_t)col * SHARED_ROWS);
-		float acc = 0.0f;
-		for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-			acc = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(w + c), s_act[c], 0.0f), acc);
-		#pragma unroll
-		for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-			acc += __shfl_xor_sync(0xffffffffu, acc, step, LANES);
-		if ( sub == 0u )
-		{
-			const uint32_t count = active_count;
-			float total = 0.0f;
-			for ( uint32_t k = 0u; k < count; ++k )
-				total += LmBf16ToFloat(packed[(uint64_t)active_rows[k] * HIDDEN + col]);
-			const float gate = SparkMathSigmoid(LmBf16ToFloat(shared_logit[row]));
-			total += SparkMathRoundBf16(LmBf16ToFloat(LmFloatToBf16(acc)) * gate);
-			output[(uint64_t)row * HIDDEN + col] = LmFloatToBf16(total);
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t HIDDEN, uint32_t INTER, uint32_t LOCAL_EXPERTS>
-__global__ __launch_bounds__(128u, 4)
-static void QwenBf16MoeSkinnyW1W3SingleKernel(const uint16_t *__restrict__ w1, const uint16_t *__restrict__ w3,
-	const uint16_t *__restrict__ act, const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ packed_expert, uint16_t *__restrict__ out_act)
-{
-	constexpr uint32_t CHUNKS = HIDDEN >> 3u;
-	constexpr uint32_t WARPS = 4u;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t n = blockIdx.x * WARPS + warp;
-	const uint32_t p = blockIdx.y;
-	LmDependentWait();
-	if ( p >= group_row_offset[LOCAL_EXPERTS] || n >= INTER )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t e = packed_expert[p];
-	const float wt = packed_weight[p];
-	const uint64_t row_off = ((uint64_t)e * INTER + n) * HIDDEN;
-	const uint4 *pw1 = (const uint4 *)(w1 + row_off);
-	const uint4 *pw3 = (const uint4 *)(w3 + row_off);
-	const uint4 *pa = (const uint4 *)act;
-	float acc1 = 0.0f, acc3 = 0.0f;
-	for ( uint32_t c = lane; c < CHUNKS; c += 32u )
-	{
-		const uint4 va = __ldg(pa + c);
-		acc1 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(pw1 + c), va, 0.0f), acc1);
-		acc3 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(pw3 + c), va, 0.0f), acc3);
-	}
-	#pragma unroll
-	for ( uint32_t step = 16u; step > 0u; step >>= 1u )
-	{
-		acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, 32);
-		acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, 32);
-	}
-	if ( lane == 0u )
-	{
-		const float g = SparkMathRoundBf16(acc1), u = SparkMathRoundBf16(acc3);
-		out_act[(uint64_t)p * INTER + n] = LmFloatToBf16(SparkMathGateLimitedGlu(g, u, INFINITY) * wt);
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t HIDDEN, uint32_t INTER, uint32_t LOCAL_EXPERTS>
-__global__ __launch_bounds__(128u, 4)
-static void QwenBf16MoeSkinnyW1W3BatchedKernel(const uint16_t *__restrict__ w1, const uint16_t *__restrict__ w3,
-	const uint16_t *__restrict__ act, const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ route_source_token, uint16_t *__restrict__ out_act)
-{
-	constexpr uint32_t CHUNKS = HIDDEN >> 3u;
-	constexpr uint32_t WARPS = 4u;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t n = blockIdx.x * WARPS + warp;
-	const uint32_t e = blockIdx.y;
-	LmDependentWait();
-	if ( e >= LOCAL_EXPERTS || n >= INTER )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t begin = group_row_offset[e], end = group_row_offset[e + 1u];
-	if ( begin >= end )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint64_t row_off = ((uint64_t)e * INTER + n) * HIDDEN;
-	const uint4 *pw1 = (const uint4 *)(w1 + row_off);
-	const uint4 *pw3 = (const uint4 *)(w3 + row_off);
-	for ( uint32_t p0 = begin; p0 < end; p0 += 4u )
-	{
-		const uint32_t count = end - p0 < 4u ? end - p0 : 4u;
-		if ( count == 1u )
-		{
-			const uint4 *pa0 = (const uint4 *)(act + (uint64_t)route_source_token[p0] * HIDDEN);
-			float acc1 = 0.0f, acc3 = 0.0f;
-			for ( uint32_t c = lane; c < CHUNKS; c += 32u )
-			{
-				const uint4 va = __ldg(pa0 + c);
-				acc1 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(pw1 + c), va, 0.0f), acc1);
-				acc3 = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(pw3 + c), va, 0.0f), acc3);
-			}
-			#pragma unroll
-			for ( uint32_t step = 16u; step > 0u; step >>= 1u )
-			{
-				acc1 += __shfl_xor_sync(0xffffffffu, acc1, step, 32);
-				acc3 += __shfl_xor_sync(0xffffffffu, acc3, step, 32);
-			}
-			if ( lane == 0u )
-			{
-				const float g = SparkMathRoundBf16(acc1), u = SparkMathRoundBf16(acc3);
-				out_act[(uint64_t)p0 * INTER + n] = LmFloatToBf16(SparkMathGateLimitedGlu(g, u, INFINITY) * packed_weight[p0]);
-			}
-		}
-		else if ( count == 2u )
-		{
-			const uint4 *pa0 = (const uint4 *)(act + (uint64_t)route_source_token[p0] * HIDDEN);
-			const uint4 *pa1 = (const uint4 *)(act + (uint64_t)route_source_token[p0 + 1u] * HIDDEN);
-			float a10 = 0.0f, a30 = 0.0f, a11 = 0.0f, a31 = 0.0f;
-			for ( uint32_t c = lane; c < CHUNKS; c += 32u )
-			{
-				const uint4 vw1 = __ldcs(pw1 + c), vw3 = __ldcs(pw3 + c);
-				const uint4 va0 = __ldg(pa0 + c), va1 = __ldg(pa1 + c);
-				a10 = fmaf(1.0f, LmSkinnyBf16Chunk(vw1, va0, 0.0f), a10);
-				a30 = fmaf(1.0f, LmSkinnyBf16Chunk(vw3, va0, 0.0f), a30);
-				a11 = fmaf(1.0f, LmSkinnyBf16Chunk(vw1, va1, 0.0f), a11);
-				a31 = fmaf(1.0f, LmSkinnyBf16Chunk(vw3, va1, 0.0f), a31);
-			}
-			#pragma unroll
-			for ( uint32_t step = 16u; step > 0u; step >>= 1u )
-			{
-				a10 += __shfl_xor_sync(0xffffffffu, a10, step, 32);
-				a30 += __shfl_xor_sync(0xffffffffu, a30, step, 32);
-				a11 += __shfl_xor_sync(0xffffffffu, a11, step, 32);
-				a31 += __shfl_xor_sync(0xffffffffu, a31, step, 32);
-			}
-			if ( lane == 0u )
-			{
-				out_act[(uint64_t)p0 * INTER + n] = LmFloatToBf16(SparkMathGateLimitedGlu(SparkMathRoundBf16(a10), SparkMathRoundBf16(a30), INFINITY) * packed_weight[p0]);
-				out_act[(uint64_t)(p0 + 1u) * INTER + n] = LmFloatToBf16(SparkMathGateLimitedGlu(SparkMathRoundBf16(a11), SparkMathRoundBf16(a31), INFINITY) * packed_weight[p0 + 1u]);
-			}
-		}
-		else
-		{
-			const uint4 *pa[4];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < 4u; ++r )
-				pa[r] = (const uint4 *)(act + (uint64_t)(r < count ? route_source_token[p0 + r] : route_source_token[p0]) * HIDDEN);
-			float acc1[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			float acc3[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			for ( uint32_t c = lane; c < CHUNKS; c += 32u )
-			{
-				const uint4 vw1 = __ldcs(pw1 + c);
-				const uint4 vw3 = __ldcs(pw3 + c);
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-				{
-					const uint4 va = __ldg(pa[r] + c);
-					acc1[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw1, va, 0.0f), acc1[r]);
-					acc3[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw3, va, 0.0f), acc3[r]);
-				}
-			}
-			#pragma unroll
-			for ( uint32_t step = 16u; step > 0u; step >>= 1u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-				{
-					acc1[r] += __shfl_xor_sync(0xffffffffu, acc1[r], step, 32);
-					acc3[r] += __shfl_xor_sync(0xffffffffu, acc3[r], step, 32);
-				}
-			if ( lane == 0u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-					if ( r < count )
-					{
-						const float g = SparkMathRoundBf16(acc1[r]), u = SparkMathRoundBf16(acc3[r]);
-						out_act[(uint64_t)(p0 + r) * INTER + n] = LmFloatToBf16(SparkMathGateLimitedGlu(g, u, INFINITY) * packed_weight[p0 + r]);
-					}
-		}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t INTER, uint32_t HIDDEN, uint32_t LOCAL_EXPERTS>
-__global__ __launch_bounds__(128u, 4)
-static void QwenBf16MoeSkinnyW2SingleKernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ expert_act,
-	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ packed_expert, uint16_t *__restrict__ out)
-{
-	constexpr uint32_t CHUNKS = INTER >> 3u;
-	constexpr uint32_t LANES = (CHUNKS >= 32u && (CHUNKS % 32u) == 0u) ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = 128u / LANES;
-	const uint32_t n = blockIdx.x * GROUPS + (threadIdx.x / LANES);
-	const uint32_t sub = threadIdx.x & (LANES - 1u);
-	const uint32_t p = blockIdx.y;
-	LmDependentWait();
-	if ( p >= group_row_offset[LOCAL_EXPERTS] || n >= HIDDEN )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t e = packed_expert[p];
-	const uint4 *pw = (const uint4 *)(w2 + ((uint64_t)e * HIDDEN + n) * INTER);
-	const uint4 *pa = (const uint4 *)(expert_act + (uint64_t)p * INTER);
-	float acc = 0.0f;
-	for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-		acc = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(pw + c), __ldg(pa + c), 0.0f), acc);
-	#pragma unroll
-	for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-		acc += __shfl_xor_sync(0xffffffffu, acc, step, LANES);
-	if ( sub == 0u )
-		out[(uint64_t)p * HIDDEN + n] = LmFloatToBf16(acc);
-	LmDependentRelease();
-}
-
-template<uint32_t INTER, uint32_t HIDDEN, uint32_t LOCAL_EXPERTS>
-__global__ __launch_bounds__(128u, 4)
-static void QwenBf16MoeSkinnyW2BatchedKernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ expert_act,
-	const uint32_t *__restrict__ group_row_offset, uint16_t *__restrict__ out)
-{
-	constexpr uint32_t CHUNKS = INTER >> 3u;
-	constexpr uint32_t LANES = (CHUNKS >= 32u && (CHUNKS % 32u) == 0u) ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = 128u / LANES;
-	const uint32_t n = blockIdx.x * GROUPS + (threadIdx.x / LANES);
-	const uint32_t sub = threadIdx.x & (LANES - 1u);
-	const uint32_t e = blockIdx.y;
-	LmDependentWait();
-	if ( e >= LOCAL_EXPERTS || n >= HIDDEN )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t begin = group_row_offset[e], end = group_row_offset[e + 1u];
-	if ( begin >= end )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint4 *pw = (const uint4 *)(w2 + ((uint64_t)e * HIDDEN + n) * INTER);
-	for ( uint32_t p0 = begin; p0 < end; p0 += 4u )
-	{
-		const uint32_t count = end - p0 < 4u ? end - p0 : 4u;
-		if ( count == 1u )
-		{
-			const uint4 *pa0 = (const uint4 *)(expert_act + (uint64_t)p0 * INTER);
-			float acc = 0.0f;
-			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-				acc = fmaf(1.0f, LmSkinnyBf16Chunk(__ldcs(pw + c), __ldg(pa0 + c), 0.0f), acc);
-			#pragma unroll
-			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-				acc += __shfl_xor_sync(0xffffffffu, acc, step, LANES);
-			if ( sub == 0u )
-				out[(uint64_t)p0 * HIDDEN + n] = LmFloatToBf16(acc);
-		}
-		else if ( count == 2u )
-		{
-			const uint4 *pa0 = (const uint4 *)(expert_act + (uint64_t)p0 * INTER);
-			const uint4 *pa1 = (const uint4 *)(expert_act + (uint64_t)(p0 + 1u) * INTER);
-			float a0 = 0.0f, a1 = 0.0f;
-			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-			{
-				const uint4 vw = __ldcs(pw + c);
-				a0 = fmaf(1.0f, LmSkinnyBf16Chunk(vw, __ldg(pa0 + c), 0.0f), a0);
-				a1 = fmaf(1.0f, LmSkinnyBf16Chunk(vw, __ldg(pa1 + c), 0.0f), a1);
-			}
-			#pragma unroll
-			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-			{
-				a0 += __shfl_xor_sync(0xffffffffu, a0, step, LANES);
-				a1 += __shfl_xor_sync(0xffffffffu, a1, step, LANES);
-			}
-			if ( sub == 0u )
-			{
-				out[(uint64_t)p0 * HIDDEN + n] = LmFloatToBf16(a0);
-				out[(uint64_t)(p0 + 1u) * HIDDEN + n] = LmFloatToBf16(a1);
-			}
-		}
-		else
-		{
-			const uint4 *pa[4];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < 4u; ++r )
-				pa[r] = (const uint4 *)(expert_act + (uint64_t)(r < count ? (p0 + r) : p0) * INTER);
-			float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-			for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-			{
-				const uint4 vw = __ldcs(pw + c);
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-					acc[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw, __ldg(pa[r] + c), 0.0f), acc[r]);
-			}
-			#pragma unroll
-			for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-					acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], step, LANES);
-			if ( sub == 0u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < 4u; ++r )
-					if ( r < count )
-						out[(uint64_t)(p0 + r) * HIDDEN + n] = LmFloatToBf16(acc[r]);
-		}
-	}
-	LmDependentRelease();
-}
-
-static __device__ __forceinline__ void QwenBf16TilePrefixScan(const uint32_t *__restrict__ group_row_offset, uint32_t *prefix,
-	uint32_t groups, uint32_t tile_m, uint32_t n_tiles)
-{
-	if ( threadIdx.x < 32u )
-	{
-		const uint32_t lane = threadIdx.x;
-		const uint32_t per_lane = (groups + 31u) >> 5u;
-		const uint32_t first = lane * per_lane;
-		uint32_t own = 0u;
-		for ( uint32_t g = first; g < first + per_lane && g < groups; ++g )
-		{
-			const uint32_t r = group_row_offset[g + 1u] - group_row_offset[g];
-			own += (r + tile_m - 1u) / tile_m * n_tiles;
-		}
-		uint32_t running = own;
-		#pragma unroll
-		for ( uint32_t offset = 1u; offset < 32u; offset <<= 1u )
-		{
-			const uint32_t other = __shfl_up_sync(0xffffffffu, running, offset);
-			if ( lane >= offset )
-				running += other;
-		}
-		uint32_t off = running - own;
-		for ( uint32_t g = first; g < first + per_lane && g < groups; ++g )
-		{
-			prefix[g] = off;
-			const uint32_t r = group_row_offset[g + 1u] - group_row_offset[g];
-			off += (r + tile_m - 1u) / tile_m * n_tiles;
-		}
-		if ( lane == 31u )
-			prefix[groups] = running;
-	}
-	__syncthreads();
-}
-
-static __device__ __forceinline__ uint32_t QwenBf16GroupedTotalTiles(const uint32_t *__restrict__ group_row_offset, uint32_t groups,
-	uint32_t tile_m, uint32_t n_tiles)
-{
-	uint32_t total = 0u;
-	for ( uint32_t g = 0u; g < groups; ++g )
-		total += (__ldg(group_row_offset + g + 1u) - __ldg(group_row_offset + g) + tile_m - 1u) / tile_m * n_tiles;
-	return total;
-}
-
-static __device__ __forceinline__ void QwenBf16GroupedTileScan(const uint32_t *__restrict__ group_row_offset, uint32_t groups,
-	uint32_t tile, uint32_t tile_m, uint32_t n_tiles, uint32_t &grp, uint32_t &row_base, uint32_t &row_limit, uint32_t &nt)
-{
-	uint32_t off = 0u;
-	for ( uint32_t g = 0u; g < groups; ++g )
-	{
-		const uint32_t first = __ldg(group_row_offset + g), end = __ldg(group_row_offset + g + 1u);
-		const uint32_t cnt = (end - first + tile_m - 1u) / tile_m * n_tiles;
-		if ( tile < off + cnt )
-		{
-			grp = g;
-			row_limit = end;
-			const uint32_t within = tile - off;
-			row_base = first + (within / n_tiles) * tile_m;
-			nt = within % n_tiles;
-			return;
-		}
-		off += cnt;
-	}
-	grp = 0u; row_base = 0u; row_limit = 0u; nt = 0u;
-}
-
-static __device__ __forceinline__ void QwenBf16GroupedTileLookup(const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ prefix,
-	uint32_t groups, uint32_t tile, uint32_t tile_m, uint32_t n_tiles, uint32_t &grp, uint32_t &row_base, uint32_t &row_limit, uint32_t &nt)
-{
-	uint32_t lo = 0u, hi = groups;
-	while ( lo + 1u < hi )
-	{
-		const uint32_t mid = (lo + hi) >> 1u;
-		if ( prefix[mid] <= tile ) lo = mid;
-		else hi = mid;
-	}
-	grp = lo;
-	const uint32_t first = group_row_offset[grp];
-	row_limit = group_row_offset[grp + 1u];
-	const uint32_t within = tile - prefix[grp];
-	row_base = first + (within / n_tiles) * tile_m;
-	nt = within % n_tiles;
-}
-
-template<uint32_t BYTES, bool HAS_PREFIX>
-struct QwenBf16MmaSmem
-{
-	__align__(128) uint8_t buf[BYTES];
-	uint32_t prefix[257u];
-};
-
-template<uint32_t BYTES>
-struct QwenBf16MmaSmem<BYTES, false>
-{
-	__align__(128) uint8_t buf[BYTES];
-};
-
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M>
-__global__ __launch_bounds__(THREADS, 2)
-static void QwenBf16MoeMmaW1W3ActKernel(const uint16_t *__restrict__ w_gate, const uint16_t *__restrict__ w_up, const uint16_t *__restrict__ act,
-	const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ source_row_map,
-	uint16_t *__restrict__ out, uint32_t groups, uint32_t K, uint32_t N)
-{
-	constexpr uint32_t TILE_K = 64u, KSTEPS = 4u, ROW_CHUNKS = 8u, ROW_BYTES = 128u, STAGES = 2u;
-	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
-	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
-	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
-	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + 2u * B_BYTES;
-	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
-	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
-	constexpr bool USE_PREFIX = (STAGES * STAGE_BYTES <= 48000u);
-	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid fused BF16 MoE gate-up MMA tile");
-	__shared__ QwenBf16MmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
-	uint8_t *const smem = smem_s.buf;
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
-	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
-	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
-	const uint32_t k_tiles = K / TILE_K, n_tiles = (N + TILE_N - 1u) / TILE_N;
-	LmDependentWait();
-	uint32_t total_tiles;
-	if constexpr ( USE_PREFIX )
-	{
-		QwenBf16TilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
-		total_tiles = smem_s.prefix[groups];
-	}
-	else
-		total_tiles = QwenBf16GroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
-	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
-	{
-		uint32_t grp, row_base, row_limit, nt;
-		if constexpr ( USE_PREFIX )
-			QwenBf16GroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		else
-			QwenBf16GroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		const uint32_t col_base = nt * TILE_N;
-		const uint16_t *a_src[A_PER_T];
-		uint32_t a_mask = 0u, b_mask = 0u;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < A_PER_T; ++q )
-		{
-			const uint32_t packed = row_base + row0 + q * ROW_STEP;
-			const uint32_t valid = packed < row_limit ? 1u : 0u;
-			const uint32_t src_r = valid != 0u ? source_row_map[packed] : 0u;
-			a_src[q] = act + (uint64_t)src_r * K + col0 * 8u;
-			a_mask |= valid << q;
-		}
-		const uint64_t g_off = (((uint64_t)grp * N) + col_base + row0) * K + col0 * 8u;
-		const uint16_t *bg_base = w_gate + g_off, *bu_base = w_up + g_off;
-		const uint64_t b_step = (uint64_t)ROW_STEP * K;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
-			b_mask |= (col_base + row0 + q * ROW_STEP < N ? 1u : 0u) << q;
-		auto issue_k = [&](uint32_t st_off)
-		{
-			const uint32_t stage = shared_base + st_off;
-			#pragma unroll
-			for ( uint32_t q = 0u; q < A_PER_T; ++q )
-			{
-				const uint32_t r = row0 + q * ROW_STEP;
-				const uint32_t valid = (a_mask >> q) & 1u;
-				LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? a_src[q] : act, valid << 4u);
-				a_src[q] += TILE_K;
-			}
-			#pragma unroll
-			for ( uint32_t q = 0u; q < B_PER_T; ++q )
-			{
-				const uint32_t r = row0 + q * ROW_STEP;
-				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
-				const uint32_t valid = (b_mask >> q) & 1u;
-				LmStreamCopy(stage + A_BYTES + sw, valid != 0u ? bg_base + q * b_step : w_gate, valid << 4u);
-				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, valid != 0u ? bu_base + q * b_step : w_up, valid << 4u);
-			}
-			bg_base += TILE_K;
-			bu_base += TILE_K;
-		};
-		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
-		float tg[MF][NF][4], tu[MF][NF][4];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-			{
-				tg[i][j][0] = tg[i][j][1] = tg[i][j][2] = tg[i][j][3] = 0.0f;
-				tu[i][j][0] = tu[i][j][1] = tu[i][j][2] = tu[i][j][3] = 0.0f;
-			}
-		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
-		{
-			#pragma unroll
-			for ( uint32_t ii = 0u; ii < MF; ++ii )
-			{
-				const uint32_t r = warp_m * WARP_M + ii * 16u + (lane & 15u);
-				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
-				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
-			}
-			#pragma unroll
-			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
-			{
-				const uint32_t r = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
-				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
-				const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
-				uint32_t tmp[4];
-				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + off);
-				bg_reg[buf][jj][0] = tmp[0]; bg_reg[buf][jj][1] = tmp[1];
-				bg_reg[buf][jj + 1u][0] = tmp[2]; bg_reg[buf][jj + 1u][1] = tmp[3];
-				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + B_BYTES + off);
-				bu_reg[buf][jj][0] = tmp[0]; bu_reg[buf][jj][1] = tmp[1];
-				bu_reg[buf][jj + 1u][0] = tmp[2]; bu_reg[buf][jj + 1u][1] = tmp[3];
-			}
-		};
-		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
-		if ( kp < k_tiles )
-			issue_k(sp_off);
-		LmStreamCommit();
-		kp++;
-		sp_off ^= STAGE_BYTES;
-		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-		{
-			LmStreamWait<0u>();
-			__syncthreads();
-			const uint32_t stage_s = shared_base + sc_off;
-			if ( kp < k_tiles )
-			{
-				issue_k(sp_off);
-				kp++;
-				sp_off ^= STAGE_BYTES;
-			}
-			LmStreamCommit();
-			load_frag(0u, 0u, stage_s);
-			#pragma unroll
-			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
-			{
-				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-				if ( ks + 1u < KSTEPS )
-					load_frag(nxt, ks + 1u, stage_s);
-				#pragma unroll
-				for ( uint32_t i = 0u; i < MF; ++i )
-					#pragma unroll
-					for ( uint32_t j = 0u; j < NF; ++j )
-					{
-						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
-					}
-			}
-			sc_off ^= STAGE_BYTES;
-		}
-		LmStreamWait<0u>();
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-				#pragma unroll
-				for ( uint32_t e = 0u; e < 4u; e += 2u )
-				{
-					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
-					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					if ( r < row_limit && c < N )
-					{
-						const float wt = __ldg(packed_weight + r);
-						const uint16_t lo = LmFloatToBf16(SparkMathGateLimitedGlu(SparkMathRoundBf16(tg[i][j][e]), SparkMathRoundBf16(tu[i][j][e]), INFINITY) * wt);
-						const uint16_t hi = LmFloatToBf16(SparkMathGateLimitedGlu(SparkMathRoundBf16(tg[i][j][e + 1u]), SparkMathRoundBf16(tu[i][j][e + 1u]), INFINITY) * wt);
-						*(uint32_t *)(out + (uint64_t)r * N + c) = (uint32_t)lo | ((uint32_t)hi << 16u);
-					}
-				}
-		if ( tile + gridDim.x < total_tiles )
-			__syncthreads();
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t STAGES>
-__global__ __launch_bounds__(THREADS, 2)
-static void QwenBf16MoeMmaW2Kernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ act,
-	uint16_t *__restrict__ out, const uint32_t *__restrict__ group_row_offset, uint32_t groups, uint32_t K, uint32_t N)
-{
-	constexpr uint32_t TILE_K = 64u, KSTEPS = 4u, ROW_CHUNKS = 8u, ROW_BYTES = 128u;
-	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
-	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
-	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
-	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + B_BYTES;
-	constexpr uint32_t A_PER_T = (TILE_M * ROW_CHUNKS) / THREADS, B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS;
-	constexpr uint32_t ROW_STEP = THREADS / ROW_CHUNKS;
-	constexpr bool USE_PREFIX = (STAGES * STAGE_BYTES <= 48000u);
-	static_assert(NF >= 2u && (NF & 1u) == 0u && WARPS_M * WARPS_N == WARPS, "valid grouped BF16 W2 MMA tile");
-	__shared__ QwenBf16MmaSmem<STAGES * STAGE_BYTES, USE_PREFIX> smem_s;
-	uint8_t *const smem = smem_s.buf;
-	const uint32_t shared_base = (uint32_t)__cvta_generic_to_shared(smem);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, quad_row = lane >> 2u, quad = lane & 3u;
-	const uint32_t warp_m = warp / WARPS_N, warp_n = warp % WARPS_N;
-	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
-	const uint32_t k_tiles = K / TILE_K, n_tiles = (N + TILE_N - 1u) / TILE_N;
-	LmDependentWait();
-	uint32_t total_tiles;
-	if constexpr ( USE_PREFIX )
-	{
-		QwenBf16TilePrefixScan(group_row_offset, smem_s.prefix, groups, TILE_M, n_tiles);
-		total_tiles = smem_s.prefix[groups];
-	}
-	else
-		total_tiles = QwenBf16GroupedTotalTiles(group_row_offset, groups, TILE_M, n_tiles);
-	for ( uint32_t tile = blockIdx.x; tile < total_tiles; tile += gridDim.x )
-	{
-		uint32_t grp, row_base, row_limit, nt;
-		if constexpr ( USE_PREFIX )
-			QwenBf16GroupedTileLookup(group_row_offset, smem_s.prefix, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		else
-			QwenBf16GroupedTileScan(group_row_offset, groups, tile, TILE_M, n_tiles, grp, row_base, row_limit, nt);
-		const uint32_t col_base = nt * TILE_N;
-		const uint16_t *a_src[A_PER_T];
-		uint32_t a_mask = 0u, b_mask = 0u;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < A_PER_T; ++q )
-		{
-			const uint32_t packed = row_base + row0 + q * ROW_STEP;
-			const uint32_t valid = packed < row_limit ? 1u : 0u;
-			a_src[q] = act + (uint64_t)(valid != 0u ? packed : 0u) * K + col0 * 8u;
-			a_mask |= valid << q;
-		}
-		const uint16_t *b_base = weight + (((uint64_t)grp * N) + col_base + row0) * K + col0 * 8u;
-		const uint64_t b_step = (uint64_t)ROW_STEP * K;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
-			b_mask |= (col_base + row0 + q * ROW_STEP < N ? 1u : 0u) << q;
-		auto issue_k = [&](uint32_t st_off)
-		{
-			const uint32_t stage = shared_base + st_off;
-			#pragma unroll
-			for ( uint32_t q = 0u; q < A_PER_T; ++q )
-			{
-				const uint32_t r = row0 + q * ROW_STEP;
-				const uint32_t valid = (a_mask >> q) & 1u;
-				LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? a_src[q] : act, valid << 4u);
-				a_src[q] += TILE_K;
-			}
-			#pragma unroll
-			for ( uint32_t q = 0u; q < B_PER_T; ++q )
-			{
-				const uint32_t r = row0 + q * ROW_STEP;
-				const uint32_t valid = (b_mask >> q) & 1u;
-				LmStreamCopy(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? b_base + q * b_step : weight, valid << 4u);
-			}
-			b_base += TILE_K;
-		};
-		auto advance = [](uint32_t &off)
-		{
-			if constexpr ( STAGES == 2u )
-				off ^= STAGE_BYTES;
-			else
-			{
-				off += STAGE_BYTES;
-				if ( off == STAGES * STAGE_BYTES )
-					off = 0u;
-			}
-		};
-		uint32_t a_reg[2][MF][4], b_reg[2][NF][2];
-		float total[MF][NF][4];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-				total[i][j][0] = total[i][j][1] = total[i][j][2] = total[i][j][3] = 0.0f;
-		auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
-		{
-			#pragma unroll
-			for ( uint32_t ii = 0u; ii < MF; ++ii )
-			{
-				const uint32_t r = warp_m * WARP_M + ii * 16u + (lane & 15u);
-				const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
-				LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
-			}
-			#pragma unroll
-			for ( uint32_t jj = 0u; jj < NF; jj += 2u )
-			{
-				const uint32_t r = warp_n * WARP_N + jj * 8u + (lane & 7u) + (((lane >> 4u) & 1u) * 8u);
-				const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
-				uint32_t tmp[4];
-				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
-				b_reg[buf][jj][0] = tmp[0]; b_reg[buf][jj][1] = tmp[1];
-				b_reg[buf][jj + 1u][0] = tmp[2]; b_reg[buf][jj + 1u][1] = tmp[3];
-			}
-		};
-		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
-		#pragma unroll
-		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
-		{
-			if ( kp < k_tiles )
-				issue_k(sp_off);
-			LmStreamCommit();
-			kp++;
-			advance(sp_off);
-		}
-		if constexpr ( STAGES >= 3u )
-		{
-			LmStreamWait<STAGES - 2u>();
-			__syncthreads();
-			load_frag(0u, 0u, shared_base + sc_off);
-			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-			{
-				const uint32_t stage_s = shared_base + sc_off;
-				#pragma unroll
-				for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
-				{
-					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-					if ( ks == 0u )
-					{
-						if ( kp < k_tiles )
-						{
-							issue_k(sp_off);
-							kp++;
-							advance(sp_off);
-						}
-						LmStreamCommit();
-					}
-					if ( ks + 1u < KSTEPS )
-						load_frag(nxt, ks + 1u, stage_s);
-					else if ( kt + 1u < k_tiles )
-					{
-						LmStreamWait<STAGES - 2u>();
-						__syncthreads();
-						advance(sc_off);
-						load_frag(nxt, 0u, shared_base + sc_off);
-					}
-					#pragma unroll
-					for ( uint32_t i = 0u; i < MF; ++i )
-						#pragma unroll
-						for ( uint32_t j = 0u; j < NF; ++j )
-							LmMmaBf16(total[i][j], a_reg[cur][i], b_reg[cur][j]);
-				}
-			}
-		}
-		else
-		{
-			for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
-			{
-				LmStreamWait<0u>();
-				__syncthreads();
-				const uint32_t stage_s = shared_base + sc_off;
-				if ( kp < k_tiles )
-				{
-					issue_k(sp_off);
-					kp++;
-					advance(sp_off);
-				}
-				LmStreamCommit();
-				load_frag(0u, 0u, stage_s);
-				#pragma unroll
-				for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
-				{
-					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-					if ( ks + 1u < KSTEPS )
-						load_frag(nxt, ks + 1u, stage_s);
-					#pragma unroll
-					for ( uint32_t i = 0u; i < MF; ++i )
-						#pragma unroll
-						for ( uint32_t j = 0u; j < NF; ++j )
-							LmMmaBf16(total[i][j], a_reg[cur][i], b_reg[cur][j]);
-				}
-				advance(sc_off);
-			}
-		}
-		LmStreamWait<0u>();
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-				#pragma unroll
-				for ( uint32_t e = 0u; e < 4u; e += 2u )
-				{
-					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
-					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					if ( r < row_limit && c < N )
-						*(uint32_t *)(out + (uint64_t)r * N + c) = (uint32_t)LmFloatToBf16(total[i][j][e]) |
-							((uint32_t)LmFloatToBf16(total[i][j][e + 1u]) << 16u);
-				}
-		if ( tile + gridDim.x < total_tiles )
-			__syncthreads();
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t THREADS, uint32_t WIDTH>
-__global__ __launch_bounds__(THREADS, 2)
-static void QwenHybridHcInjectNormKernel(uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ partial_bf16,
-	const float *__restrict__ inject, const float *__restrict__ norm_weight, uint16_t *__restrict__ hc_normed_bf16,
-	uint32_t groups)
-{
-	static_assert((WIDTH & 7u) == 0u && WIDTH <= THREADS * LM_RMS_NORM_STAGED, "HC width fits in staged vectorized waves");
-	constexpr uint32_t VEC_SLOTS = (WIDTH + THREADS * 8u - 1u) / (THREADS * 8u);
-	__shared__ float reduction[LmBlockWarps<THREADS>()], sq_wave[THREADS * 8u];
-	const uint32_t stream = blockIdx.x, row = blockIdx.y;
-	const uint64_t res_base = ((uint64_t)row * groups + stream) * WIDTH;
-	const uint64_t part_base = (uint64_t)row * WIDTH;
-	uint16_t *res_row = residual_bf16 + res_base;
-	const uint16_t *part_row = partial_bf16 + part_base;
-	uint16_t *out_row = hc_normed_bf16 + res_base;
-	const float *group_weight = norm_weight + (uint64_t)stream * WIDTH;
-	const float weight = inject[(uint64_t)row * groups + stream];
-	uint4 staged[VEC_SLOTS];
-	float total = 0.0f;
-	LmDependentWait();
-	#pragma unroll
-	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
-	{
-		const uint32_t wave_base = slot * THREADS * 8u;
-		const uint32_t offset = wave_base + threadIdx.x * 8u;
-		if ( offset < WIDTH )
-		{
-			float r[8], p[8], sq[8];
-			LmLoadBf16x8AsFloat(*(const uint4 *)(res_row + offset), r);
-			LmLoadBf16x8AsFloat(*(const uint4 *)(part_row + offset), p);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				r[k] += SparkMathHyperInjected(p[k], weight);
-			const uint4 packed = LmPackUint4FloatToBf16(r);
-			*(uint4 *)(res_row + offset) = packed;
-			staged[slot] = packed;
-			LmLoadBf16x8AsFloat(packed, r);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				sq[k] = r[k] * r[k];
-			LmStoreFloat8(sq_wave + threadIdx.x * 8u, sq);
-		}
-		else
-			staged[slot] = make_uint4(0u, 0u, 0u, 0u);
-		__syncthreads();
-		#pragma unroll
-		for ( uint32_t s = 0u; s < 8u; ++s )
-			if ( wave_base + s * THREADS + threadIdx.x < WIDTH )
-				total += sq_wave[s * THREADS + threadIdx.x];
-		if ( slot + 1u < VEC_SLOTS )
-			__syncthreads();
-	}
-	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)WIDTH, QH_EPSILON);
-	#pragma unroll
-	for ( uint32_t slot = 0u; slot < VEC_SLOTS; ++slot )
-		if ( (slot * THREADS + threadIdx.x) * 8u < WIDTH )
-			LmGroupRmsStore8(staged[slot], group_weight, (slot * THREADS + threadIdx.x) * 8u, scale, out_row);
-	LmDependentRelease();
-}
-
-template<uint32_t STREAMS, uint32_t WIDTH, uint32_t LOW_RANK, uint32_t RG, bool HAS_INJECT = true>
-__global__ __launch_bounds__((STREAMS * WIDTH >= 2048u ? 256u : (STREAMS * WIDTH >= 1024u ? 128u : 32u)), 2)
-static void QwenHcDownGateInjectKernel(const uint16_t *__restrict__ down, const uint16_t *__restrict__ inject_w,
-	const uint16_t *__restrict__ hc_normed, uint16_t *__restrict__ hc_low, float *__restrict__ hc_inject, uint32_t rows)
-{
-	constexpr uint32_t K = STREAMS * WIDTH;
-	constexpr uint32_t CHUNKS = K >> 3u;
-	constexpr uint32_t TOTAL_N = LOW_RANK + (HAS_INJECT ? STREAMS : 0u);
-	constexpr uint32_t SPLIT_WARPS = CHUNKS >= 256u ? 8u : (CHUNKS >= 128u ? 4u : 1u);
-	constexpr uint32_t THREADS = SPLIT_WARPS * 32u;
-	__shared__ float partial[SPLIT_WARPS][RG];
-	const uint32_t row_groups = (rows + RG - 1u) / RG;
-	const uint32_t n0 = blockIdx.x / row_groups;
-	const uint32_t first_row = (blockIdx.x % row_groups) * RG;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	LmDependentWait();
-	if ( n0 < TOTAL_N )
-	{
-		const uint32_t count = rows - first_row < RG ? rows - first_row : RG;
-		const uint4 *w0 = (const uint4 *)(n0 < LOW_RANK ? down + (uint64_t)n0 * K : inject_w + (uint64_t)(n0 - LOW_RANK) * K);
-		const uint4 *a[RG];
-		#pragma unroll
-		for ( uint32_t r = 0u; r < RG; ++r )
-			a[r] = (const uint4 *)(hc_normed + (uint64_t)(first_row + (r < count ? r : 0u)) * K);
-		float acc[RG];
-		#pragma unroll
-		for ( uint32_t r = 0u; r < RG; ++r )
-			acc[r] = 0.0f;
-		for ( uint32_t c = threadIdx.x; c < CHUNKS; c += THREADS )
-		{
-			const uint4 vw0 = __ldcs(w0 + c);
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				acc[r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw0, __ldg(a[r] + c), 0.0f), acc[r]);
-		}
-		#pragma unroll
-		for ( uint32_t step = 16u; step > 0u; step >>= 1u )
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], step, 32);
-		if constexpr ( SPLIT_WARPS > 1u )
-		{
-			if ( lane == 0u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < RG; ++r )
-					partial[warp][r] = acc[r];
-			__syncthreads();
-			if ( threadIdx.x == 0u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < RG; ++r )
-					if ( r < count )
-					{
-						float sum = partial[0][r];
-						#pragma unroll
-						for ( uint32_t w = 1u; w < SPLIT_WARPS; ++w )
-							sum += partial[w][r];
-						const uint32_t row = first_row + r;
-						const float v0 = LmBf16ToFloat(LmFloatToBf16(sum));
-						if ( !HAS_INJECT || n0 < LOW_RANK )
-							hc_low[(uint64_t)row * LOW_RANK + n0] = LmFloatToBf16(SparkMathHyperGate(v0, (float)STREAMS));
-						else
-							hc_inject[(uint64_t)row * STREAMS + (n0 - LOW_RANK)] = SparkMathHyperInjectWeight(v0, (float)STREAMS);
-					}
-		}
-		else if ( lane == 0u )
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				if ( r < count )
-				{
-					const uint32_t row = first_row + r;
-					const float v0 = LmBf16ToFloat(LmFloatToBf16(acc[r]));
-					if ( !HAS_INJECT || n0 < LOW_RANK )
-						hc_low[(uint64_t)row * LOW_RANK + n0] = LmFloatToBf16(SparkMathHyperGate(v0, (float)STREAMS));
-					else
-						hc_inject[(uint64_t)row * STREAMS + (n0 - LOW_RANK)] = SparkMathHyperInjectWeight(v0, (float)STREAMS);
-				}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t STREAMS, uint32_t WIDTH, uint32_t LOW_RANK, uint32_t RG>
-__global__ __launch_bounds__(QH_THREADS, 2)
-static void QwenHcUpMixKernel(const uint16_t *__restrict__ up, const uint16_t *__restrict__ hc_low,
-	const uint16_t *__restrict__ hc_normed, uint16_t *__restrict__ mixed, uint32_t rows)
-{
-	constexpr uint32_t CHUNKS = LOW_RANK >> 3u;
-	constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-	constexpr uint32_t GROUPS = QH_THREADS / LANES;
-	__shared__ __align__(16) uint4 s_low[RG][CHUNKS];
-	const uint32_t row_groups = (rows + RG - 1u) / RG;
-	const uint32_t col = (blockIdx.x / row_groups) * GROUPS + (threadIdx.x / LANES);
-	const uint32_t first_row = (blockIdx.x % row_groups) * RG;
-	const uint32_t count = rows - first_row < RG ? rows - first_row : RG;
-	const uint32_t sub = threadIdx.x & (LANES - 1u);
-	LmDependentWait();
-	for ( uint32_t idx = threadIdx.x; idx < count * CHUNKS; idx += QH_THREADS )
-	{
-		const uint32_t r = idx / CHUNKS, c = idx % CHUNKS;
-		s_low[r][c] = ((const uint4 *)(hc_low + (uint64_t)(first_row + r) * LOW_RANK))[c];
-	}
-	__syncthreads();
-	if ( col < WIDTH )
-	{
-		const uint4 *w[STREAMS];
-		#pragma unroll
-		for ( uint32_t s = 0u; s < STREAMS; ++s )
-			w[s] = (const uint4 *)(up + (uint64_t)(s * WIDTH + col) * LOW_RANK);
-		float acc[STREAMS][RG];
-		#pragma unroll
-		for ( uint32_t s = 0u; s < STREAMS; ++s )
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				acc[s][r] = 0.0f;
-		for ( uint32_t c = sub; c < CHUNKS; c += LANES )
-		{
-			uint4 vw[STREAMS];
-			#pragma unroll
-			for ( uint32_t s = 0u; s < STREAMS; ++s )
-				vw[s] = __ldcs(w[s] + c);
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-			{
-				const uint4 va = s_low[r < count ? r : 0u][c];
-				#pragma unroll
-				for ( uint32_t s = 0u; s < STREAMS; ++s )
-					acc[s][r] = fmaf(1.0f, LmSkinnyBf16Chunk(vw[s], va, 0.0f), acc[s][r]);
-			}
-		}
-		#pragma unroll
-		for ( uint32_t step = LANES >> 1u; step > 0u; step >>= 1u )
-			#pragma unroll
-			for ( uint32_t s = 0u; s < STREAMS; ++s )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < RG; ++r )
-					acc[s][r] += __shfl_xor_sync(0xffffffffu, acc[s][r], step, LANES);
-		if ( sub == 0u )
-			#pragma unroll
-			for ( uint32_t r = 0u; r < RG; ++r )
-				if ( r < count )
-				{
-					const uint32_t row = first_row + r;
-					float total = 0.0f;
-					#pragma unroll
-					for ( uint32_t s = 0u; s < STREAMS; ++s )
-					{
-						const float u = LmBf16ToFloat(LmFloatToBf16(acc[s][r]));
-						const float n = LmBf16ToFloat(hc_normed[((uint64_t)row * STREAMS + s) * WIDTH + col]);
-						total += SparkMathHyperMixTerm(SparkMathHyperMixGate(u), n);
-					}
-					mixed[(uint64_t)row * WIDTH + col] = LmFloatToBf16(total / (float)STREAMS);
-				}
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t THREADS, uint32_t STREAMS, uint32_t WIDTH>
-__global__ __launch_bounds__(THREADS, 4)
-static void QwenHyperMixKernel(const uint16_t *__restrict__ up_bf16, const uint16_t *__restrict__ normed_bf16,
-	uint16_t *__restrict__ mixed_bf16)
-{
-	static_assert((WIDTH & 7u) == 0u, "hyper mix width is whole uint4 vectors");
-	constexpr uint32_t VECS = WIDTH >> 3u;
-	const uint32_t row = blockIdx.x;
-	const uint64_t base = (uint64_t)row * STREAMS * WIDTH;
-	LmDependentWait();
-	for ( uint32_t v = threadIdx.x; v < VECS; v += THREADS )
-	{
-		const uint32_t element = v << 3u;
-		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-		#pragma unroll
-		for ( uint32_t s = 0u; s < STREAMS; ++s )
-		{
-			const uint64_t at = base + (uint64_t)s * WIDTH + element;
-			float u[8], n[8];
-			LmLoadBf16x8AsFloat(*(const uint4 *)(up_bf16 + at), u);
-			LmLoadBf16x8AsFloat(*(const uint4 *)(normed_bf16 + at), n);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				total[k] += SparkMathHyperMixTerm(SparkMathHyperMixGate(u[k]), n[k]);
-		}
-		#pragma unroll
-		for ( uint32_t k = 0u; k < 8u; ++k )
-			total[k] /= (float)STREAMS;
-		*(uint4 *)(mixed_bf16 + (uint64_t)row * WIDTH + element) = LmPackUint4FloatToBf16(total);
-	}
-	LmDependentRelease();
-}
-
-template<uint32_t THREADS, uint32_t STREAMS>
-__global__ __launch_bounds__(THREADS, 2)
-static void QwenHyperInjectWeightsVecKernel(const uint16_t *__restrict__ normed_bf16, const uint16_t *__restrict__ weight_bf16,
-	float *__restrict__ inject, uint32_t width)
-{
-	__shared__ float reduction[LmBlockWarps<THREADS>()];
-	const uint32_t row = blockIdx.x, total_v = (STREAMS * width) >> 3u;
-	const uint4 *src4 = (const uint4 *)(normed_bf16 + (uint64_t)row * STREAMS * width);
-	float sums[STREAMS];
-	LmDependentWait();
-	LmDependentRelease();
-	#pragma unroll
-	for ( uint32_t s = 0u; s < STREAMS; ++s )
-		sums[s] = 0.0f;
-	for ( uint32_t c = threadIdx.x; c < total_v; c += THREADS )
-	{
-		const uint4 x = src4[c];
-		#pragma unroll
-		for ( uint32_t s = 0u; s < STREAMS; ++s )
-			sums[s] = LmDotBf16x8(x, ((const uint4 *)weight_bf16)[(uint64_t)s * total_v + c], sums[s]);
-	}
-	#pragma unroll
-	for ( uint32_t s = 0u; s < STREAMS; ++s )
-	{
-		const float logit = SparkMathRoundBf16(LmBlockSum<THREADS>(sums[s], reduction));
-		if ( threadIdx.x == 0u )
-			inject[(uint64_t)row * STREAMS + s] = SparkMathHyperInjectWeight(logit, (float)STREAMS);
-	}
-}
 
 template<uint32_t THREADS, uint32_t WIDTH>
 __global__ __launch_bounds__(THREADS, 1)
@@ -4200,27 +2305,29 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( G::kExperts <= LM_TOPK_WARP_PER_LANE * LM_WARP_LANES )
 		{
+			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
+			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			if ( routes <= 32u )
 			{
-				const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
-				const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-				const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-				(void)LM_LAUNCH_DEPENDENT((QwenMoeRouteSmallKernel<G>), 1u, QH_THREADS, 0, stream, state->router_logits, rows, state->expert_first,
+				if ( QwenSkl2Launch(QWENSKL2_moe_route_small_256, 1u, QH_THREADS, 0, stream,
+					state->router_logits, rows, G::kExperts, G::kTopK, state->expert_first, G::kLocalExperts,
 					step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
 					state->route_packed_row, state->route_source_token, state->packed_expert, state->packed_weight, tile_m, n_up,
-					state->tile_prefix_up, n_down, state->tile_prefix_down);
+					state->tile_prefix_up, n_down, state->tile_prefix_down) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
 			{
-				(void)LM_LAUNCH_DEPENDENT((QwenMoeSoftmaxTopkLocalKernel<G>), rows, QH_THREADS, 0, stream, state->router_logits, state->expert_first,
-					step->route_fault, state->route_expert, state->route_weight, state->route_global);
-				const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
-				const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-				const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-				(void)LM_LAUNCH_DEPENDENT((QwenRouteBuildPackedKernel<QH_THREADS, G::kLocalExperts + 1u>), 1u, QH_THREADS, 0, stream,
-					state->route_expert, state->route_weight, routes, G::kTopK, state->group_row_offset, state->route_packed_row,
-					state->route_source_token, state->packed_expert, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
-					n_down, state->tile_prefix_down);
+				if ( QwenSkl2Launch(QWENSKL2_moe_softmax_topk_local_256, rows, QH_THREADS, 0, stream,
+					state->router_logits, G::kExperts, G::kTopK, state->expert_first, G::kLocalExperts,
+					step->route_fault, state->route_expert, state->route_weight, state->route_global) != SPARK_GPU_SUCCESS ||
+					QwenSkl2Launch(QWENSKL2_moe_route_build_packed_256, 1u, QH_THREADS, 0, stream,
+					state->route_expert, state->route_weight, routes, G::kTopK, G::kLocalExperts + 1u,
+					state->group_row_offset, state->route_packed_row, state->route_source_token,
+					state->packed_expert, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
+					n_down, state->tile_prefix_down) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 		}
 		else
@@ -4234,10 +2341,12 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
 			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-			(void)LM_LAUNCH_DEPENDENT((QwenRouteBuildPackedKernel<QH_THREADS, G::kLocalExperts + 1u>), 1u, QH_THREADS, 0, stream,
-				state->route_expert, state->route_weight, routes, G::kTopK, state->group_row_offset, state->route_packed_row,
-				state->route_source_token, state->packed_expert, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
-				n_down, state->tile_prefix_down);
+			if ( QwenSkl2Launch(QWENSKL2_moe_route_build_packed_256, 1u, QH_THREADS, 0, stream,
+				state->route_expert, state->route_weight, routes, G::kTopK, G::kLocalExperts + 1u,
+				state->group_row_offset, state->route_packed_row, state->route_source_token,
+				state->packed_expert, state->packed_weight, tile_m, n_up, state->tile_prefix_up,
+				n_down, state->tile_prefix_down) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		if constexpr ( G::kExpertCodec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 && (G::kHidden % 128u) == 0u && (G::kMoeInter % 128u) == 0u )
 		{
@@ -4254,53 +2363,43 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			{
 				const uint32_t up_blocks = G::kLocalExperts * ((G::kMoeInter + 63u) / 64u);
 				const uint32_t dn_blocks = G::kLocalExperts * ((G::kHidden + 127u) / 128u);
-				if ( rows <= 128u )
-				{
-					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<1u, 8u, false, true, 4u>), up_blocks, 256u, 0, stream,
-						layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
-						state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<1u, 8u, true, false, 4u>), dn_blocks, 256u, 0, stream,
-						layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
-						state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
-				else if ( rows < 512u )
-				{
-					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<2u, 8u, false, true, 4u>), up_blocks, 256u, 0, stream,
-						layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
-						state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<2u, 8u, true, false, 4u>), dn_blocks, 256u, 0, stream,
-						layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
-						state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
-				else
-				{
-					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<3u, 8u, false, true, 2u>), up_blocks, 256u, 0, stream,
-						layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
-						state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((QwenNvfp4ExpertsKernel<3u, 8u, true, false, 2u>), dn_blocks, 256u, 0, stream,
-						layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
-						state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
+				const uint32_t up_id = rows <= 128u ? QWENSKL2_moe_nvfp4_w1w3_m16 : (rows < 512u ? QWENSKL2_moe_nvfp4_w1w3_m32 : QWENSKL2_moe_nvfp4_w1w3_m48);
+				const uint32_t dn_id = rows <= 128u ? QWENSKL2_moe_nvfp4_w2_m16 : (rows < 512u ? QWENSKL2_moe_nvfp4_w2_m32 : QWENSKL2_moe_nvfp4_w2_m48);
+				if ( QwenSkl2Launch(up_id, up_blocks, 256u, 0, stream,
+					layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight, state->expert_act,
+					state->group_row_offset, state->route_source_token, G::kLocalExperts, G::kHidden, G::kMoeInter) != SPARK_GPU_SUCCESS ||
+					QwenSkl2Launch(dn_id, dn_blocks, 256u, 0, stream,
+					layer->moe_w2, layer->moe_w2_scale, (const uint8_t *)0, (const uint8_t *)0, state->expert_act, (const float *)0,
+					state->expert_out, state->group_row_offset, (const uint32_t *)0, G::kLocalExperts, G::kMoeInter, G::kHidden) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else if ( rows == 1u )
 			{
-				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW1W3SingleKernel<G::kHidden, G::kMoeInter, G::kLocalExperts>),
-					dim3((G::kMoeInter + UP_PER_BLK - 1u) / UP_PER_BLK, routes), QH_THREADS, 0, stream,
+				constexpr uint32_t up_id = UP_LANES == 32u ? QWENSKL2_moe_nvfp4_skinny_w1w3_single_l32 :
+					(UP_LANES == 16u ? QWENSKL2_moe_nvfp4_skinny_w1w3_single_l16 : QWENSKL2_moe_nvfp4_skinny_w1w3_single_l8);
+				constexpr uint32_t dn_id = DN_LANES == 32u ? QWENSKL2_moe_nvfp4_skinny_w2_single_l32 :
+					(DN_LANES == 16u ? QWENSKL2_moe_nvfp4_skinny_w2_single_l16 : QWENSKL2_moe_nvfp4_skinny_w2_single_l8);
+				if ( QwenSkl2Launch(up_id, dim3((G::kMoeInter + UP_PER_BLK - 1u) / UP_PER_BLK, routes), QH_THREADS, 0, stream,
 					layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight,
-					state->group_row_offset, state->packed_expert, state->expert_act);
-				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW2SingleKernel<G::kMoeInter, G::kHidden, G::kLocalExperts>),
-					dim3((G::kHidden + DN_SINGLE_PER_BLK - 1u) / DN_SINGLE_PER_BLK, routes), QH_THREADS, 0, stream,
-					layer->moe_w2, layer->moe_w2_scale, state->expert_act, state->group_row_offset, state->packed_expert, state->expert_out);
+					state->group_row_offset, state->packed_expert, state->expert_act, G::kHidden, G::kMoeInter, G::kLocalExperts) != SPARK_GPU_SUCCESS ||
+					QwenSkl2Launch(dn_id, dim3((G::kHidden + DN_SINGLE_PER_BLK - 1u) / DN_SINGLE_PER_BLK, routes), QH_THREADS, 0, stream,
+					layer->moe_w2, layer->moe_w2_scale, state->expert_act, state->group_row_offset, state->packed_expert,
+					state->expert_out, G::kMoeInter, G::kHidden, G::kLocalExperts) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
 			{
-				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW1W3BatchedKernel<G::kHidden, G::kMoeInter, G::kLocalExperts>),
-					dim3((G::kMoeInter + UP_PER_BLK - 1u) / UP_PER_BLK, G::kLocalExperts), QH_THREADS, 0, stream,
+				constexpr uint32_t up_id = UP_LANES == 32u ? QWENSKL2_moe_nvfp4_skinny_w1w3_batched_l32 :
+					(UP_LANES == 16u ? QWENSKL2_moe_nvfp4_skinny_w1w3_batched_l16 : QWENSKL2_moe_nvfp4_skinny_w1w3_batched_l8);
+				constexpr uint32_t dn_id = DN_LANES == 32u ? QWENSKL2_moe_nvfp4_skinny_w2_batched_l32 :
+					(DN_LANES == 16u ? QWENSKL2_moe_nvfp4_skinny_w2_batched_l16 : QWENSKL2_moe_nvfp4_skinny_w2_batched_l8);
+				if ( QwenSkl2Launch(up_id, dim3((G::kMoeInter + UP_PER_BLK - 1u) / UP_PER_BLK, G::kLocalExperts), QH_THREADS, 0, stream,
 					layer->moe_w1, layer->moe_w1_scale, layer->moe_w3, layer->moe_w3_scale, normed, state->packed_weight,
-					state->group_row_offset, state->route_source_token, state->expert_act);
-				(void)LM_LAUNCH_DEPENDENT((QwenNvfp4SkinnyW2BatchedKernel<G::kMoeInter, G::kHidden, G::kLocalExperts>),
-					dim3((G::kHidden + DN_SINGLE_PER_BLK - 1u) / DN_SINGLE_PER_BLK, G::kLocalExperts), QH_THREADS, 0, stream,
-					layer->moe_w2, layer->moe_w2_scale, state->expert_act, state->group_row_offset, state->expert_out);
+					state->group_row_offset, state->route_source_token, state->expert_act, G::kHidden, G::kMoeInter, G::kLocalExperts) != SPARK_GPU_SUCCESS ||
+					QwenSkl2Launch(dn_id, dim3((G::kHidden + DN_SINGLE_PER_BLK - 1u) / DN_SINGLE_PER_BLK, G::kLocalExperts), QH_THREADS, 0, stream,
+					layer->moe_w2, layer->moe_w2_scale, state->expert_act, state->group_row_offset, state->expert_out,
+					G::kMoeInter, G::kHidden, G::kLocalExperts) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 		}
 		else if constexpr ( G::kExpertCodec == SPARK_WEIGHT_CODEC_BF16 && (G::kHidden & 63u) == 0u && (G::kMoeInter & 63u) == 0u && G::kLocalExperts <= 256u )
@@ -4312,30 +2411,19 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			const uint16_t *w2_bf16 = (const uint16_t *)layer->moe_w2;
 			if ( use_mma )
 			{
-				if ( local_mean <= 16u )
-				{
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<16u, 64u, 128u, 1u>), sms * 4u, 128u, 0, stream,
-						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
-						state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW2Kernel<16u, 64u, 128u, 1u, 3u>), sms * 3u, 128u, 0, stream,
-						w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
-				else if ( local_mean <= 32u )
-				{
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<32u, 64u, 256u, 2u>), sms * 2u, 256u, 0, stream,
-						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
-						state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW2Kernel<32u, 64u, 256u, 2u, 3u>), sms * 2u, 256u, 0, stream,
-						w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
-				else
-				{
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW1W3ActKernel<64u, 64u, 256u, 2u>), sms * 2u, 256u, 0, stream,
-						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
-						state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter);
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeMmaW2Kernel<64u, 128u, 256u, 2u, 2u>), sms * 2u, 256u, 0, stream,
-						w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden);
-				}
+				const uint32_t up_id = local_mean <= 16u ? QWENSKL2_moe_bf16_mma_w1w3_16x64 :
+					(local_mean <= 32u ? QWENSKL2_moe_bf16_mma_w1w3_32x64 : QWENSKL2_moe_bf16_mma_w1w3_64x64);
+				const uint32_t dn_id = local_mean <= 16u ? QWENSKL2_moe_bf16_mma_w2_16x64 :
+					(local_mean <= 32u ? QWENSKL2_moe_bf16_mma_w2_32x64 : QWENSKL2_moe_bf16_mma_w2_64x128);
+				const uint32_t up_blk = local_mean <= 16u ? sms * 4u : sms * 2u;
+				const uint32_t dn_blk = local_mean <= 16u ? sms * 3u : sms * 2u;
+				const uint32_t thr = local_mean <= 16u ? 128u : 256u;
+				if ( QwenSkl2Launch(up_id, up_blk, thr, 0, stream,
+					w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
+					state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter) != SPARK_GPU_SUCCESS ||
+					QwenSkl2Launch(dn_id, dn_blk, thr, 0, stream,
+					w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
 			{
@@ -4346,25 +2434,29 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				constexpr uint32_t W2_BLOCKS = (G::kHidden + W2_GROUPS - 1u) / W2_GROUPS;
 				if ( rows == 1u )
 				{
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeSkinnyW1W3SingleKernel<G::kHidden, G::kMoeInter, G::kLocalExperts>),
-						dim3(W1_BLOCKS, routes), 128u, 0, stream,
-						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->packed_expert, state->expert_act);
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeSkinnyW2SingleKernel<G::kMoeInter, G::kHidden, G::kLocalExperts>),
-						dim3(W2_BLOCKS, routes), 128u, 0, stream,
-						w2_bf16, state->expert_act, state->group_row_offset, state->packed_expert, state->expert_out);
+					constexpr uint32_t w2_id = W2_LANES == 32u ? QWENSKL2_moe_bf16_skinny_w2_single_l32 :
+						(W2_LANES == 16u ? QWENSKL2_moe_bf16_skinny_w2_single_l16 : QWENSKL2_moe_bf16_skinny_w2_single_l8);
+					if ( QwenSkl2Launch(QWENSKL2_moe_bf16_skinny_w1w3_single, dim3(W1_BLOCKS, routes), 128u, 0, stream,
+						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->packed_expert,
+						state->expert_act, G::kHidden, G::kMoeInter, G::kLocalExperts) != SPARK_GPU_SUCCESS ||
+						QwenSkl2Launch(w2_id, dim3(W2_BLOCKS, routes), 128u, 0, stream,
+						w2_bf16, state->expert_act, state->group_row_offset, state->packed_expert, state->expert_out,
+						G::kMoeInter, G::kHidden, G::kLocalExperts) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 				else
 				{
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeSkinnyW1W3BatchedKernel<G::kHidden, G::kMoeInter, G::kLocalExperts>),
-						dim3(W1_BLOCKS, G::kLocalExperts), 128u, 0, stream,
-						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token, state->expert_act);
-					(void)LM_LAUNCH_DEPENDENT((QwenBf16MoeSkinnyW2BatchedKernel<G::kMoeInter, G::kHidden, G::kLocalExperts>),
-						dim3(W2_BLOCKS, G::kLocalExperts), 128u, 0, stream,
-						w2_bf16, state->expert_act, state->group_row_offset, state->expert_out);
+					constexpr uint32_t w2_id = W2_LANES == 32u ? QWENSKL2_moe_bf16_skinny_w2_batched_l32 :
+						(W2_LANES == 16u ? QWENSKL2_moe_bf16_skinny_w2_batched_l16 : QWENSKL2_moe_bf16_skinny_w2_batched_l8);
+					if ( QwenSkl2Launch(QWENSKL2_moe_bf16_skinny_w1w3_batched, dim3(W1_BLOCKS, G::kLocalExperts), 128u, 0, stream,
+						w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
+						state->expert_act, G::kHidden, G::kMoeInter, G::kLocalExperts) != SPARK_GPU_SUCCESS ||
+						QwenSkl2Launch(w2_id, dim3(W2_BLOCKS, G::kLocalExperts), 128u, 0, stream,
+						w2_bf16, state->expert_act, state->group_row_offset, state->expert_out,
+						G::kMoeInter, G::kHidden, G::kLocalExperts) != SPARK_GPU_SUCCESS )
+						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 			}
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		else
 		{
@@ -4387,8 +2479,9 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			}
 			if ( launch != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			(void)LM_LAUNCH_DEPENDENT((QwenMoeSwigluPackedKernel), dim3(LmGridBlocks<QH_THREADS>(G::kMoeInter), routes), QH_THREADS, 0, stream,
-				state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter);
+			if ( QwenSkl2Launch(QWENSKL2_moe_swiglu_packed_256, dim3(LmGridBlocks<QH_THREADS>(G::kMoeInter), routes), QH_THREADS, 0, stream,
+				state->expert_gate, state->expert_up, state->packed_weight, state->group_row_offset, G::kLocalExperts, state->expert_act, G::kMoeInter) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			if ( use_stream )
 			{
 				if ( LmStreamGemmGrouped<ExpertFormat>(layer->moe_w2, w2_scale, state->expert_act, state->expert_out, state->group_row_offset,
@@ -4422,13 +2515,16 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			if ( multi_shared_done )
 			{
 				constexpr uint32_t S_CHUNKS = G::kSharedRows >> 3u;
-				constexpr uint32_t S_LANES = S_CHUNKS >= 32u ? 32u : (S_CHUNKS >= 16u ? 16u : 8u);
+				constexpr uint32_t S_LANES = S_CHUNKS >= 16u ? 16u : 8u;
 				constexpr uint32_t S_GROUPS = 128u / S_LANES;
 				constexpr uint32_t S_BLOCKS = (G::kHidden + S_GROUPS - 1u) / S_GROUPS;
-				(void)LM_LAUNCH_DEPENDENT((QwenMoeSharedDownFinalizeKernel<G::kHidden, G::kSharedRows, G::kTopK, G::kLocalExperts>),
-					dim3(S_BLOCKS, rows), 128u, 0, stream, state->expert_out, state->route_packed_row, state->route_expert,
-					state->shared_gate_up, layer->moe_shared_down, state->shared_logit, state->partial + (uint64_t)first * G::kHidden, rows);
-				return CudaStageLaunched();
+				constexpr uint32_t sh_id = S_LANES == 16u ? QWENSKL2_moe_shared_down_finalize_l16 : QWENSKL2_moe_shared_down_finalize_l8;
+				if ( QwenSkl2Launch(sh_id, dim3(S_BLOCKS, rows), 128u, 0, stream,
+					state->expert_out, state->route_packed_row, state->route_expert, state->shared_gate_up,
+					layer->moe_shared_down, state->shared_logit, state->partial + (uint64_t)first * G::kHidden,
+					rows, G::kHidden, G::kSharedRows, G::kTopK, G::kLocalExperts) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				return SPARK_STATUS_OK;
 			}
 		}
 		if ( !shared_act_ready &&
@@ -4438,10 +2534,11 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			Project<LmBf16Format>(layer->moe_shared_down, 0, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, exact, sms, stream, prefill_wave) !=
 				LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		(void)LM_LAUNCH_DEPENDENT((QwenMoeLocalFinalizeGatedKernel), dim3(LmVecBlocks<QH_THREADS>(G::kHidden), rows), QH_THREADS, 0, stream,
+		if ( QwenSkl2Launch(QWENSKL2_moe_local_finalize_gated_256, dim3(LmVecBlocks<QH_THREADS>(G::kHidden), rows), QH_THREADS, 0, stream,
 			state->expert_out, state->route_packed_row, state->route_expert, state->shared_out, state->shared_logit,
-			state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
-		return CudaStageLaunched();
+			state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus Ffn(State *state, const Frame &frame, const QwenHybridLayer &entry)
@@ -4516,8 +2613,11 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			if ( state->hc_pending_inject != 0u )
 			{
 				state->hc_pending_inject = 0u;
-				(void)LM_LAUNCH_DEPENDENT((QwenHybridHcInjectNormKernel<QH_THREADS, G::kHidden>), dim3(G::kStreams, rows), QH_THREADS, 0, stream,
-					state->residual, state->partial, state->hc_inject, norm, state->hc_normed, G::kStreams);
+				constexpr uint32_t in_id = G::kHidden <= 2048u ? QWENSKL2_hc_inject_norm_256_w2048 :
+					(G::kHidden <= 4096u ? QWENSKL2_hc_inject_norm_256_w4096 : QWENSKL2_hc_inject_norm_256_w8192);
+				if ( QwenSkl2Launch(in_id, dim3(G::kStreams, rows), QH_THREADS, 0, stream,
+					state->residual, state->partial, state->hc_inject, norm, state->hc_normed, G::kStreams, G::kHidden, QH_EPSILON) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
 				LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->residual, norm, state->hc_normed,
@@ -4525,42 +2625,28 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			if ( skinny )
 			{
 				constexpr uint32_t HC_THREADS = S::kResidual >= 2048u ? 256u : (S::kResidual >= 1024u ? 128u : 32u);
-				if ( inject != 0 )
-				{
-					constexpr uint32_t N_BLOCKS = G::kHcLowRank + G::kStreams;
-					if ( rows == 1u )
-						(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 1u, true>), N_BLOCKS, HC_THREADS, 0, stream,
-							down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows);
-					else if ( rows <= 4u )
-						(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 4u, true>), N_BLOCKS, HC_THREADS, 0, stream,
-							down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows);
-					else
-						(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 8u, true>),
-							N_BLOCKS * ((rows + 7u) / 8u), HC_THREADS, 0, stream, down, inject, state->hc_normed, state->hc_low, state->hc_inject, rows);
-				}
-				else
-				{
-					constexpr uint32_t N_BLOCKS = G::kHcLowRank;
-					if ( rows == 1u )
-						(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 1u, false>), N_BLOCKS, HC_THREADS, 0, stream,
-							down, (const uint16_t *)0, state->hc_normed, state->hc_low, (float *)0, rows);
-					else if ( rows <= 4u )
-						(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 4u, false>), N_BLOCKS, HC_THREADS, 0, stream,
-							down, (const uint16_t *)0, state->hc_normed, state->hc_low, (float *)0, rows);
-					else
-						(void)LM_LAUNCH_DEPENDENT((QwenHcDownGateInjectKernel<G::kStreams, G::kHidden, G::kHcLowRank, 8u, false>),
-							N_BLOCKS * ((rows + 7u) / 8u), HC_THREADS, 0, stream, down, (const uint16_t *)0, state->hc_normed, state->hc_low, (float *)0, rows);
-				}
+				const uint32_t n_blocks = G::kHcLowRank + (inject != 0 ? G::kStreams : 0u);
+				const uint32_t rg_dn = rows == 1u ? 1u : (rows <= 4u ? 4u : 8u);
+				const uint32_t dn_id = HC_THREADS == 256u ?
+					(rg_dn == 1u ? QWENSKL2_hc_down_gate_inject_skinny_t256_r1 : (rg_dn == 4u ? QWENSKL2_hc_down_gate_inject_skinny_t256_r4 : QWENSKL2_hc_down_gate_inject_skinny_t256_r8)) :
+					(HC_THREADS == 128u ?
+					(rg_dn == 1u ? QWENSKL2_hc_down_gate_inject_skinny_t128_r1 : (rg_dn == 4u ? QWENSKL2_hc_down_gate_inject_skinny_t128_r4 : QWENSKL2_hc_down_gate_inject_skinny_t128_r8)) :
+					(rg_dn == 1u ? QWENSKL2_hc_down_gate_inject_skinny_t32_r1 : (rg_dn == 4u ? QWENSKL2_hc_down_gate_inject_skinny_t32_r4 : QWENSKL2_hc_down_gate_inject_skinny_t32_r8)));
+				if ( QwenSkl2Launch(dn_id, n_blocks * ((rows + rg_dn - 1u) / rg_dn), HC_THREADS, 0, stream,
+					down, inject, state->hc_normed, state->hc_low, inject != 0 ? state->hc_inject : (float *)0,
+					rows, G::kStreams, G::kHidden, G::kHcLowRank) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				constexpr uint32_t CHUNKS = G::kHcLowRank >> 3u;
 				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
 				constexpr uint32_t GROUPS = QH_THREADS / LANES;
 				constexpr uint32_t COL_BLOCKS = (G::kHidden + GROUPS - 1u) / GROUPS;
-				if ( rows == 1u )
-					(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixKernel<G::kStreams, G::kHidden, G::kHcLowRank, 1u>), COL_BLOCKS, QH_THREADS, 0, stream,
-						up, state->hc_low, state->hc_normed, mixed, rows);
-				else
-					(void)LM_LAUNCH_DEPENDENT((QwenHcUpMixKernel<G::kStreams, G::kHidden, G::kHcLowRank, 4u>),
-						COL_BLOCKS * ((rows + 3u) / 4u), QH_THREADS, 0, stream, up, state->hc_low, state->hc_normed, mixed, rows);
+				const uint32_t up_id = rows == 1u ?
+					(LANES == 32u ? QWENSKL2_hc_up_mix_skinny_r1_l32 : (LANES == 16u ? QWENSKL2_hc_up_mix_skinny_r1_l16 : QWENSKL2_hc_up_mix_skinny_r1_l8)) :
+					(LANES == 32u ? QWENSKL2_hc_up_mix_skinny_r4_l32 : (LANES == 16u ? QWENSKL2_hc_up_mix_skinny_r4_l16 : QWENSKL2_hc_up_mix_skinny_r4_l8));
+				const uint32_t up_blks = rows == 1u ? COL_BLOCKS : COL_BLOCKS * ((rows + 3u) / 4u);
+				if ( QwenSkl2Launch(up_id, up_blks, QH_THREADS, 0, stream,
+					up, state->hc_low, state->hc_normed, mixed, rows, G::kStreams, G::kHidden, G::kHcLowRank) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else if constexpr ( (S::kResidual % 64u) == 0u && (G::kHcLowRank % 64u) == 0u && (G::kHidden % 64u) == 0u )
 			{
@@ -4599,11 +2685,12 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 					(uint64_t)rows * G::kHcLowRank, (float)G::kStreams);
 				if ( Project<LmBf16Format>(up, 0, state->hc_low, state->hc_up, rows, G::kHcLowRank, S::kResidual, exact, sms, stream, prefill_unified) != LM_LAUNCH_OK )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				(void)LM_LAUNCH_DEPENDENT((QwenHyperMixKernel<QH_THREADS, G::kStreams, G::kHidden>), rows, QH_THREADS, 0, stream,
-					state->hc_up, state->hc_normed, mixed);
-				if ( inject != 0 )
-					(void)LM_LAUNCH_DEPENDENT((QwenHyperInjectWeightsVecKernel<QH_THREADS, G::kStreams>), rows, QH_THREADS, 0, stream,
-						state->hc_normed, inject, state->hc_inject, G::kHidden);
+				if ( QwenSkl2Launch(QWENSKL2_hc_mix_vec_256, rows, QH_THREADS, 0, stream,
+					state->hc_up, state->hc_normed, mixed, G::kStreams, G::kHidden) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+				if ( inject != 0 && QwenSkl2Launch(QWENSKL2_hc_inject_weights_vec_256, rows, QH_THREADS, 0, stream,
+					state->hc_normed, inject, state->hc_inject, G::kStreams, G::kHidden) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 		}
 		return CudaStageLaunched();

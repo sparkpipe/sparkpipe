@@ -1,0 +1,326 @@
+import "stdlib/math.skl2";
+
+const HC_BLK256 = 256;
+
+macro hc_inject_norm_wave(res_row, part_row, weight, sq_wave, wave_base, tid, width, out_staged, total) {
+    reg u32 offset = wave_base + (tid << 3);
+    if (offset < width) {
+        reg u32x4 rv = ldg128_stream(ptr_add(res_row, offset, 2));
+        reg u32x4 pv = ldg128_stream(ptr_add(part_row, offset, 2));
+        reg u32x4 packed;
+        unroll (k = 0..4) {
+            reg f32 r0 = bf16_lo(rv[k]) + bf16_lo(f32_to_bf16(bf16_lo(pv[k]) * weight));
+            reg f32 r1 = bf16_hi(rv[k]) + bf16_lo(f32_to_bf16(bf16_hi(pv[k]) * weight));
+            packed[k] = pack_bf16x2(r0, r1);
+            reg f32 q0 = bf16_lo(packed[k]);
+            reg f32 q1 = bf16_hi(packed[k]);
+            sts32(sq_wave, (tid << 3) + k * 2, q0 * q0);
+            sts32(sq_wave, (tid << 3) + k * 2 + 1, q1 * q1);
+        }
+        stg128(ptr_add(res_row, offset, 2), packed);
+        out_staged = packed;
+    } else {
+        out_staged = pack_u32x4(0, 0, 0, 0);
+    }
+    barrier();
+    unroll (s = 0..8) {
+        if (wave_base + (s << 8) + tid < width) {
+            total = total + lds32(sq_wave, (s << 8) + tid);
+        }
+    }
+}
+
+macro hc_inject_norm_store8(vec, group_weight, offset, scale, out_row) {
+    reg u32x4 wlo = ldg128_persist(ptr_add(group_weight, offset, 4));
+    reg u32x4 whi = ldg128_persist(ptr_add(group_weight, offset + 4, 4));
+    reg u32x4 ov;
+    ov[0] = pack_bf16x2((bf16_lo(vec[0]) * scale) * u32_as_f32(wlo[0]), (bf16_hi(vec[0]) * scale) * u32_as_f32(wlo[1]));
+    ov[1] = pack_bf16x2((bf16_lo(vec[1]) * scale) * u32_as_f32(wlo[2]), (bf16_hi(vec[1]) * scale) * u32_as_f32(wlo[3]));
+    ov[2] = pack_bf16x2((bf16_lo(vec[2]) * scale) * u32_as_f32(whi[0]), (bf16_hi(vec[2]) * scale) * u32_as_f32(whi[1]));
+    ov[3] = pack_bf16x2((bf16_lo(vec[3]) * scale) * u32_as_f32(whi[2]), (bf16_hi(vec[3]) * scale) * u32_as_f32(whi[3]));
+    stg128(ptr_add(out_row, offset, 2), ov);
+}
+
+@pdl
+@concept(norm_rope)
+template kernel[HC_BLK256, REGS] hc_inject_norm_tpl<SLOTS, REGS>(
+    global u32* residual_bf16, global u32* partial_bf16, global f32* inject,
+    global f32* norm_weight, global u32* hc_normed_bf16,
+    u32 groups, u32 width, f32 eps
+) {
+    shared f32 reduction[8];
+    shared f32 sq_wave[2048];
+    acqbulk();
+    reg u32 st = ctaid_x(); reg u32 row = ctaid_y();
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u64 res_row = ptr_add(residual_bf16, (row * groups + st) * width, 2);
+    reg u64 part_row = ptr_add(partial_bf16, row * width, 2);
+    reg u64 out_row = ptr_add(hc_normed_bf16, (row * groups + st) * width, 2);
+    reg u64 g_weight = ptr_add(norm_weight, st * width, 4);
+    reg f32 weight = u32_as_f32(ldg32_persist(ptr_add(inject, row * groups + st, 4)));
+    reg u32x4 staged[SLOTS];
+    reg f32 total = 0.0f;
+    unroll (sl = 0..SLOTS) {
+        hc_inject_norm_wave(res_row, part_row, weight, sq_wave, sl << 11, tid, width, staged[sl], total);
+        if constexpr (sl + 1 < SLOTS) { barrier(); }
+    }
+    reg f32 sum_sq = 0.0f;
+    block_reduce_sum_exact(total, reduction, wid, lane, sum_sq);
+    reg f32 scale = 0.0f;
+    rsqrt_exact_div(sum_sq, u32_to_f32(width), eps, scale);
+    unroll (sl = 0..SLOTS) {
+        reg u32 off = (sl << 11) + (tid << 3);
+        if (off < width) {
+            hc_inject_norm_store8(staged[sl], g_weight, off, scale, out_row);
+        }
+    }
+    preexit();
+}
+
+instantiate hc_inject_norm_tpl<1, 64> as hc_inject_norm_256_w2048;
+instantiate hc_inject_norm_tpl<2, 80> as hc_inject_norm_256_w4096;
+instantiate hc_inject_norm_tpl<4, 96> as hc_inject_norm_256_w8192;
+
+macro hc_down_store_val(hc_low, hc_inject, row, n0, low_rank, streams, s_f, inv_s, sum) {
+    reg f32 v0 = bf16_lo(f32_to_bf16(sum));
+    if (n0 < low_rank) {
+        reg f32 gv = 0.0f;
+        hyper_gate_f32(v0, s_f, inv_s, gv);
+        stg16(ptr_add(hc_low, row * low_rank + n0, 2), f32_to_bf16(gv));
+    } else {
+        reg f32 iv = 0.0f;
+        hyper_inject_weight_f32(v0, s_f, inv_s, iv);
+        stg32(ptr_add(hc_inject, row * streams + (n0 - low_rank), 4), f32_as_u32(iv));
+    }
+}
+
+macro hc_down_sum_warps(WARPS, RG, partial, r, count, first_row, n0, low_rank, streams, s_f, inv_s, hc_low, hc_inject) {
+    if (r < count) {
+        reg f32 sum = lds32(partial, r);
+        unroll (w = 1..WARPS) { sum = sum + lds32(partial, w * RG + r); }
+        hc_down_store_val(hc_low, hc_inject, first_row + r, n0, low_rank, streams, s_f, inv_s, sum);
+    }
+}
+
+macro hc_down_reduce_and_store(THREADS, RG, partial, acc, wid, lane, tid, first_row, count, n0, low_rank, streams, s_f, inv_s, hc_low, hc_inject) {
+    if constexpr (THREADS > 32) {
+        if (lane == 0) {
+            unroll (r = 0..RG) { sts32(partial, wid * RG + r, acc[r]); }
+        }
+        barrier();
+        if (tid == 0) {
+            unroll (r = 0..RG) {
+                hc_down_sum_warps(THREADS / 32, RG, partial, r, count, first_row, n0, low_rank, streams, s_f, inv_s, hc_low, hc_inject);
+            }
+        }
+    } else {
+        if (lane == 0) {
+            unroll (r = 0..RG) {
+                if (r < count) {
+                    hc_down_store_val(hc_low, hc_inject, first_row + r, n0, low_rank, streams, s_f, inv_s, acc[r]);
+                }
+            }
+        }
+    }
+}
+
+@pdl
+@concept(linear)
+template kernel[THREADS, REGS] hc_down_gate_inject_skinny_tpl<THREADS, RG, REGS>(
+    global u32* down, global u32* inject_w, global u32* hc_normed,
+    global u32* hc_low, global f32* hc_inject,
+    u32 rows, u32 streams, u32 width, u32 low_rank
+) {
+    shared f32 partial[(THREADS / 32) * RG];
+    acqbulk();
+    reg u32 k_dim = streams * width;
+    reg u32 chunks = k_dim >> 3;
+    reg u32 has_inj = ((inject_w[0] | inject_w[1]) != 0) ? 1 : 0;
+    reg u32 total_n = low_rank + ((has_inj != 0) ? streams : 0);
+    reg u32 row_groups = (rows + RG - 1) >> ((RG == 1) ? 0 : ((RG == 4) ? 2 : 3));
+    reg u32 n0 = 0; reg u32 rg_i = 0;
+    u32_divmod(ctaid_x(), row_groups, n0, rg_i);
+    if (n0 >= total_n) { preexit(); return; }
+    reg u32 first_row = rg_i * RG;
+    reg u32 count = (rows - first_row < RG) ? (rows - first_row) : RG;
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u64 w0 = (n0 < low_rank) ? ptr_add(down, n0 * chunks, 16) : ptr_add(inject_w, (n0 - low_rank) * chunks, 16);
+    reg u64 a_ptr[RG];
+    reg f32 acc[RG];
+    unroll (r = 0..RG) {
+        a_ptr[r] = ptr_add(hc_normed, (first_row + ((r < count) ? r : 0)) * chunks, 16);
+        acc[r] = 0.0f;
+    }
+    for (reg u32 c = tid; c < chunks; c += THREADS) {
+        reg u32x4 vw = ldg128_stream(ptr_add(w0, c, 16));
+        unroll (r = 0..RG) {
+            reg u32x4 va = ldg128_persist(ptr_add(a_ptr[r], c, 16));
+            bf16_dot8_acc(acc[r], vw, va);
+        }
+    }
+    unroll (r = 0..RG) { acc[r] = warp_sum(acc[r]); }
+    reg f32 s_f = u32_to_f32(streams); reg f32 inv_s = 0.0f;
+    rcp_nr1_f32(s_f, inv_s);
+    hc_down_reduce_and_store(THREADS, RG, partial, acc, wid, lane, tid, first_row, count, n0, low_rank, streams, s_f, inv_s, hc_low, hc_inject);
+    preexit();
+}
+
+instantiate hc_down_gate_inject_skinny_tpl<256, 1, 64> as hc_down_gate_inject_skinny_t256_r1;
+instantiate hc_down_gate_inject_skinny_tpl<256, 4, 80> as hc_down_gate_inject_skinny_t256_r4;
+instantiate hc_down_gate_inject_skinny_tpl<256, 8, 96> as hc_down_gate_inject_skinny_t256_r8;
+instantiate hc_down_gate_inject_skinny_tpl<128, 1, 64> as hc_down_gate_inject_skinny_t128_r1;
+instantiate hc_down_gate_inject_skinny_tpl<128, 4, 80> as hc_down_gate_inject_skinny_t128_r4;
+instantiate hc_down_gate_inject_skinny_tpl<128, 8, 96> as hc_down_gate_inject_skinny_t128_r8;
+instantiate hc_down_gate_inject_skinny_tpl<32, 1, 64> as hc_down_gate_inject_skinny_t32_r1;
+instantiate hc_down_gate_inject_skinny_tpl<32, 4, 80> as hc_down_gate_inject_skinny_t32_r4;
+instantiate hc_down_gate_inject_skinny_tpl<32, 8, 96> as hc_down_gate_inject_skinny_t32_r8;
+
+macro hc_up_skinny_stream_step(RG, LANES, up, hc_normed, s_low, si, width, col, chunks, sub, first_row, count, streams, total) {
+    reg u64 w_s = ptr_add(up, (si * width + col) * chunks, 16);
+    reg f32 acc[RG];
+    unroll (r = 0..RG) { acc[r] = 0.0f; }
+    for (reg u32 c = sub; c < chunks; c += LANES) {
+        reg u32x4 vw = ldg128_stream(ptr_add(w_s, c, 16));
+        unroll (r = 0..RG) {
+            reg u32 sr = (r < count) ? r : 0;
+            reg u32x4 va = lds128(s_low, (sr * chunks + c) * 4);
+            bf16_dot8_acc(acc[r], vw, va);
+        }
+    }
+    unroll (r = 0..RG) { lanes_reduce_sum(LANES, acc[r]); }
+    if (sub == 0) {
+        unroll (r = 0..RG) {
+            if (r < count) {
+                reg f32 uv = bf16_lo(f32_to_bf16(acc[r]));
+                reg f32 nv = bf16_lo(ldg16_stream(ptr_add(hc_normed, ((first_row + r) * streams + si) * width + col, 2)));
+                reg f32 term = 0.0f;
+                hyper_mix_term_f32(uv, nv, term);
+                total[r] = total[r] + term;
+            }
+        }
+    }
+}
+
+@pdl
+@concept(linear)
+template kernel[HC_BLK256, REGS] hc_up_mix_skinny_tpl<RG, LANES, REGS>(
+    global u32* up, global u32* hc_low, global u32* hc_normed, global u32* mixed,
+    u32 rows, u32 streams, u32 width, u32 low_rank
+) {
+    shared u32 s_low[RG * 256];
+    acqbulk();
+    reg u32 chunks = low_rank >> 3;
+    reg u32 row_groups = (rows + RG - 1) >> ((RG == 1) ? 0 : 2);
+    reg u32 col_blk = 0; reg u32 rg_i = 0;
+    u32_divmod(ctaid_x(), row_groups, col_blk, rg_i);
+    reg u32 tid = tid_x();
+    reg u32 col = col_blk * (HC_BLK256 / LANES) + (tid >> ((LANES == 32) ? 5 : ((LANES == 16) ? 4 : 3)));
+    reg u32 sub = tid & (LANES - 1);
+    reg u32 first_row = rg_i * RG;
+    reg u32 count = (rows - first_row < RG) ? (rows - first_row) : RG;
+    for (reg u32 idx = tid; idx < count * chunks; idx += HC_BLK256) {
+        reg u32 rr = 0; reg u32 cc = 0;
+        u32_divmod(idx, chunks, rr, cc);
+        sts128(s_low, (rr * chunks + cc) * 4, ldg128_persist(ptr_add(hc_low, (first_row + rr) * chunks + cc, 16)));
+    }
+    barrier();
+    if (col < width) {
+        reg f32 total[RG];
+        unroll (r = 0..RG) { total[r] = 0.0f; }
+        for (reg u32 si = 0; si < streams; si += 1) {
+            hc_up_skinny_stream_step(RG, LANES, up, hc_normed, s_low, si, width, col, chunks, sub, first_row, count, streams, total);
+        }
+        if (sub == 0) {
+            reg f32 s_f = u32_to_f32(streams); reg f32 inv_s = 0.0f;
+            rcp_nr1_f32(s_f, inv_s);
+            unroll (r = 0..RG) {
+                if (r < count) {
+                    reg f32 q = 0.0f;
+                    div_nr1_f32(total[r], s_f, inv_s, q);
+                    stg16(ptr_add(mixed, (first_row + r) * width + col, 2), f32_to_bf16(q));
+                }
+            }
+        }
+    }
+    preexit();
+}
+
+instantiate hc_up_mix_skinny_tpl<1, 8, 64> as hc_up_mix_skinny_r1_l8;
+instantiate hc_up_mix_skinny_tpl<1, 16, 64> as hc_up_mix_skinny_r1_l16;
+instantiate hc_up_mix_skinny_tpl<1, 32, 64> as hc_up_mix_skinny_r1_l32;
+instantiate hc_up_mix_skinny_tpl<4, 8, 80> as hc_up_mix_skinny_r4_l8;
+instantiate hc_up_mix_skinny_tpl<4, 16, 80> as hc_up_mix_skinny_r4_l16;
+instantiate hc_up_mix_skinny_tpl<4, 32, 80> as hc_up_mix_skinny_r4_l32;
+
+@pdl
+@concept(linear)
+kernel[HC_BLK256, 64] hc_mix_vec_256(
+    global u32* up_bf16, global u32* normed_bf16, global u32* mixed_bf16,
+    u32 streams, u32 width
+) {
+    acqbulk();
+    reg u32 row = ctaid_x();
+    reg u32 vecs = width >> 3;
+    reg u32 base_v = row * streams * vecs;
+    reg f32 s_f = u32_to_f32(streams); reg f32 inv_s = 0.0f;
+    rcp_nr1_f32(s_f, inv_s);
+    for (reg u32 v = tid_x(); v < vecs; v += HC_BLK256) {
+        reg f32 tot[8];
+        unroll (k = 0..8) { tot[k] = 0.0f; }
+        for (reg u32 si = 0; si < streams; si += 1) {
+            reg u32 at = base_v + si * vecs + v;
+            reg u32x4 uv = ldg128_stream(ptr_add(up_bf16, at, 16));
+            reg u32x4 nv = ldg128_stream(ptr_add(normed_bf16, at, 16));
+            unroll (k = 0..4) {
+                reg f32 t0 = 0.0f; reg f32 t1 = 0.0f;
+                hyper_mix_term_f32(bf16_lo(uv[k]), bf16_lo(nv[k]), t0);
+                hyper_mix_term_f32(bf16_hi(uv[k]), bf16_hi(nv[k]), t1);
+                tot[k * 2] = tot[k * 2] + t0;
+                tot[k * 2 + 1] = tot[k * 2 + 1] + t1;
+            }
+        }
+        reg u32x4 ov;
+        unroll (k = 0..4) {
+            reg f32 q0 = 0.0f; reg f32 q1 = 0.0f;
+            div_nr1_f32(tot[k * 2], s_f, inv_s, q0);
+            div_nr1_f32(tot[k * 2 + 1], s_f, inv_s, q1);
+            ov[k] = pack_bf16x2(q0, q1);
+        }
+        stg128(ptr_add(mixed_bf16, row * vecs + v, 16), ov);
+    }
+    preexit();
+}
+
+@pdl
+@concept(linear)
+kernel[HC_BLK256, 64] hc_inject_weights_vec_256(
+    global u32* normed_bf16, global u32* weight_bf16, global f32* inject,
+    u32 streams, u32 width
+) {
+    shared f32 reduction[8];
+    acqbulk();
+    preexit();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 total_v = (streams * width) >> 3;
+    reg u64 src_row = ptr_add(normed_bf16, row * total_v, 16);
+    reg f32 s_f = u32_to_f32(streams); reg f32 inv_s = 0.0f;
+    rcp_nr1_f32(s_f, inv_s);
+    for (reg u32 si = 0; si < streams; si += 1) {
+        reg u64 w_s = ptr_add(weight_bf16, si * total_v, 16);
+        reg f32 acc = 0.0f;
+        for (reg u32 c = tid; c < total_v; c += HC_BLK256) {
+            reg u32x4 xv = ldg128_persist(ptr_add(src_row, c, 16));
+            reg u32x4 wv = ldg128_stream(ptr_add(w_s, c, 16));
+            bf16_dot8_acc(acc, wv, xv);
+        }
+        reg f32 total = 0.0f;
+        block_reduce_sum_exact(acc, reduction, wid, lane, total);
+        if (tid == 0) {
+            reg f32 iv = 0.0f;
+            hyper_inject_weight_f32(bf16_lo(f32_to_bf16(total)), s_f, inv_s, iv);
+            stg32(ptr_add(inject, row * streams + si, 4), f32_as_u32(iv));
+        }
+        if (si + 1 < streams) { barrier(); }
+    }
+}
