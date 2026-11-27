@@ -1,0 +1,2 @@
++760
+wave-10 mimo26 + hy4 blackwell sm_121a P1/P2/P3/P4 optimization: fused single-pass 4-stream HC post-norm (HyHcFusedSinglePassKernel), fused multi-target SM-filling MXFP8/FP8 MMA linear (HyMultiLinearMmaKernel), dual-weight single-A-load HyScaledTileMmaDual, single-activation-load HY4/MiMo26 FastMoE kernels, and 2-CTA/SM swizzled bank-conflict-free MiMo26 MXFP4 experts kernel with L2::256B prefetch.
