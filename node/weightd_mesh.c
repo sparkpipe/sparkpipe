@@ -385,6 +385,7 @@ typedef struct SparkWeightdMesh
     SparkWeightdMeshLanePlan lane_plan[SPARK_WEIGHTD_MESH_MAX_LANES];
     SparkWeightdMeshShmSlab hybrid_shm;
     uint32_t hybrid_active;
+    uint32_t hybrid_verify;
     uint32_t hybrid_owner_lane;
     uint32_t hybrid_owner_band;
     uint32_t hybrid_grant_gen;
@@ -945,10 +946,12 @@ static void SparkWeightdMeshShmSlabRelease(uint32_t unmap_region)
 static void SparkWeightdMeshShmSlabInit(uint32_t rank)
 {
     const char *env = getenv("SPARK_WEIGHTD_MESH_HYBRID");
+    const char *verify_env = getenv("SPARK_WEIGHTD_MESH_HYBRID_VERIFY");
     long ps;
     int fd;
     void *mapped;
     weightd_mesh.hybrid_shm.fd = -1;
+    weightd_mesh.hybrid_verify = verify_env != 0 && verify_env[0] != '\0' && strcmp(verify_env,"0") != 0 ? 1u : 0u;
     if ( env != 0 && strcmp(env,"0") == 0 )
         return;
     ps = sysconf(_SC_PAGESIZE);
@@ -3219,19 +3222,20 @@ static void SparkWeightdMeshHybridUpdateCreditsLocked(void)
 {
     SparkWeightdMeshHybridCtrl *ctrl;
     const SparkWeightdMeshLanePlan *plan;
-    uint32_t i;
-    if ( weightd_mesh.hybrid_active == 0u || weightd_mesh.hybrid_owner_lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
-        return;
-    ctrl = SparkWeightdMeshHybridCtrlPtr();
-    if ( ctrl == 0 )
+    uint32_t i,updated = 0u;
+    if ( weightd_mesh.hybrid_active == 0u || weightd_mesh.hybrid_owner_lane >= SPARK_WEIGHTD_MESH_MAX_LANES ||
+         (ctrl = SparkWeightdMeshHybridCtrlPtr()) == 0 )
         return;
     plan = &weightd_mesh.lane_plan[weightd_mesh.hybrid_owner_lane];
     for (i = 0u; i < plan->peer_count; i++)
     {
         const SparkWeightdMeshSendQueue *q = &weightd_mesh.send_queues[plan->peers[i].peer];
-        __atomic_store_n(&ctrl->cpu_sq_limit[i],q->retired + q->depth,__ATOMIC_RELEASE);
-        __atomic_store_n(&ctrl->cpu_wr_limit[i],q->wr_retired + SPARK_WEIGHTD_MESH_SEND_CAPACITY,__ATOMIC_RELEASE);
+        uint32_t sq_lim = q->retired + q->depth,wr_lim = q->wr_retired + SPARK_WEIGHTD_MESH_SEND_CAPACITY;
+        if ( ctrl->cpu_sq_limit[i] != sq_lim ) { __atomic_store_n(&ctrl->cpu_sq_limit[i],sq_lim,__ATOMIC_RELAXED); updated = 1u; }
+        if ( ctrl->cpu_wr_limit[i] != wr_lim ) { __atomic_store_n(&ctrl->cpu_wr_limit[i],wr_lim,__ATOMIC_RELAXED); updated = 1u; }
     }
+    if ( updated != 0u )
+        __atomic_thread_fence(__ATOMIC_RELEASE);
 }
 
 static void SparkWeightdMeshHybridIssuedPublishLocked(uint32_t index,uint64_t seq)
@@ -3294,13 +3298,71 @@ static uint32_t SparkWeightdMeshHybridHeaderOkAtLocked(const SparkWeightdMeshLan
     return 1u;
 }
 
+static uint32_t SparkWeightdMeshHybridOrderedTriggers(
+    const SparkWeightdMeshHybridCtrl *ctrl,uint64_t issued,uint32_t order[2],uint64_t seqs[2])
+{
+    uint32_t count = 0u;
+    seqs[0] = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
+    seqs[1] = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
+    if ( seqs[1] > issued )
+    {
+        uint64_t recheck0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
+        if ( recheck0 > seqs[0] )
+            seqs[0] = recheck0;
+    }
+    if ( seqs[0] > issued ) order[count++] = 0u;
+    if ( seqs[1] > issued ) order[count++] = 1u;
+    if ( count == 2u && seqs[order[0]] > seqs[order[1]] )
+    {
+        uint32_t tmp = order[0];
+        order[0] = order[1];
+        order[1] = tmp;
+    }
+    return count;
+}
+
+static uint32_t SparkWeightdMeshHybridTriggerValid(const SparkWeightdMeshLanePlan *plan,
+    uint32_t peer_mask,uint32_t ds,uint32_t num_bb,uint32_t gen,uint64_t slot,uint64_t bytes)
+{
+    uint32_t xfer_len;
+    if ( plan->valid == 0u || gen != weightd_mesh.hybrid_grant_gen ||
+         peer_mask == 0u || (peer_mask & ~plan->all_peers_mask) != 0u ||
+         slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND || slot / SPARK_WEIGHTD_MESH_SLOTS_PER_RANK != plan->local_rank ||
+         bytes == 0u || bytes > SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u )
+        return 0u;
+    if ( ds == 3u )
+        return num_bb == 1u ? 1u : 0u;
+    xfer_len = (uint32_t)(bytes + 8u);
+    if ( xfer_len > plan->min_max_inline || ds != ((36u + xfer_len + 15u) >> 4u) ||
+         num_bb == 0u || num_bb > 15u || num_bb != ((ds + 3u) >> 2u) )
+        return 0u;
+    return 1u;
+}
+
+static uint32_t SparkWeightdMeshHybridHasRoomLocked(
+    const SparkWeightdMeshLanePlan *plan,uint32_t peer_mask,uint32_t all_peers,uint32_t num_bb)
+{
+    uint32_t i;
+    for (i = 0u; i < plan->peer_count; i++)
+    {
+        uint32_t peer;
+        if ( all_peers == 0u && (peer_mask & (1u << plan->peers[i].target)) == 0u )
+            continue;
+        peer = plan->peers[i].peer;
+        if ( weightd_mesh.send_pending[peer] >= SPARK_WEIGHTD_MESH_SEND_CAPACITY ||
+             SparkWeightdMeshSqFree(&weightd_mesh.send_queues[peer]) < num_bb )
+            return 0u;
+    }
+    return 1u;
+}
+
 static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *ctrl,uint32_t trig_slot,uint64_t seq,uint64_t now_ns)
 {
     const SparkWeightdMeshLanePlan *plan;
     SparkWeightdMeshTransfer *transfer;
-    uint64_t meta = __atomic_load_n(&ctrl->trigger[trig_slot].meta,__ATOMIC_ACQUIRE);
-    uint64_t slot = __atomic_load_n(&ctrl->trigger[trig_slot].slot,__ATOMIC_ACQUIRE);
-    uint64_t bytes = __atomic_load_n(&ctrl->trigger[trig_slot].bytes,__ATOMIC_ACQUIRE);
+    uint64_t meta = __atomic_load_n(&ctrl->trigger[trig_slot].meta,__ATOMIC_RELAXED);
+    uint64_t slot = __atomic_load_n(&ctrl->trigger[trig_slot].slot,__ATOMIC_RELAXED);
+    uint64_t bytes = __atomic_load_n(&ctrl->trigger[trig_slot].bytes,__ATOMIC_RELAXED);
     uint32_t peer_mask = SparkWeightdMeshHybridMetaPeerMask(meta);
     uint32_t ds = SparkWeightdMeshHybridMetaDs(meta);
     uint32_t num_bb = SparkWeightdMeshHybridMetaNumBb(meta);
@@ -3312,14 +3374,10 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
     uint8_t order[SPARK_WEIGHTD_MESH_PEERS];
     if ( __atomic_load_n(&ctrl->trigger[trig_slot].seq,__ATOMIC_ACQUIRE) != seq )
         return 0u;
-    if ( owner_lane >= SPARK_WEIGHTD_MESH_MAX_LANES || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
-         gen != weightd_mesh.hybrid_grant_gen )
+    if ( owner_lane >= SPARK_WEIGHTD_MESH_MAX_LANES || owner_band >= SPARK_WEIGHTD_MESH_BANDS )
         return 0u;
     plan = &weightd_mesh.lane_plan[owner_lane];
-    if ( plan->valid == 0u || peer_mask == 0u || (peer_mask & ~plan->all_peers_mask) != 0u ||
-         ds < 3u || num_bb == 0u || num_bb > 15u ||
-         slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND || slot / SPARK_WEIGHTD_MESH_SLOTS_PER_RANK != plan->local_rank ||
-         bytes == 0u || bytes > SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u )
+    if ( SparkWeightdMeshHybridTriggerValid(plan,peer_mask,ds,num_bb,gen,slot,bytes) == 0u )
         return 0u;
     index = owner_band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + plan->local_rank;
     if ( seq <= weightd_mesh.issued[index] || SparkWeightdMeshCellFailed(index) != 0u )
@@ -3335,7 +3393,14 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
     if ( SparkWeightdMeshNextTransferGeneration == (SPARK_WEIGHTD_MESH_TRANSFER_ID >> 16u) - 1u )
         return 0u;
     all_peers = peer_mask == plan->all_peers_mask ? 1u : 0u;
-    if ( SparkWeightdMeshHybridHeaderOkAtLocked(plan,peer_mask,all_peers,ds,owner_band,slot,bytes,0) == 0u )
+    if ( SparkWeightdMeshHybridHasRoomLocked(plan,peer_mask,all_peers,num_bb) == 0u )
+    {
+        (void)SparkWeightdMeshDrainCqLocked(now_ns);
+        if ( SparkWeightdMeshHybridHasRoomLocked(plan,peer_mask,all_peers,num_bb) == 0u )
+            return 0u;
+    }
+    if ( weightd_mesh.hybrid_verify != 0u &&
+         SparkWeightdMeshHybridHeaderOkAtLocked(plan,peer_mask,all_peers,ds,owner_band,slot,bytes,0) == 0u )
     {
         transfer->seq = seq;
         transfer->failed = SPARK_WEIGHTD_MESH_TRANSFER_FAILED;
@@ -3437,45 +3502,35 @@ static uint32_t SparkWeightdMeshHybridRingOneLocked(SparkWeightdMeshHybridCtrl *
 static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
 {
     SparkWeightdMeshHybridCtrl *ctrl;
-    uint32_t index,owner_band,owner_rank,order[2] = {0u, 0u},count = 0u,c,rung = 0u;
-    uint64_t issued,seqs[2];
+    uint32_t index,owner_band,owner_rank,order[2] = {0u, 0u},count,c,rung = 0u,cpu_loaded = 0u;
+    uint64_t issued,seqs[2],cpu0 = 0u,cpu1 = 0u;
     if ( weightd_mesh.hybrid_active == 0u || weightd_mesh.mesh_ready == 0u )
         return 0u;
     ctrl = SparkWeightdMeshHybridCtrlPtr();
     owner_band = weightd_mesh.hybrid_owner_band;
-    if ( ctrl == 0 || weightd_mesh.mesh_ready == 0u || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
+    if ( ctrl == 0 || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
          ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
         return 0u;
     owner_rank = ctrl->owner_rank;
     index = owner_band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + owner_rank;
     issued = weightd_mesh.issued[index];
-    seqs[0] = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
-    seqs[1] = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
-    if ( seqs[1] > issued )
-    {
-        uint64_t recheck0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
-        if ( recheck0 > seqs[0] )
-            seqs[0] = recheck0;
-    }
-    if ( seqs[0] <= issued && seqs[1] <= issued )
+    count = SparkWeightdMeshHybridOrderedTriggers(ctrl,issued,order,seqs);
+    if ( count == 0u )
         return 0u;
-    if ( seqs[0] > issued ) order[count++] = 0u;
-    if ( seqs[1] > issued ) order[count++] = 1u;
-    if ( count == 2u && seqs[order[0]] > seqs[order[1]] )
-    {
-        uint32_t tmp = order[0];
-        order[0] = order[1];
-        order[1] = tmp;
-    }
-    const volatile uint64_t *db0 = SparkWeightdMeshDoorbellAt(index,0u);
-    const volatile uint64_t *db1 = SparkWeightdMeshDoorbellAt(index,1u);
-    uint64_t cpu0 = __atomic_load_n(&db0[0],__ATOMIC_ACQUIRE);
-    uint64_t cpu1 = __atomic_load_n(&db1[0],__ATOMIC_ACQUIRE);
     for (c = 0u; c < count; c++)
     {
         uint64_t cand = seqs[order[c]];
-        if ( (cpu0 > issued && cpu0 < cand) || (cpu1 > issued && cpu1 < cand) )
-            break;
+        if ( cand != issued + 1u )
+        {
+            if ( cpu_loaded == 0u )
+            {
+                cpu0 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,0u)[0],__ATOMIC_ACQUIRE);
+                cpu1 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,1u)[0],__ATOMIC_ACQUIRE);
+                cpu_loaded = 1u;
+            }
+            if ( (cpu0 > issued && cpu0 < cand) || (cpu1 > issued && cpu1 < cand) )
+                break;
+        }
         if ( SparkWeightdMeshHybridRingOneLocked(ctrl,order[c],cand,now_ns) == 0u )
             break;
         issued = weightd_mesh.issued[index];
@@ -3486,8 +3541,8 @@ static uint32_t SparkWeightdMeshHybridPollLocked(uint64_t now_ns)
 
 static uint32_t SparkWeightdMeshHybridPendingTriggerLocked(const SparkWeightdMeshHybridCtrl *ctrl)
 {
-    uint32_t owner_band = weightd_mesh.hybrid_owner_band,index;
-    uint64_t issued,s0,s1,cpu0,cpu1;
+    uint32_t owner_band = weightd_mesh.hybrid_owner_band,index,order[2] = {0u, 0u},count,c;
+    uint64_t issued,seqs[2],cpu0,cpu1;
     if ( ctrl == 0 || weightd_mesh.mesh_ready == 0u || owner_band >= SPARK_WEIGHTD_MESH_BANDS ||
          ctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
         return 0u;
@@ -3495,20 +3550,14 @@ static uint32_t SparkWeightdMeshHybridPendingTriggerLocked(const SparkWeightdMes
     if ( SparkWeightdMeshCellFailed(index) != 0u )
         return 0u;
     issued = weightd_mesh.issued[index];
-    s0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
-    s1 = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
-    if ( s1 > issued )
-    {
-        uint64_t recheck0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
-        if ( recheck0 > s0 )
-            s0 = recheck0;
-    }
+    count = SparkWeightdMeshHybridOrderedTriggers(ctrl,issued,order,seqs);
+    if ( count == 0u )
+        return 0u;
     cpu0 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,0u)[0],__ATOMIC_ACQUIRE);
     cpu1 = __atomic_load_n(&SparkWeightdMeshDoorbellAt(index,1u)[0],__ATOMIC_ACQUIRE);
-    if ( s0 > issued && !(cpu0 > issued && cpu0 < s0) && !(cpu1 > issued && cpu1 < s0) )
-        return 1u;
-    if ( s1 > issued && !(cpu0 > issued && cpu0 < s1) && !(cpu1 > issued && cpu1 < s1) )
-        return 1u;
+    for (c = 0u; c < count; c++)
+        if ( !(cpu0 > issued && cpu0 < seqs[order[c]]) && !(cpu1 > issued && cpu1 < seqs[order[c]]) )
+            return 1u;
     return 0u;
 }
 
@@ -3530,32 +3579,17 @@ static void SparkWeightdMeshHybridCaptureDeferredLocked(SparkWeightdMeshHybridCt
     if ( SparkWeightdMeshCellFailed(index) != 0u )
         return;
     issued = weightd_mesh.issued[index];
-    seqs[0] = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
-    seqs[1] = __atomic_load_n(&ctrl->trigger[1].seq,__ATOMIC_ACQUIRE);
-    if ( seqs[1] > issued )
-    {
-        uint64_t recheck0 = __atomic_load_n(&ctrl->trigger[0].seq,__ATOMIC_ACQUIRE);
-        if ( recheck0 > seqs[0] )
-            seqs[0] = recheck0;
-    }
-    if ( seqs[0] > issued ) order[count++] = 0u;
-    if ( seqs[1] > issued ) order[count++] = 1u;
+    count = SparkWeightdMeshHybridOrderedTriggers(ctrl,issued,order,seqs);
     if ( count == 0u )
         return;
-    if ( count == 2u && seqs[order[0]] > seqs[order[1]] )
-    {
-        uint32_t tmp = order[0];
-        order[0] = order[1];
-        order[1] = tmp;
-    }
     memset(sq_adv,0,sizeof(sq_adv));
     for (c = 0u; c < count; c++)
     {
         uint32_t trig_slot = order[c],peer_mask,ds,num_bb,gen,all_peers,i,d,dup = 0u;
         uint64_t seq = seqs[trig_slot];
-        uint64_t meta = __atomic_load_n(&ctrl->trigger[trig_slot].meta,__ATOMIC_ACQUIRE);
-        uint64_t slot = __atomic_load_n(&ctrl->trigger[trig_slot].slot,__ATOMIC_ACQUIRE);
-        uint64_t bytes = __atomic_load_n(&ctrl->trigger[trig_slot].bytes,__ATOMIC_ACQUIRE);
+        uint64_t meta = __atomic_load_n(&ctrl->trigger[trig_slot].meta,__ATOMIC_RELAXED);
+        uint64_t slot = __atomic_load_n(&ctrl->trigger[trig_slot].slot,__ATOMIC_RELAXED);
+        uint64_t bytes = __atomic_load_n(&ctrl->trigger[trig_slot].bytes,__ATOMIC_RELAXED);
         SparkWeightdMeshHybridDeferred *def;
         if ( __atomic_load_n(&ctrl->trigger[trig_slot].seq,__ATOMIC_ACQUIRE) != seq )
             continue;
@@ -3563,10 +3597,7 @@ static void SparkWeightdMeshHybridCaptureDeferredLocked(SparkWeightdMeshHybridCt
         ds = SparkWeightdMeshHybridMetaDs(meta);
         num_bb = SparkWeightdMeshHybridMetaNumBb(meta);
         gen = SparkWeightdMeshHybridMetaGrantGen(meta);
-        if ( gen != weightd_mesh.hybrid_grant_gen || peer_mask == 0u || (peer_mask & ~plan->all_peers_mask) != 0u ||
-             ds < 3u || num_bb == 0u || num_bb > 15u ||
-             slot >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND || slot / SPARK_WEIGHTD_MESH_SLOTS_PER_RANK != plan->local_rank ||
-             bytes == 0u || bytes > SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u )
+        if ( SparkWeightdMeshHybridTriggerValid(plan,peer_mask,ds,num_bb,gen,slot,bytes) == 0u )
             continue;
         for (d = 0u; d < weightd_mesh.hybrid_deferred_count; d++)
             if ( weightd_mesh.hybrid_deferred[d].band == owner_band &&
@@ -3805,7 +3836,8 @@ static void SparkWeightdMeshHybridRefreshLocked(uint32_t preferred_band)
 }
 
 static SparkStatus SparkWeightdMeshPostCompactFast(uint32_t band,uint32_t index,uint32_t record,uint64_t seq,uint64_t slot,
-    uint64_t bytes,SparkWeightdMeshRoute route,uint64_t now_ns)
+    uint64_t bytes,SparkWeightdMeshRoute route,uint64_t now_ns,
+    const uint8_t (*inline_override)[SPARK_WEIGHTD_MESH_INLINE_MAX_BYTES + 8u])
 {
     const SparkWeightdMeshLanePlan *plan = &weightd_mesh.lane_plan[band / 2u];
     SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[record];
@@ -3813,7 +3845,7 @@ static SparkStatus SparkWeightdMeshPostCompactFast(uint32_t band,uint32_t index,
     uint32_t all_peers = peer_rank_mask == plan->all_peers_mask ? 1u : 0u;
     uint32_t xfer_len = (uint32_t)(bytes + 8u);
     uint32_t is_peer = route.fields.mode == SPARK_WEIGHTD_MESH_ROUTE_PEER ? 1u : 0u;
-    uint32_t is_inline = xfer_len <= plan->min_max_inline ? 1u : 0u;
+    uint32_t is_inline = inline_override != 0 || xfer_len <= plan->min_max_inline ? 1u : 0u;
     uint8_t ds = is_inline != 0u ? (uint8_t)((36u + xfer_len + 15u) >> 4u) : 3u;
     uint32_t num_bb = (uint32_t)((ds + 3u) >> 2u);
     uint32_t inl_cnt_be = htobe32(xfer_len | MLX5_INLINE_SEG);
@@ -3855,7 +3887,7 @@ static SparkStatus SparkWeightdMeshPostCompactFast(uint32_t band,uint32_t index,
         struct mlx5_wqe_raddr_seg *remote;
         if ( all_peers == 0u && (peer_rank_mask & (1u << p->target)) == 0u )
             continue;
-        if ( is_peer != 0u && i + 1u < plan->peer_count )
+        if ( inline_override == 0 && is_peer != 0u && i + 1u < plan->peer_count )
         {
             const uint8_t *next_src = (const uint8_t *)(uintptr_t)(staging_band_base + plan->peers[i + 1u].staging_peer_off);
             __builtin_prefetch(next_src,0,0);
@@ -3883,15 +3915,16 @@ static SparkStatus SparkWeightdMeshPostCompactFast(uint32_t band,uint32_t index,
         local_addr = is_peer != 0u ? (staging_band_base + p->staging_peer_off) : recv_src;
         if ( is_inline != 0u )
         {
+            const uint8_t *src = inline_override != 0 ? inline_override[peer] : (const uint8_t *)(uintptr_t)local_addr;
             struct mlx5_wqe_inl_data_seg *segment = (struct mlx5_wqe_inl_data_seg *)(remote + 1);
             uint32_t sq_bytes = queue->depth * 64u,dst_off = sq_idx * 64u + 36u,tail_room = sq_bytes - dst_off;
             segment->byte_count = inl_cnt_be;
             if ( __builtin_expect(xfer_len <= tail_room,1) )
-                memcpy(queue->buffer + dst_off,(const void *)(uintptr_t)local_addr,xfer_len);
+                memcpy(queue->buffer + dst_off,src,xfer_len);
             else
             {
-                memcpy(queue->buffer + dst_off,(const void *)(uintptr_t)local_addr,tail_room);
-                memcpy(queue->buffer,(const uint8_t *)(uintptr_t)local_addr + tail_room,xfer_len - tail_room);
+                memcpy(queue->buffer + dst_off,src,tail_room);
+                memcpy(queue->buffer,src + tail_room,xfer_len - tail_room);
             }
         }
         else
@@ -3913,7 +3946,9 @@ static SparkStatus SparkWeightdMeshPostCompactFast(uint32_t band,uint32_t index,
     transfer->pending = pending_mask;
     weightd_mesh.send_pending_total += count;
     SparkWeightdMeshSqRingOrder(order,count);
-    if ( SparkWeightdMeshPollingThread == 0u )
+    if ( inline_override != 0 )
+        weightd_mesh.stat_hybrid_rings++;
+    else if ( SparkWeightdMeshPollingThread == 0u )
         SparkWeightdMeshWake();
     {
         uint64_t spent = SparkMonotonicNs() - now_ns;
@@ -3922,6 +3957,11 @@ static SparkStatus SparkWeightdMeshPostCompactFast(uint32_t band,uint32_t index,
         weightd_mesh.timing.route_max_ns = spent > weightd_mesh.timing.route_max_ns ? spent : weightd_mesh.timing.route_max_ns;
     }
     weightd_mesh.post_ns[record] = now_ns;
+    if ( inline_override != 0 && weightd_mesh.publish_seq[record] != seq )
+    {
+        weightd_mesh.publish_seq[record] = seq;
+        weightd_mesh.publish_ns[record] = now_ns;
+    }
     if ( weightd_mesh.publish_seq[record] == seq )
         SparkLatencyAdd(&weightd_mesh.timing.post,weightd_mesh.publish_ns[record],now_ns);
     return SPARK_STATUS_OK;
@@ -3938,8 +3978,10 @@ static uint32_t SparkWeightdMeshHybridDrainDeferredLocked(uint64_t now_ns)
         SparkWeightdMeshTransfer *transfer = &weightd_mesh.transfers[record];
         uint64_t issued = weightd_mesh.issued[index];
         uint64_t cpu0,cpu1;
+        SparkWeightdMeshRoute route = {0};
         last_band = def->band;
-        if ( def->seq <= issued || SparkWeightdMeshCellFailed(index) != 0u )
+        if ( def->seq <= issued || SparkWeightdMeshCellFailed(index) != 0u ||
+             weightd_mesh.lane_plan[def->lane].valid == 0u )
         {
             if ( --weightd_mesh.hybrid_deferred_count != 0u )
                 weightd_mesh.hybrid_deferred[0] = weightd_mesh.hybrid_deferred[1];
@@ -3957,113 +3999,12 @@ static uint32_t SparkWeightdMeshHybridDrainDeferredLocked(uint64_t now_ns)
         }
         if ( SparkWeightdMeshNextTransferGeneration == (SPARK_WEIGHTD_MESH_TRANSFER_ID >> 16u) - 1u )
             break;
-        if ( def->is_inline == 0u )
-        {
-            SparkWeightdMeshRoute route = {0};
-            route.fields.peer_mask = def->peer_mask;
-            route.fields.mode = def->is_peer != 0u ? SPARK_WEIGHTD_MESH_ROUTE_PEER : SPARK_WEIGHTD_MESH_ROUTE_FULL;
-            route.fields.compact_tail = 1u;
-            if ( SparkWeightdMeshPostCompactFast(def->band,index,record,def->seq,def->slot,def->bytes,route,now_ns) != SPARK_STATUS_OK )
-                break;
-        }
-        else
-        {
-            const SparkWeightdMeshLanePlan *plan = &weightd_mesh.lane_plan[def->lane];
-            uint32_t all_peers,xfer_len = (uint32_t)(def->bytes + 8u),i,count = 0u,room_ok = 1u;
-            uint8_t ds = (uint8_t)((36u + xfer_len + 15u) >> 4u);
-            uint32_t num_bb = (uint32_t)((ds + 3u) >> 2u),inl_cnt_be = htobe32(xfer_len | MLX5_INLINE_SEG);
-            uint64_t slot_base = ((uint64_t)def->band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + def->slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES;
-            uint64_t wr_base,pending_mask = 0u;
-            uint8_t order[SPARK_WEIGHTD_MESH_PEERS];
-            if ( plan->valid == 0u )
-            {
-                if ( --weightd_mesh.hybrid_deferred_count != 0u )
-                    weightd_mesh.hybrid_deferred[0] = weightd_mesh.hybrid_deferred[1];
-                continue;
-            }
-            all_peers = def->peer_mask == plan->all_peers_mask ? 1u : 0u;
-            for (i = 0u; i < plan->peer_count; i++)
-            {
-                uint32_t peer;
-                if ( all_peers == 0u && (def->peer_mask & (1u << plan->peers[i].target)) == 0u )
-                    continue;
-                peer = plan->peers[i].peer;
-                if ( weightd_mesh.send_pending[peer] >= SPARK_WEIGHTD_MESH_SEND_CAPACITY ||
-                     (SparkWeightdMeshSqFree(&weightd_mesh.send_queues[peer]) < num_bb &&
-                      SparkWeightdMeshSqEnsureRoom(peer,num_bb) != SPARK_STATUS_OK) )
-                {
-                    room_ok = 0u;
-                    break;
-                }
-            }
-            if ( room_ok == 0u )
-                break;
-            transfer->seq = def->seq;
-            transfer->generation = ++SparkWeightdMeshNextTransferGeneration;
-            transfer->failed = 0u;
-            transfer->reset_peer = 0u;
-            transfer->chained = 0u;
-            weightd_mesh.issued[index] = def->seq;
-            SparkWeightdMeshHybridIssuedPublishLocked(index,def->seq);
-            wr_base = SPARK_WEIGHTD_MESH_TRANSFER_ID | (transfer->generation << 16u) | ((uint64_t)record << 6u) | 3u;
-            for (i = 0u; i < plan->peer_count; i++)
-            {
-                const SparkWeightdMeshPlanPeer *p = &plan->peers[i];
-                SparkWeightdMeshSendQueue *queue;
-                struct mlx5_wqe_ctrl_seg *control;
-                struct mlx5_wqe_raddr_seg *remote;
-                struct mlx5_wqe_inl_data_seg *segment;
-                uint32_t peer,sq_idx,w0,w1,sq_bytes,dst_off,tail_room;
-                if ( all_peers == 0u && (def->peer_mask & (1u << p->target)) == 0u )
-                    continue;
-                peer = p->peer;
-                queue = &weightd_mesh.send_queues[peer];
-                sq_idx = queue->produced & queue->mask;
-                control = (struct mlx5_wqe_ctrl_seg *)(queue->buffer + (uint64_t)sq_idx * 64u);
-                remote = (struct mlx5_wqe_raddr_seg *)(control + 1);
-                segment = (struct mlx5_wqe_inl_data_seg *)(remote + 1);
-                w0 = htobe32(((uint32_t)(uint16_t)queue->produced << 8u) | MLX5_OPCODE_RDMA_WRITE);
-                w1 = htobe32(p->qpn_shifted | ds);
-                control->opmod_idx_opcode = w0;
-                control->qpn_ds = w1;
-                control->signature = 0u;
-                control->dci_stream_channel_id = 0u;
-                control->fm_ce_se = MLX5_WQE_CTRL_CQ_UPDATE;
-                control->imm = 0u;
-                remote->raddr = htobe64(p->remote_base + slot_base);
-                remote->rkey = p->rkey_be;
-                remote->reserved = 0u;
-                segment->byte_count = inl_cnt_be;
-                sq_bytes = queue->depth * 64u;
-                dst_off = sq_idx * 64u + 36u;
-                tail_room = sq_bytes - dst_off;
-                if ( xfer_len <= tail_room )
-                    memcpy(queue->buffer + dst_off,def->inline_data[peer],xfer_len);
-                else
-                {
-                    memcpy(queue->buffer + dst_off,def->inline_data[peer],tail_room);
-                    memcpy(queue->buffer,def->inline_data[peer] + tail_room,xfer_len - tail_room);
-                }
-                queue->wr_id[sq_idx] = wr_base | ((uint64_t)peer << 2u);
-                queue->wqe_bbs[sq_idx] = (uint8_t)num_bb;
-                queue->ring_word = (uint64_t)w0 | ((uint64_t)w1 << 32u);
-                queue->produced += num_bb;
-                queue->wr_issued++;
-                pending_mask |= UINT64_C(1) << (peer * 4u + 3u);
-                weightd_mesh.send_pending[peer]++;
-                order[count++] = (uint8_t)peer;
-            }
-            transfer->pending = pending_mask;
-            weightd_mesh.send_pending_total += count;
-            SparkWeightdMeshSqRingOrder(order,count);
-            weightd_mesh.stat_hybrid_rings++;
-            weightd_mesh.post_ns[record] = now_ns;
-            if ( weightd_mesh.publish_seq[record] != def->seq )
-            {
-                weightd_mesh.publish_seq[record] = def->seq;
-                weightd_mesh.publish_ns[record] = now_ns;
-            }
-        }
+        route.fields.peer_mask = def->peer_mask;
+        route.fields.mode = def->is_peer != 0u ? SPARK_WEIGHTD_MESH_ROUTE_PEER : SPARK_WEIGHTD_MESH_ROUTE_FULL;
+        route.fields.compact_tail = 1u;
+        if ( SparkWeightdMeshPostCompactFast(def->band,index,record,def->seq,def->slot,def->bytes,route,now_ns,
+                 def->is_inline != 0u ? def->inline_data : 0) != SPARK_STATUS_OK )
+            break;
         if ( --weightd_mesh.hybrid_deferred_count != 0u )
             weightd_mesh.hybrid_deferred[0] = weightd_mesh.hybrid_deferred[1];
         posted++;
@@ -4105,7 +4046,7 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
     }
     if ( route.fields.compact_tail != 0u && weightd_mesh.lane_plan[band / 2u].valid != 0u )
     {
-        status = SparkWeightdMeshPostCompactFast(band,index,record,seq,slot,bytes,route,now_ns);
+        status = SparkWeightdMeshPostCompactFast(band,index,record,seq,slot,bytes,route,now_ns,0);
         if ( had_hybrid != 0u )
             SparkWeightdMeshHybridRefreshLocked(band);
         return status;
@@ -4646,6 +4587,35 @@ static void SparkWeightdMeshPinFastCores(int32_t doorbell_cpu)
     fprintf(stderr,"WD-MESH-PIN doorbell thread cpus=%u capacity=%u min_capacity=%u rc=%d\n",count,highest,lowest,pthread_setaffinity_np(pthread_self(),sizeof(set),&set));
 }
 
+static uint32_t SparkWeightdMeshHybridFastSpinLocked(uint64_t *now_ns,uint32_t *repair_out)
+{
+    SparkWeightdMeshHybridCtrl *hctrl;
+    uint32_t hband = weightd_mesh.hybrid_owner_band,spin;
+    uint64_t issued;
+    if ( weightd_mesh.hybrid_active == 0u || weightd_mesh.mesh_ready == 0u ||
+         weightd_mesh.hybrid_deferred_count != 0u || weightd_mesh.quiesce_until_ns != 0u ||
+         hband >= SPARK_WEIGHTD_MESH_BANDS || (hctrl = SparkWeightdMeshHybridCtrlPtr()) == 0 ||
+         hctrl->owner_rank >= SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
+        return 0u;
+    issued = weightd_mesh.issued[hband * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + hctrl->owner_rank];
+    for ( spin = 0u; spin < 64u && __atomic_load_n(&SparkWeightdMeshWireWaiters,__ATOMIC_ACQUIRE) == 0u; spin++ )
+    {
+        if ( __atomic_load_n(&hctrl->trigger[0].seq,__ATOMIC_ACQUIRE) > issued ||
+             __atomic_load_n(&hctrl->trigger[1].seq,__ATOMIC_ACQUIRE) > issued )
+        {
+            uint32_t work = SparkWeightdMeshHybridPollLocked(*now_ns);
+            if ( work != 0u )
+            {
+                *repair_out |= SparkWeightdMeshDrainCqLocked(*now_ns);
+                *now_ns = SparkMonotonicNs();
+                weightd_mesh.work_ns = *now_ns;
+            }
+            return work;
+        }
+    }
+    return 0u;
+}
+
 void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu)
 {
     SparkWeightdMeshPollingThread = 1u;
@@ -4666,7 +4636,13 @@ void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu)
         now_ns = SparkMonotonicNs();
         while ( __atomic_load_n(&SparkWeightdMeshWireWaiters,__ATOMIC_ACQUIRE) == 0u )
         {
-            uint32_t repair = 0u,work = SparkWeightdMeshDoorbellPollLocked(now_ns,&repair);
+            uint32_t repair = 0u,work;
+            if ( SparkWeightdMeshHybridFastSpinLocked(&now_ns,&repair_needed) != 0u )
+            {
+                empty = 0u;
+                continue;
+            }
+            work = SparkWeightdMeshDoorbellPollLocked(now_ns,&repair);
             repair_needed |= repair;
             if ( work != 0u )
             {

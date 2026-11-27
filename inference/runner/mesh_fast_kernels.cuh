@@ -129,10 +129,10 @@ static __device__ __forceinline__ uint16_t SparkTpLdCvU16(const volatile void *a
     return (uint16_t)v;
 }
 
-static __device__ __forceinline__ uint32_t SparkTpLdAcquireSysU32(const volatile void *address)
+static __device__ __forceinline__ uint32_t SparkTpLdcvU32(const volatile void *address)
 {
     uint32_t v;
-    asm volatile("ld.acquire.sys.global.u32 %0,[%1];" : "=r"(v) : "l"(address) : "memory");
+    asm volatile("ld.global.cv.u32 %0,[%1];" : "=r"(v) : "l"(address) : "memory");
     return v;
 }
 
@@ -141,9 +141,14 @@ static __device__ __forceinline__ void SparkTpStVolatileU32(volatile void *addre
     asm volatile("st.volatile.global.u32 [%0],%1;" :: "l"(address),"r"(v) : "memory");
 }
 
-static __device__ __forceinline__ void SparkTpStReleaseSysU32(volatile void *address,uint32_t v)
+static __device__ __forceinline__ void SparkTpStVolatileU64(volatile void *address,uint64_t v)
 {
-    asm volatile("st.release.sys.global.u32 [%0],%1;" :: "l"(address),"r"(v) : "memory");
+    asm volatile("st.volatile.global.u64 [%0],%1;" :: "l"(address),"l"((unsigned long long)v) : "memory");
+}
+
+static __device__ __forceinline__ void SparkTpStU128(void *address,uint4 v)
+{
+    asm volatile("st.global.v4.u32 [%0],{%1,%2,%3,%4};" :: "l"(address),"r"(v.x),"r"(v.y),"r"(v.z),"r"(v.w) : "memory");
 }
 
 static __device__ __forceinline__ uint32_t SparkTpBe32(uint32_t v)
@@ -397,6 +402,7 @@ struct SparkTpMeshHybridGrant
     uint32_t num_bb;
     uint32_t is_inline;
     uint32_t peer_count;
+    uint32_t pi[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
 };
 
 #define SPARK_TP_MESH_FAST_2D_CAP_ELEMENTS (16u * ((((SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES - 8u) / sizeof(uint16_t)) / 4u) & ~UINT64_C(15)))
@@ -405,34 +411,40 @@ struct SparkTpMeshHybridGrant
 #define SPARK_TP_MESH_FAST_PRIOR_FULL_STAGING_FLAG (UINT64_C(1) << 62u)
 #define SPARK_TP_MESH_FAST_PRIOR_FLAGS_MASK (SPARK_TP_MESH_FAST_PRIOR_CPU_FLAG | SPARK_TP_MESH_FAST_PRIOR_FULL_STAGING_FLAG)
 
-static __device__ __forceinline__ SparkTpMeshHybridGrant SparkTpMeshHybridAcquireWarp0(
+static __device__ __forceinline__ void SparkTpMeshHybridAcquireWarp0(
     const SparkTpMeshRoundControl *control,SparkWeightdMeshHybridCtrl *ctrl,
     uint32_t hybrid_band,uint32_t degree,uint32_t rank,
-    uint32_t peer_mask,uint32_t xfer_len,uint32_t allow_inline,uint32_t allow_dma)
+    uint32_t peer_mask,uint32_t xfer_len,uint32_t allow_inline,uint32_t allow_dma,
+    uint32_t skip_cpu_check,uint64_t seq,uint64_t slot,uint64_t bytes,SparkTpMeshHybridGrant &s_hyb)
 {
-    SparkTpMeshHybridGrant g = { 0u, 0u, 0u, 0u, 0u, 0u };
     const uint32_t lane = threadIdx.x & 31u;
+    if ( lane == 0u ) s_hyb.ok = 0u;
     if ( ctrl == 0 || peer_mask == 0u || xfer_len == 0u )
-        return g;
+        return;
     if ( lane == 0u )
     {
-        SparkTpStReleaseSysU64(&ctrl->gpu_busy,1u);
+        SparkTpStVolatileU64(&ctrl->gpu_busy,1u);
         __threadfence_system();
     }
     __syncwarp();
     uint32_t pre_ok = 0u,pcount = 0u,num_bb = 0u,ds = 0u,is_inl = 0u,gen = 0u;
     if ( lane == 0u )
     {
-        const uint64_t rseq = control != 0 ? SparkTpLdcvU64(&control->round_seq) : 0u;
-        const volatile uint64_t *shipped = control != 0 ? (const volatile uint64_t *)(uintptr_t)control->shipped_cell : 0;
-        const uint64_t t0 = SparkTpLdAcquireU64(&ctrl->trigger[0].seq);
-        const uint64_t t1 = SparkTpLdAcquireU64(&ctrl->trigger[1].seq);
-        const uint64_t issued = SparkTpLdAcquireU64(&ctrl->cpu_issued_seq);
-        const uint32_t prior_is_hybrid = rseq != 0u && (rseq == t0 || rseq == t1) ? 1u : 0u;
-        const uint32_t cpu_pending = rseq != 0u && prior_is_hybrid == 0u &&
-            issued < rseq && (shipped == 0 || SparkTpLdAcquireU64(shipped) != rseq) ? 1u : 0u;
         const uint64_t mode = SparkTpLdAcquireU64(&ctrl->cpu_mode);
-        gen = (uint32_t)SparkTpLdAcquireU64(&ctrl->grant_gen);
+        gen = (uint32_t)SparkTpLdcvU64(&ctrl->grant_gen);
+        const uint64_t issued = SparkTpLdcvU64(&ctrl->cpu_issued_seq);
+        uint32_t cpu_pending = 0u;
+        if ( skip_cpu_check == 0u && control != 0 )
+        {
+            const uint64_t rseq = SparkTpLdcvU64(&control->round_seq);
+            if ( rseq != 0u && issued < rseq &&
+                 SparkTpLdAcquireU64(&ctrl->trigger[rseq & 1u].seq) != rseq )
+            {
+                const volatile uint64_t *shipped = (const volatile uint64_t *)(uintptr_t)control->shipped_cell;
+                if ( shipped == 0 || SparkTpLdAcquireU64(shipped) != rseq )
+                    cpu_pending = 1u;
+            }
+        }
         pcount = ctrl->peer_count;
         if ( cpu_pending == 0u && mode == 1u && gen != 0u && ctrl->owner_band == hybrid_band &&
              ctrl->degree == degree && ctrl->owner_rank == rank &&
@@ -452,148 +464,165 @@ static __device__ __forceinline__ SparkTpMeshHybridGrant SparkTpMeshHybridAcquir
     pre_ok = __shfl_sync(0xffffffffu,pre_ok,0);
     pcount = __shfl_sync(0xffffffffu,pcount,0);
     num_bb = __shfl_sync(0xffffffffu,num_bb,0);
-    uint32_t credit_ok = 1u;
+    uint32_t credit_ok = 1u,active_peer = 0u,pi = 0u,wrs = 0u;
     if ( pre_ok != 0u && lane < pcount )
     {
         const uint32_t target = ctrl->peers[lane].target;
         if ( (peer_mask & (1u << target)) != 0u )
         {
-            const uint32_t pi = SparkTpLdAcquireSysU32(&ctrl->gpu_pi[lane]);
-            const uint32_t wrs = SparkTpLdAcquireSysU32(&ctrl->gpu_wrs[lane]);
-            const uint32_t sq_lim = SparkTpLdAcquireSysU32(&ctrl->cpu_sq_limit[lane]);
-            const uint32_t wr_lim = SparkTpLdAcquireSysU32(&ctrl->cpu_wr_limit[lane]);
+            active_peer = 1u;
+            pi = SparkTpLdcvU32(&ctrl->gpu_pi[lane]);
+            wrs = SparkTpLdcvU32(&ctrl->gpu_wrs[lane]);
+            const uint32_t sq_lim = SparkTpLdcvU32(&ctrl->cpu_sq_limit[lane]);
+            const uint32_t wr_lim = SparkTpLdcvU32(&ctrl->cpu_wr_limit[lane]);
             if ( (uint32_t)(sq_lim - pi) < num_bb || (uint32_t)(wr_lim - wrs) < 1u )
                 credit_ok = 0u;
         }
     }
-    const uint32_t all_ok = pre_ok != 0u && __all_sync(0xffffffffu,credit_ok != 0u) ? 1u : 0u;
-    if ( all_ok == 0u )
+    if ( pre_ok == 0u || !__all_sync(0xffffffffu,credit_ok != 0u) )
     {
         if ( lane == 0u )
             SparkTpStReleaseSysU64(&ctrl->gpu_busy,0u);
-        return g;
+        return;
     }
-    g.ok = 1u;
-    g.gen = __shfl_sync(0xffffffffu,gen,0);
-    g.ds = __shfl_sync(0xffffffffu,ds,0);
-    g.num_bb = num_bb;
-    g.is_inline = __shfl_sync(0xffffffffu,is_inl,0);
-    g.peer_count = pcount;
-    return g;
+    if ( active_peer != 0u )
+    {
+        s_hyb.pi[lane] = pi;
+        ctrl->gpu_pi[lane] = pi + num_bb;
+        ctrl->gpu_wrs[lane] = wrs + 1u;
+    }
+    if ( lane == 0u )
+    {
+        SparkWeightdMeshHybridTrigger *trig = &ctrl->trigger[seq & 1u];
+        s_hyb.ok = 1u;
+        s_hyb.gen = gen;
+        s_hyb.ds = ds;
+        s_hyb.num_bb = num_bb;
+        s_hyb.is_inline = is_inl;
+        s_hyb.peer_count = pcount;
+        trig->meta = SparkWeightdMeshHybridMetaPack(peer_mask,ds,num_bb,gen);
+        trig->slot = slot;
+        trig->bytes = bytes;
+    }
+}
+
+static __device__ __forceinline__ uint32_t SparkTpMeshHybridInlineWord(
+    const uint16_t *src16,uint64_t src_elems,uint32_t n_u32,uint32_t inl_hdr,uint64_t tag,uint32_t k)
+{
+    if ( k == 0u ) return inl_hdr;
+    if ( k <= n_u32 )
+    {
+        const uint64_t e = (uint64_t)(k - 1u) * 2u;
+        const uint32_t lo = e < src_elems ? (uint32_t)src16[e] : 0u;
+        const uint32_t hi = e + 1u < src_elems ? (uint32_t)src16[e + 1u] : 0u;
+        return lo | (hi << 16u);
+    }
+    if ( k == n_u32 + 1u ) return (uint32_t)tag;
+    if ( k == n_u32 + 2u ) return (uint32_t)(tag >> 32u);
+    return 0u;
 }
 
 static __device__ __forceinline__ void SparkTpMeshHybridWriteInlineWqe(
-    uint8_t *shm,const SparkWeightdMeshHybridPeer &hp,uint32_t pi,uint32_t ds,
-    uint64_t slot_base,const uint16_t *src16,uint64_t src_elems,uint64_t bytes,uint64_t tag,
-    uint32_t lane,uint32_t lanes)
+    uint8_t *shm,const SparkWeightdMeshHybridPeer *hp,uint32_t pi,uint32_t ds,
+    uint64_t slot_base,const uint16_t *src16,uint64_t src_elems,uint64_t bytes,uint64_t tag,uint32_t lane)
 {
-    uint8_t *sq_base = shm + hp.sq_shm_off;
-    const uint32_t sq_idx = pi & hp.sq_mask;
+    uint4 *sq_vec = (uint4 *)(shm + hp->sq_shm_off);
+    const uint32_t sq_idx = pi & hp->sq_mask;
+    const uint32_t sq_vec_mask = hp->sq_depth * 4u - 1u;
+    const uint32_t vec_base = sq_idx * 4u + 2u;
     const uint32_t xfer_len = (uint32_t)(bytes + 8u);
-    const uint32_t sq_bytes = hp.sq_depth * 64u;
-    const uint32_t sq_byte_mask = sq_bytes - 1u;
-    const uint32_t dst_off = sq_idx * 64u + 36u;
     const uint32_t n_u32 = (uint32_t)(bytes >> 2u);
+    const uint32_t n_vec = (n_u32 + 6u) >> 2u;
+    const uint32_t inl_hdr = SparkTpBe32(xfer_len | 0x80000000u);
     if ( lane == 0u )
     {
-        volatile uint4 *wqe = (volatile uint4 *)(sq_base + (uint64_t)sq_idx * 64u);
         const uint32_t w0 = SparkTpBe32(((pi & 0xffffu) << 8u) | 0x08u);
-        const uint32_t w1 = SparkTpBe32(hp.qpn_shifted | ds);
-        const uint64_t raddr_be = SparkTpBe64(hp.remote_base + slot_base);
-        SparkTpStVolatileU128(wqe,make_uint4(w0,w1,0x08000000u,0u));
-        SparkTpStVolatileU128(wqe + 1,make_uint4((uint32_t)raddr_be,(uint32_t)(raddr_be >> 32u),hp.rkey_be,0u));
-        SparkTpStVolatileU32(sq_base + (uint64_t)sq_idx * 64u + 32u,SparkTpBe32(xfer_len | 0x80000000u));
+        const uint32_t w1 = SparkTpBe32(hp->qpn_shifted | ds);
+        SparkTpStU128(&sq_vec[sq_idx * 4u],make_uint4(w0,w1,0x08000000u,0u));
     }
-    const uint32_t full_words = src_elems * 2u >= bytes && (((uintptr_t)src16 & 3u) == 0u) ? 1u : 0u;
-    if ( dst_off + xfer_len <= sq_bytes )
+    else if ( lane == 1u )
     {
-        volatile uint32_t *dst32 = (volatile uint32_t *)(sq_base + dst_off);
-        if ( full_words != 0u )
-        {
-            const uint32_t *src32 = (const uint32_t *)src16;
-            for ( uint32_t w = lane; w < n_u32; w += lanes )
-                SparkTpStVolatileU32(&dst32[w],src32[w]);
-        }
-        else
-        {
-            for ( uint32_t w = lane; w < n_u32; w += lanes )
-            {
-                const uint64_t e = (uint64_t)w * 2u;
-                const uint32_t lo = e < src_elems ? (uint32_t)src16[e] : 0u;
-                const uint32_t hi = e + 1u < src_elems ? (uint32_t)src16[e + 1u] : 0u;
-                SparkTpStVolatileU32(&dst32[w],lo | (hi << 16u));
-            }
-        }
-        if ( lane == 0u )
-        {
-            SparkTpStVolatileU32(&dst32[n_u32],(uint32_t)tag);
-            SparkTpStVolatileU32(&dst32[n_u32 + 1u],(uint32_t)(tag >> 32u));
-        }
+        const uint64_t raddr_be = SparkTpBe64(hp->remote_base + slot_base);
+        SparkTpStU128(&sq_vec[sq_idx * 4u + 1u],make_uint4((uint32_t)raddr_be,(uint32_t)(raddr_be >> 32u),hp->rkey_be,0u));
     }
-    else
+    if ( src_elems * 2u >= bytes && (((uintptr_t)src16 & 15u) == 0u) && (bytes & 7u) == 0u )
     {
-        for ( uint32_t w = lane; w < n_u32; w += lanes )
+        const uint4 *src4 = (const uint4 *)src16;
+        const uint32_t full_q = n_u32 >> 2u,rem = n_u32 & 3u;
+        const uint32_t tlo = (uint32_t)tag,thi = (uint32_t)(tag >> 32u);
+        uint32_t carry = inl_hdr;
+        for ( uint32_t base = 0u; base < n_vec; base += 32u )
         {
-            uint32_t val;
-            if ( full_words != 0u )
-                val = ((const uint32_t *)src16)[w];
-            else
-            {
-                const uint64_t e = (uint64_t)w * 2u;
-                const uint32_t lo = e < src_elems ? (uint32_t)src16[e] : 0u;
-                const uint32_t hi = e + 1u < src_elems ? (uint32_t)src16[e + 1u] : 0u;
-                val = lo | (hi << 16u);
-            }
-            SparkTpStVolatileU32(sq_base + ((dst_off + w * 4u) & sq_byte_mask),val);
+            const uint32_t v = base + lane;
+            uint4 cur = make_uint4(0u,0u,0u,0u);
+            if ( v < full_q )
+                cur = src4[v];
+            else if ( v == full_q )
+                cur = rem != 0u ? make_uint4(((const uint32_t *)src16)[full_q * 4u],((const uint32_t *)src16)[full_q * 4u + 1u],tlo,thi) :
+                    make_uint4(tlo,thi,0u,0u);
+            const uint32_t prev = __shfl_up_sync(0xffffffffu,cur.w,1);
+            const uint32_t w0 = lane == 0u ? carry : prev;
+            carry = __shfl_sync(0xffffffffu,cur.w,31);
+            if ( v < n_vec )
+                SparkTpStU128(&sq_vec[(vec_base + v) & sq_vec_mask],make_uint4(w0,cur.x,cur.y,cur.z));
         }
-        if ( lane == 0u )
-        {
-            SparkTpStVolatileU32(sq_base + ((dst_off + (uint32_t)bytes) & sq_byte_mask),(uint32_t)tag);
-            SparkTpStVolatileU32(sq_base + ((dst_off + (uint32_t)bytes + 4u) & sq_byte_mask),(uint32_t)(tag >> 32u));
-        }
+        return;
+    }
+    for ( uint32_t v = lane; v < n_vec; v += 32u )
+    {
+        const uint32_t k = v * 4u;
+        SparkTpStU128(&sq_vec[(vec_base + v) & sq_vec_mask],make_uint4(
+            SparkTpMeshHybridInlineWord(src16,src_elems,n_u32,inl_hdr,tag,k),
+            SparkTpMeshHybridInlineWord(src16,src_elems,n_u32,inl_hdr,tag,k + 1u),
+            SparkTpMeshHybridInlineWord(src16,src_elems,n_u32,inl_hdr,tag,k + 2u),
+            SparkTpMeshHybridInlineWord(src16,src_elems,n_u32,inl_hdr,tag,k + 3u)));
     }
 }
 
 static __device__ __forceinline__ void SparkTpMeshHybridWriteDmaWqe(
-    uint8_t *shm,const SparkWeightdMeshHybridPeer &hp,uint32_t pi,
+    uint8_t *shm,const SparkWeightdMeshHybridPeer *hp,uint32_t pi,
     uint64_t slot_base,uint64_t local_iova,uint32_t lkey_be,uint32_t xfer_len)
 {
-    uint8_t *sq_base = shm + hp.sq_shm_off;
-    const uint32_t sq_idx = pi & hp.sq_mask;
-    volatile uint4 *wqe = (volatile uint4 *)(sq_base + (uint64_t)sq_idx * 64u);
+    uint4 *wqe = (uint4 *)(shm + hp->sq_shm_off + (uint64_t)(pi & hp->sq_mask) * 64u);
     const uint32_t w0 = SparkTpBe32(((pi & 0xffffu) << 8u) | 0x08u);
-    const uint32_t w1 = SparkTpBe32(hp.qpn_shifted | 3u);
-    const uint64_t raddr_be = SparkTpBe64(hp.remote_base + slot_base);
+    const uint32_t w1 = SparkTpBe32(hp->qpn_shifted | 3u);
+    const uint64_t raddr_be = SparkTpBe64(hp->remote_base + slot_base);
     const uint64_t iova_be = SparkTpBe64(local_iova);
-    SparkTpStVolatileU128(wqe,make_uint4(w0,w1,0x08000000u,0u));
-    SparkTpStVolatileU128(wqe + 1,make_uint4((uint32_t)raddr_be,(uint32_t)(raddr_be >> 32u),hp.rkey_be,0u));
-    SparkTpStVolatileU128(wqe + 2,make_uint4(SparkTpBe32(xfer_len),lkey_be,(uint32_t)iova_be,(uint32_t)(iova_be >> 32u)));
+    SparkTpStU128(wqe,make_uint4(w0,w1,0x08000000u,0u));
+    SparkTpStU128(wqe + 1,make_uint4((uint32_t)raddr_be,(uint32_t)(raddr_be >> 32u),hp->rkey_be,0u));
+    SparkTpStU128(wqe + 2,make_uint4(SparkTpBe32(xfer_len),lkey_be,(uint32_t)iova_be,(uint32_t)(iova_be >> 32u)));
 }
 
-static __device__ __forceinline__ void SparkTpMeshHybridCommitWarp0(
+static __device__ __forceinline__ void SparkTpMeshHybridWriteDmaWarps(
+    const SparkWeightdMeshHybridCtrl *ctrl,uint8_t *shm,const SparkTpMeshHybridGrant &s_hyb,
+    uint32_t peer_mask,uint32_t is_peer,uint64_t slot_base,uint64_t base_iova,uint32_t xfer_len,
+    uint32_t warp_id,uint32_t warps)
+{
+    for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
+    {
+        const SparkWeightdMeshHybridPeer *hp = &ctrl->peers[i];
+        if ( (peer_mask & (1u << hp->target)) == 0u ) continue;
+        SparkTpMeshHybridWriteDmaWqe(shm,hp,s_hyb.pi[i],slot_base,
+            is_peer != 0u ? (base_iova + hp->staging_peer_off) : base_iova,
+            is_peer != 0u ? hp->staging_lkey_be : hp->recv_lkey_be,xfer_len);
+    }
+}
+
+static __device__ __forceinline__ void SparkTpMeshHybridRingWarp0(
     SparkWeightdMeshHybridCtrl *ctrl,uint8_t *shm,const SparkTpMeshHybridGrant &g,
-    uint32_t peer_mask,uint64_t seq,uint64_t tag,uint64_t slot,uint64_t bytes)
+    uint32_t peer_mask,uint64_t seq,uint64_t tag)
 {
     const uint32_t lane = threadIdx.x & 31u;
-    const uint32_t dbr_shm = ctrl->dbrec_in_shm;
-    if ( lane < g.peer_count && (peer_mask & (1u << ctrl->peers[lane].target)) != 0u )
+    if ( ctrl->dbrec_in_shm != 0u )
     {
-        const uint32_t next_pi = SparkTpLdAcquireSysU32(&ctrl->gpu_pi[lane]) + g.num_bb;
-        const uint32_t next_wrs = SparkTpLdAcquireSysU32(&ctrl->gpu_wrs[lane]) + 1u;
-        SparkTpStReleaseSysU32(&ctrl->gpu_pi[lane],next_pi);
-        SparkTpStReleaseSysU32(&ctrl->gpu_wrs[lane],next_wrs);
-        if ( dbr_shm != 0u )
-            SparkTpStVolatileU32(shm + ctrl->peers[lane].dbrec_shm_off + 4u,SparkTpBe32(next_pi & 0xffffu));
+        if ( lane < g.peer_count && (peer_mask & (1u << ctrl->peers[lane].target)) != 0u )
+            SparkTpStVolatileU32(shm + ctrl->peers[lane].dbrec_shm_off + 4u,SparkTpBe32((g.pi[lane] + g.num_bb) & 0xffffu));
+        __threadfence_system();
+        __syncwarp();
     }
-    __threadfence_system();
-    __syncwarp();
     if ( lane == 0u )
     {
-        SparkWeightdMeshHybridTrigger *trig = &ctrl->trigger[seq & 1u];
-        trig->meta = SparkWeightdMeshHybridMetaPack(peer_mask,g.ds,g.num_bb,g.gen);
-        trig->slot = slot;
-        trig->bytes = bytes;
-        SparkTpStReleaseSysU64(&trig->seq,tag);
+        SparkTpStVolatileU64(&ctrl->trigger[seq & 1u].seq,tag);
         SparkTpStReleaseSysU64(&ctrl->gpu_busy,0u);
     }
 }
@@ -604,30 +633,31 @@ static __device__ __forceinline__ uint32_t SparkTpMeshHybridTryRingDmaWarp0(
     uint32_t peer_mask,uint32_t is_peer,uint64_t slot,uint64_t slot_bytes,
     uint64_t seq,uint64_t tag,uint64_t bytes,uint64_t half_off)
 {
+    __shared__ SparkTpMeshHybridGrant s_hyb;
     const uint32_t lane = threadIdx.x & 31u;
     if ( ctrl == 0 || shm == 0 || slot_bytes != SPARK_WEIGHTD_MESH_SLOT_BYTES )
         return 0u;
-    const SparkTpMeshHybridGrant g = SparkTpMeshHybridAcquireWarp0(
-        control,ctrl,hybrid_band,degree,rank,peer_mask,(uint32_t)(bytes + 8u),0u,1u);
-    if ( g.ok == 0u )
+    SparkTpMeshHybridAcquireWarp0(control,ctrl,hybrid_band,degree,rank,peer_mask,(uint32_t)(bytes + 8u),0u,1u,0u,seq,slot,bytes,s_hyb);
+    __syncwarp();
+    if ( s_hyb.ok == 0u )
         return 0u;
     const uint64_t slot_base = ((uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * slot_bytes;
     const uint64_t staging_band_iova = ctrl->staging_iova_base +
         (uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + half_off;
     const uint64_t recv_iova = ctrl->recv_iova_base + slot_base;
-    if ( lane < g.peer_count )
+    if ( lane < s_hyb.peer_count )
     {
-        const SparkWeightdMeshHybridPeer hp = ctrl->peers[lane];
-        if ( (peer_mask & (1u << hp.target)) != 0u )
+        const SparkWeightdMeshHybridPeer *hp = &ctrl->peers[lane];
+        if ( (peer_mask & (1u << hp->target)) != 0u )
         {
-            const uint64_t local_iova = is_peer != 0u ? (staging_band_iova + hp.staging_peer_off) : recv_iova;
-            const uint32_t lkey_be = is_peer != 0u ? hp.staging_lkey_be : hp.recv_lkey_be;
-            SparkTpMeshHybridWriteDmaWqe(shm,hp,SparkTpLdAcquireSysU32(&ctrl->gpu_pi[lane]),slot_base,local_iova,lkey_be,(uint32_t)(bytes + 8u));
+            const uint64_t local_iova = is_peer != 0u ? (staging_band_iova + hp->staging_peer_off) : recv_iova;
+            const uint32_t lkey_be = is_peer != 0u ? hp->staging_lkey_be : hp->recv_lkey_be;
+            SparkTpMeshHybridWriteDmaWqe(shm,hp,s_hyb.pi[lane],slot_base,local_iova,lkey_be,(uint32_t)(bytes + 8u));
         }
     }
     __threadfence_system();
     __syncwarp();
-    SparkTpMeshHybridCommitWarp0(ctrl,shm,g,peer_mask,seq,tag,slot,bytes);
+    SparkTpMeshHybridRingWarp0(ctrl,shm,s_hyb,peer_mask,seq,tag);
     return 1u;
 }
 
@@ -808,10 +838,7 @@ static __global__ void SparkTpMeshFastPublishKernel(
     const uint64_t slot = s_slot;
     if ( failed == 0u && s_compact != 0u && hybrid_ctrl != 0 && hybrid_shm != 0 &&
          slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES && tid < 32u )
-    {
-        SparkTpMeshHybridGrant g = SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,s_peer_mask,(uint32_t)(bytes + 8u),1u,1u);
-        if ( tid == 0u ) s_hyb = g;
-    }
+        SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,s_peer_mask,(uint32_t)(bytes + 8u),1u,1u,0u,s_seq,slot,bytes,s_hyb);
     __syncthreads();
     volatile uint8_t *destination = band + slot * slot_bytes;
     volatile uint64_t *cell = s_cap != 0u ? (entry + SPARK_WEIGHTD_MESH_DOORBELL_CELL_WORDS(s_seq)) : entry;
@@ -829,10 +856,10 @@ static __global__ void SparkTpMeshFastPublishKernel(
             }
             for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
             {
-                const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-                if ( (s_peer_mask & (1u << hp.target)) == 0u ) continue;
-                SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),s_hyb.ds,slot_base,
-                    (const uint16_t *)source,bytes >> 1u,bytes,s_tag,lane,32u);
+                const SparkWeightdMeshHybridPeer *hp = &hybrid_ctrl->peers[i];
+                if ( (s_peer_mask & (1u << hp->target)) == 0u ) continue;
+                SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,s_hyb.pi[i],s_hyb.ds,slot_base,
+                    (const uint16_t *)source,bytes >> 1u,bytes,s_tag,lane);
             }
         }
         else
@@ -845,21 +872,14 @@ static __global__ void SparkTpMeshFastPublishKernel(
                 if ( s_hyb.ok == 0u ) { cell[1] = bytes; cell[2] = slot; cell[3] = s_route; }
             }
             if ( s_hyb.ok != 0u && lane == 0u )
-            {
-                const uint64_t local_iova = hybrid_ctrl->recv_iova_base + slot_base;
-                for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
-                {
-                    const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-                    if ( (s_peer_mask & (1u << hp.target)) == 0u ) continue;
-                    SparkTpMeshHybridWriteDmaWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),slot_base,local_iova,hp.recv_lkey_be,(uint32_t)(bytes + 8u));
-                }
-            }
+                SparkTpMeshHybridWriteDmaWarps(hybrid_ctrl,hybrid_shm,s_hyb,s_peer_mask,0u,slot_base,
+                    hybrid_ctrl->recv_iova_base + slot_base,(uint32_t)(bytes + 8u),warp_id,warps);
         }
         __threadfence_system();
     }
     __syncthreads();
     if ( failed == 0u && s_hyb.ok != 0u && tid < 32u )
-        SparkTpMeshHybridCommitWarp0(hybrid_ctrl,hybrid_shm,s_hyb,s_peer_mask,s_seq,s_tag,slot,bytes);
+        SparkTpMeshHybridRingWarp0(hybrid_ctrl,hybrid_shm,s_hyb,s_peer_mask,s_seq,s_tag);
     if ( tid != 0u ) return;
     if ( failed != 0u && SparkTpLdcvU64(&control->error_word) == 0u ) control->error_word = UINT64_MAX;
     if ( failed == 0u && SparkTpLdcvU64(&control->error_word) == 0u )
@@ -1117,6 +1137,23 @@ static __device__ __forceinline__ void SparkTpMeshFastPeerStageSlice(
         *(volatile uint64_t *)((volatile uint8_t *)dst + doorbell_bytes) = tag;
 }
 
+static __device__ __forceinline__ void SparkTpMeshFastPeerStageAll(
+    uint8_t *band,uint64_t slot_bytes,uint64_t slot,
+    uint16_t *staging,uint64_t staging_slot_elements,uint64_t staging_half_elems,
+    const uint16_t *local,uint32_t degree,uint32_t rank,
+    uint64_t total_count,uint64_t src_stride,uint64_t slice,uint64_t doorbell_bytes,uint64_t tag,
+    uint32_t mode,uint32_t copy_self,uint32_t compact,uint32_t tid,uint32_t warp_id,uint32_t lane,uint32_t warps)
+{
+    if ( degree <= 4u )
+        for ( uint32_t p = 0u; p < degree; ++p )
+            SparkTpMeshFastPeerStageSlice(band,slot_bytes,slot,staging,staging_slot_elements,staging_half_elems,
+                local,rank,p,total_count,src_stride,slice,doorbell_bytes,tag,mode,copy_self,compact,tid,blockDim.x);
+    else
+        for ( uint32_t p = warp_id; p < degree; p += warps )
+            SparkTpMeshFastPeerStageSlice(band,slot_bytes,slot,staging,staging_slot_elements,staging_half_elems,
+                local,rank,p,total_count,src_stride,slice,doorbell_bytes,tag,mode,copy_self,compact,lane,32u);
+}
+
 static __global__ void SparkTpMeshFastPeerStageSmallKernel(
     uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,
     volatile uint64_t *entry,volatile SparkWeightdMeshWaitRequest *gate,
@@ -1178,10 +1215,7 @@ static __global__ void SparkTpMeshFastPeerStageSmallKernel(
     const uint64_t half_elems = s_half_elems;
     if ( failed == 0u && compact != 0u && hybrid_ctrl != 0 && hybrid_shm != 0 &&
          slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES && tid < 32u )
-    {
-        SparkTpMeshHybridGrant g = SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,s_peer_mask,(uint32_t)(doorbell_bytes + 8u),1u,1u);
-        if ( tid == 0u ) s_hyb = g;
-    }
+        SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,s_peer_mask,(uint32_t)(doorbell_bytes + 8u),1u,1u,0u,s_seq,slot,doorbell_bytes,s_hyb);
     __syncthreads();
     volatile uint64_t *cell = s_cap != 0u ? (entry + SPARK_WEIGHTD_MESH_DOORBELL_CELL_WORDS(s_seq)) : entry;
     if ( failed == 0u )
@@ -1194,31 +1228,21 @@ static __global__ void SparkTpMeshFastPeerStageSmallKernel(
                     local,rank,rank,total_count,src_stride,slice,doorbell_bytes,s_tag,mode,1u,compact,tid,blockDim.x);
             for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
             {
-                const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-                if ( (s_peer_mask & (1u << hp.target)) == 0u ) continue;
+                const SparkWeightdMeshHybridPeer *hp = &hybrid_ctrl->peers[i];
+                if ( (s_peer_mask & (1u << hp->target)) == 0u ) continue;
                 const uint64_t first = mode == 1u ?
-                    ((uint64_t)hp.target * slice < total_count ? (uint64_t)hp.target * slice : total_count) :
-                    (uint64_t)hp.target * src_stride;
+                    ((uint64_t)hp->target * slice < total_count ? (uint64_t)hp->target * slice : total_count) :
+                    (uint64_t)hp->target * src_stride;
                 const uint64_t length = mode == 1u ?
                     (total_count - first < slice ? total_count - first : slice) : slice;
-                SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),s_hyb.ds,slot_base,
-                    local + first,length,doorbell_bytes,s_tag,lane,32u);
+                SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,s_hyb.pi[i],s_hyb.ds,slot_base,
+                    local + first,length,doorbell_bytes,s_tag,lane);
             }
         }
         else
         {
-            if ( degree <= 4u )
-            {
-                for ( uint32_t p = 0u; p < degree; ++p )
-                    SparkTpMeshFastPeerStageSlice(band,slot_bytes,slot,staging,staging_slot_elements,half_elems,
-                        local,rank,p,total_count,src_stride,slice,doorbell_bytes,s_tag,mode,copy_self,compact,tid,blockDim.x);
-            }
-            else
-            {
-                for ( uint32_t p = warp_id; p < degree; p += warps )
-                    SparkTpMeshFastPeerStageSlice(band,slot_bytes,slot,staging,staging_slot_elements,half_elems,
-                        local,rank,p,total_count,src_stride,slice,doorbell_bytes,s_tag,mode,copy_self,compact,lane,32u);
-            }
+            SparkTpMeshFastPeerStageAll(band,slot_bytes,slot,staging,staging_slot_elements,half_elems,
+                local,degree,rank,total_count,src_stride,slice,doorbell_bytes,s_tag,mode,copy_self,compact,tid,warp_id,lane,warps);
             if ( tid == 0u )
             {
                 *(volatile uint64_t *)(band + slot * slot_bytes + (compact != 0u ? doorbell_bytes : slot_bytes - 8u)) = s_tag;
@@ -1230,23 +1254,15 @@ static __global__ void SparkTpMeshFastPeerStageSmallKernel(
                 }
             }
             if ( s_hyb.ok != 0u && lane == 0u )
-            {
-                const uint64_t staging_band_iova = hybrid_ctrl->staging_iova_base +
-                    (uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + half_elems * sizeof(uint16_t);
-                for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
-                {
-                    const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-                    if ( (s_peer_mask & (1u << hp.target)) == 0u ) continue;
-                    SparkTpMeshHybridWriteDmaWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),slot_base,
-                        staging_band_iova + hp.staging_peer_off,hp.staging_lkey_be,(uint32_t)(doorbell_bytes + 8u));
-                }
-            }
+                SparkTpMeshHybridWriteDmaWarps(hybrid_ctrl,hybrid_shm,s_hyb,s_peer_mask,1u,slot_base,
+                    hybrid_ctrl->staging_iova_base + (uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + half_elems * sizeof(uint16_t),
+                    (uint32_t)(doorbell_bytes + 8u),warp_id,warps);
         }
         __threadfence_system();
     }
     __syncthreads();
     if ( failed == 0u && s_hyb.ok != 0u && tid < 32u )
-        SparkTpMeshHybridCommitWarp0(hybrid_ctrl,hybrid_shm,s_hyb,s_peer_mask,s_seq,s_tag,slot,doorbell_bytes);
+        SparkTpMeshHybridRingWarp0(hybrid_ctrl,hybrid_shm,s_hyb,s_peer_mask,s_seq,s_tag);
     if ( tid != 0u ) return;
     if ( failed != 0u && SparkTpLdcvU64(&control->error_word) == 0u ) control->error_word = UINT64_MAX;
     if ( failed == 0u && SparkTpLdcvU64(&control->error_word) == 0u )
@@ -2351,44 +2367,23 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishRs(
     SparkWeightdMeshRoute r;
     r.word = rs_route;
     const uint32_t peer_mask = (uint32_t)r.fields.peer_mask;
-    if ( compact != 0u && hybrid_ctrl != 0 && hybrid_shm != 0 && slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES )
-    {
-        if ( tid < 32u )
-        {
-            SparkTpMeshHybridGrant g = SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,peer_mask,(uint32_t)(in_bytes + 8u),1u,1u);
-            if ( tid == 0u ) s_hyb = g;
-        }
-    }
-    else if ( tid == 0u )
-        s_hyb.ok = 0u;
-    __syncthreads();
     const uint64_t slot_base = ((uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + rs_slot) * slot_bytes;
     if ( s_hyb.ok != 0u && s_hyb.is_inline != 0u )
     {
         for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
         {
-            const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-            if ( (peer_mask & (1u << hp.target)) == 0u ) continue;
-            const uint64_t p_first = (uint64_t)hp.target * slice < count ? (uint64_t)hp.target * slice : count;
+            const SparkWeightdMeshHybridPeer *hp = &hybrid_ctrl->peers[i];
+            if ( (peer_mask & (1u << hp->target)) == 0u ) continue;
+            const uint64_t p_first = (uint64_t)hp->target * slice < count ? (uint64_t)hp->target * slice : count;
             const uint64_t p_len = count - p_first < slice ? count - p_first : slice;
-            SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),s_hyb.ds,slot_base,
-                local_begin + p_first,p_len,in_bytes,rs_tag,lane,32u);
+            SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,s_hyb.pi[i],s_hyb.ds,slot_base,
+                local_begin + p_first,p_len,in_bytes,rs_tag,lane);
         }
     }
     else
     {
-        if ( degree <= 4u )
-        {
-            for ( uint32_t p = 0u; p < degree; ++p )
-                SparkTpMeshFastPeerStageSlice(band,slot_bytes,rs_slot,staging,staging_slot_elements,half_elems,
-                    local_begin,rank,p,count,0u,slice,in_bytes,rs_tag,1u,0u,compact,tid,blockDim.x);
-        }
-        else
-        {
-            for ( uint32_t p = warp_id; p < degree; p += warps )
-                SparkTpMeshFastPeerStageSlice(band,slot_bytes,rs_slot,staging,staging_slot_elements,half_elems,
-                    local_begin,rank,p,count,0u,slice,in_bytes,rs_tag,1u,0u,compact,lane,32u);
-        }
+        SparkTpMeshFastPeerStageAll(band,slot_bytes,rs_slot,staging,staging_slot_elements,half_elems,
+            local_begin,degree,rank,count,0u,slice,in_bytes,rs_tag,1u,0u,compact,tid,warp_id,lane,warps);
         if ( tid == 0u )
         {
             *(volatile uint64_t *)(band + rs_slot * slot_bytes + in_tail_off) = rs_tag;
@@ -2401,22 +2396,14 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishRs(
             }
         }
         if ( s_hyb.ok != 0u && lane == 0u )
-        {
-            const uint64_t staging_band_iova = hybrid_ctrl->staging_iova_base +
-                (uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + half_elems * sizeof(uint16_t);
-            for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
-            {
-                const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-                if ( (peer_mask & (1u << hp.target)) == 0u ) continue;
-                SparkTpMeshHybridWriteDmaWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),slot_base,
-                    staging_band_iova + hp.staging_peer_off,hp.staging_lkey_be,(uint32_t)(in_bytes + 8u));
-            }
-        }
+            SparkTpMeshHybridWriteDmaWarps(hybrid_ctrl,hybrid_shm,s_hyb,peer_mask,1u,slot_base,
+                hybrid_ctrl->staging_iova_base + (uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES + half_elems * sizeof(uint16_t),
+                (uint32_t)(in_bytes + 8u),warp_id,warps);
     }
     __threadfence_system();
     __syncthreads();
     if ( s_hyb.ok != 0u && tid < 32u )
-        SparkTpMeshHybridCommitWarp0(hybrid_ctrl,hybrid_shm,s_hyb,peer_mask,rs_seq,rs_tag,rs_slot,in_bytes);
+        SparkTpMeshHybridRingWarp0(hybrid_ctrl,hybrid_shm,s_hyb,peer_mask,rs_seq,rs_tag);
     if ( tid == 0u )
     {
         control->round_seq_prior = SparkTpLdcvU64(&control->round_seq) | (s_hyb.ok != 0u ? 0u : SPARK_TP_MESH_FAST_PRIOR_CPU_FLAG);
@@ -2441,7 +2428,7 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishAg(
     uint32_t degree,uint32_t rank,uint32_t vecs,const uint4 *smem_row,
     uint64_t rs_tag,uint64_t ag_seq,uint64_t ag_tag,uint64_t ag_slot,
     uint64_t ag_doorbell_bytes,uint64_t ag_route,uint64_t ag_tail_off,
-    uint32_t cap,uint32_t ag_compact,uint64_t timeout_ns,
+    uint32_t cap,uint32_t ag_compact,uint64_t timeout_ns,uint32_t rs_was_hybrid,
     SparkWeightdMeshHybridCtrl *hybrid_ctrl,uint8_t *hybrid_shm,uint32_t hybrid_band,
     SparkTpMeshHybridGrant &s_hyb,uint32_t &s_failed,volatile uint64_t &s_wait_start,uint64_t &s_arr_end)
 {
@@ -2451,40 +2438,44 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishAg(
     SparkWeightdMeshRoute r;
     r.word = ag_route;
     const uint32_t peer_mask = (uint32_t)r.fields.peer_mask;
-    if ( tid == 0u )
-    {
-        const volatile uint64_t *shipped_cell = (const volatile uint64_t *)(uintptr_t)control->shipped_cell;
-        const uint32_t ag_ready = shipped_cell != 0 &&
-            SparkTpMeshFastShippedAccepts(control,SparkTpLdcvU64(shipped_cell),cap) != 0u ? 1u : 0u;
-        if ( ag_ready == 0u )
-        {
-            SparkTpMeshFastShipWait(gate,control,timeout_ns,cap);
-            if ( SparkTpLdcvU64(&control->error_word) != 0u )
-                s_failed = 1u;
-        }
-        s_hyb.ok = 0u;
-    }
-    __syncthreads();
-    if ( s_failed != 0u ) return;
     const uint32_t smem_inline_ok = vecs <= 128u && ag_doorbell_bytes == (uint64_t)vecs * 16u ? 1u : 0u;
     if ( ag_compact != 0u && hybrid_ctrl != 0 && hybrid_shm != 0 &&
-         slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES && tid < 32u )
+         slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES )
     {
-        SparkTpMeshHybridGrant g = SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,peer_mask,
-            (uint32_t)(ag_doorbell_bytes + 8u),smem_inline_ok,1u);
-        if ( tid == 0u ) s_hyb = g;
+        if ( tid < 32u )
+            SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,peer_mask,
+                (uint32_t)(ag_doorbell_bytes + 8u),smem_inline_ok,1u,rs_was_hybrid,ag_seq,ag_slot,ag_doorbell_bytes,s_hyb);
     }
+    else if ( tid == 0u )
+        s_hyb.ok = 0u;
     __syncthreads();
+    if ( s_hyb.ok == 0u )
+    {
+        if ( tid == 0u )
+        {
+            const volatile uint64_t *shipped_cell = (const volatile uint64_t *)(uintptr_t)control->shipped_cell;
+            const uint32_t ag_ready = shipped_cell != 0 &&
+                SparkTpMeshFastShippedAccepts(control,SparkTpLdcvU64(shipped_cell),cap) != 0u ? 1u : 0u;
+            if ( ag_ready == 0u )
+            {
+                SparkTpMeshFastShipWait(gate,control,timeout_ns,cap);
+                if ( SparkTpLdcvU64(&control->error_word) != 0u )
+                    s_failed = 1u;
+            }
+        }
+        __syncthreads();
+        if ( s_failed != 0u ) return;
+    }
     const uint64_t slot_base = ((uint64_t)hybrid_band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + ag_slot) * slot_bytes;
     if ( s_hyb.ok != 0u && s_hyb.is_inline != 0u )
     {
         const uint16_t *src16 = (const uint16_t *)smem_row;
         for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
         {
-            const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-            if ( (peer_mask & (1u << hp.target)) == 0u ) continue;
-            SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),s_hyb.ds,slot_base,
-                src16,(uint64_t)vecs * 8u,ag_doorbell_bytes,ag_tag,lane,32u);
+            const SparkWeightdMeshHybridPeer *hp = &hybrid_ctrl->peers[i];
+            if ( (peer_mask & (1u << hp->target)) == 0u ) continue;
+            SparkTpMeshHybridWriteInlineWqe(hybrid_shm,hp,s_hyb.pi[i],s_hyb.ds,slot_base,
+                src16,(uint64_t)vecs * 8u,ag_doorbell_bytes,ag_tag,lane);
         }
     }
     else
@@ -2503,21 +2494,13 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishAg(
             }
         }
         if ( s_hyb.ok != 0u && lane == 0u )
-        {
-            const uint64_t local_iova = hybrid_ctrl->recv_iova_base + slot_base;
-            for ( uint32_t i = warp_id; i < s_hyb.peer_count; i += warps )
-            {
-                const SparkWeightdMeshHybridPeer hp = hybrid_ctrl->peers[i];
-                if ( (peer_mask & (1u << hp.target)) == 0u ) continue;
-                SparkTpMeshHybridWriteDmaWqe(hybrid_shm,hp,SparkTpLdAcquireSysU32(&hybrid_ctrl->gpu_pi[i]),slot_base,
-                    local_iova,hp.recv_lkey_be,(uint32_t)(ag_doorbell_bytes + 8u));
-            }
-        }
+            SparkTpMeshHybridWriteDmaWarps(hybrid_ctrl,hybrid_shm,s_hyb,peer_mask,0u,slot_base,
+                hybrid_ctrl->recv_iova_base + slot_base,(uint32_t)(ag_doorbell_bytes + 8u),warp_id,warps);
     }
     __threadfence_system();
     __syncthreads();
     if ( s_hyb.ok != 0u && tid < 32u )
-        SparkTpMeshHybridCommitWarp0(hybrid_ctrl,hybrid_shm,s_hyb,peer_mask,ag_seq,ag_tag,ag_slot,ag_doorbell_bytes);
+        SparkTpMeshHybridRingWarp0(hybrid_ctrl,hybrid_shm,s_hyb,peer_mask,ag_seq,ag_tag);
     if ( tid == 0u )
     {
         const uint64_t end_ns = SparkTpFastTimerNs();
@@ -2571,40 +2554,64 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     const uint32_t tid = threadIdx.x;
     const uint32_t warp_id = tid >> 5u,lane = tid & 31u,warps = blockDim.x >> 5u;
     LmDependentWait();
-    if ( tid == 0u )
+    if ( tid < 32u )
     {
-        s_started = SparkTpFastTimerNs();
-        const uint64_t prev_seq = SparkTpLdcvU64(&control->seq);
-        const uint64_t epoch = SparkTpLdcvU64(&control->epoch);
-        uint32_t failed = SparkTpLdcvU64(&control->error_word) != 0u || prev_seq > UINT32_MAX - 2u ? 1u : 0u;
-        const uint64_t rs_seq = prev_seq + 1u;
-        const uint64_t ag_seq = prev_seq + 2u;
-        const uint64_t rs_slot = (uint64_t)rank * slots_per_rank + ((rs_seq - 1u) & (slots_per_rank - 1u));
-        const uint64_t ag_slot = (uint64_t)rank * slots_per_rank + ((ag_seq - 1u) & (slots_per_rank - 1u));
-        const uint32_t cap = SparkTpMeshFastCompactCap(gate);
-        const uint32_t compact = cap != 0u && in_bytes != 0u && (in_bytes & 7u) == 0u &&
-            in_bytes + 8u <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES && in_bytes <= slot_bytes - 16u ? 1u : 0u;
-        const uint32_t use_half = compact != 0u && in_bytes + 8u <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES ? 1u : 0u;
-        const uint32_t ag_compact = cap != 0u && ag_doorbell_bytes != 0u && (ag_doorbell_bytes & 7u) == 0u &&
-            ag_doorbell_bytes <= slot_bytes - 16u ? 1u : 0u;
-        s_rs_seq = rs_seq;
-        s_rs_tag = (epoch << 32u) | rs_seq;
-        s_rs_slot = rs_slot;
-        s_ag_seq = ag_seq;
-        s_ag_tag = (epoch << 32u) | ag_seq;
-        s_ag_slot = ag_slot;
-        s_cap = cap;
-        s_compact = compact;
-        s_ag_compact = ag_compact;
-        s_half_elems = use_half != 0u ? (SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(rs_slot) / sizeof(uint16_t)) : 0u;
-        s_in_tail_off = compact != 0u ? in_bytes : slot_bytes - 8u;
-        s_ag_tail_off = ag_compact != 0u ? ag_doorbell_bytes : slot_bytes - 8u;
-        if ( failed == 0u )
+        uint32_t failed = 0u,compact = 0u,use_half = 0u,try_inl_first = 0u;
+        uint64_t rs_seq = 0u,rs_slot = 0u;
+        if ( tid == 0u )
         {
-            SparkTpMeshFastShipWait(gate,control,timeout_ns,SparkTpMeshFastStagingAllowPrior(control,use_half));
-            if ( SparkTpLdcvU64(&control->error_word) != 0u ) failed = 1u;
+            s_started = SparkTpFastTimerNs();
+            const uint64_t prev_seq = SparkTpLdcvU64(&control->seq);
+            const uint64_t epoch = SparkTpLdcvU64(&control->epoch);
+            failed = SparkTpLdcvU64(&control->error_word) != 0u || prev_seq > UINT32_MAX - 2u ? 1u : 0u;
+            rs_seq = prev_seq + 1u;
+            const uint64_t ag_seq = prev_seq + 2u;
+            rs_slot = (uint64_t)rank * slots_per_rank + ((rs_seq - 1u) & (slots_per_rank - 1u));
+            const uint64_t ag_slot = (uint64_t)rank * slots_per_rank + ((ag_seq - 1u) & (slots_per_rank - 1u));
+            const uint32_t cap = SparkTpMeshFastCompactCap(gate);
+            compact = cap != 0u && in_bytes != 0u && (in_bytes & 7u) == 0u &&
+                in_bytes + 8u <= SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES && in_bytes <= slot_bytes - 16u ? 1u : 0u;
+            use_half = compact != 0u && in_bytes + 8u <= SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES ? 1u : 0u;
+            const uint32_t ag_compact = cap != 0u && ag_doorbell_bytes != 0u && (ag_doorbell_bytes & 7u) == 0u &&
+                ag_doorbell_bytes <= slot_bytes - 16u ? 1u : 0u;
+            s_rs_seq = rs_seq;
+            s_rs_tag = (epoch << 32u) | rs_seq;
+            s_rs_slot = rs_slot;
+            s_ag_seq = ag_seq;
+            s_ag_tag = (epoch << 32u) | ag_seq;
+            s_ag_slot = ag_slot;
+            s_cap = cap;
+            s_compact = compact;
+            s_ag_compact = ag_compact;
+            s_half_elems = use_half != 0u ? (SPARK_WEIGHTD_MESH_STAGING_HALF_OFFSET(rs_slot) / sizeof(uint16_t)) : 0u;
+            s_in_tail_off = compact != 0u ? in_bytes : slot_bytes - 8u;
+            s_ag_tail_off = ag_compact != 0u ? ag_doorbell_bytes : slot_bytes - 8u;
+            try_inl_first = failed == 0u && compact != 0u && hybrid_ctrl != 0 && hybrid_shm != 0 &&
+                slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES && (in_bytes + 8u) <= hybrid_ctrl->min_max_inline ? 1u : 0u;
+            if ( failed == 0u && try_inl_first == 0u )
+            {
+                SparkTpMeshFastShipWait(gate,control,timeout_ns,SparkTpMeshFastStagingAllowPrior(control,use_half));
+                if ( SparkTpLdcvU64(&control->error_word) != 0u ) failed = 1u;
+            }
+            s_hyb.ok = 0u;
+            s_failed = failed;
         }
-        s_failed = failed;
+        failed = __shfl_sync(0xffffffffu,failed,0);
+        compact = __shfl_sync(0xffffffffu,compact,0);
+        try_inl_first = __shfl_sync(0xffffffffu,try_inl_first,0);
+        if ( failed == 0u && compact != 0u && hybrid_ctrl != 0 && hybrid_shm != 0 &&
+             slot_bytes == SPARK_WEIGHTD_MESH_SLOT_BYTES )
+        {
+            SparkWeightdMeshRoute r;
+            r.word = rs_route;
+            SparkTpMeshHybridAcquireWarp0(control,hybrid_ctrl,hybrid_band,degree,rank,(uint32_t)r.fields.peer_mask,
+                (uint32_t)(in_bytes + 8u),1u,try_inl_first == 0u ? 1u : 0u,0u,s_rs_seq,s_rs_slot,in_bytes,s_hyb);
+            if ( tid == 0u && try_inl_first != 0u && s_hyb.ok == 0u )
+            {
+                SparkTpMeshFastShipWait(gate,control,timeout_ns,SparkTpMeshFastStagingAllowPrior(control,use_half));
+                if ( SparkTpLdcvU64(&control->error_word) != 0u ) s_failed = 1u;
+            }
+        }
     }
     __syncthreads();
     if ( s_failed != 0u )
@@ -2627,6 +2634,7 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
         local + begin,degree,rank,count,slice,in_bytes,rs_route,
         rs_seq,rs_tag,rs_slot,s_half_elems,s_in_tail_off,cap,compact,s_started,
         hybrid_ctrl,hybrid_shm,hybrid_band,s_hyb,s_wait_start,s_arr_end);
+    const uint32_t rs_was_hybrid = s_hyb.ok;
     const uint64_t stride = slots_per_rank * slot_bytes;
     const uint8_t *rs_base = band + rs_ring * slot_bytes;
     const uint32_t vecs = (uint32_t)(span >> 3u);
@@ -2758,7 +2766,7 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     }
     SparkTpMeshFastRsagPublishAg(band,slot_bytes,entry,gate,control,degree,rank,vecs,&staged[0u][0u],
         rs_tag,ag_seq,ag_tag,ag_slot,ag_doorbell_bytes,ag_route,s_ag_tail_off,
-        cap,s_ag_compact,timeout_ns,hybrid_ctrl,hybrid_shm,hybrid_band,s_hyb,s_failed,s_wait_start,s_arr_end);
+        cap,s_ag_compact,timeout_ns,rs_was_hybrid,hybrid_ctrl,hybrid_shm,hybrid_band,s_hyb,s_failed,s_wait_start,s_arr_end);
     __syncthreads();
     if ( s_failed != 0u )
     {
