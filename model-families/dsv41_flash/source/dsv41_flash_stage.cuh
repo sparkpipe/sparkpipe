@@ -1577,6 +1577,18 @@ static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerS
 	return D41_SPREAD && step->rows >= 1u && step->rows <= D41_SPREAD_ROWS && state->own_rows == 0u && state->dump == 0 ? 1u : 0u;
 }
 
+static SparkStatus D41HcRound(D41ModelState *state, SparkGpuStream stream, uint32_t op, uint32_t rows, uint32_t width,
+	const void *send, void *recv, uint32_t ffn, uint32_t fallback_post = 0u)
+{
+	if ( state->dump == 0 )
+		SparkTpMeshArEpilogueArmHc4(stream, (uint64_t)rows * D41_HIDDEN, D41_HIDDEN,
+			ffn != 0u ? state->post_ffn : state->post_attn, ffn != 0u ? state->comb_ffn : state->comb_attn, state->streams);
+	const SparkStatus status = CudaStageRound(state, stream, op, rows, width, send, recv);
+	if ( SparkTpMeshArEpilogueConsumed() != 0u ) state->post_mode = 4u;
+	else if ( status == SPARK_STATUS_OK && fallback_post != 0u ) state->post_mode = fallback_post;
+	return status;
+}
+
 static SparkStatus D41SpreadGather(D41ModelState *state, SparkGpuStream stream, uint32_t rows, uint32_t width, uint16_t *source, uint16_t *target,
 	uint32_t first_rank, uint32_t ranks, uint32_t operation = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, D41Mx *mx = 0, uint32_t qdq = 0u)
 {
@@ -1756,15 +1768,10 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
-	{
-		if ( rows > 1u && state->dump == 0 )
-		{
-			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, o_b_rows, state->wo_a_group, state->moe_gathered);
-			if ( status == SPARK_STATUS_OK ) state->post_mode = 1u;
-		}
-		else
-			status = D41SpreadGather(state, stream, rows, o_b_rows, state->wo_a_group, state->partial, 0u, D41_TP);
-	}
+		status = state->dump == 0 ?
+			D41HcRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, o_b_rows, state->wo_a_group,
+				rows > 1u ? state->moe_gathered : state->partial, 0u, rows > 1u ? 1u : 0u) :
+			D41SpreadGather(state, stream, rows, o_b_rows, state->wo_a_group, state->partial, 0u, D41_TP);
 	state->owner_reduced = 1u;
 	return status;
 }
@@ -2980,11 +2987,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 			status = D41Launched();
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			SparkTpMeshArEpilogueArmHc4(stream, (uint64_t)rows * D41_HIDDEN, D41_HIDDEN, state->post_ffn, state->comb_ffn, state->streams);
-			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->moe_final, state->partial);
-			if ( SparkTpMeshArEpilogueConsumed() != 0u )
-				state->post_mode = 4u;
-			return status;
+			return D41HcRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->moe_final, state->partial, 1u);
 		}
 		float *partial = (float *)state->moe_final;
 		LM_LAUNCH_DEPENDENT((D41MoeFinalizeF32Kernel), dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream, state->expert_slice, state->route_packed_row,
@@ -3016,14 +3019,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 			state->moe_final, state->own_out);
 	}
 	if ( rows > D41_OWN_ROWS_MIN || (D41_TP >= 8u && rows > D41_VERIFY_INVARIANT_SEQS) )
-	{
-		if ( state->dump == 0 )
-			SparkTpMeshArEpilogueArmHc4(stream, (uint64_t)rows * D41_HIDDEN, D41_HIDDEN, state->post_ffn, state->comb_ffn, state->streams);
-		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->moe_final, state->partial);
-		if ( SparkTpMeshArEpilogueConsumed() != 0u )
-			state->post_mode = 4u;
-		return status;
-	}
+		return D41HcRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->moe_final, state->partial, 1u);
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_HIDDEN, state->moe_final, state->moe_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -3227,15 +3223,10 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		return D41Launched();
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_HIDDEN_SLICE, state->moe_final,
-			rows == 1u ? state->partial : state->moe_gathered);
-	if ( status != SPARK_STATUS_OK || rows == 1u )
+		status = D41HcRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_HIDDEN_SLICE, state->moe_final,
+			rows == 1u ? state->partial : state->moe_gathered, 1u, state->dump == 0 && rows > 1u ? 1u : 0u);
+	if ( status != SPARK_STATUS_OK || rows == 1u || state->post_mode == 1u || state->post_mode == 4u )
 		return status;
-	if ( state->dump == 0 )
-	{
-		state->post_mode = 1u;
-		return SPARK_STATUS_OK;
-	}
 	LM_LAUNCH((LmRankMajorRowsKernel<D41_THREADS>), dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream, state->moe_gathered, state->partial, rows,
 		D41_HIDDEN_SLICE, D41_TP);
 	return D41Launched();
@@ -4332,14 +4323,10 @@ struct D41Cuda : CudaStage<D41Cuda>
 		}
 		if ( state->own_pad != 0u )
 			SparkGpuMemsetAsync(state->partial + (uint64_t)rows * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41_HIDDEN * sizeof(uint16_t), frame.stream);
-		if ( state->own_rows == 0u && state->dump == 0 )
-			SparkTpMeshArEpilogueArmHc4(frame.stream, (uint64_t)rows * D41_HIDDEN, D41_HIDDEN, state->post_attn, state->comb_attn, state->streams);
 		SparkStatus status = state->own_rows != 0u ?
 			CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, state->own_rows * D41_TP, 0u, state->partial,
 				state->own_out) :
-			CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-		if ( SparkTpMeshArEpilogueConsumed() != 0u )
-			state->post_mode = 4u;
+			D41HcRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial, 0u);
 		if ( status == SPARK_STATUS_OK && index < 2u )
 			status = D41DumpRows(state, index, 1u, state->partial, rows, D41_HIDDEN, frame.stream);
 		return status;

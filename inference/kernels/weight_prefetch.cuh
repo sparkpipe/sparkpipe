@@ -136,12 +136,13 @@ static inline void SparkTpMeshArEpilogueArmHc4(SparkGpuStream stream, uint64_t e
 	s = {stream,elements,0u,{post != 0 && comb != 0 && streams != 0 && width != 0u ? SPARK_TP_MESH_AR_EPILOGUE_HC_POST4 : 0u,width,streams,post,comb}};
 }
 
-static inline SparkTpMeshArEpilogue SparkTpMeshArEpilogueTake(SparkGpuStream stream, uint64_t elements, uint64_t slice)
+static inline SparkTpMeshArEpilogue SparkTpMeshArEpilogueTake(SparkGpuStream stream, uint64_t elements, uint64_t slice, uint32_t gather_deg = 0u)
 {
 	SparkTpMeshArEpilogueSlot &s = SparkTpMeshArEpilogueTls();
 	SparkTpMeshArEpilogue out = {0u,0u,0,0,0};
 	if ( s.ep.kind == 0u || s.stream != stream || s.elements != elements || (elements & 7u) != 0u || (slice & 7u) != 0u || (((uintptr_t)s.ep.dst) & 15u) != 0u ) return(out);
 	if ( s.ep.kind == SPARK_TP_MESH_AR_EPILOGUE_HC_POST4 && (s.ep.width == 0u || (s.ep.width & 7u) != 0u || (elements % s.ep.width) != 0u) ) return(out);
+	if ( gather_deg != 0u && (s.ep.kind != SPARK_TP_MESH_AR_EPILOGUE_HC_POST4 || (s.ep.width % gather_deg) != 0u || ((s.ep.width / gather_deg) & 7u) != 0u || (slice % (s.ep.width / gather_deg)) != 0u) ) return(out);
 	out = s.ep; s.ep.kind = 0u; s.consumed = 1u; return(out);
 }
 
