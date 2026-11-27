@@ -522,77 +522,38 @@ def encode_ldg256(rd_lo, rd_hi, raddr, ur_desc, policy="default", pred=PT, neg=F
     return (lo, hi)
 
 
-STG_W_U8 = 0x1100
-STG_W_U16 = 0x1500
-STG_W_32 = 0x1900
-STG_W_64 = 0x1B00
-STG_W_128 = 0x1D00
-
-
-STG_CACHE_DEFAULT = 0x0C100000
-STG_CACHE_EF = 0x0C000000
-STG_CACHE_STRONG_SYS = 0x0C114000
+STG_W_U8, STG_W_U16, STG_W_32, STG_W_64, STG_W_128 = 0x1100, 0x1500, 0x1900, 0x1B00, 0x1D00
+STG_CACHE_DEFAULT, STG_CACHE_EF, STG_CACHE_STRONG_SYS = 0x0C100000, 0x0C000000, 0x0C114000
 
 
 def encode_stg(raddr, rval, ur_desc, width_bits=STG_W_128, cache=STG_CACHE_DEFAULT, offset=0, pred=PT, neg=False, rd=7, stall=1, wait=0):
-    lo = (
-        0x986
-        | (pred_bits(pred, neg) << 12)
-        | ((raddr & 0xFF) << 24)
-        | ((rval & 0xFF) << 32)
-        | ((offset & 0xFFFFFF) << 40)
-    )
-    hi = cache | width_bits | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd, wait=wait)
-    return (lo, hi)
+    lo = 0x986 | (pred_bits(pred, neg) << 12) | ((raddr & 0xFF) << 24) | ((rval & 0xFF) << 32) | ((offset & 0xFFFFFF) << 40)
+    return (lo, cache | width_bits | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd, wait=wait))
 
 
 def encode_stg256(raddr, rval_lo, rval_hi, ur_desc, pred=PT, neg=False, rd=7, stall=1, wait=0):
-    lo = (
-        0x97F
-        | (pred_bits(pred, neg) << 12)
-        | ((rval_hi & 0xFF) << 16)
-        | ((raddr & 0xFF) << 24)
-        | ((rval_lo & 0xFF) << 32)
-        | (0xF8 << 56)
-    )
-    hi = 0x0F121800 | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd, wait=wait)
-    return (lo, hi)
+    lo = 0x97F | (pred_bits(pred, neg) << 12) | ((rval_hi & 0xFF) << 16) | ((raddr & 0xFF) << 24) | ((rval_lo & 0xFF) << 32) | (0xF8 << 56)
+    return (lo, 0x0F121800 | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd, wait=wait))
 
 
 def encode_lds(rd, raddr, ur_base=URZ, offset=0, wr=0, rd_bar=7, stall=1, wait=0):
-    lo = (
-        0x7984
-        | ((rd & 0xFF) << 16)
-        | ((raddr & 0xFF) << 24)
-        | ((ur_base & 0xFF) << 32)
-        | ((offset & 0xFFFFFF) << 40)
-    )
-    hi = 0x08000800 | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait)
-    return (lo, hi)
+    lo = 0x7984 | ((rd & 0xFF) << 16) | ((raddr & 0xFF) << 24) | ((ur_base & 0xFF) << 32) | ((offset & 0xFFFFFF) << 40)
+    return (lo, 0x08000800 | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait))
 
 
 def encode_lds128(rd, raddr, ur_base=URZ, offset=0, wr=0, rd_bar=7, stall=1, wait=0):
-    lo = (
-        0x7984
-        | ((rd & 0xFF) << 16)
-        | ((raddr & 0xFF) << 24)
-        | ((ur_base & 0xFF) << 32)
-        | ((offset & 0xFFFFFF) << 40)
-    )
-    hi = 0x08000C00 | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait)
-    return (lo, hi)
+    lo = 0x7984 | ((rd & 0xFF) << 16) | ((raddr & 0xFF) << 24) | ((ur_base & 0xFF) << 32) | ((offset & 0xFFFFFF) << 40)
+    return (lo, 0x08000C00 | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait))
 
 
-def encode_sts(raddr, rval, offset=0, pred=PT, neg=False, rd_bar=7, stall=1, wait=0):
-    lo = (
-        0x388
-        | (pred_bits(pred, neg) << 12)
-        | ((raddr & 0xFF) << 24)
-        | ((rval & 0xFF) << 32)
-        | ((offset & 0xFFFFFF) << 40)
-    )
-    hi = 0x00000800 | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd_bar, wait=wait)
-    return (lo, hi)
+def encode_sts(raddr, rval, offset=0, pred=PT, neg=False, w128=False, rd_bar=7, stall=1, wait=0):
+    lo = 0x388 | (pred_bits(pred, neg) << 12) | ((raddr & 0xFF) << 24) | ((rval & 0xFF) << 32) | ((offset & 0xFFFFFF) << 40)
+    return (lo, (0x00000C00 if w128 else 0x00000800) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd_bar, wait=wait))
+
+
+def encode_ldsm_x4(rd, ra, trans=False, offset=0, wr=0, rd_bar=7, stall=1, wait=0):
+    lo = 0x783B | ((rd & 0xFF) << 16) | ((ra & 0xFF) << 24) | ((offset & 0xFFFFFF) << 40)
+    return (lo, (0x00004200 if trans else 0x00000200) | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait))
 
 
 def encode_ublkpf_l2(ur_addr, ur_bytes, stall=1, wait=0):
@@ -601,22 +562,14 @@ def encode_ublkpf_l2(ur_addr, ur_bytes, stall=1, wait=0):
     return (lo, hi)
 
 
-def encode_hmma_16816_f32_bf16(rd, ra, rb, rc=RZ, stall=1, wait=0):
+def encode_hmma_16816_f32_bf16(rd, ra, rb, rc=RZ, tf32=False, stall=1, wait=0):
     lo = 0x723C | ((rd & 0xFF) << 16) | ((ra & 0xFF) << 24) | ((rb & 0xFF) << 32)
-    hi = 0x00041800 | (rc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
-    return (lo, hi)
+    return (lo, (0x00081000 if tf32 else 0x00041800) | (rc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait))
 
 
-def encode_ldgsts128(r_smem, r_gaddr, ur_desc, offset=0, pred=PT, neg=False, rd_bar=7, stall=1, wait=0):
-    lo = (
-        0x0FAE
-        | (pred_bits(pred, neg) << 12)
-        | ((r_smem & 0xFF) << 16)
-        | ((r_gaddr & 0xFF) << 24)
-        | ((offset & 0xFFFFFFFF) << 32)
-    )
-    hi = 0x0B981800 | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd_bar, wait=wait)
-    return (lo, hi)
+def encode_ldgsts128(r_smem, r_gaddr, ur_desc, offset=0, pred=PT, neg=False, zfill_pred=PT, rd_bar=7, stall=1, wait=0):
+    lo = 0x0FAE | (pred_bits(pred, neg) << 12) | ((r_smem & 0xFF) << 16) | ((r_gaddr & 0xFF) << 24) | ((offset & 0xFFFFFFFF) << 32)
+    return (lo, (0x08181800 | ((zfill_pred & 7) << 23)) | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd_bar, wait=wait))
 
 
 def encode_ldgdepbar(wr=0, stall=1, wait=0):

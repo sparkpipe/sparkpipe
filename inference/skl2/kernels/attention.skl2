@@ -509,119 +509,127 @@ template kernel[192, 96] qwen_gqa_decode_tpl<IS_SPLIT>(
 instantiate qwen_gqa_decode_tpl<1> as qwen_gqa_split_decode_24_4_256;
 instantiate qwen_gqa_decode_tpl<0> as qwen_gqa_direct_decode_gate_24_4_256;
 
-macro prefill_stage_kv16(kv_view, kv_cur, seq_id, kh_g, lkvh, s_prior, s_row_begin, total_kv, rows, t0, tid, sm_k, sm_v) {
-    for (reg u32 idx = tid; idx < 512; idx += 128) {
-        reg u32 s = idx >> 5;
-        reg u32 c = idx & 31;
+macro prefill_copy_kv32(IS_V, kv_view, kv_cur, seq_id, kh_g, lkvh, s_prior, s_row_begin, total_kv, rows, tile, dst_base, tid, query_bf16) {
+    reg u32 t0 = tile << 5;
+    reg u64 pbase = 0; reg u32 pok = 0;
+    if (t0 < s_prior) { kv_shard_slot_addr(kv_view, seq_id, t0, 4096, pbase, pok); }
+    for (reg u32 idx = tid; idx < 1024; idx += 128) {
+        reg u32 s = idx >> 5; reg u32 c = idx & 31;
         reg u32 k_idx = t0 + s;
-        reg u32x4 kv = pack_u32x4(0, 0, 0, 0);
-        reg u32x4 vv = pack_u32x4(0, 0, 0, 0);
-        if (k_idx < total_kv) {
+        reg u32 valid = (k_idx < total_kv) ? 1 : 0;
+        reg u64 src = query_bf16;
+        if (valid != 0) {
             if (k_idx < s_prior) {
-                reg u64 slot = 0; reg u32 ok = 0;
-                kv_shard_slot_addr(kv_view, seq_id, k_idx, 4096, slot, ok);
-                if (ok != 0) {
-                    kv = ldg128_stream(ptr_add(slot, (kh_g << 5) + c, 16));
-                    vv = ldg128_stream(ptr_add(slot, ((4 + kh_g) << 5) + c, 16));
-                }
+                if (pok != 0) { src = ptr_add(pbase, (s << 8) + (((IS_V * 4) + kh_g) << 5) + c, 16); }
+                else { valid = 0; }
             } else {
-                reg u32 cur_r = ((lkvh * rows + (s_row_begin + k_idx - s_prior)) * 2) * 32;
-                kv = ldg128_stream(ptr_add(kv_cur, cur_r + c, 16));
-                vv = ldg128_stream(ptr_add(kv_cur, cur_r + 32 + c, 16));
+                src = ptr_add(kv_cur, ((((lkvh * rows + (s_row_begin + k_idx - s_prior)) * 2) + IS_V) << 5) + c, 16);
             }
         }
-        unroll (w = 0..4) {
-            sts32(sm_k, (idx << 2) + w, kv[w]);
-            sts32(sm_v, (idx << 2) + w, vv[w]);
+        ldgsts128_z(dst_base + ((s << 9) | ((c ^ (s & 7)) << 4)), src, valid);
+    }
+    ldgdepbar();
+}
+
+macro prefill_qk_tile32(q_frag, vw, mat, wit, lane, qw, score) {
+    unroll (f = 0..4) { score[f] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
+    reg u32 b_row0 = ((mat >> 1) << 3) + wit;
+    reg u32 b_row1 = (((2 + (mat >> 1)) << 3) + wit);
+    unroll (ks = 0..8) {
+        reg u32 b_ch = ((vw * 8 + ks) << 1) + (mat & 1);
+        reg u32x4 kb0 = ldsm_x4((b_row0 << 9) | ((b_ch ^ (b_row0 & 7)) << 4));
+        reg u32x4 kb1 = ldsm_x4((b_row1 << 9) | ((b_ch ^ (b_row1 & 7)) << 4));
+        score[0] = hmma16816_bf16(q_frag[ks], lo_u32x2(kb0), score[0]);
+        score[1] = hmma16816_bf16(q_frag[ks], hi_u32x2(kb0), score[1]);
+        score[2] = hmma16816_bf16(q_frag[ks], lo_u32x2(kb1), score[2]);
+        score[3] = hmma16816_bf16(q_frag[ks], hi_u32x2(kb1), score[3]);
+    }
+    reg u32 sb = 8192 + (((qw << 1) + vw) << 9);
+    unroll (f = 0..4) { unroll (e = 0..4) { dyn_sts32(sb + (((f << 2) + e) << 5) + lane, f32_as_u32(score[f][e])); } }
+}
+
+macro prefill_reduce_softmax32(qw, lane, t0, rp0, rp1, v0, v1, tg, scale_log2, score, rmax0, rmax1, rsum0, rsum1, out_acc) {
+    reg u32 sb0 = 8192 + (qw << 10);
+    reg f32 neg_inf = u32_as_f32(0xFF800000);
+    reg f32 pk0 = neg_inf; reg f32 pk1 = neg_inf;
+    unroll (f = 0..4) {
+        unroll (e = 0..4) {
+            reg u32 off = (((f << 2) + e) << 5) + lane;
+            reg f32 sv = dyn_lds32_f32(sb0 + off) + dyn_lds32_f32(sb0 + 512 + off);
+            reg u32 kp = t0 + (f << 3) + (tg << 1) + (e & 1);
+            if constexpr ((e >> 1) == 0) {
+                if (v0 == 0) { sv = neg_inf; }
+                if (kp > rp0) { sv = neg_inf; }
+                pk0 = maxf(pk0, sv);
+            } else {
+                if (v1 == 0) { sv = neg_inf; }
+                if (kp > rp1) { sv = neg_inf; }
+                pk1 = maxf(pk1, sv);
+            }
+            score[f][e] = sv;
         }
     }
-    barrier();
-}
-
-macro prefill_qk_tile16(sm_q, sm_k, sm_s, qw, vw, gid, tg, lane, s0, s1) {
-    s0 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
-    s1 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
-    reg u32 q_r0 = (qw << 4) + gid;
-    unroll (ks = 0..8) {
-        reg u32 k_off = (vw << 6) + (ks << 3) + tg;
-        reg u32x4 fq = pack_u32x4(
-            lds32(sm_q, (q_r0 << 7) + k_off), lds32(sm_q, ((q_r0 + 8) << 7) + k_off),
-            lds32(sm_q, (q_r0 << 7) + k_off + 4), lds32(sm_q, ((q_r0 + 8) << 7) + k_off + 4)
-        );
-        reg u32x2 fk0 = pack_u32x2(lds32(sm_k, (gid << 7) + k_off), lds32(sm_k, (gid << 7) + k_off + 4));
-        reg u32x2 fk1 = pack_u32x2(lds32(sm_k, ((gid + 8) << 7) + k_off), lds32(sm_k, ((gid + 8) << 7) + k_off + 4));
-        s0 = hmma16816_bf16(fq, fk0, s0);
-        s1 = hmma16816_bf16(fq, fk1, s1);
-    }
-    reg u32 sb = ((qw << 1) + vw) << 8;
-    unroll (e = 0..4) {
-        sts32(sm_s, sb + (e << 5) + lane, s0[e]);
-        sts32(sm_s, sb + 128 + (e << 5) + lane, s1[e]);
-    }
-    barrier();
-    reg u32 sb0 = (qw << 9);
-    unroll (e = 0..4) {
-        s0[e] = lds32(sm_s, sb0 + (e << 5) + lane) + lds32(sm_s, sb0 + 256 + (e << 5) + lane);
-        s1[e] = lds32(sm_s, sb0 + 128 + (e << 5) + lane) + lds32(sm_s, sb0 + 384 + (e << 5) + lane);
-    }
-}
-
-macro prefill_online_softmax(t0, rpos0, rpos1, v0, v1, tg, scale_log2, s0, s1, rmax0, rmax1, rsum0, rsum1, out_acc) {
-    reg f32 neg_inf = u32_as_f32(0xFF800000);
-    unroll (e = 0..4) {
-        reg u32 side = e >> 1;
-        reg u32 rp = (side == 0) ? rpos0 : rpos1;
-        reg u32 vr = (side == 0) ? v0 : v1;
-        reg u32 kp0 = t0 + (tg << 1) + (e & 1);
-        if (vr == 0) { s0[e] = neg_inf; s1[e] = neg_inf; }
-        if (kp0 > rp) { s0[e] = neg_inf; }
-        if (kp0 + 8 > rp) { s1[e] = neg_inf; }
-    }
-    reg f32 nm0 = maxf(rmax0, quad_max(maxf(maxf(s0[0], s0[1]), maxf(s1[0], s1[1]))));
-    reg f32 nm1 = maxf(rmax1, quad_max(maxf(maxf(s0[2], s0[3]), maxf(s1[2], s1[3]))));
+    reg f32 nm0 = maxf(rmax0, quad_max(pk0));
+    reg f32 nm1 = maxf(rmax1, quad_max(pk1));
     reg f32 sc0 = (f32_as_u32(rmax0) == 0xFF800000) ? 0.0f : exp2_ftz((rmax0 - nm0) * scale_log2);
     reg f32 sc1 = (f32_as_u32(rmax1) == 0xFF800000) ? 0.0f : exp2_ftz((rmax1 - nm1) * scale_log2);
     rmax0 = nm0; rmax1 = nm1;
     rsum0 = rsum0 * sc0; rsum1 = rsum1 * sc1;
-    unroll (f = 0..16) {
-        out_acc[f * 4] *= sc0; out_acc[f * 4 + 1] *= sc0;
-        out_acc[f * 4 + 2] *= sc1; out_acc[f * 4 + 3] *= sc1;
+    reg u32 need_sc = 0;
+    if (sc0 != 1.0f) { need_sc = 1; }
+    if (sc1 != 1.0f) { need_sc = 1; }
+    if (need_sc != 0) {
+        unroll (f = 0..16) {
+            out_acc[f][0] *= sc0; out_acc[f][1] *= sc0;
+            out_acc[f][2] *= sc1; out_acc[f][3] *= sc1;
+        }
     }
-}
-
-macro prefill_pv_mma(sm_v, vw, gid, tg, scale_log2, s0, s1, rmax0, rmax1, rsum0, rsum1, out_acc) {
     reg f32 sh0 = (f32_as_u32(rmax0) == 0xFF800000) ? 0.0f : (rmax0 * scale_log2);
     reg f32 sh1 = (f32_as_u32(rmax1) == 0xFF800000) ? 0.0f : (rmax1 * scale_log2);
-    unroll (e = 0..4) {
-        reg f32 sh = ((e >> 1) == 0) ? sh0 : sh1;
-        reg f32 w0 = (f32_as_u32(s0[e]) == 0xFF800000) ? 0.0f : exp2_ftz(fma(s0[e], scale_log2, -sh));
-        reg f32 w1 = (f32_as_u32(s1[e]) == 0xFF800000) ? 0.0f : exp2_ftz(fma(s1[e], scale_log2, -sh));
-        s0[e] = w0; s1[e] = w1;
-        if ((e >> 1) == 0) { rsum0 = rsum0 + w0 + w1; } else { rsum1 = rsum1 + w0 + w1; }
+    unroll (f = 0..4) {
+        unroll (e = 0..4) {
+            if constexpr ((e >> 1) == 0) {
+                reg f32 w = (f32_as_u32(score[f][e]) == 0xFF800000) ? 0.0f : exp2_ftz(fma(score[f][e], scale_log2, -sh0));
+                score[f][e] = w; rsum0 = rsum0 + w;
+            } else {
+                reg f32 w = (f32_as_u32(score[f][e]) == 0xFF800000) ? 0.0f : exp2_ftz(fma(score[f][e], scale_log2, -sh1));
+                score[f][e] = w; rsum1 = rsum1 + w;
+            }
+        }
     }
-    reg u32x4 fp = pack_u32x4(pack_bf16x2(s0[0], s0[1]), pack_bf16x2(s0[2], s0[3]), pack_bf16x2(s1[0], s1[1]), pack_bf16x2(s1[2], s1[3]));
-    unroll (f = 0..16) {
-        reg u32 vcol = (vw << 6) + (f << 2) + (gid >> 1);
-        reg u32 k0 = (tg << 1);
-        reg u32 w0a = lds32(sm_v, (k0 << 7) + vcol);
-        reg u32 w0b = lds32(sm_v, ((k0 + 1) << 7) + vcol);
-        reg u32 w1a = lds32(sm_v, ((k0 + 8) << 7) + vcol);
-        reg u32 w1b = lds32(sm_v, ((k0 + 9) << 7) + vcol);
-        reg u32 vb0 = ((gid & 1) == 0) ? pack_u16x2(w0a & 0xFFFF, w0b & 0xFFFF) : pack_u16x2(w0a >> 16, w0b >> 16);
-        reg u32 vb1 = ((gid & 1) == 0) ? pack_u16x2(w1a & 0xFFFF, w1b & 0xFFFF) : pack_u16x2(w1a >> 16, w1b >> 16);
-        reg f32x4 d = pack_f32x4(out_acc[f * 4], out_acc[f * 4 + 1], out_acc[f * 4 + 2], out_acc[f * 4 + 3]);
-        d = hmma16816_bf16(fp, pack_u32x2(vb0, vb1), d);
-        out_acc[f * 4] = d[0]; out_acc[f * 4 + 1] = d[1]; out_acc[f * 4 + 2] = d[2]; out_acc[f * 4 + 3] = d[3];
-    }
-    barrier();
 }
 
-macro prefill_load_q_smem(query_bf16, row_first, row_end, rank_heads, local_h, tid, sm_q) {
+macro prefill_pv_mma32(vw, mat, wit, score, out_acc) {
+    unroll (step = 0..2) {
+        reg u32x4 wp = pack_u32x4(
+            pack_bf16x2(score[step * 2][0], score[step * 2][1]), pack_bf16x2(score[step * 2][2], score[step * 2][3]),
+            pack_bf16x2(score[step * 2 + 1][0], score[step * 2 + 1][1]), pack_bf16x2(score[step * 2 + 1][2], score[step * 2 + 1][3])
+        );
+        reg u32 vb_row = (step << 4) + ((mat & 1) << 3) + wit;
+        reg u32 base_c = (vw << 4) + (mat >> 1);
+        unroll (fg = 0..4) {
+            reg u32 c0 = base_c + (fg << 2); reg u32 c1 = c0 + 2;
+            reg u32x4 vb0 = ldsm_x4_t(16384 + ((vb_row << 9) | ((c0 ^ (vb_row & 7)) << 4)));
+            reg u32x4 vb1 = ldsm_x4_t(16384 + ((vb_row << 9) | ((c1 ^ (vb_row & 7)) << 4)));
+            out_acc[fg * 4] = hmma16816_bf16(wp, lo_u32x2(vb0), out_acc[fg * 4]);
+            out_acc[fg * 4 + 1] = hmma16816_bf16(wp, hi_u32x2(vb0), out_acc[fg * 4 + 1]);
+            out_acc[fg * 4 + 2] = hmma16816_bf16(wp, lo_u32x2(vb1), out_acc[fg * 4 + 2]);
+            out_acc[fg * 4 + 3] = hmma16816_bf16(wp, hi_u32x2(vb1), out_acc[fg * 4 + 3]);
+        }
+    }
+}
+
+macro prefill_load_q_regs(query_bf16, row_first, row_end, rank_heads, local_h, tid, qw, vw, mat, wit, q_frag) {
     for (reg u32 idx = tid; idx < 1024; idx += 128) {
-        reg u32 r = idx >> 5;
-        reg u32 c = idx & 31;
-        reg u32x4 qv = pack_u32x4(0, 0, 0, 0); if (row_first + r < row_end) { qv = ldg128_persist(ptr_add(query_bf16, ((row_first + r) * rank_heads + local_h) * 32 + c, 16)); }
-        unroll (w = 0..4) { sts32(sm_q, (idx << 2) + w, qv[w]); }
+        reg u32 r = idx >> 5; reg u32 c = idx & 31;
+        reg u32 vr = (row_first + r < row_end) ? 1 : 0;
+        ldgsts128_z((r << 9) | ((c ^ (r & 7)) << 4), ptr_add(query_bf16, (vr != 0) ? (((row_first + r) * rank_heads + local_h) * 32 + c) : 0, 16), vr);
+    }
+    ldgdepbar(); depbar_le(0); barrier();
+    reg u32 a_row = (qw << 4) + ((mat & 1) << 3) + wit;
+    unroll (ks = 0..8) {
+        reg u32 a_ch = ((vw * 8 + ks) << 1) + (mat >> 1);
+        q_frag[ks] = ldsm_x4((a_row << 9) | ((a_ch ^ (a_row & 7)) << 4));
     }
     barrier();
 }
@@ -642,13 +650,13 @@ macro prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_
             if (v0 != 0) {
                 reg u32 gw = ldg32_stream(ptr_add(ptr_add(gate_base, r_lo, gate_stride << 1), gcol, 2));
                 reg u32 ow = 0;
-                gqa_gate_pair(out_acc[f * 4], out_acc[f * 4 + 1], d0, inv0, gw, ow);
+                gqa_gate_pair(out_acc[f][0], out_acc[f][1], d0, inv0, gw, ow);
                 stg32(ptr_add(ptr_add(merged_out, r_lo, attn_width << 1), dcol, 2), ow);
             }
             if (v1 != 0) {
                 reg u32 gw = ldg32_stream(ptr_add(ptr_add(gate_base, r_hi, gate_stride << 1), gcol, 2));
                 reg u32 ow = 0;
-                gqa_gate_pair(out_acc[f * 4 + 2], out_acc[f * 4 + 3], d1, inv1, gw, ow);
+                gqa_gate_pair(out_acc[f][2], out_acc[f][3], d1, inv1, gw, ow);
                 stg32(ptr_add(ptr_add(merged_out, r_hi, attn_width << 1), dcol, 2), ow);
             }
         }
@@ -657,7 +665,7 @@ macro prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_
 
 @pdl
 @concept(attention)
-kernel[128, 160] qwen_local_prefill_attn_4_256_direct(
+kernel[128, 176] qwen_local_prefill_attn_4_256_direct(
     global u32* query_bf16, global u32* kv_prior, global u32* kv_cur,
     blob[56, 8] kv_view, global u32* sequence_of_row, global u32* gate_base,
     u32 gate_stride, global u32* positions, blob[1804, 4] plan,
@@ -665,10 +673,6 @@ kernel[128, 160] qwen_local_prefill_attn_4_256_direct(
     u32 elem_first, u32 attn_width, f32 qk_scale, global u32* block_mask,
     u32 mask_words, u32 block_tokens, u32 index_blocks, global u32* merged_out
 ) {
-    shared u32 sm_q[4096];
-    shared u32 sm_k[2048];
-    shared u32 sm_v[2048];
-    shared f32 sm_s[1024];
     acqbulk();
     reg u32 seq_idx = ctaid_z();
     reg u32 pcount = param_u32(plan, 0);
@@ -685,35 +689,36 @@ kernel[128, 160] qwen_local_prefill_attn_4_256_direct(
     reg u32 row_first = s_row_begin + local_first;
     reg u32 row_end = s_row_begin + ((local_first + 32 < s_rows) ? (local_first + 32) : s_rows);
     reg u32 seq_id = 0; if (pcount == 1) { seq_id = ldg32_persist(sequence_of_row); } else { plan_read_u32(plan, 12, seq_idx, seq_id); }
-    reg u32 tid = tid_x();
-    prefill_load_q_smem(query_bf16, row_first, row_end, rank_heads, local_h, tid, sm_q);
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
-    reg u32 qw = wid >> 1;
-    reg u32 vw = wid & 1;
-    reg u32 gid = lane >> 2;
-    reg u32 tg = lane & 3;
-    reg u32 r_lo = row_first + (qw << 4) + gid;
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 qw = wid >> 1; reg u32 vw = wid & 1;
+    reg u32 mat = lane >> 3; reg u32 wit = lane & 7;
+    reg u32x4 q_frag[8];
+    prefill_load_q_regs(query_bf16, row_first, row_end, rank_heads, local_h, tid, qw, vw, mat, wit, q_frag);
+    reg u32 r_lo = row_first + (qw << 4) + (lane >> 2);
     reg u32 r_hi = r_lo + 8;
-    reg u32 v0 = (r_lo < row_end) ? 1 : 0;
-    reg u32 v1 = (r_hi < row_end) ? 1 : 0;
+    reg u32 v0 = (r_lo < row_end) ? 1 : 0; reg u32 v1 = (r_hi < row_end) ? 1 : 0;
     reg u32 rp0 = 0; if (v0 != 0) { rp0 = ldg32_persist(ptr_add(positions, r_lo, 4)); }
     reg u32 rp1 = 0; if (v1 != 0) { rp1 = ldg32_persist(ptr_add(positions, r_hi, 4)); }
-    reg u32 max_pos = ldg32_persist(ptr_add(positions, row_end - 1, 4));
+    reg u32 tile_end = (ldg32_persist(ptr_add(positions, row_end - 1, 4)) + 32) >> 5;
     reg u32 kh_g = 0; reg u32 kh_rem = 0;
     u32_divmod(q_first + local_h, group, kh_g, kh_rem);
-    reg f32 out_acc[64];
-    unroll (i = 0..64) { out_acc[i] = 0.0f; }
+    reg f32x4 out_acc[16];
+    unroll (i = 0..16) { out_acc[i] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
     reg f32 rmax0 = u32_as_f32(0xFF800000); reg f32 rmax1 = u32_as_f32(0xFF800000);
     reg f32 rsum0 = 0.0f; reg f32 rsum1 = 0.0f;
     reg f32 scale_log2 = qk_scale * 1.4426950408889634f;
-    for (reg u32 t0 = 0; t0 <= max_pos; t0 += 16) {
-        prefill_stage_kv16(kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, t0, tid, sm_k, sm_v);
-        reg f32x4 s0; reg f32x4 s1;
-        prefill_qk_tile16(sm_q, sm_k, sm_s, qw, vw, gid, tg, lane, s0, s1);
-        prefill_online_softmax(t0, rp0, rp1, v0, v1, tg, scale_log2, s0, s1, rmax0, rmax1, rsum0, rsum1, out_acc);
-        prefill_pv_mma(sm_v, vw, gid, tg, scale_log2, s0, s1, rmax0, rmax1, rsum0, rsum1, out_acc);
+    if (tile_end > 0) { prefill_copy_kv32(0, kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, 0, 0, tid, query_bf16); }
+    for (reg u32 tile = 0; tile < tile_end; tile += 1) {
+        prefill_copy_kv32(1, kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, tile, 16384, tid, query_bf16);
+        depbar_le(1); barrier();
+        reg f32x4 score[4];
+        prefill_qk_tile32(q_frag, vw, mat, wit, lane, qw, score);
+        depbar_le(0); barrier();
+        if (tile + 1 < tile_end) { prefill_copy_kv32(0, kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, tile + 1, 0, tid, query_bf16); }
+        prefill_reduce_softmax32(qw, lane, tile << 5, rp0, rp1, v0, v1, lane & 3, scale_log2, score, rmax0, rmax1, rsum0, rsum1, out_acc);
+        prefill_pv_mma32(vw, mat, wit, score, out_acc);
+        if (tile + 1 < tile_end) { barrier(); }
     }
-    prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_h, elem_first, attn_width, vw, tg, r_lo, r_hi, v0, v1, rsum0, rsum1, out_acc);
+    prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_h, elem_first, attn_width, vw, lane & 3, r_lo, r_hi, v0, v1, rsum0, rsum1, out_acc);
     preexit();
 }
