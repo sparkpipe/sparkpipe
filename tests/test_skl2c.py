@@ -177,7 +177,11 @@ def test_stdlib_policy_versioning_and_lockfile():
     unit = load_unit([str(SKL2_DIR / "models" / "families.skl2")], search_roots=[str(SKL2_DIR)])
 
     s_small = select_primitive_variant(unit, "std.allreduce", "latest", {"msg_bytes": 10240, "ranks": 16, "topology": "hybrid_mode0"})
-    assert s_small["version"] == "v2" and s_small["variant"] == "hybrid_single_acquire_128", s_small
+    assert s_small["version"] == "v3" and s_small["variant"] == "hybrid_fused_1cta_128", s_small
+    s_fused_64k = select_primitive_variant(unit, "std.allreduce", "latest", {"msg_bytes": 131072, "ranks": 16, "topology": "hybrid_mode0"})
+    assert s_fused_64k["version"] == "v3" and s_fused_64k["variant"] == "hybrid_fused_1cta_128", s_fused_64k
+    s_v2 = select_primitive_variant(unit, "std.allreduce", "v2", {"msg_bytes": 10240, "ranks": 16, "topology": "hybrid_mode0"})
+    assert s_v2["version"] == "v2" and s_v2["variant"] == "hybrid_single_acquire_128", s_v2
     s_v1 = select_primitive_variant(unit, "std.allreduce", "v1", {"msg_bytes": 10240, "ranks": 16, "topology": "hybrid_mode0"})
     assert s_v1["version"] == "v1" and s_v1["variant"] == "hybrid_inline_128", s_v1
     s_2d = select_primitive_variant(unit, "std.allreduce", "latest", {"msg_bytes": 65536, "ranks": 16, "topology": "2d_4x4"})
@@ -191,6 +195,11 @@ model dev_hybrid extends ReferenceHybridTransformer@latest {
     hidden = 5120;
     tp_degree = 16;
 }
+model pinned_v2_hybrid extends ReferenceHybridTransformer@v1 {
+    hidden = 5120;
+    tp_degree = 16;
+    use std.allreduce@v2;
+}
 model pinned_hybrid extends ReferenceHybridTransformer@v1 {
     hidden = 5120;
     tp_degree = 16;
@@ -201,18 +210,22 @@ model pinned_hybrid extends ReferenceHybridTransformer@v1 {
         pin_p = pathlib.Path(tmp) / "version_test.skl2"
         pin_p.write_text(pin_src, encoding="utf-8")
         u_ver = load_unit([str(pin_p)], search_roots=[str(SKL2_DIR)])
-    plan_ver = resolve_models(u_ver, ["dev_hybrid", "pinned_hybrid"])
-    assert plan_ver["models"]["dev_hybrid"]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128", plan_ver
+    plan_ver = resolve_models(u_ver, ["dev_hybrid", "pinned_v2_hybrid", "pinned_hybrid"])
+    assert plan_ver["models"]["dev_hybrid"]["resolved_primitives"]["std.allreduce"] == "v3:hybrid_fused_1cta_128", plan_ver
+    assert plan_ver["models"]["pinned_v2_hybrid"]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128", plan_ver
     assert plan_ver["models"]["pinned_hybrid"]["resolved_primitives"]["std.allreduce"] == "v1:hybrid_inline_128", plan_ver
     lock_dev = build_lockfile(u_ver, ["dev_hybrid"])
+    lock_v2 = build_lockfile(u_ver, ["pinned_v2_hybrid"])
     lock_pin = build_lockfile(u_ver, ["pinned_hybrid"])
     assert lock_dev["models"]["dev_hybrid"]["sha256"] != lock_pin["models"]["pinned_hybrid"]["sha256"]
-    assert lock_dev["resolved_models"]["dev_hybrid"]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128"
+    assert lock_dev["models"]["dev_hybrid"]["sha256"] != lock_v2["models"]["pinned_v2_hybrid"]["sha256"]
+    assert lock_dev["resolved_models"]["dev_hybrid"]["resolved_primitives"]["std.allreduce"] == "v3:hybrid_fused_1cta_128"
+    assert lock_v2["resolved_models"]["pinned_v2_hybrid"]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128"
     assert lock_pin["resolved_models"]["pinned_hybrid"]["resolved_primitives"]["std.allreduce"] == "v1:hybrid_inline_128"
 
     lock_doc = build_lockfile(unit)
     assert lock_doc["schema"] == "skl2.lock.v1"
-    assert lock_doc["primitives"]["std.allreduce"]["version"] == "v2"
+    assert lock_doc["primitives"]["std.allreduce"]["version"] == "v3"
     assert "std.linear" in lock_doc["primitives"]
     verify_lockfile(unit, lock_doc)
 
@@ -250,9 +263,9 @@ def test_differential_models_and_dedup():
     assert plan["models"]["gemma4_26b_a4b"]["spec"]["moe_experts"] == 128
     assert plan["models"]["ling_30_flash"]["spec"]["moe_experts"] == 512
     for m in expected_models:
-        assert plan["models"][m]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128", (m, plan["models"][m])
+        assert plan["models"][m]["resolved_primitives"]["std.allreduce"] == "v3:hybrid_fused_1cta_128", (m, plan["models"][m])
     assert plan["dedup_ratio"] >= 0.65, f"expected >=65% cross-model dedup across 10 models, got {plan['dedup_ratio']}"
-    assert "allreduce.hybrid_single_acquire_128_fused_rmsnorm" in plan["shared_kernels"]
+    assert "allreduce.hybrid_fused_1cta_128_fused_rmsnorm" in plan["shared_kernels"]
 
     families_lines = len((SKL2_DIR / "models" / "families.skl2").read_text(encoding="utf-8").splitlines())
     assert families_lines <= 165, f"expected all 10 differential models in <=165 lines, got {families_lines}"
@@ -334,7 +347,7 @@ def test_full_cubin_emission_and_cli():
                 "Skl2Launch_qwen_gdn_scalar_chunk_128_128_128_pdl",
                 "Skl2Select_allreduce",
                 "Skl2Ordinal_allreduce",
-                "SKL2_VAR_ALLREDUCE_HYBRID_SINGLE_ACQUIRE_128",
+                "SKL2_VAR_ALLREDUCE_HYBRID_FUSED_1CTA_128",
                 "Skl2Select_linear",
                 "Skl2Select_attention",
             ):
@@ -351,10 +364,11 @@ def test_full_cubin_emission_and_cli():
                     f'#include <assert.h>\n#include "{hdr_path.name}"\n'
                     "int main(void) {\n"
                     "    uint32_t cnt = 0u, bytes = 0u;\n"
-                    "    assert(Skl2Select_allreduce(10240u, 16u, SKL2_TAG_NONE) == SKL2_VAR_ALLREDUCE_HYBRID_SINGLE_ACQUIRE_128);\n"
+                    "    assert(Skl2Select_allreduce(10240u, 16u, SKL2_TAG_NONE) == SKL2_VAR_ALLREDUCE_HYBRID_FUSED_1CTA_128);\n"
+                    "    assert(Skl2Select_allreduce(131072u, 16u, SKL2_TAG_HYBRID_MODE0) == SKL2_VAR_ALLREDUCE_HYBRID_FUSED_1CTA_128);\n"
                     "    assert(Skl2Select_allreduce(65536u, 16u, SKL2_TAG_2D_4X4) == SKL2_VAR_ALLREDUCE_TWO_D_4X4);\n"
                     "    assert(Skl2Select_allreduce(65536u, 16u, SKL2_TAG_NONE) == SKL2_VAR_ALLREDUCE_HYBRID_DMA_RING);\n"
-                    "    assert(Skl2Ordinal_allreduce(SKL2_VAR_ALLREDUCE_HYBRID_SINGLE_ACQUIRE_128) == SKL2_ORD_allreduce_wqe_stg128);\n"
+                    "    assert(Skl2Ordinal_allreduce(SKL2_VAR_ALLREDUCE_HYBRID_FUSED_1CTA_128) == SKL2_ORD_allreduce_wqe_stg128);\n"
                     "    assert(Skl2Ordinal_allreduce(SKL2_VAR_ALLREDUCE_HYBRID_DMA_RING) == SKL2_ORD_allreduce_combine_rmsnorm_bf16);\n"
                     "    assert(Skl2Select_linear(4u) == SKL2_VAR_LINEAR_SKINNY_GEMV);\n"
                     "    assert(Skl2Select_linear(32u) == SKL2_VAR_LINEAR_MMA_GEMM);\n"

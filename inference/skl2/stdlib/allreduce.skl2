@@ -68,6 +68,48 @@ primitive std.allreduce @v2 {
     }
 }
 
+primitive std.allreduce @v3 {
+    concept = allreduce;
+    arch = sm_121a;
+    variant hybrid_fused_1cta_128 {
+        kernel = allreduce_wqe_stg128;
+        transport = rdma_fused_1cta_rs_ag;
+        store_isa = stg128_sys;
+        load_isa = ldg256_stream;
+        fence = membar_sys;
+        gpu_devcache_align16 = true;
+        isolated_cpu_seq_cacheline = true;
+        single_thread_doorbell = true;
+        idle_warp_revalidate_overlap = true;
+        hidden_self_copy = true;
+        fused_one_phase_ops = "pair_gather,all_gather,all_to_all,max_u64";
+        max_fused_bytes = 131072;
+        max_inline_bytes = 828;
+    }
+    variant hybrid_dma_ring {
+        kernel = allreduce_combine_rmsnorm_bf16;
+        transport = rdma_write_ring;
+        load_isa = ldg256_stream;
+        epilogue = rmsnorm;
+    }
+    variant two_d_4x4 {
+        kernel = allreduce_combine_rmsnorm_bf16;
+        transport = two_d_mesh_rs_ag;
+        row_ranks = 4;
+        col_ranks = 4;
+    }
+    policy {
+        when msg_bytes <= 131072 && ranks <= 16 && topology == "hybrid_mode0" => hybrid_fused_1cta_128;
+        when msg_bytes <= 16384 && ranks <= 16 => hybrid_fused_1cta_128;
+        when msg_bytes > 16384 && topology == "2d_4x4" => two_d_4x4;
+        default => hybrid_dma_ring;
+    }
+    fuse {
+        gemv + allreduce -> linear_ar;
+        allreduce + norm -> ar_rmsnorm;
+    }
+}
+
 @concept(allreduce)
 @pdl
 kernel[128, 32] allreduce_wqe_stg128(
