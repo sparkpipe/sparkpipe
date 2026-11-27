@@ -208,6 +208,23 @@ def verify_codegen_invariants():
             if (lo & 0xFFFF) == 0x7B1D:
                 assert (hi & 0x10000) == 0, f"BAR.SYNC must not set DEFER_BLOCKING in {k.name}"
                 assert idx + 1 < len(k.insns) and (k.insns[idx + 1][0] & 0xFFFF) == 0x7918, f"BAR.SYNC must be followed by NOP in {k.name}"
+    from cubin_elf import build_cubin
+    blob = build_cubin(kernels, arch="sm121")
+    e_shoff = struct.unpack_from("<Q", blob, 40)[0]
+    e_shentsize, e_shnum, e_shstrndx = struct.unpack_from("<HHH", blob, 58)
+    shdrs = [struct.unpack_from("<IIQQQQIIQQ", blob, e_shoff + i * e_shentsize) for i in range(e_shnum)]
+    str_off = shdrs[e_shstrndx][4]
+    by_name = {blob[str_off + sh[0]:blob.index(b"\x00", str_off + sh[0])].decode(): sh for sh in shdrs}
+    for k in kernels:
+        assert (by_name[f".text.{k.name}"][7] >> 20) == 0, f"legacy bar_bits in .text sh_info for {k.name}"
+        ish = by_name[f".nv.info.{k.name}"]
+        b, pos, attr4c = blob[ish[4]:ish[4] + ish[5]], 0, None
+        while pos < len(b):
+            fmt, attr, val = struct.unpack_from("<BBH", b, pos); pos += 4
+            if fmt == 4: pos += val
+            if attr == 0x4C: attr4c = (fmt, val)
+        expected = (2, k.barriers) if k.barriers > 0 else None
+        assert attr4c == expected, f"EIATTR_NUM_BARRIERS mismatch for {k.name}: got {attr4c}, expected {expected}"
 
 
 def verify_new_builtins():

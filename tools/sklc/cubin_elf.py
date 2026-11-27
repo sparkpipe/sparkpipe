@@ -226,42 +226,16 @@ def build_cubin(kernels, arch="sm121"):
         code, exit_offsets = k.code_bytes()
         layout, param_bytes = k.param_layout()
         const0_size = C0_PARAM_BASE + param_bytes
-        info_k_idx = add_section(
-            f".nv.info.{k.name}",
-            SHT_CUDA_INFO,
-            SHF_INFO_LINK,
-            b"",
-            link=symtab_idx,
-            info=0,
-            align=4,
-        )
+        info_k_idx = add_section(f".nv.info.{k.name}", SHT_CUDA_INFO, SHF_INFO_LINK, b"", link=symtab_idx, info=0, align=4)
         prepared.append({
-            "kernel": k,
-            "code": code,
-            "code_len": len(code),
-            "exit_offsets": exit_offsets,
-            "layout": layout,
-            "param_bytes": param_bytes,
-            "const0_size": const0_size,
-            "info_k_idx": info_k_idx,
-            "text_idx": 0,
-            "smem_idx": 0,
-            "const0_idx": 0,
-            "const0_sym": 0,
-            "func_sym": 0,
+            "kernel": k, "code": code, "code_len": len(code), "exit_offsets": exit_offsets,
+            "layout": layout, "param_bytes": param_bytes, "const0_size": const0_size,
+            "info_k_idx": info_k_idx, "text_idx": 0, "smem_idx": 0, "const0_idx": 0, "const0_sym": 0, "func_sym": 0,
         })
 
     for m in prepared:
         k = m["kernel"]
-        text_idx = add_section(
-            f".text.{k.name}",
-            SHT_PROGBITS,
-            SHF_ALLOC | SHF_EXECINSTR,
-            m["code"],
-            link=symtab_idx,
-            info=0,
-            align=128,
-        )
+        text_idx = add_section(f".text.{k.name}", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, m["code"], link=symtab_idx, info=0, align=128)
         m["text_idx"] = text_idx
         sections[m["info_k_idx"] - 1]["info"] = text_idx
         sym_locals.append(struct.pack("<IBBHQQ", strtab.add(f".text.{k.name}"), 0x03, 0, text_idx, 0, 0))
@@ -269,28 +243,11 @@ def build_cubin(kernels, arch="sm121"):
     for m in prepared:
         k = m["kernel"]
         if k.smem_bytes > 0:
-            m["smem_idx"] = add_section(
-                f".nv.shared.{k.name}",
-                SHT_NOBITS,
-                SHF_WRITE | SHF_ALLOC | SHF_INFO_LINK,
-                b"",
-                link=0,
-                info=m["text_idx"],
-                align=16,
-                nobits_size=k.smem_bytes,
-            )
+            m["smem_idx"] = add_section(f".nv.shared.{k.name}", SHT_NOBITS, SHF_WRITE | SHF_ALLOC | SHF_INFO_LINK, b"", link=0, info=m["text_idx"], align=16, nobits_size=k.smem_bytes)
 
     for m in prepared:
         k = m["kernel"]
-        const0_idx = add_section(
-            f".nv.constant0.{k.name}",
-            SHT_PROGBITS,
-            SHF_ALLOC | SHF_INFO_LINK,
-            b"\x00" * m["const0_size"],
-            link=0,
-            info=m["text_idx"],
-            align=4,
-        )
+        const0_idx = add_section(f".nv.constant0.{k.name}", SHT_PROGBITS, SHF_ALLOC | SHF_INFO_LINK, b"\x00" * m["const0_size"], link=0, info=m["text_idx"], align=4)
         m["const0_idx"] = const0_idx
         m["const0_sym"] = len(sym_locals)
         sym_locals.append(struct.pack("<IBBHQQ", strtab.add(f".nv.constant0.{k.name}"), 0x03, 0, const0_idx, 0, 0))
@@ -302,8 +259,7 @@ def build_cubin(kernels, arch="sm121"):
         func_sym = local_count + len(sym_globals)
         m["func_sym"] = func_sym
         sym_globals.append(struct.pack("<IBBHQQ", strtab.add(k.name), 0x12, 0x10, m["text_idx"], 0, m["code_len"]))
-        bar_bits = (k.barriers & 0x7F) << 20
-        sections[m["text_idx"] - 1]["info"] = func_sym | bar_bits
+        sections[m["text_idx"] - 1]["info"] = func_sym
 
     nvinfo_global = bytearray()
     for m in kernel_meta:
@@ -322,6 +278,8 @@ def build_cubin(kernels, arch="sm121"):
             info_k.extend(nvinfo_attr_val(0x17, struct.pack("<IHHI", 0, ordinal, poff, flags_word)))
         info_k.extend(nvinfo_attr_hword(0x50, 0))
         info_k.extend(nvinfo_attr_hword(0x1B, 0x00FF))
+        if k.barriers > 0:
+            info_k.extend(nvinfo_attr_byte(0x4C, k.barriers))
         info_k.extend(nvinfo_attr_hword(0x5F, 0x0101))
         info_k.extend(nvinfo_attr_byte(0x4A, 0))
         if m["exit_offsets"]:
