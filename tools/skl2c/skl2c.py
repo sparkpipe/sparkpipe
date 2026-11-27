@@ -60,7 +60,7 @@ def main(argv=None):
     if args.output:
         with open(args.output, "wb") as f: f.write(cubin)
     if args.emit_c_header:
-        with open(args.emit_c_header, "w", encoding="utf-8") as f: f.write(emit_c_header(images, model_plan=model_plan, arch=args.arch))
+        with open(args.emit_c_header, "w", encoding="utf-8") as f: f.write(emit_c_header(images, model_plan=model_plan, arch=args.arch, unit=unit))
     if args.manifest:
         combined = [open(fp, "rb").read() for fp in unit["files"]]
         src_label = args.inputs[0] if len(args.inputs) == 1 else ",".join(args.inputs)
