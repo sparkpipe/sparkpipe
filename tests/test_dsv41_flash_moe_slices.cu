@@ -183,20 +183,20 @@ static uint64_t Run(void)
 		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		{
 			REQUIRE(Experts(slice_up[rank], xq, gate_up, offsets, source, EXPERTS, rows, routes, 0u, HIDDEN, 2u * SLICE) == LM_LAUNCH_OK);
-			D41MoeSendKernel<<<D41ItemGrid(HIDDEN / THREADS, routes + rows), THREADS>>>(gate_up, packed_weight, shared + (uint64_t)rank * rows * HIDDEN,
+			D41MoeSendLaunch(D41ItemGrid(HIDDEN / THREADS, routes + rows), THREADS, (SparkGpuStream)0, gate_up, packed_weight, shared + (uint64_t)rank * rows * HIDDEN,
 				send + (uint64_t)rank * DEGREE * stride, routes, rows, SLICE, HIDDEN_SLICE, DEGREE, stride, LIMIT, ROUTE_ELEMENTS, CODES);
 		}
 		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		{
 			for ( uint32_t peer = 0u; peer < DEGREE; ++peer )
 				CUDA(cudaMemcpy(received + (uint64_t)peer * stride, send + ((uint64_t)peer * DEGREE + rank) * stride, stride * 2u, cudaMemcpyDeviceToDevice));
-			D41ActAssembleQdqKernel<<<D41ItemGrid(INTER / THREADS, routes), THREADS>>>(received, act, SLICE, INTER, stride, routes, CODES);
+			D41ActAssembleQdqLaunch(D41ItemGrid(INTER / THREADS, routes), THREADS, (SparkGpuStream)0, received, act, SLICE, INTER, stride, routes, CODES);
 			REQUIRE(Experts(slice_down[rank], act, slice_out, offsets, source, EXPERTS, rows, routes, 1u, INTER, HIDDEN_SLICE) == LM_LAUNCH_OK);
-			D41FinalizeSliceKernel<<<dim3((HIDDEN_SLICE + THREADS - 1u) / THREADS, rows), THREADS>>>(slice_out, received, global, packed_row,
+			D41FinalizeSliceLaunch(dim3((HIDDEN_SLICE + THREADS - 1u) / THREADS, rows), THREADS, (SparkGpuStream)0, slice_out, received, global, packed_row,
 				final_slices + (uint64_t)rank * rows * HIDDEN_SLICE, TOPK, LOCAL, DEGREE, HIDDEN_SLICE, stride, (uint64_t)routes * ROUTE_ELEMENTS,
 				(const uint16_t *)0);
 		}
-		D41SliceGatherKernel<<<dim3(HIDDEN / THREADS, rows), THREADS>>>(final_slices, candidate, rows, HIDDEN_SLICE, DEGREE);
+		D41SliceGatherLaunch(dim3(HIDDEN / THREADS, rows), THREADS, (SparkGpuStream)0, final_slices, candidate, rows, HIDDEN_SLICE, DEGREE);
 		CUDA(cudaDeviceSynchronize());
 		{
 			std::vector<uint16_t> want((uint64_t)rows * HIDDEN), got((uint64_t)rows * HIDDEN);

@@ -177,7 +177,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		CUDA(cudaMalloc(&send_d, (size_t)RANKS * shuffle * RECORD_BYTES));
 		CUDA(cudaMemset(send_d, 0, (size_t)RANKS * shuffle * RECORD_BYTES));
 		if ( live[source] != 0u )
-			D41ShufflePackKernel<<<live[source], 256u>>>(codes_d, scales_d, experts_d, weights_d, source * own, RANKS, shuffle, HIDDEN, TOPK, RECORD_BYTES,
+			D41ShufflePackLaunch(live[source], 256u, (SparkGpuStream)0, codes_d, scales_d, experts_d, weights_d, source * own, RANKS, shuffle, HIDDEN, TOPK, RECORD_BYTES,
 				send_d);
 		CUDA(cudaGetLastError());
 		moved[source] = Host(send_d, (size_t)RANKS * shuffle * RECORD_BYTES);
@@ -190,7 +190,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		CUDA(cudaMalloc(&gathered_d, RANKS * sizeof(Counts)));
 		CUDA(cudaMalloc(&totals_d, sizeof(Totals)));
 		CUDA(cudaMemcpy(gathered_d, parts.data(), RANKS * sizeof(Counts), cudaMemcpyHostToDevice));
-		D41ExchangeTotalsKernel<RANKS, EXPERTS><<<7u, 1024u>>>((const uint8_t *)gathered_d, sizeof(Counts), 1u, totals_d);
+		D41ExchangeTotalsLaunch<RANKS, EXPERTS>(7u, 1024u, (SparkGpuStream)0, (const uint8_t *)gathered_d, sizeof(Counts), 1u, totals_d);
 		CUDA(cudaGetLastError());
 		CUDA(cudaMemcpy(&totals, totals_d, sizeof(Totals), cudaMemcpyDeviceToHost));
 		for ( uint32_t index = 0u; index < RANKS * RANKS + EXPERTS + RANKS * EXPERTS; ++index )
@@ -228,7 +228,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		CUDA(cudaMalloc(&experts_d, (size_t)spaces * TOPK * sizeof(uint32_t)));
 		CUDA(cudaMalloc(&weights_d, (size_t)spaces * TOPK * sizeof(float)));
 		if ( count != 0u )
-			D41ShuffleUnpackKernel<RANKS><<<dim3(2u, count), 256u>>>(received_d, moe_in[target], shuffle, HIDDEN, TOPK, RECORD_BYTES, codes_d, scales_d,
+			D41ShuffleUnpackLaunch<RANKS>(dim3(2u, count), 256u, (SparkGpuStream)0, received_d, moe_in[target], shuffle, HIDDEN, TOPK, RECORD_BYTES, codes_d, scales_d,
 				experts_d, weights_d);
 		CUDA(cudaGetLastError());
 		codes[target] = Host(codes_d, (size_t)count * HIDDEN);
@@ -372,7 +372,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		CUDA(cudaMalloc(&send_d, (size_t)RANKS * capacity * RECORD_BYTES));
 		CUDA(cudaMemset(send_d, 0, (size_t)RANKS * capacity * RECORD_BYTES));
 		if ( routed != 0u )
-			D41ExchangePackKernel<<<dim3(routed, RANKS), 256u>>>(codes_d, scales_d, experts_d, weights_d, slot_d[source], owner_d, RANKS, capacity, HIDDEN,
+			D41ExchangePackLaunch(dim3(routed, RANKS), 256u, (SparkGpuStream)0, codes_d, scales_d, experts_d, weights_d, slot_d[source], owner_d, RANKS, capacity, HIDDEN,
 				TOPK, EXPERTS, RECORD_BYTES, send_d);
 		CUDA(cudaGetLastError());
 		sent[source] = Host(send_d, (size_t)RANKS * capacity * RECORD_BYTES);
@@ -416,7 +416,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		CUDA(cudaMalloc(&weight_d, (size_t)spaces * TOPK * sizeof(float)));
 		CUDA(cudaMalloc(&global_d, (size_t)spaces * TOPK * sizeof(uint32_t)));
 		if ( received_rows != 0u )
-			D41ExchangeUnpackKernel<RANKS><<<dim3((HIDDEN / 16u + 255u) / 256u, received_rows), 256u>>>(received_d, rows_in, capacity, HIDDEN, TOPK,
+			D41ExchangeUnpackLaunch<RANKS>(dim3((HIDDEN / 16u + 255u) / 256u, received_rows), 256u, (SparkGpuStream)0, received_d, rows_in, capacity, HIDDEN, TOPK,
 				RECORD_BYTES, codes_d, scales_d, route_d, weight_d);
 		CUDA(cudaGetLastError());
 		const std::vector<uint8_t> unpacked_codes = Host(codes_d, (size_t)received_rows * HIDDEN);
@@ -470,7 +470,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		for ( uint32_t q = 0u; q <= received_rows; ++q )
 			places[q] = q < received_rows ? received_rows - 1u - q : received_rows + 7u;
 		uint32_t *places_d = Device(places);
-		D41RecordPlaceKernel<RANKS><<<(received_rows + 1u + 255u) / 256u, 256u>>>(places_d, received_rows + 1u, rows_in, capacity);
+		D41RecordPlaceLaunch<RANKS>((received_rows + 1u + 255u) / 256u, 256u, (SparkGpuStream)0, places_d, received_rows + 1u, rows_in, capacity);
 		CUDA(cudaGetLastError());
 		const std::vector<uint32_t> placed = Host(places_d, (size_t)received_rows + 1u);
 		cudaFree(places_d);
@@ -485,7 +485,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		std::vector<uint32_t> output_row((size_t)spaces * TOPK, UINT32_MAX);
 		uint32_t *output_row_d = Device(output_row);
 		if ( received_rows != 0u )
-			D41FinalizeMapKernel<RANKS><<<(received_rows + 255u) / 256u, 256u>>>(route_d, packed_row_d, rows_in, capacity, TOPK, HELD, received_rows, 0x80000000u,
+			D41FinalizeMapLaunch<RANKS>((received_rows + 255u) / 256u, 256u, (SparkGpuStream)0, route_d, packed_row_d, rows_in, capacity, TOPK, HELD, received_rows, 0x80000000u,
 				output_row_d);
 		CUDA(cudaGetLastError());
 		output_row = Host(output_row_d, (size_t)spaces * TOPK);
@@ -512,7 +512,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		}
 		CUDA(cudaMemcpy(final_d, written.data(), written.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
 		if ( received_rows != 0u )
-			D41ExchangeFinalizeKernel<RANKS><<<dim3((HIDDEN / 8u + 255u) / 256u, received_rows), 256u>>>(packed_d, packed_row_d, route_d, rows_in, capacity,
+			D41ExchangeFinalizeLaunch<RANKS>(dim3((HIDDEN / 8u + 255u) / 256u, received_rows), 256u, (SparkGpuStream)0, packed_d, packed_row_d, route_d, rows_in, capacity,
 				TOPK, HELD, HIDDEN, 1u, final_d);
 		CUDA(cudaGetLastError());
 		cudaFree(output_row_d);
@@ -556,7 +556,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		CUDA(cudaMalloc(&back_d, (size_t)RANKS * shuffle * HIDDEN * sizeof(uint16_t)));
 		CUDA(cudaMemset(back_d, 0, (size_t)RANKS * shuffle * HIDDEN * sizeof(uint16_t)));
 		if ( moe_rows[target] != 0u )
-			D41ShuffleSumKernel<RANKS><<<dim3((HIDDEN / 8u + 255u) / 256u, moe_rows[target]), 256u>>>(landing_d, slot_d[target], moe_in[target], shuffle,
+			D41ShuffleSumLaunch<RANKS>(dim3((HIDDEN / 8u + 255u) / 256u, moe_rows[target]), 256u, (SparkGpuStream)0, landing_d, slot_d[target], moe_in[target], shuffle,
 				HIDDEN, back_d);
 		CUDA(cudaGetLastError());
 		summed[target] = Host(back_d, (size_t)RANKS * shuffle * HIDDEN);
@@ -573,7 +573,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 			value = ToBf16((float)(Next() % 4096u) / 1024.0f - 2.0f);
 		uint16_t *back_d = Device(back), *shared_d = Device(shared), *output_d = 0;
 		CUDA(cudaMalloc(&output_d, (size_t)own * HIDDEN * sizeof(uint16_t)));
-		D41ShuffleFinishKernel<<<dim3((HIDDEN / 8u + 255u) / 256u, own), 256u>>>(back_d, shared_d, live[source], source * own, RANKS, shuffle, HIDDEN,
+		D41ShuffleFinishLaunch(dim3((HIDDEN / 8u + 255u) / 256u, own), 256u, (SparkGpuStream)0, back_d, shared_d, live[source], source * own, RANKS, shuffle, HIDDEN,
 			output_d);
 		CUDA(cudaGetLastError());
 		const std::vector<uint16_t> output = Host(output_d, (size_t)own * HIDDEN);
@@ -737,7 +737,7 @@ static uint32_t WindowCase(uint32_t rows, uint32_t own, uint32_t edge)
 		std::vector<uint16_t> own_kv(&full[(size_t)rank * own * dim], &full[(size_t)(rank + 1u) * own * dim]);
 		uint16_t *own_d = Device(own_kv);
 		CUDA(cudaMemset(window_d, 0xee, full.size() * sizeof(uint16_t)));
-		D41WindowAssembleKernel<<<own + RANKS * edge, 64u>>>(own_d, edges_d, window_d, own, edge, rank * own);
+		D41WindowAssembleLaunch(own + RANKS * edge, 64u, (SparkGpuStream)0, own_d, edges_d, window_d, own, edge, rank * own);
 		CUDA(cudaGetLastError());
 		const std::vector<uint16_t> window_kv = Host(window_d, full.size());
 		const uint32_t first = rank * own, from = first >= window - 1u ? first - (window - 1u) : 0u, to = first + own < rows ? first + own : rows;
@@ -788,7 +788,7 @@ static uint32_t TailCase(uint32_t rows, uint32_t source_first, uint32_t first)
 		CUDA(cudaMalloc(&send_pre_d, (size_t)RANKS * capacity * sizeof(uint4)));
 		CUDA(cudaMemset(send_d, 0xcd, (size_t)RANKS * capacity * vectors * sizeof(uint4)));
 		CUDA(cudaMemset(send_pre_d, 0xcd, (size_t)RANKS * capacity * sizeof(uint4)));
-		D41TailPackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(streams_d, (const float *)pre_d, rank, rows, source_first, own, first, tail_own, capacity, width,
+		D41TailPackLaunch(dim3(2u, capacity, RANKS), 64u, (SparkGpuStream)0, streams_d, (const float *)pre_d, rank, rows, source_first, own, first, tail_own, capacity, width,
 			send_d, send_pre_d);
 		CUDA(cudaGetLastError());
 		sent[rank] = Host(send_d, (size_t)RANKS * capacity * vectors);
@@ -814,7 +814,7 @@ static uint32_t TailCase(uint32_t rows, uint32_t source_first, uint32_t first)
 		CUDA(cudaMalloc(&pre_d, (size_t)RANKS * tail_own * D41K_HC * sizeof(uint32_t)));
 		CUDA(cudaMemset(streams_d, 0xab, (size_t)RANKS * tail_own * width * sizeof(uint16_t)));
 		CUDA(cudaMemset(pre_d, 0xab, (size_t)RANKS * tail_own * D41K_HC * sizeof(uint32_t)));
-		D41TailUnpackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(received_d, received_pre_d, rank, rows, source_first, own, first, tail_own, capacity, width,
+		D41TailUnpackLaunch(dim3(2u, capacity, RANKS), 64u, (SparkGpuStream)0, received_d, received_pre_d, rank, rows, source_first, own, first, tail_own, capacity, width,
 			streams_d, (float *)pre_d);
 		CUDA(cudaGetLastError());
 		const std::vector<uint16_t> streams = Host(streams_d, (size_t)RANKS * tail_own * width);
@@ -844,7 +844,7 @@ static uint32_t TailCase(uint32_t rows, uint32_t source_first, uint32_t first)
 		uint4 *held_d = Device(held), *send_d = 0;
 		CUDA(cudaMalloc(&send_d, (size_t)RANKS * capacity * record_vectors * sizeof(uint4)));
 		CUDA(cudaMemset(send_d, 0xcd, (size_t)RANKS * capacity * record_vectors * sizeof(uint4)));
-		D41TailRowsPackKernel<<<dim3(1u, capacity, RANKS), 64u>>>(held_d, mask_vectors, record_vectors, rank, rows, source_first, own, first, tail_own,
+		D41TailRowsPackLaunch(dim3(1u, capacity, RANKS), 64u, (SparkGpuStream)0, held_d, mask_vectors, record_vectors, rank, rows, source_first, own, first, tail_own,
 			capacity, send_d);
 		CUDA(cudaGetLastError());
 		mask_sent[rank] = Host(send_d, (size_t)RANKS * capacity * record_vectors);
@@ -859,7 +859,7 @@ static uint32_t TailCase(uint32_t rows, uint32_t source_first, uint32_t first)
 				(size_t)capacity * record_vectors * sizeof(uint4));
 		std::vector<uint4> held((size_t)rows * mask_vectors, make_uint4(0xbeefu, 0xbeefu, 0xbeefu, 0xbeefu));
 		uint4 *received_d = Device(received), *held_d = Device(held);
-		D41TailRowsUnpackKernel<<<dim3(1u, capacity, RANKS), 64u>>>(received_d, mask_vectors, record_vectors, rank, rows, source_first, own, first, tail_own,
+		D41TailRowsUnpackLaunch(dim3(1u, capacity, RANKS), 64u, (SparkGpuStream)0, received_d, mask_vectors, record_vectors, rank, rows, source_first, own, first, tail_own,
 			capacity, held_d);
 		CUDA(cudaGetLastError());
 		held = Host(held_d, (size_t)rows * mask_vectors);
@@ -955,7 +955,7 @@ static uint32_t DirectCase(uint32_t own, uint32_t rows, uint32_t hot, uint32_t c
 		CUDA(cudaMalloc(&gathered_d, RANKS * sizeof(Counts)));
 		CUDA(cudaMalloc(&totals_d, sizeof(Totals)));
 		CUDA(cudaMemcpy(gathered_d, parts.data(), RANKS * sizeof(Counts), cudaMemcpyHostToDevice));
-		D41ExchangeTotalsKernel<RANKS, EXPERTS><<<copies_active != 0u ? 7u : 1u, 1024u>>>((const uint8_t *)gathered_d, sizeof(Counts), copies_active != 0u ? 1u : 0u, totals_d);
+		D41ExchangeTotalsLaunch<RANKS, EXPERTS>(copies_active != 0u ? 7u : 1u, 1024u, (SparkGpuStream)0, (const uint8_t *)gathered_d, sizeof(Counts), copies_active != 0u ? 1u : 0u, totals_d);
 		CUDA(cudaGetLastError());
 		CUDA(cudaMemcpy(&totals, totals_d, sizeof(Totals), cudaMemcpyDeviceToHost));
 		for ( uint32_t s = 0u; s < RANKS; ++s )
@@ -1004,7 +1004,7 @@ static uint32_t DirectCase(uint32_t own, uint32_t rows, uint32_t hot, uint32_t c
 		for ( uint32_t t = 0u; t < RANKS; ++t )
 			REQUIRE(got_count[t] == counts[source * RANKS + t]);
 		if ( n != 0u )
-			D41ExchangePackKernel<<<dim3(n, RANKS), 256u>>>(codes_d, scales_d, experts_d, weights_d, slot_d, owner_d, RANKS, capacity, HIDDEN, TOPK, EXPERTS,
+			D41ExchangePackLaunch(dim3(n, RANKS), 256u, (SparkGpuStream)0, codes_d, scales_d, experts_d, weights_d, slot_d, owner_d, RANKS, capacity, HIDDEN, TOPK, EXPERTS,
 				RECORD_BYTES, send_d);
 		CUDA(cudaGetLastError());
 		slots[source] = Host(slot_d, (size_t)n * RANKS);
@@ -1033,7 +1033,7 @@ static uint32_t DirectCase(uint32_t own, uint32_t rows, uint32_t hot, uint32_t c
 			float *rw_d = 0;
 			CUDA(cudaMalloc(&re_d, (size_t)m * TOPK * sizeof(uint32_t)));
 			CUDA(cudaMalloc(&rw_d, (size_t)m * TOPK * sizeof(float)));
-			D41ExchangeUnpackKernel<RANKS><<<dim3(1u, m), 32u>>>(recv_d, recv, capacity, HIDDEN, TOPK, RECORD_BYTES, (uint8_t *)0, (uint8_t *)0, re_d, rw_d);
+			D41ExchangeUnpackLaunch<RANKS>(dim3(1u, m), 32u, (SparkGpuStream)0, recv_d, recv, capacity, HIDDEN, TOPK, RECORD_BYTES, (uint8_t *)0, (uint8_t *)0, re_d, rw_d);
 			CUDA(cudaGetLastError());
 			std::vector<uint32_t> re = Host(re_d, (size_t)m * TOPK);
 			for ( uint32_t row = 0u; row < m; ++row )
@@ -1078,7 +1078,7 @@ static uint32_t DirectCase(uint32_t own, uint32_t rows, uint32_t hot, uint32_t c
 		uint32_t *slot_d = Device(slots[source].empty() ? std::vector<uint32_t>(1u, 0u) : slots[source]);
 		CUDA(cudaMalloc(&out_d, (size_t)own * HIDDEN * sizeof(uint16_t)));
 		CUDA(cudaMemset(out_d, 0x55, (size_t)own * HIDDEN * sizeof(uint16_t)));
-		D41DirectFinishKernel<RANKS><<<dim3((HIDDEN / 8u + 255u) / 256u, own), 256u>>>(land_d, slot_d, shared_d, live[source], HIDDEN, out_d);
+		D41DirectFinishLaunch<RANKS>(dim3((HIDDEN / 8u + 255u) / 256u, own), 256u, (SparkGpuStream)0, land_d, slot_d, shared_d, live[source], HIDDEN, out_d);
 		CUDA(cudaGetLastError());
 		std::vector<uint16_t> out = Host(out_d, (size_t)own * HIDDEN);
 		for ( uint32_t row = 0u; row < own; ++row )

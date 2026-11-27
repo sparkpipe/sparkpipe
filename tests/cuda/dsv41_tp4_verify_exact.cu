@@ -356,10 +356,10 @@ int main(void)
 		st->step_score_stride = 512u;
 		st->step_ratio2_stride = 512u;
 		LM_LAUNCH((LmRowLanesKernel), 1u, 256u, 0, (SparkGpuStream)0, step.sequence_row_begin, step.sequence_row_indices, st->row_lane, st->row_ordinal);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
 		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
 	};
 
@@ -394,10 +394,10 @@ int main(void)
 		st->step_score_stride = 512u;
 		st->step_ratio2_stride = 512u;
 		LM_LAUNCH((LmRowLanesKernel), nr, 256u, 0, (SparkGpuStream)0, step.sequence_row_begin, step.sequence_row_indices, st->row_lane, st->row_ordinal);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
 		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
 	};
 

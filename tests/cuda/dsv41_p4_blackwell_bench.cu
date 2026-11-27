@@ -300,7 +300,7 @@ static void BenchTp4AndRows16Moe(void)
 		for ( uint32_t i = 0u; i < routes; ++i ) hsrc[i] = (i * 131u) % rows;
 		BENCH_CHECK(cudaMemcpy(doff, hoff.data(), (tp4_experts + 1u) * 4u, cudaMemcpyHostToDevice));
 		BENCH_CHECK(cudaMemcpy(dsrc, hsrc.data(), routes * 4u, cudaMemcpyHostToDevice));
-		D41CompactActiveExpertsKernel<384u><<<1u, 256u>>>(doff, dact, tp4_experts);
+		D41CompactActiveExpertsLaunch<384u>(1u, 256u, (SparkGpuStream)0, doff, dact, tp4_experts);
 		BENCH_CHECK(cudaDeviceSynchronize());
 		auto run_direct = [&]() {
 			D41CellMxW13DirectKernel<2u, 2u, 384u, 5120u, 1024u><<<384u * (1024u / 128u), 256u>>>(
