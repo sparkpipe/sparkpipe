@@ -113,18 +113,22 @@ macro gqa_gate_pair(a0, a1, denom, inv_d, gate_word, out_word) {
 
 @pdl
 @concept(attention)
-kernel[BLOCK, 64] gqa_split_reduce_sigmoid_gate_pdl_exact_bf16(
+template kernel[BLOCK, 64] gqa_split_reduce_tpl<IS_GEN>(
     global u32* partials_f32, global u32* attn_local_bf16,
     global u32* sequence_of_row, global u32* context_length,
     global u32* row_position, global u32* merged_out_bf16,
-    u32 rows
+    u32 rows,
+    if (IS_GEN == 1) u32 heads_in,
+    if (IS_GEN == 1) u32 qkv_v_in
 ) {
     acqbulk();
+    reg u32 heads = 24; reg u32 qkv_v = 1792;
+    if constexpr (IS_GEN == 1) { heads = heads_in; qkv_v = qkv_v_in; }
     reg u32 wid = warp_id();
     reg u32 lane = lane_id();
     reg u32 head = ctaid_x() * 8 + wid;
     reg u32 row = ctaid_y();
-    if (row >= rows || head >= 24) {
+    if (row >= rows || head >= heads) {
         preexit();
         return;
     }
@@ -153,7 +157,7 @@ kernel[BLOCK, 64] gqa_split_reduce_sigmoid_gate_pdl_exact_bf16(
     reg u32 lane8 = lane << 3;
     for (reg u32 s = 0; s < 12; s += 1) {
         if (s * slen < limit) {
-            reg u32 in_base = ((row * 12 + s) * 24 + head) * 260;
+            reg u32 in_base = ((row * 12 + s) * heads + head) * 260;
             reg f32 sm = u32_as_f32(ldg32_stream(ptr_add(partials_f32, in_base + 256, 4)));
             reg f32 sl = u32_as_f32(ldg32_stream(ptr_add(partials_f32, in_base + 257, 4)));
             reg f32 prev = gmax;
@@ -174,13 +178,16 @@ kernel[BLOCK, 64] gqa_split_reduce_sigmoid_gate_pdl_exact_bf16(
     reg f32 denom = maxf(gsum, 1.0e-20f);
     reg f32 inv_d = 0.0f;
     rcp_nr1_f32(denom, inv_d);
-    reg u32x4 gv = ldg128_stream(ptr_add(attn_local_bf16, row * 1792 + (head * 2 + 1) * 32 + lane, 16));
+    reg u32x4 gv = ldg128_stream(ptr_add(attn_local_bf16, row * qkv_v + (head * 2 + 1) * 32 + lane, 16));
     unroll (k = 0..4) {
         gqa_gate_pair(acc[k * 2], acc[k * 2 + 1], denom, inv_d, gv[k], gv[k]);
     }
-    stg128(ptr_add(merged_out_bf16, (row * 24 + head) * 32 + lane, 16), gv);
+    stg128(ptr_add(merged_out_bf16, (row * heads + head) * 32 + lane, 16), gv);
     preexit();
 }
+
+instantiate gqa_split_reduce_tpl<0> as gqa_split_reduce_sigmoid_gate_pdl_exact_bf16;
+instantiate gqa_split_reduce_tpl<1> as qwen_gqa_split_reduce_gate_gen;
 
 macro plan_read_u32(plan, base_off, idx, out_val) {
     out_val = param_u32(plan, base_off);
@@ -189,7 +196,7 @@ macro plan_read_u32(plan, base_off, idx, out_val) {
     }
 }
 
-macro attn_norm_rope_head256(v, norm_w, rope_smem, wid, lane, pos_f, out_v) {
+macro attn_norm_rope_head256(v, norm_w, rope_smem, wid, lane, pos_f, rounded_rope, out_v) {
     reg f32 sq = 0.0f;
     unroll (k = 0..4) {
         reg f32 x0 = bf16_lo(v[k]);
@@ -216,12 +223,17 @@ macro attn_norm_rope_head256(v, norm_w, rope_smem, wid, lane, pos_f, out_v) {
     reg f32 angle = pos_f * exp2_ftz(u32_to_f32(lane) * -0.7266717707566105f);
     reg f32 sv = 0.0f; reg f32 cv = 0.0f;
     sincos_pos_f32(angle, sv, cv);
-    reg f32 cb = bf16_lo(f32_to_bf16(cv));
-    reg f32 sb = bf16_lo(f32_to_bf16(sv));
     reg f32 a = bf16_lo(lds32(rope_smem, rbase + lane));
     reg f32 b = bf16_lo(lds32(rope_smem, rbase + 32 + lane));
-    sts32(rope_smem, rbase + lane, f32_to_bf16(bf16_lo(f32_to_bf16(a * cb)) + bf16_lo(f32_to_bf16((-b) * sb))));
-    sts32(rope_smem, rbase + 32 + lane, f32_to_bf16(bf16_lo(f32_to_bf16(b * cb)) + bf16_lo(f32_to_bf16(a * sb))));
+    if (rounded_rope != 0) {
+        reg f32 cb = bf16_lo(f32_to_bf16(cv));
+        reg f32 sb = bf16_lo(f32_to_bf16(sv));
+        sts32(rope_smem, rbase + lane, f32_to_bf16(bf16_lo(f32_to_bf16(a * cb)) + bf16_lo(f32_to_bf16((-b) * sb))));
+        sts32(rope_smem, rbase + 32 + lane, f32_to_bf16(bf16_lo(f32_to_bf16(b * cb)) + bf16_lo(f32_to_bf16(a * sb))));
+    } else {
+        sts32(rope_smem, rbase + lane, f32_to_bf16((a * cv) - (b * sv)));
+        sts32(rope_smem, rbase + 32 + lane, f32_to_bf16((a * sv) + (b * cv)));
+    }
     rbase = shfl_idx(rbase, 0);
     if (lane < 8) {
         unroll (k = 0..4) {
@@ -232,9 +244,97 @@ macro attn_norm_rope_head256(v, norm_w, rope_smem, wid, lane, pos_f, out_v) {
     }
 }
 
+macro attn_load_vec8_gen(gathered, rows, row, attn_rows_v, logical_v, tp_deg, rank_heads_flag, q2_v, kv_v, out_v) {
+    if (tp_deg <= 1) {
+        out_v = ldg128_stream(ptr_add(gathered, row * attn_rows_v + logical_v, 16));
+    } else if (rank_heads_flag != 0) {
+        reg u32 q_rv = 0; reg u32 kv_rv = 0; reg u32 tmp_r = 0;
+        u32_divmod(q2_v, tp_deg, q_rv, tmp_r);
+        u32_divmod(kv_v, tp_deg, kv_rv, tmp_r);
+        reg u32 rk = 0; reg u32 el = 0;
+        if (logical_v < q2_v) {
+            u32_divmod(logical_v, q_rv, rk, el);
+        } else if (logical_v < q2_v + kv_v) {
+            u32_divmod(logical_v - q2_v, kv_rv, rk, el);
+            el = q_rv + el;
+        } else {
+            u32_divmod(logical_v - q2_v - kv_v, kv_rv, rk, el);
+            el = q_rv + kv_rv + el;
+        }
+        out_v = ldg128_stream(ptr_add(gathered, (rk * rows + row) * attn_rows_v + el, 16));
+    } else {
+        reg u32 rk = 0; reg u32 el = 0;
+        u32_divmod(logical_v, attn_rows_v, rk, el);
+        out_v = ldg128_stream(ptr_add(gathered, (rk * rows + row) * attn_rows_v + el, 16));
+    }
+}
+
+macro attn_prep_load_kv_mode(IS_LOCAL, IS_V, gathered, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, h_idx, lane, out_v) {
+    if (gather_mode != 0) {
+        reg u32 kv_rv = 0; reg u32 tr = 0; u32_divmod(kv_v, tp_deg, kv_rv, tr);
+        reg u32 rk = 0; reg u32 el = 0; u32_divmod((h_idx << 5) + lane, kv_rv, rk, el);
+        if constexpr (IS_LOCAL == 1) {
+            out_v = ldg128_stream(ptr_add(gathered, (rk * rows + row) * (kv_rv << 1) + (IS_V * kv_rv) + el, 16));
+        } else {
+            reg u32 q_rv = 0; u32_divmod(q2_v >> 1, tp_deg, q_rv, tr);
+            out_v = ldg128_stream(ptr_add(gathered, (rk * rows + row) * (q_rv + (kv_rv << 1)) + q_rv + (IS_V * kv_rv) + el, 16));
+        }
+    } else {
+        attn_load_vec8_gen(gathered, rows, row, attn_rows_v, q2_v + (IS_V * kv_v) + (h_idx << 5) + lane, tp_deg, flags & 1, q2_v, kv_v, out_v);
+    }
+}
+
+macro attn_prep_load_q_mode(IS_LOCAL, IS_GEN, attn_local, gathered, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, task, h, lane, out_v) {
+    if constexpr (IS_GEN == 0) {
+        out_v = ldg128_stream(ptr_add(gathered, row * attn_rows_v + (h << 6) + lane, 16));
+    } else if constexpr (IS_LOCAL == 1) {
+        if (gather_mode != 0) { out_v = ldg128_stream(ptr_add(attn_local, row * attn_rows_v + (task << 6) + lane, 16)); }
+        else { attn_load_vec8_gen(gathered, rows, row, attn_rows_v, (h << 6) + lane, tp_deg, flags & 1, q2_v, kv_v, out_v); }
+    } else if (gather_mode != 0) {
+        reg u32 q_rv = 0; reg u32 kv_rv = 0; reg u32 tr = 0;
+        u32_divmod(q2_v >> 1, tp_deg, q_rv, tr); u32_divmod(kv_v, tp_deg, kv_rv, tr);
+        reg u32 rk = 0; reg u32 el = 0; u32_divmod((h << 5) + lane, q_rv, rk, el);
+        out_v = ldg128_stream(ptr_add(gathered, (rk * rows + row) * (q_rv + (kv_rv << 1)) + el, 16));
+    } else {
+        attn_load_vec8_gen(gathered, rows, row, attn_rows_v, (h << 6) + lane, tp_deg, flags & 1, q2_v, kv_v, out_v);
+    }
+}
+
+macro attn_prep_kv_task(IS_LOCAL, IS_GEN, IS_V, gathered, k_norm, kv_cur, slot, ok, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, rounded_rope, pos_f, h_idx, kv_first, local_kvh, rope_smem, wid, lane) {
+    reg u32 need = 0;
+    if constexpr (IS_LOCAL == 1) { if (h_idx >= kv_first && h_idx < kv_first + local_kvh) { need = 1; } }
+    if ((ok | need) != 0) {
+        reg u32x4 v = pack_u32x4(0, 0, 0, 0);
+        if constexpr (IS_GEN == 0) { v = ldg128_stream(ptr_add(gathered, row * attn_rows_v + q2_v + (IS_V * kv_v) + (h_idx << 5) + lane, 16)); }
+        else { attn_prep_load_kv_mode(IS_LOCAL, IS_V, gathered, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, h_idx, lane, v); }
+        if constexpr (IS_V == 0) {
+            reg u32x4 k_out = pack_u32x4(0, 0, 0, 0);
+            attn_norm_rope_head256(v, k_norm, rope_smem, wid, lane, pos_f, rounded_rope, k_out);
+            v = k_out;
+        }
+        if (ok != 0) { stg128(ptr_add(slot, (IS_V * kv_v) + (h_idx << 5) + lane, 16), v); }
+        if constexpr (IS_LOCAL == 1) {
+            if (need != 0) { stg128(ptr_add(kv_cur, (((h_idx - kv_first) * rows + row) * 2 + IS_V) * 32 + lane, 16), v); }
+        }
+    }
+}
+
+macro attn_prep_gate_slice(IS_GEN, gathered, merged_gate, rows, row, attn_rows_v, tp_rank, attn_width, h, lane, tp_deg, flags, gather_mode, q2_v, kv_v) {
+    if constexpr (IS_GEN == 1) {
+        reg u32 gb_v = (tp_rank * attn_width) >> 3; reg u32 aw_v = attn_width >> 3; reg u32 gv_i = (h << 5) + lane;
+        if (tp_deg > 1 && gather_mode == 0) {
+            if (gv_i >= gb_v && gv_i < gb_v + aw_v) {
+                reg u32x4 gv = pack_u32x4(0, 0, 0, 0);
+                attn_load_vec8_gen(gathered, rows, row, attn_rows_v, ((h * 2 + 1) << 5) + lane, tp_deg, flags & 1, q2_v, kv_v, gv);
+                stg128(ptr_add(merged_gate, row * aw_v + (gv_i - gb_v), 16), gv);
+            }
+        }
+    }
+}
+
 @pdl
 @concept(attention)
-template kernel[BLOCK, 80] qwen_attn_prep_tpl<IS_LOCAL>(
+template kernel[BLOCK, 88] qwen_attn_prep_tpl<IS_LOCAL, IS_GEN>(
     if (IS_LOCAL == 1) global u32* attn_local,
     global u32* gathered, global u32* q_norm, global u32* k_norm,
     global u32* positions,
@@ -246,30 +346,37 @@ template kernel[BLOCK, 80] qwen_attn_prep_tpl<IS_LOCAL>(
     if (IS_LOCAL == 1) u32 q_first,
     if (IS_LOCAL == 1) u32 rank_heads,
     if (IS_LOCAL == 1) u32 kv_first,
-    if (IS_LOCAL == 1) u32 local_kvh
+    if (IS_LOCAL == 1) u32 local_kvh,
+    if (IS_GEN == 1) u32 heads_in,
+    if (IS_GEN == 1) u32 kv_heads_in,
+    if (IS_GEN == 1) u32 tp_deg_in,
+    if (IS_GEN == 1) u32 flags_in
 ) {
     shared u32 rope_smem[512];
     acqbulk();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
-    reg u32 task = ctaid_x() * 8 + wid;
-    reg u32 row = ctaid_y();
-    reg u32 nq = 24;
+    reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 task = ctaid_x() * 8 + wid; reg u32 row = ctaid_y();
+    reg u32 heads = 24; reg u32 kvh = 4; reg u32 tp_deg = 1; reg u32 flags = 4;
+    if constexpr (IS_GEN == 1) { heads = heads_in; kvh = kv_heads_in; tp_deg = tp_deg_in; flags = flags_in; }
+    reg u32 nq = heads;
     if constexpr (IS_LOCAL == 1) { nq = rank_heads; }
-    if (task >= nq + 8 || row >= rows) {
-        preexit();
-        return;
-    }
+    if (task >= nq + (kvh << 1) || row >= rows) { preexit(); return; }
     reg u32 attn_rows_v = attn_rows >> 3;
     reg u32 pos = ldg32_persist(ptr_add(positions, row, 4));
     reg f32 pos_f = u32_to_f32(pos);
+    reg u32 q2_v = heads << 6; reg u32 kv_v = kvh << 5;
+    reg u32 gather_mode = (flags >> 1) & 1;
+    reg u32 rounded_rope = (flags >> 2) & 1;
     if (task < nq) {
         reg u32 h = task;
         if constexpr (IS_LOCAL == 1) { h = q_first + task; }
-        reg u32x4 qv = ldg128_stream(ptr_add(gathered, row * attn_rows_v + (h << 6) + lane, 16));
+        reg u32x4 qv = pack_u32x4(0, 0, 0, 0);
+        if constexpr (IS_LOCAL == 1) { attn_prep_load_q_mode(1, IS_GEN, attn_local, gathered, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, task, h, lane, qv); }
+        else { attn_prep_load_q_mode(0, IS_GEN, gathered, gathered, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, task, h, lane, qv); }
         reg u32x4 q_out = pack_u32x4(0, 0, 0, 0);
-        attn_norm_rope_head256(qv, q_norm, rope_smem, wid, lane, pos_f, q_out);
+        attn_norm_rope_head256(qv, q_norm, rope_smem, wid, lane, pos_f, rounded_rope, q_out);
         stg128(ptr_add(attn_query, (row * nq + task) * 32 + lane, 16), q_out);
+        attn_prep_gate_slice(IS_GEN, gathered, merged_gate, rows, row, attn_rows_v, tp_rank, attn_width, h, lane, tp_deg, flags, gather_mode, q2_v, kv_v);
         preexit();
         return;
     }
@@ -277,63 +384,70 @@ template kernel[BLOCK, 80] qwen_attn_prep_tpl<IS_LOCAL>(
     if constexpr (IS_LOCAL == 0) { store_pos = ldg32_persist(ptr_add(store_positions, row, 4)); }
     reg u32 seq = ldg32_persist(ptr_add(sequence_of_row, row, 4));
     reg u64 slot = 0; reg u32 ok = 0;
-    kv_shard_slot_addr(kv_view, seq, store_pos, 4096, slot, ok);
-    if (task < nq + 4) {
-        reg u32 kh = task - nq;
-        reg u32x4 kv = ldg128_stream(ptr_add(gathered, row * attn_rows_v + 1536 + (kh << 5) + lane, 16));
-        reg u32x4 k_out = pack_u32x4(0, 0, 0, 0);
-        attn_norm_rope_head256(kv, k_norm, rope_smem, wid, lane, pos_f, k_out);
-        if (ok != 0) { stg128(ptr_add(slot, (kh << 5) + lane, 16), k_out); }
-        if constexpr (IS_LOCAL == 1) {
-            if (kh >= kv_first && kh < kv_first + local_kvh) {
-                stg128(ptr_add(kv_cur, (((kh - kv_first) * rows + row) * 2) * 32 + lane, 16), k_out);
-            }
-        }
+    kv_shard_slot_addr(kv_view, seq, store_pos, kvh << 10, slot, ok);
+    if (task < nq + kvh) {
+        if constexpr (IS_LOCAL == 1) { attn_prep_kv_task(1, IS_GEN, 0, gathered, k_norm, kv_cur, slot, ok, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, rounded_rope, pos_f, task - nq, kv_first, local_kvh, rope_smem, wid, lane); }
+        else { attn_prep_kv_task(0, IS_GEN, 0, gathered, k_norm, attn_query, slot, ok, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, rounded_rope, pos_f, task - nq, 0, 0, rope_smem, wid, lane); }
     } else {
-        reg u32 vh = task - nq - 4;
-        reg u32x4 vv = ldg128_stream(ptr_add(gathered, row * attn_rows_v + 1664 + (vh << 5) + lane, 16));
-        if (ok != 0) { stg128(ptr_add(slot, 128 + (vh << 5) + lane, 16), vv); }
-        if constexpr (IS_LOCAL == 1) {
-            if (vh >= kv_first && vh < kv_first + local_kvh) {
-                stg128(ptr_add(kv_cur, (((vh - kv_first) * rows + row) * 2 + 1) * 32 + lane, 16), vv);
-            }
-        }
+        if constexpr (IS_LOCAL == 1) { attn_prep_kv_task(1, IS_GEN, 1, gathered, k_norm, kv_cur, slot, ok, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, rounded_rope, pos_f, task - nq - kvh, kv_first, local_kvh, rope_smem, wid, lane); }
+        else { attn_prep_kv_task(0, IS_GEN, 1, gathered, k_norm, attn_query, slot, ok, rows, row, attn_rows_v, q2_v, kv_v, tp_deg, flags, gather_mode, rounded_rope, pos_f, task - nq - kvh, 0, 0, rope_smem, wid, lane); }
     }
     preexit();
 }
 
-instantiate qwen_attn_prep_tpl<0> as qwen_hybrid_attn_prep_tp1;
-instantiate qwen_attn_prep_tpl<1> as qwen_attn_prep_local_tp1;
+instantiate qwen_attn_prep_tpl<0, 0> as qwen_hybrid_attn_prep_tp1;
+instantiate qwen_attn_prep_tpl<1, 0> as qwen_attn_prep_local_tp1;
+instantiate qwen_attn_prep_tpl<0, 1> as qwen_hybrid_attn_prep_gen;
+instantiate qwen_attn_prep_tpl<1, 1> as qwen_attn_prep_local_gen;
 
 @pdl
 @concept(attention)
-kernel[BLOCK, 48] qwen_prior_kv_direct_4_256(
-    blob[56, 8] kv_view, global u32* sequence_of_row, blob[1804, 4] plan,
-    u32 kv_first, u32 local_kvh, global u32* kv_prior
+template kernel[BLOCK, 48] qwen_pack_local_attn_tpl<IS_QKV>(
+    global u32* attn_local, global u32* dst_send,
+    u32 rows, u32 attn_rows, u32 first_v, u32 kv_local_v
 ) {
     acqbulk();
-    reg u32 k_idx = ctaid_x();
-    reg u32 lh = ctaid_y();
-    reg u32 s = ctaid_z();
-    reg u32 pcount = param_u32(plan, 0);
-    if (s >= pcount || lh >= local_kvh) {
-        preexit();
-        return;
+    reg u32 attn_rows_v = attn_rows >> 3;
+    reg u32 pack_v = kv_local_v;
+    if constexpr (IS_QKV == 1) { pack_v = first_v + kv_local_v; }
+    reg u32 total = rows * pack_v;
+    reg u32 stride = grid_x() * BLOCK;
+    for (reg u32 idx = ctaid_x() * BLOCK + tid_x(); idx < total; idx += stride) {
+        reg u32 r = 0; reg u32 c = 0;
+        u32_divmod(idx, pack_v, r, c);
+        reg u32 src_c = first_v + c;
+        if constexpr (IS_QKV == 1) {
+            if (c < first_v) { src_c = ((c >> 5) << 6) + (c & 31); }
+            else { src_c = (first_v << 1) + (c - first_v); }
+        }
+        stg128(ptr_add(dst_send, idx, 16), ldg128_persist(ptr_add(attn_local, r * attn_rows_v + src_c, 16)));
     }
+    preexit();
+}
+
+instantiate qwen_pack_local_attn_tpl<0> as qwen_pack_local_kv_256;
+instantiate qwen_pack_local_attn_tpl<1> as qwen_pack_local_qkv_no_gate_256;
+
+@pdl
+@concept(attention)
+template kernel[BLOCK, 48] qwen_prior_kv_direct_tpl<IS_GEN>(
+    blob[56, 8] kv_view, global u32* sequence_of_row, blob[1804, 4] plan,
+    u32 kv_first, u32 local_kvh, global u32* kv_prior,
+    if (IS_GEN == 1) u32 kv_heads_in
+) {
+    acqbulk();
+    reg u32 kvh = 4;
+    if constexpr (IS_GEN == 1) { kvh = kv_heads_in; }
+    reg u32 k_idx = ctaid_x(); reg u32 lh = ctaid_y(); reg u32 s = ctaid_z();
+    reg u32 pcount = param_u32(plan, 0);
+    if (s >= pcount || lh >= local_kvh) { preexit(); return; }
     reg u32 old_ctx = 0;
     plan_read_u32(plan, 780, s, old_ctx);
-    if (k_idx >= old_ctx) {
-        preexit();
-        return;
-    }
+    if (k_idx >= old_ctx) { preexit(); return; }
     reg u32 seq = 0;
-    if (pcount == 1) {
-        seq = ldg32_persist(sequence_of_row);
-    } else {
-        plan_read_u32(plan, 12, s, seq);
-    }
+    if (pcount == 1) { seq = ldg32_persist(sequence_of_row); } else { plan_read_u32(plan, 12, s, seq); }
     reg u64 slot = 0; reg u32 ok = 0;
-    kv_shard_slot_addr(kv_view, seq, k_idx, 4096, slot, ok);
+    kv_shard_slot_addr(kv_view, seq, k_idx, kvh << 10, slot, ok);
     reg u32 tid = tid_x();
     if (ok != 0 && tid < 32) {
         reg u32 total_prior = param_u32(plan, 4);
@@ -342,22 +456,100 @@ kernel[BLOCK, 48] qwen_prior_kv_direct_4_256(
         reg u32 kh = kv_first + lh;
         reg u32 dst_base = ((lh * total_prior + (prior_off + k_idx)) * 2) * 32;
         stg128(ptr_add(kv_prior, dst_base + tid, 16), ldg128_persist(ptr_add(slot, kh * 32 + tid, 16)));
-        stg128(ptr_add(kv_prior, dst_base + 32 + tid, 16), ldg128_persist(ptr_add(slot, (4 + kh) * 32 + tid, 16)));
+        stg128(ptr_add(kv_prior, dst_base + 32 + tid, 16), ldg128_persist(ptr_add(slot, (kvh + kh) * 32 + tid, 16)));
     }
     preexit();
 }
 
-macro gqa_stage_kv_tile(kv_view, seq, t0, cnt, fork, slot_off, kv_head, tid, st_off, s_k, s_v) {
-    for (reg u32 idx = tid; idx < (cnt << 5); idx += 192) {
+instantiate qwen_prior_kv_direct_tpl<0> as qwen_prior_kv_direct_4_256;
+instantiate qwen_prior_kv_direct_tpl<1> as qwen_prior_kv_direct_gen;
+
+macro prior_kv_peer_pos(plan, idx, rank_v, degree, grain, s, out_pos, out_ok) {
+    out_ok = 0; out_pos = 0;
+    reg u32 pkeys = 0; reg u32 old_ctx = 0;
+    plan_read_u32(plan, 1548, s, pkeys);
+    plan_read_u32(plan, 780, s, old_ctx);
+    reg u32 qg = 0; reg u32 rg = 0;
+    u32_divmod(idx, grain, qg, rg);
+    out_pos = (rank_v + qg * degree) * grain + rg;
+    if (idx < pkeys && out_pos < old_ctx) { out_ok = 1; }
+}
+
+@pdl
+@concept(attention)
+kernel[BLOCK, 64] qwen_prior_kv_pack_gen(
+    blob[56, 8] kv_view, global u32* sequence_of_row, blob[1804, 4] plan,
+    u32 attn_width, u32 group, u32 local_kvh, u64 a2a_stride_bytes,
+    global u32* send_bytes, u32 kv_heads
+) {
+    acqbulk();
+    reg u32 idx = ctaid_x() * 8 + warp_id(); reg u32 lane = lane_id();
+    reg u32 peer = ctaid_y(); reg u32 s = ctaid_z();
+    reg u32 degree = param_u32(kv_view, 40); reg u32 pcount = param_u32(plan, 0);
+    if (s >= pcount || peer >= degree) { preexit(); return; }
+    reg u32 pos = 0; reg u32 pok = 0;
+    prior_kv_peer_pos(plan, idx, param_u32(kv_view, 44), degree, param_u32(kv_view, 48), s, pos, pok);
+    if (pok != 0) {
+        reg u32 seq = (pcount == 1) ? ldg32_persist(sequence_of_row) : 0;
+        if (pcount != 1) { plan_read_u32(plan, 12, s, seq); }
+        reg u64 slot = 0; reg u32 ok = 0;
+        kv_shard_slot_addr(kv_view, seq, pos, kv_heads << 10, slot, ok);
+        if (ok != 0) {
+            reg u32 peer_kv0 = 0; reg u32 tr = 0;
+            u32_divmod((peer * attn_width) >> 8, group, peer_kv0, tr);
+            reg u32 total_peer = param_u32(plan, 8);
+            reg u32 peer_off = 0; plan_read_u32(plan, 1292, s, peer_off);
+            reg u64 peer_dst = ptr_add(send_bytes, peer, a2a_stride_bytes[0]);
+            for (reg u32 lh = 0; lh < local_kvh; lh += 1) {
+                reg u32 kh = peer_kv0 + lh;
+                reg u32 kd = ((lh * total_peer + (peer_off + idx)) * 2) * 32;
+                stg128(ptr_add(peer_dst, kd + lane, 16), ldg128_persist(ptr_add(slot, (kh << 5) + lane, 16)));
+                stg128(ptr_add(peer_dst, kd + 32 + lane, 16), ldg128_persist(ptr_add(slot, ((kv_heads + kh) << 5) + lane, 16)));
+            }
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(attention)
+kernel[BLOCK, 56] qwen_prior_kv_unpack_gen(
+    u32 degree, u32 grain, global u32* recv_bytes, u64 a2a_stride_bytes,
+    blob[1804, 4] plan, u32 local_kvh, global u32* kv_prior
+) {
+    acqbulk();
+    reg u32 idx = ctaid_x() * 8 + warp_id(); reg u32 lane = lane_id();
+    reg u32 src_rank = ctaid_y(); reg u32 s = ctaid_z();
+    if (s >= param_u32(plan, 0) || src_rank >= degree) { preexit(); return; }
+    reg u32 pos = 0; reg u32 pok = 0;
+    prior_kv_peer_pos(plan, idx, src_rank, degree, grain, s, pos, pok);
+    if (pok != 0) {
+        reg u32 total_prior = param_u32(plan, 4); reg u32 total_peer = param_u32(plan, 8);
+        reg u32 prior_off = 0; reg u32 peer_off = 0;
+        plan_read_u32(plan, 1036, s, prior_off);
+        plan_read_u32(plan, 1292, s, peer_off);
+        reg u64 src_base = ptr_add(recv_bytes, src_rank, a2a_stride_bytes[0]);
+        for (reg u32 lh = 0; lh < local_kvh; lh += 1) {
+            reg u32 s4 = ((lh * total_peer + (peer_off + idx)) * 2) * 32;
+            reg u32 d4 = ((lh * total_prior + (prior_off + pos)) * 2) * 32;
+            stg128(ptr_add(kv_prior, d4 + lane, 16), ldg128_persist(ptr_add(src_base, s4 + lane, 16)));
+            stg128(ptr_add(kv_prior, d4 + 32 + lane, 16), ldg128_persist(ptr_add(src_base, s4 + 32 + lane, 16)));
+        }
+    }
+    preexit();
+}
+
+macro gqa_stage_kv_tile(BLOCK_T, kv_view, seq, t0, cnt, fork, slot_off, kv_head, kvh, tid, st_off, s_k, s_v) {
+    for (reg u32 idx = tid; idx < (cnt << 5); idx += BLOCK_T) {
         reg u32 dt = idx >> 5;
         reg u32 ln = idx & 31;
         reg u32 sem = t0 + dt;
         reg u32 phys_pos = (sem < fork) ? sem : (sem + slot_off);
         reg u64 slot = 0; reg u32 ok = 0;
-        kv_shard_slot_addr(kv_view, seq, phys_pos, 4096, slot, ok);
+        kv_shard_slot_addr(kv_view, seq, phys_pos, kvh << 10, slot, ok);
         if (ok != 0) {
             ldgsts128(s_k, st_off + (idx << 2), ptr_add(slot, (kv_head << 5) + ln, 16));
-            ldgsts128(s_v, st_off + (idx << 2), ptr_add(slot, ((4 + kv_head) << 5) + ln, 16));
+            ldgsts128(s_v, st_off + (idx << 2), ptr_add(slot, ((kvh + kv_head) << 5) + ln, 16));
         }
     }
     ldgdepbar();
@@ -387,27 +579,43 @@ macro gqa_decode_tile_step(s_k, s_v, st_off, cnt, lane, qk_scale, qf, acc, rmax,
     }
 }
 
-macro gqa_store_gated_row(attn_local, merged_out, row, head, lane, acc, rsum) {
+macro gqa_store_gated_row(attn_local, merged_out, row, head, heads, qkv_v, lane, acc, rsum) {
     reg f32 denom = maxf(rsum, 1.0e-20f);
     reg f32 inv_d = 0.0f;
     rcp_nr1_f32(denom, inv_d);
-    reg u32x4 gv = ldg128_stream(ptr_add(attn_local, row * 1792 + (head * 2 + 1) * 32 + lane, 16));
+    reg u32x4 gv = ldg128_stream(ptr_add(attn_local, row * qkv_v + (head * 2 + 1) * 32 + lane, 16));
     unroll (k = 0..4) {
         gqa_gate_pair(acc[k * 2], acc[k * 2 + 1], denom, inv_d, gv[k], gv[k]);
     }
-    stg128(ptr_add(merged_out, (row * 24 + head) * 32 + lane, 16), gv);
+    stg128(ptr_add(merged_out, (row * heads + head) * 32 + lane, 16), gv);
 }
 
-macro gqa_decode_loop(kv_view, seq, begin, end, fork, slot_off, kv_head, tid, lane, qk_scale, s_k, s_v, qf, acc, rmax, rsum) {
+macro gqa_store_split_partial(attn_local, merged_out, partials, row, head, heads, qkv_v, split, begin, end, limit, lane, acc, rmax, rsum) {
+    reg u32 is_single = 0;
+    if (begin == 0 && end == limit) { is_single = 1; }
+    if (is_single != 0) {
+        gqa_store_gated_row(attn_local, merged_out, row, head, heads, qkv_v, lane, acc, rsum);
+    } else {
+        reg u32 pb = ((row * 12 + split) * heads + head) * 260;
+        stg128(ptr_add(partials, pb + (lane << 3), 4), pack_u32x4(f32_as_u32(acc[0]), f32_as_u32(acc[1]), f32_as_u32(acc[2]), f32_as_u32(acc[3])));
+        stg128(ptr_add(partials, pb + (lane << 3) + 4, 4), pack_u32x4(f32_as_u32(acc[4]), f32_as_u32(acc[5]), f32_as_u32(acc[6]), f32_as_u32(acc[7])));
+        if (lane == 0) {
+            stg32(ptr_add(partials, pb + 256, 4), f32_as_u32(rmax));
+            stg32(ptr_add(partials, pb + 257, 4), f32_as_u32(rsum));
+        }
+    }
+}
+
+macro gqa_decode_loop(BLOCK_T, kv_view, seq, begin, end, fork, slot_off, kv_head, kvh, tid, lane, qk_scale, s_k, s_v, qf, acc, rmax, rsum) {
     if (begin < end) {
         reg u32 cnt0 = (end - begin < 8) ? (end - begin) : 8;
-        gqa_stage_kv_tile(kv_view, seq, begin, cnt0, fork, slot_off, kv_head, tid, 0, s_k, s_v);
+        gqa_stage_kv_tile(BLOCK_T, kv_view, seq, begin, cnt0, fork, slot_off, kv_head, kvh, tid, 0, s_k, s_v);
         reg u32 cur = 0;
         for (reg u32 t = begin; t < end; t += 8) {
             reg u32 cnt = (end - t < 8) ? (end - t) : 8;
             reg u32 nt = t + 8;
             if (nt < end) {
-                gqa_stage_kv_tile(kv_view, seq, nt, (end - nt < 8) ? (end - nt) : 8, fork, slot_off, kv_head, tid, (cur ^ 1) << 10, s_k, s_v);
+                gqa_stage_kv_tile(BLOCK_T, kv_view, seq, nt, (end - nt < 8) ? (end - nt) : 8, fork, slot_off, kv_head, kvh, tid, (cur ^ 1) << 10, s_k, s_v);
                 depbar_le(1);
             } else {
                 depbar_le(0);
@@ -436,33 +644,32 @@ macro gqa_split_bounds(limit, row, fork_positions, slot_offsets, out_split, out_
 
 @pdl
 @concept(attention)
-template kernel[192, 96] qwen_gqa_decode_tpl<IS_SPLIT>(
+template kernel[BLOCK_T, 96] qwen_gqa_decode_tpl<IS_SPLIT, IS_GEN, BLOCK_T>(
     blob[56, 8] kv_view, global u32* query_bf16, global u32* attn_local,
     global u32* sequence_of_row, global u32* context_length, global u32* row_position,
     if (IS_SPLIT == 1) global u32* fork_positions,
     if (IS_SPLIT == 1) global u32* slot_offsets,
     f32 qk_scale,
     if (IS_SPLIT == 1) global u32* partials,
-    global u32* merged_out, u32 rows
+    global u32* merged_out, u32 rows,
+    if (IS_GEN == 1) u32 heads_in,
+    if (IS_GEN == 1) u32 kvh_in,
+    if (IS_GEN == 1) u32 qkv_v_in
 ) {
     shared u32 s_k[2048];
     shared u32 s_v[2048];
     acqbulk();
-    reg u32 row = ctaid_x();
-    reg u32 kv_head = ctaid_y();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
-    reg u32 tid = tid_x();
-    reg u32 head = kv_head * 6 + wid;
-    if (row >= rows || wid >= 6) {
-        preexit();
-        return;
-    }
+    reg u32 heads = 24; reg u32 kvh = 4; reg u32 qkv_v = 1792;
+    if constexpr (IS_GEN == 1) { heads = heads_in; kvh = kvh_in; qkv_v = qkv_v_in; }
+    reg u32 row = ctaid_x(); reg u32 kv_head = ctaid_y();
+    reg u32 wid = warp_id(); reg u32 lane = lane_id(); reg u32 tid = tid_x();
+    reg u32 grp = BLOCK_T / 32;
+    if constexpr (IS_GEN == 1) { reg u32 tr = 0; u32_divmod(heads, kvh, grp, tr); }
+    reg u32 head = kv_head * grp + wid;
+    if (row >= rows || wid >= grp) { preexit(); return; }
+    if (head >= heads) { preexit(); return; }
     reg u32 seq = ldg32_persist(ptr_add(sequence_of_row, row, 4));
-    if (seq >= param_u32(kv_view, 20)) {
-        preexit();
-        return;
-    }
+    if (seq >= param_u32(kv_view, 20)) { preexit(); return; }
     reg u32 limit = ldg32_persist(ptr_add(context_length, seq, 4));
     if ((row_position[0] | row_position[1]) != 0) {
         reg u32 rp = ldg32_persist(ptr_add(row_position, row, 4));
@@ -471,60 +678,138 @@ template kernel[192, 96] qwen_gqa_decode_tpl<IS_SPLIT>(
     reg u32 begin = 0; reg u32 end = limit; reg u32 split = 0; reg u32 fork = limit; reg u32 slot_off = 0;
     if constexpr (IS_SPLIT == 1) {
         gqa_split_bounds(limit, row, fork_positions, slot_offsets, split, begin, end, fork, slot_off);
-        if (begin >= limit) {
-            preexit();
-            return;
-        }
+        if (begin >= limit) { preexit(); return; }
     }
-    reg u32x4 qv = ldg128_persist(ptr_add(query_bf16, (row * 24 + head) * 32 + lane, 16));
-    reg f32 qf[8];
-    reg f32 acc[8];
+    reg u32x4 qv = ldg128_persist(ptr_add(query_bf16, (row * heads + head) * 32 + lane, 16));
+    reg f32 qf[8]; reg f32 acc[8];
     unroll (i = 0..4) {
         qf[i * 2] = bf16_lo(qv[i]); qf[i * 2 + 1] = bf16_hi(qv[i]);
         acc[i * 2] = 0.0f; acc[i * 2 + 1] = 0.0f;
     }
-    reg f32 rmax = u32_as_f32(0xFF800000);
-    reg f32 rsum = 0.0f;
-    gqa_decode_loop(kv_view, seq, begin, end, fork, slot_off, kv_head, tid, lane, qk_scale, s_k, s_v, qf, acc, rmax, rsum);
+    reg f32 rmax = u32_as_f32(0xFF800000); reg f32 rsum = 0.0f;
+    gqa_decode_loop(BLOCK_T, kv_view, seq, begin, end, fork, slot_off, kv_head, kvh, tid, lane, qk_scale, s_k, s_v, qf, acc, rmax, rsum);
     if constexpr (IS_SPLIT == 0) {
-        gqa_store_gated_row(attn_local, merged_out, row, head, lane, acc, rsum);
+        gqa_store_gated_row(attn_local, merged_out, row, head, heads, qkv_v, lane, acc, rsum);
     } else {
-        reg u32 is_single = 0;
-        if (begin == 0 && end == limit) { is_single = 1; }
-        if (is_single != 0) {
-            gqa_store_gated_row(attn_local, merged_out, row, head, lane, acc, rsum);
-        } else {
-            reg u32 pb = ((row * 12 + split) * 24 + head) * 260;
-            stg128(ptr_add(partials, pb + (lane << 3), 4), pack_u32x4(f32_as_u32(acc[0]), f32_as_u32(acc[1]), f32_as_u32(acc[2]), f32_as_u32(acc[3])));
-            stg128(ptr_add(partials, pb + (lane << 3) + 4, 4), pack_u32x4(f32_as_u32(acc[4]), f32_as_u32(acc[5]), f32_as_u32(acc[6]), f32_as_u32(acc[7])));
-            if (lane == 0) {
-                stg32(ptr_add(partials, pb + 256, 4), f32_as_u32(rmax));
-                stg32(ptr_add(partials, pb + 257, 4), f32_as_u32(rsum));
-            }
-        }
+        gqa_store_split_partial(attn_local, merged_out, partials, row, head, heads, qkv_v, split, begin, end, limit, lane, acc, rmax, rsum);
     }
     preexit();
 }
 
-instantiate qwen_gqa_decode_tpl<1> as qwen_gqa_split_decode_24_4_256;
-instantiate qwen_gqa_decode_tpl<0> as qwen_gqa_direct_decode_gate_24_4_256;
+instantiate qwen_gqa_decode_tpl<1, 0, 192> as qwen_gqa_split_decode_24_4_256;
+instantiate qwen_gqa_decode_tpl<0, 0, 192> as qwen_gqa_direct_decode_gate_24_4_256;
+instantiate qwen_gqa_decode_tpl<1, 1, 128> as qwen_gqa_split_decode_gen_128;
+instantiate qwen_gqa_decode_tpl<1, 1, 192> as qwen_gqa_split_decode_gen_192;
+instantiate qwen_gqa_decode_tpl<1, 1, 512> as qwen_gqa_split_decode_gen_512;
+instantiate qwen_gqa_decode_tpl<0, 1, 128> as qwen_gqa_direct_decode_gate_gen_128;
+instantiate qwen_gqa_decode_tpl<0, 1, 192> as qwen_gqa_direct_decode_gate_gen_192;
+instantiate qwen_gqa_decode_tpl<0, 1, 512> as qwen_gqa_direct_decode_gate_gen_512;
 
-macro prefill_copy_kv32(IS_V, kv_view, kv_cur, seq_id, kh_g, lkvh, s_prior, s_row_begin, total_kv, rows, tile, dst_base, tid, query_bf16) {
+macro multi_merge_warp_scales(row_base, width, si, sources, ss32, wid, lane, scales, denom_s) {
+    reg f32 neg_inf = u32_as_f32(0xFF800000);
+    reg f32 sm = neg_inf; reg f32 sd = 0.0f;
+    if (lane < sources) {
+        reg u64 mp = ptr_add(row_base, width + (si << 1) + lane * ss32, 4);
+        sm = u32_as_f32(ldg32_stream(mp));
+        sd = u32_as_f32(ldg32_stream(ptr_add(mp, 1, 4)));
+    }
+    reg f32 gm = sm;
+    gm = maxf(gm, shfl_xor(gm, 16)); gm = maxf(gm, shfl_xor(gm, 8));
+    gm = maxf(gm, shfl_xor(gm, 4)); gm = maxf(gm, shfl_xor(gm, 2)); gm = maxf(gm, shfl_xor(gm, 1));
+    reg f32 sc = 0.0f;
+    if (lane < sources) {
+        if (f32_as_u32(gm) != 0xFF800000 && f32_as_u32(sm) != 0xFF800000) {
+            sc = exp2_ftz((sm - gm) * 1.4426950408889634f);
+        }
+    }
+    if (lane < sources) { sts32(scales, wid * 16 + lane, sc); }
+    reg f32 den = 0.0f;
+    for (reg u32 s = 0; s < sources; s += 1) {
+        den = fma(shfl_idx(sd, s), shfl_idx(sc, s), den);
+    }
+    if (lane == 0) { sts32(denom_s, wid, maxf(den, 1.0e-20f)); }
+}
+
+@pdl
+@concept(attention)
+kernel[BLOCK, 64] qwen_hybrid_multi_merge_gate_gen(
+    global u32* received, u64 source_stride, u32 sources, u32 heads, u32 rank,
+    global u32* gate_bf16, global u32* output_bf16, u32 rows, u32 gate_stride, u32 gate_from_local
+) {
+    shared f32 scales[128];
+    shared f32 denom_s[8];
+    acqbulk();
+    reg u32 row = ctaid_x();
+    reg u32 width = 0; reg u32 wr = 0;
+    u32_divmod(heads << 8, sources, width, wr);
+    if (row >= rows || width == 0) { preexit(); return; }
+    reg u32 slots = ((width + 255) >> 8) + 1;
+    reg u32 record = width + (slots << 1);
+    reg u32 origin = (rank * width) >> 8;
+    reg u32 used_slots = ((rank * width + width - 1) >> 8) - origin + 1;
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u64 row_base = ptr_add(received, row * record, 4);
+    reg u64 gate_row = ptr_add(gate_bf16, row * ((gate_from_local != 0) ? gate_stride : width), 2);
+    reg u64 out_row = ptr_add(output_bf16, row * width, 2);
+    reg u32 ss32 = source_stride[0];
+    for (reg u32 sb = 0; sb < used_slots; sb += 8) {
+        reg u32 se = (sb + 8 < used_slots) ? (sb + 8) : used_slots;
+        reg u32 cs = se - sb;
+        reg u32 eb = (sb == 0) ? 0 : (((origin + sb) << 8) - rank * width);
+        reg u32 ee = (se == used_slots) ? width : (((origin + se) << 8) - rank * width);
+        if (wid < cs) { multi_merge_warp_scales(row_base, width, sb + wid, sources, ss32, wid, lane, scales, denom_s); }
+        barrier();
+        for (reg u32 v = (eb >> 1) + tid; v < (ee >> 1); v += BLOCK) {
+            reg u32 elem = v << 1;
+            reg u32 sl = ((rank * width + elem) >> 8) - origin - sb;
+            reg f32 d = lds32(denom_s, sl);
+            reg f32 inv_d = 0.0f; rcp_nr1_f32(d, inv_d);
+            reg f32 m0 = 0.0f; reg f32 m1 = 0.0f;
+            for (reg u32 s = 0; s < sources; s += 1) {
+                reg f32 wt = lds32(scales, sl * 16 + s);
+                reg u32x2 x = ldg64_persist(ptr_add(ptr_add(row_base, s * ss32, 4), v, 8));
+                m0 = fma(u32_as_f32(x[0]), wt, m0);
+                m1 = fma(u32_as_f32(x[1]), wt, m1);
+            }
+            reg u32 gv = 0;
+            if (gate_from_local != 0) {
+                reg u32 g_off = (((elem >> 8) * 2 + 1) << 8) + (elem & 255);
+                gv = ldg32_stream(ptr_add(gate_row, g_off, 2));
+            } else {
+                gv = ldg32_stream(ptr_add(gate_row, v, 4));
+            }
+            reg u32 ow = 0;
+            gqa_gate_pair(m0, m1, d, inv_d, gv, ow);
+            stg32(ptr_add(out_row, v, 4), ow);
+        }
+        if (se < used_slots) { barrier(); }
+    }
+    preexit();
+}
+
+macro prefill_kv_src_addr(IS_V, direct_paged, pok, pbase, kv_prior, kv_cur, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, rows, s, c, k_idx, src, valid) {
+    if (k_idx >= s_prior) {
+        src = ptr_add(kv_cur, ((((lkvh * rows + (s_row_begin + k_idx - s_prior)) * 2) + IS_V) << 5) + c, 16);
+    } else if (direct_paged == 0) {
+        src = ptr_add(kv_prior, ((((lkvh * total_prior + (s_prior_off + k_idx)) * 2) + IS_V) << 5) + c, 16);
+    } else if (pok != 0) {
+        src = ptr_add(pbase, s * (kvh << 6) + (((IS_V * kvh) + kh_g) << 5) + c, 16);
+    } else {
+        valid = 0;
+    }
+}
+
+macro prefill_copy_kv32(IS_V, direct_paged, kv_view, kv_prior, kv_cur, seq_id, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, total_kv, rows, tile, dst_base, tid, query_bf16) {
     reg u32 t0 = tile << 5;
     reg u64 pbase = 0; reg u32 pok = 0;
-    if (t0 < s_prior) { kv_shard_slot_addr(kv_view, seq_id, t0, 4096, pbase, pok); }
+    if (direct_paged != 0 && t0 < s_prior) { kv_shard_slot_addr(kv_view, seq_id, t0, kvh << 10, pbase, pok); }
     for (reg u32 idx = tid; idx < 1024; idx += 128) {
         reg u32 s = idx >> 5; reg u32 c = idx & 31;
         reg u32 k_idx = t0 + s;
         reg u32 valid = (k_idx < total_kv) ? 1 : 0;
         reg u64 src = query_bf16;
         if (valid != 0) {
-            if (k_idx < s_prior) {
-                if (pok != 0) { src = ptr_add(pbase, (s << 8) + (((IS_V * 4) + kh_g) << 5) + c, 16); }
-                else { valid = 0; }
-            } else {
-                src = ptr_add(kv_cur, ((((lkvh * rows + (s_row_begin + k_idx - s_prior)) * 2) + IS_V) << 5) + c, 16);
-            }
+            prefill_kv_src_addr(IS_V, direct_paged, pok, pbase, kv_prior, kv_cur, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, rows, s, c, k_idx, src, valid);
         }
         ldgsts128_z(dst_base + ((s << 9) | ((c ^ (s & 7)) << 4)), src, valid);
     }
@@ -548,7 +833,20 @@ macro prefill_qk_tile32(q_frag, vw, mat, wit, lane, qw, score) {
     unroll (f = 0..4) { unroll (e = 0..4) { dyn_sts32(sb + (((f << 2) + e) << 5) + lane, f32_as_u32(score[f][e])); } }
 }
 
-macro prefill_reduce_softmax32(qw, lane, t0, rp0, rp1, v0, v1, tg, scale_log2, score, rmax0, rmax1, rsum0, rsum1, out_acc) {
+macro prefill_mask_vis(seq_masked, block_mask, mask_words, block_tokens, rrow, rp, kp, sv, neg_inf) {
+    if (seq_masked != 0 && f32_as_u32(sv) != 0xFF800000) {
+        reg u32 blk = kp >> 2; reg u32 lim = (rp + 1) >> 2;
+        if (block_tokens != 4) {
+            reg u32 tr = 0; u32_divmod(kp, block_tokens, blk, tr); u32_divmod(rp + 1, block_tokens, lim, tr);
+        }
+        if (blk < lim) {
+            reg u32 mw = ldg32_persist(ptr_add(block_mask, rrow * mask_words + (blk >> 5), 4));
+            if (((mw >> (blk & 31)) & 1) == 0) { sv = neg_inf; }
+        }
+    }
+}
+
+macro prefill_reduce_softmax32(qw, lane, t0, r_lo, r_hi, rp0, rp1, v0, v1, tg, scale_log2, seq_masked, block_mask, mask_words, block_tokens, score, rmax0, rmax1, rsum0, rsum1, out_acc) {
     reg u32 sb0 = 8192 + (qw << 10);
     reg f32 neg_inf = u32_as_f32(0xFF800000);
     reg f32 pk0 = neg_inf; reg f32 pk1 = neg_inf;
@@ -560,10 +858,12 @@ macro prefill_reduce_softmax32(qw, lane, t0, rp0, rp1, v0, v1, tg, scale_log2, s
             if constexpr ((e >> 1) == 0) {
                 if (v0 == 0) { sv = neg_inf; }
                 if (kp > rp0) { sv = neg_inf; }
+                prefill_mask_vis(seq_masked, block_mask, mask_words, block_tokens, r_lo, rp0, kp, sv, neg_inf);
                 pk0 = maxf(pk0, sv);
             } else {
                 if (v1 == 0) { sv = neg_inf; }
                 if (kp > rp1) { sv = neg_inf; }
+                prefill_mask_vis(seq_masked, block_mask, mask_words, block_tokens, r_hi, rp1, kp, sv, neg_inf);
                 pk1 = maxf(pk1, sv);
             }
             score[f][e] = sv;
@@ -634,7 +934,7 @@ macro prefill_load_q_regs(query_bf16, row_first, row_end, rank_heads, local_h, t
     barrier();
 }
 
-macro prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_h, elem_first, attn_width, vw, tg, r_lo, r_hi, v0, v1, rsum0, rsum1, out_acc) {
+macro prefill_store_epilogue(gate_from_local, gate_base, gate_stride, merged_out, q_first, local_h, elem_first, attn_width, vw, tg, r_lo, r_hi, v0, v1, rsum0, rsum1, out_acc) {
     reg f32 d0 = maxf(quad_sum(rsum0), 1.0e-20f);
     reg f32 d1 = maxf(quad_sum(rsum1), 1.0e-20f);
     reg f32 inv0 = 0.0f; reg f32 inv1 = 0.0f;
@@ -646,7 +946,7 @@ macro prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_
         reg u32 elem = head_base + col;
         if (elem >= elem_first && elem < elem_first + attn_width) {
             reg u32 dcol = elem - elem_first;
-            reg u32 gcol = ((local_h * 2 + 1) << 8) + col;
+            reg u32 gcol = (gate_from_local != 0) ? (((local_h * 2 + 1) << 8) + col) : dcol;
             if (v0 != 0) {
                 reg u32 gw = ldg32_stream(ptr_add(ptr_add(gate_base, r_lo, gate_stride << 1), gcol, 2));
                 reg u32 ow = 0;
@@ -663,62 +963,124 @@ macro prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_
     }
 }
 
+macro prefill_probe_tile(blk0, tile_blks, bits_mask, row_first, row_end, tid, block_mask, mask_words, cur_t, done) {
+    if (tid == 0) { dyn_sts32(10240, 0); }
+    barrier();
+    if (tid < row_end - row_first) {
+        reg u32 mw = ldg32_persist(ptr_add(block_mask, (row_first + tid) * mask_words + (blk0 >> 5), 4));
+        if (((mw >> (blk0 & 31)) & bits_mask) != 0) { dyn_sts32(10240, 1); }
+    }
+    barrier();
+    if (dyn_lds32(10240) != 0) { done = 1; } else { cur_t = cur_t + 1; }
+}
+
+macro prefill_advance_live(seq_masked, tile_end, tile_blks, min_lim_blk, bits_mask, row_first, row_end, tid, block_mask, mask_words, cur_t) {
+    reg u32 done = (seq_masked == 0) ? 1 : 0;
+    for (reg u32 step = 0; step < tile_end; step += 1) {
+        if (done == 0) {
+            reg u32 blk0 = cur_t * tile_blks;
+            if (cur_t >= tile_end) { done = 1; }
+            else if (blk0 + tile_blks > min_lim_blk) { done = 1; }
+            else { prefill_probe_tile(blk0, tile_blks, bits_mask, row_first, row_end, tid, block_mask, mask_words, cur_t, done); }
+        }
+    }
+}
+
+macro prefill_init_mask_params(IS_GEN, flags, block_tokens, total_kv, index_blocks, min_pos, out_masked, out_blks, out_lim, out_bits) {
+    out_masked = 0; out_blks = 8; out_lim = 0; out_bits = 255;
+    if constexpr (IS_GEN == 1) {
+        if ((flags & 1) != 0 && block_tokens != 0) {
+            reg u32 tb = 0; reg u32 tr = 0; u32_divmod(total_kv, block_tokens, tb, tr);
+            if (tb > index_blocks) {
+                out_masked = 1;
+                u32_divmod(32, block_tokens, out_blks, tr);
+                u32_divmod(min_pos + 1, block_tokens, out_lim, tr);
+                out_bits = (1 << out_blks) - 1;
+            }
+        }
+    }
+}
+
+macro prefill_run_tiles(direct_paged, seq_masked, tile_end, tile_blks, min_lim_blk, bits_mask, row_first, row_end, tid, lane, qw, vw, mat, wit, kv_view, kv_prior, kv_cur, seq_id, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, total_kv, rows, query_bf16, block_mask, mask_words, block_tokens, r_lo, r_hi, rp0, rp1, v0, v1, scale_log2, q_frag, rmax0, rmax1, rsum0, rsum1, out_acc) {
+    reg u32 cur_tile = 0;
+    prefill_advance_live(seq_masked, tile_end, tile_blks, min_lim_blk, bits_mask, row_first, row_end, tid, block_mask, mask_words, cur_tile);
+    if (cur_tile < tile_end) { prefill_copy_kv32(0, direct_paged, kv_view, kv_prior, kv_cur, seq_id, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, total_kv, rows, cur_tile, 0, tid, query_bf16); }
+    for (reg u32 step_i = 0; step_i < tile_end; step_i += 1) {
+        if (cur_tile < tile_end) {
+            prefill_copy_kv32(1, direct_paged, kv_view, kv_prior, kv_cur, seq_id, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, total_kv, rows, cur_tile, 16384, tid, query_bf16);
+            depbar_le(1); barrier();
+            reg f32x4 score[4];
+            prefill_qk_tile32(q_frag, vw, mat, wit, lane, qw, score);
+            depbar_le(0); barrier();
+            reg u32 nt = cur_tile + 1;
+            prefill_advance_live(seq_masked, tile_end, tile_blks, min_lim_blk, bits_mask, row_first, row_end, tid, block_mask, mask_words, nt);
+            if (nt < tile_end) { prefill_copy_kv32(0, direct_paged, kv_view, kv_prior, kv_cur, seq_id, kh_g, kvh, lkvh, s_prior, s_prior_off, total_prior, s_row_begin, total_kv, rows, nt, 0, tid, query_bf16); }
+            prefill_reduce_softmax32(qw, lane, cur_tile << 5, r_lo, r_hi, rp0, rp1, v0, v1, lane & 3, scale_log2, seq_masked, block_mask, mask_words, block_tokens, score, rmax0, rmax1, rsum0, rsum1, out_acc);
+            prefill_pv_mma32(vw, mat, wit, score, out_acc);
+            cur_tile = nt;
+            if (cur_tile < tile_end) { barrier(); }
+        }
+    }
+}
+
 @pdl
 @concept(attention)
-kernel[128, 176] qwen_local_prefill_attn_4_256_direct(
+template kernel[128, 224] qwen_local_prefill_attn_tpl<IS_GEN>(
     global u32* query_bf16, global u32* kv_prior, global u32* kv_cur,
     blob[56, 8] kv_view, global u32* sequence_of_row, global u32* gate_base,
     u32 gate_stride, global u32* positions, blob[1804, 4] plan,
     u32 rows, u32 rank_heads, u32 q_first, u32 group, u32 kv_first,
     u32 elem_first, u32 attn_width, f32 qk_scale, global u32* block_mask,
-    u32 mask_words, u32 block_tokens, u32 index_blocks, global u32* merged_out
+    u32 mask_words, u32 block_tokens, u32 index_blocks, global u32* merged_out,
+    if (IS_GEN == 1) u32 kv_heads_in,
+    if (IS_GEN == 1) u32 flags_in
 ) {
     acqbulk();
+    reg u32 kvh = 4; reg u32 flags = 6;
+    if constexpr (IS_GEN == 1) { kvh = kv_heads_in; flags = flags_in; }
+    reg u32 direct_paged = (flags >> 2) & 1;
     reg u32 seq_idx = ctaid_z();
     reg u32 pcount = param_u32(plan, 0);
     if (seq_idx >= pcount) { preexit(); return; }
-    reg u32 q_block = 0; reg u32 h_in_g = 0;
-    u32_divmod(ctaid_x(), group, q_block, h_in_g);
-    reg u32 local_h = ctaid_y() * group + h_in_g;
-    reg u32 s_row_begin = 0; reg u32 s_rows = 0; reg u32 s_prior = 0;
+    reg u32 q_block = ctaid_y(); reg u32 local_h = ctaid_x();
+    if (direct_paged != 0) {
+        reg u32 h_in_g = 0; u32_divmod(ctaid_x(), group, q_block, h_in_g);
+        local_h = ctaid_y() * group + h_in_g;
+    }
+    reg u32 s_row_begin = 0; reg u32 s_rows = 0; reg u32 s_prior = 0; reg u32 s_prior_off = 0; reg u32 seq_id = 0;
     plan_read_u32(plan, 268, seq_idx, s_row_begin);
     plan_read_u32(plan, 524, seq_idx, s_rows);
     plan_read_u32(plan, 780, seq_idx, s_prior);
+    plan_read_u32(plan, 1036, seq_idx, s_prior_off);
+    if (pcount == 1) { seq_id = ldg32_persist(sequence_of_row); } else { plan_read_u32(plan, 12, seq_idx, seq_id); }
+    reg u32 total_prior = param_u32(plan, 4);
     reg u32 local_first = q_block << 5;
     if (local_first >= s_rows) { preexit(); return; }
     reg u32 row_first = s_row_begin + local_first;
     reg u32 row_end = s_row_begin + ((local_first + 32 < s_rows) ? (local_first + 32) : s_rows);
-    reg u32 seq_id = 0; if (pcount == 1) { seq_id = ldg32_persist(sequence_of_row); } else { plan_read_u32(plan, 12, seq_idx, seq_id); }
     reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
-    reg u32 qw = wid >> 1; reg u32 vw = wid & 1;
-    reg u32 mat = lane >> 3; reg u32 wit = lane & 7;
+    reg u32 qw = wid >> 1; reg u32 vw = wid & 1; reg u32 mat = lane >> 3; reg u32 wit = lane & 7;
     reg u32x4 q_frag[8];
     prefill_load_q_regs(query_bf16, row_first, row_end, rank_heads, local_h, tid, qw, vw, mat, wit, q_frag);
-    reg u32 r_lo = row_first + (qw << 4) + (lane >> 2);
-    reg u32 r_hi = r_lo + 8;
+    reg u32 r_lo = row_first + (qw << 4) + (lane >> 2); reg u32 r_hi = r_lo + 8;
     reg u32 v0 = (r_lo < row_end) ? 1 : 0; reg u32 v1 = (r_hi < row_end) ? 1 : 0;
-    reg u32 rp0 = 0; if (v0 != 0) { rp0 = ldg32_persist(ptr_add(positions, r_lo, 4)); }
-    reg u32 rp1 = 0; if (v1 != 0) { rp1 = ldg32_persist(ptr_add(positions, r_hi, 4)); }
+    reg u32 rp0 = (v0 != 0) ? ldg32_persist(ptr_add(positions, r_lo, 4)) : 0;
+    reg u32 rp1 = (v1 != 0) ? ldg32_persist(ptr_add(positions, r_hi, 4)) : 0;
+    reg u32 min_pos = ldg32_persist(ptr_add(positions, row_first, 4));
     reg u32 tile_end = (ldg32_persist(ptr_add(positions, row_end - 1, 4)) + 32) >> 5;
     reg u32 kh_g = 0; reg u32 kh_rem = 0;
     u32_divmod(q_first + local_h, group, kh_g, kh_rem);
+    reg u32 total_kv = s_prior + s_rows;
+    reg u32 seq_masked = 0; reg u32 tile_blks = 8; reg u32 min_lim_blk = 0; reg u32 bits_mask = 255;
+    prefill_init_mask_params(IS_GEN, flags, block_tokens, total_kv, index_blocks, min_pos, seq_masked, tile_blks, min_lim_blk, bits_mask);
     reg f32x4 out_acc[16];
     unroll (i = 0..16) { out_acc[i] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
     reg f32 rmax0 = u32_as_f32(0xFF800000); reg f32 rmax1 = u32_as_f32(0xFF800000);
     reg f32 rsum0 = 0.0f; reg f32 rsum1 = 0.0f;
-    reg f32 scale_log2 = qk_scale * 1.4426950408889634f;
-    if (tile_end > 0) { prefill_copy_kv32(0, kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, 0, 0, tid, query_bf16); }
-    for (reg u32 tile = 0; tile < tile_end; tile += 1) {
-        prefill_copy_kv32(1, kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, tile, 16384, tid, query_bf16);
-        depbar_le(1); barrier();
-        reg f32x4 score[4];
-        prefill_qk_tile32(q_frag, vw, mat, wit, lane, qw, score);
-        depbar_le(0); barrier();
-        if (tile + 1 < tile_end) { prefill_copy_kv32(0, kv_view, kv_cur, seq_id, kh_g, kh_g - kv_first, s_prior, s_row_begin, s_prior + s_rows, rows, tile + 1, 0, tid, query_bf16); }
-        prefill_reduce_softmax32(qw, lane, tile << 5, rp0, rp1, v0, v1, lane & 3, scale_log2, score, rmax0, rmax1, rsum0, rsum1, out_acc);
-        prefill_pv_mma32(vw, mat, wit, score, out_acc);
-        if (tile + 1 < tile_end) { barrier(); }
-    }
-    prefill_store_epilogue(gate_base, gate_stride, merged_out, q_first, local_h, elem_first, attn_width, vw, lane & 3, r_lo, r_hi, v0, v1, rsum0, rsum1, out_acc);
+    prefill_run_tiles(direct_paged, seq_masked, tile_end, tile_blks, min_lim_blk, bits_mask, row_first, row_end, tid, lane, qw, vw, mat, wit, kv_view, kv_prior, kv_cur, seq_id, kh_g, kvh, kh_g - kv_first, s_prior, s_prior_off, total_prior, s_row_begin, total_kv, rows, query_bf16, block_mask, mask_words, block_tokens, r_lo, r_hi, rp0, rp1, v0, v1, qk_scale * 1.4426950408889634f, q_frag, rmax0, rmax1, rsum0, rsum1, out_acc);
+    prefill_store_epilogue((flags >> 1) & 1, gate_base, gate_stride, merged_out, q_first, local_h, elem_first, attn_width, vw, lane & 3, r_lo, r_hi, v0, v1, rsum0, rsum1, out_acc);
     preexit();
 }
+
+instantiate qwen_local_prefill_attn_tpl<0> as qwen_local_prefill_attn_4_256_direct;
+instantiate qwen_local_prefill_attn_tpl<1> as qwen_local_prefill_attn_gen_256;

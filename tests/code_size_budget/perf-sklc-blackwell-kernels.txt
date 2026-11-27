@@ -1,2 +1,0 @@
-+2085
-Standalone Blackwell sm_121a/sm_120a SKL2 compiler (tools/sklc/*, tools/skl2c/*, C99/embedded NVRM+CUDA header gen) and SKL2 stdlib/kernel suites (inference/skl2/*), covering 100% of qwen3.8-27b kernels (99 NVRM skl-overlay + 123 total) while retiring 100% of legacy .skl v1 files, tools/sklc/frontend.py, and 11 CUDA kernel families (25 kernels, -1,722L) from qwen38_hybrid_stage.cuh via native embedded skl2 cubin dispatch (-1,503 net authored SLOC in Slice 4).
