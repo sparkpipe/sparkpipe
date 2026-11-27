@@ -91,7 +91,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t mesh_activity_generation;
     uint32_t mesh_activity_active;
     uint32_t active_stream_valid;
-    void *active_stream;
+    void *active_stream,*seed_stream;
     uint8_t *mesh_buffer;
     void *owned_mesh_mapping;
     uint8_t *mesh_device;
@@ -580,6 +580,9 @@ static SparkStatus SparkTpDeviceCollectiveUseStream(
     SparkTpDeviceCollectiveImplementation *implementation,void *stream)
 {
     SparkStatus status;
+    if ( implementation->seed_stream != 0 && implementation->seed_stream != stream && SparkGpuStreamSynchronize(implementation->seed_stream) != 0 )
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    implementation->seed_stream = 0;
     if ( implementation->active_stream_valid != 0u && implementation->active_stream != stream )
     {
         status = SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream);
@@ -606,7 +609,7 @@ static SparkStatus SparkTpDeviceCollectiveEndActivity(
     if ( status == SPARK_STATUS_OK )
     {
         implementation->mesh_activity_active = 0u;
-        implementation->active_stream = 0;
+        implementation->active_stream = implementation->seed_stream = 0;
         implementation->active_stream_valid = 0u;
     }
     return status;
@@ -627,7 +630,7 @@ SparkStatus SparkTpDeviceCollectiveEndChain(
     status = SparkTpDeviceCollectiveStreamTerminal(stream);
     if ( status != SPARK_STATUS_OK )
         return status;
-    implementation->active_stream = 0;
+    implementation->active_stream = implementation->seed_stream = 0;
     implementation->active_stream_valid = 0u;
     return SPARK_STATUS_OK;
 }
@@ -662,6 +665,7 @@ static SparkStatus SparkTpDeviceCollectiveSeedEpoch(
         if ( SparkGpuMemcpyAsync(control + first * sizeof(uint64_t),seed + first,
                 count * sizeof(uint64_t),SPARK_GPU_COPY_HOST_TO_DEVICE,target) != 0 )
             SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+        implementation->seed_stream = target;
     }
     else if ( SparkGpuMemcpy(control + first * sizeof(uint64_t),seed + first,
             count * sizeof(uint64_t),SPARK_GPU_COPY_HOST_TO_DEVICE) != 0 )

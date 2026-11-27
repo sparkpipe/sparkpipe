@@ -67,11 +67,11 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 - **`EnsureCells`**, once per collective: a fill of the arrival ring, the zeroing of the round control block, and five 8-byte seeds from pageable variables.
   - The zeroing was `SparkGpuMemsetAsync(..., 0)`, legacy-stream work that the collective's kernels on the non-blocking submission stream do not wait for. It is now `SparkGpuMemset`, which has landed when it returns.
   - Class: load. Fixed for a discrete GPU: the seeds and fills land before any round runs.
-- **`SeedEpoch`**, per chain: two uploads from the pinned published cell and one fill. Every dispatch starts a chain, because the batch engine gives each submission its own request id.
-  - `ChainKey` first checks that the active stream has finished.
-  - When there is an active stream, the three writes are now asynchronous on it, so they are ordered before the round kernels that follow on the same stream without any host wait. Switching streams requires the old one to be idle.
-  - Only the first chain, with no active stream yet, uses the synchronous copies and fill, which land before they return.
-  - Before: the pinned uploads were host-synchronous, and the fill was a race on any GPU. Class: serving write after idle; per step, stream-ordered.
+- **`SeedEpoch`**, per chain: writes the cancel-expected and epoch words from the pinned published cell. Every dispatch starts a chain, because the batch engine gives each submission its own request id.
+  - `ChainKeyQueue` first checks that any prior active stream has finished.
+  - When a queue is passed (including on a fresh collective or after `EndChain`), or when an active stream exists, the upload is asynchronous on that stream and records `seed_stream`. Rounds on the same stream are ordered behind it with no host wait; a round on a different stream (such as a prefill gather on `gather_stream`) sees `seed_stream != stream` in `UseStream` and synchronizes `seed_stream` before issuing.
+  - Only a caller that passes no queue with no active stream yet uses the synchronous copy, which lands before it returns.
+  - Before: a queued seed on a fresh collective did not set the active stream, leaving a first round on another stream unordered. Class: serving write after idle; per step, stream-ordered.
 - **The rounds loop** (`EnqueueRoundsInternal`): two uploads of the round control words before the loop kernel launches.
   - They are now asynchronous on the submission stream, ordered before the loop kernel. The source is a pageable struct and a stack pair, which the copy stages before it returns.
   - Before: a race on a discrete GPU.
