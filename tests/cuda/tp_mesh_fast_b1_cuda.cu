@@ -476,7 +476,7 @@ static void TestAllReduceExact(MeshFixture *f, uint32_t rank, uint32_t elements,
 
     FixtureResetEpoch(f, rank, degree, (uint64_t)elements * sizeof(uint16_t));
     CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-    CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+    CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
     CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
         f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
         elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -515,7 +515,7 @@ static void TestAllReduceExact(MeshFixture *f, uint32_t rank, uint32_t elements,
     {
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
         if ( inplace == 0u )
-            CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+            CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(cudaGraphLaunch(exec, f->stream));
         CUDA_OK(cudaStreamSynchronize(f->stream));
         CUDA_OK(cudaMemcpy(h_fast, fast_out, elements * sizeof(uint16_t), cudaMemcpyDeviceToHost));
@@ -546,7 +546,7 @@ static void TestAllGatherExact(MeshFixture *f, uint32_t rank, uint32_t local_ele
 
     FixtureResetEpoch(f, rank, degree, (uint64_t)local_elements * sizeof(uint16_t));
     CUDA_OK(cudaMemcpy(f->local_dev, h_local, local_elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-    CUDA_OK(cudaMemset(f->out_ref, 0, total * sizeof(uint16_t)));
+    CUDA_OK(cudaMemsetAsync(f->out_ref, 0, total * sizeof(uint16_t), f->stream));
     CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
         f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
         total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -565,7 +565,7 @@ static void TestAllGatherExact(MeshFixture *f, uint32_t rank, uint32_t local_ele
 
     for ( uint32_t rep = 0u; rep < 8u; ++rep )
     {
-        CUDA_OK(cudaMemset(f->out_fast, 0, total * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, total * sizeof(uint16_t), f->stream));
         CUDA_OK(cudaGraphLaunch(exec, f->stream));
         CUDA_OK(cudaStreamSynchronize(f->stream));
         CUDA_OK(cudaMemcpy(h_fast, f->out_fast, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
@@ -597,7 +597,7 @@ static void TestPairGatherExact(MeshFixture *f, uint32_t rank, uint32_t local_el
 
     FixtureResetEpoch(f, rank, degree, (uint64_t)local_elements * sizeof(uint16_t));
     CUDA_OK(cudaMemcpy(f->local_dev, h_local, local_elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-    CUDA_OK(cudaMemset(f->out_ref, 0, total * sizeof(uint16_t)));
+    CUDA_OK(cudaMemsetAsync(f->out_ref, 0, total * sizeof(uint16_t), f->stream));
     CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
         f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
         total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -605,7 +605,7 @@ static void TestPairGatherExact(MeshFixture *f, uint32_t rank, uint32_t local_el
     CUDA_OK(cudaMemcpy(h_ref, f->out_ref, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 
     FixtureResetEpoch(f, rank, degree, (uint64_t)local_elements * sizeof(uint16_t));
-    CUDA_OK(cudaMemset(f->out_fast, 0, total * sizeof(uint16_t)));
+    CUDA_OK(cudaMemsetAsync(f->out_fast, 0, total * sizeof(uint16_t), f->stream));
     CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
         f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
         total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR | SPARK_TP_MESH_ROUTES_PAIR_ONLY,
@@ -622,7 +622,7 @@ static void TestPairGatherExact(MeshFixture *f, uint32_t rank, uint32_t local_el
         "pair-only pair gather partner slice exact");
 
     FixtureResetEpoch(f, rank, degree, (uint64_t)local_elements * sizeof(uint16_t));
-    CUDA_OK(cudaMemset(f->out_fast, 0, total * sizeof(uint16_t)));
+    CUDA_OK(cudaMemsetAsync(f->out_fast, 0, total * sizeof(uint16_t), f->stream));
     CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
         f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
         total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR,
@@ -659,7 +659,7 @@ static void TestAllToAllExact(MeshFixture *f, uint32_t rank, uint32_t per_peer)
 
     FixtureResetEpoch(f, rank, degree, (uint64_t)per_peer * sizeof(uint16_t));
     CUDA_OK(cudaMemcpy(f->local_dev, h_local, total * sizeof(uint16_t), cudaMemcpyHostToDevice));
-    CUDA_OK(cudaMemset(f->out_ref, 0, total * sizeof(uint16_t)));
+    CUDA_OK(cudaMemsetAsync(f->out_ref, 0, total * sizeof(uint16_t), f->stream));
     cudaGraph_t ref_graph = 0, fast_graph = 0;
     cudaGraphExec_t ref_exec = 0, fast_exec = 0;
     CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
@@ -682,11 +682,11 @@ static void TestAllToAllExact(MeshFixture *f, uint32_t rank, uint32_t per_peer)
     CUDA_OK(cudaStreamEndCapture(f->stream, &fast_graph));
     CUDA_OK(cudaGraphInstantiate(&fast_exec, fast_graph, 0, 0, 0));
     size_t fast_nodes = CaptureNodeCount(fast_graph);
-    CHECK(ref_nodes == 5u && fast_nodes == 2u, "all-to-all fast reduces graph nodes from 5 to 2");
+    CHECK(ref_nodes == 5u && fast_nodes == 1u, "all-to-all fast reduces graph nodes from 5 to 1");
 
     for ( uint32_t rep = 0u; rep < 8u; ++rep )
     {
-        CUDA_OK(cudaMemset(f->out_fast, 0, total * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, total * sizeof(uint16_t), f->stream));
         CUDA_OK(cudaGraphLaunch(fast_exec, f->stream));
         CUDA_OK(cudaStreamSynchronize(f->stream));
         CUDA_OK(cudaMemcpy(h_fast, f->out_fast, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
@@ -759,7 +759,8 @@ typedef struct BenchResult
 static BenchResult BenchOp(MeshFixture *f, uint32_t fast, uint32_t op, uint32_t elements, uint32_t routes, uint32_t skew, uint32_t iters)
 {
     const uint32_t rank = 0u, degree = 16u;
-    const uint64_t payload_bytes = (op == 0u ? (uint64_t)(elements / degree) : (uint64_t)elements) * sizeof(uint16_t);
+    const uint64_t payload_bytes = op == 2u ? ((uint64_t)elements * sizeof(uint64_t)) :
+        ((op == 0u ? (uint64_t)(elements / degree) : (uint64_t)elements) * sizeof(uint16_t));
     SetSkewOrder(f, rank, skew);
     FixtureResetEpoch(f, rank, degree, payload_bytes);
     cudaGraph_t graph = 0;
@@ -826,7 +827,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -836,7 +837,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
         __atomic_store_n(&f->responder.ship_delay_ns, 25000u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         cudaGraph_t graph = 0;
         cudaGraphExec_t exec = 0;
         CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
@@ -875,7 +876,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -885,7 +886,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
         __atomic_store_n(&f->responder.ship_delay_ns, 25000u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
             elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_PUBLISH));
@@ -912,7 +913,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)elements * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -922,7 +923,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
         __atomic_store_n(&f->responder.ship_delay_ns, 25000u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)elements * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
             elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_PUBLISH));
@@ -951,7 +952,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)seg * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, seg * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, seg * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             elements, SPARK_TP_MESH_OPERATION_REDUCE_SCATTER, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -961,7 +962,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
         __atomic_store_n(&f->responder.ship_delay_ns, 25000u, __ATOMIC_RELEASE);
         FixtureResetEpoch(f, rank, degree, (uint64_t)seg * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, seg * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, seg * sizeof(uint16_t), f->stream));
         for ( uint32_t iter = 0u; iter < 8u; ++iter )
             CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
                 f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
@@ -1037,7 +1038,7 @@ static void TestCompactTailAndShipOverlap(MeshFixture *f)
             __atomic_store_n(&f->responder.ship_delay_ns, 0u, __ATOMIC_RELEASE);
             FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
             CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-            CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+            CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
             CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
                 f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
                 elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -1200,7 +1201,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         memset(f->staging_host, 0x5a, 16u * SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         cudaGraph_t graph = 0;
         cudaGraphExec_t exec = 0;
         CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
@@ -1267,7 +1268,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
         f->gate_host->capabilities = 0u;
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, elements * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             elements, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -1276,7 +1277,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
 
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         for ( uint32_t rep = 0u; rep < 16u; ++rep )
             CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
                 f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
@@ -1300,7 +1301,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
         f->gate_host->capabilities = 0u;
         FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, local_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elements * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             elements, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -1309,7 +1310,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
 
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, elements * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, elements * sizeof(uint16_t), f->stream));
         for ( uint32_t rep = 0u; rep < 8u; ++rep )
             CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
                 f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
@@ -1333,7 +1334,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
         f->gate_host->capabilities = 0u;
         FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
         CUDA_OK(cudaMemcpy(f->local_dev, h_local, local_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
-        CUDA_OK(cudaMemset(f->out_ref, 0, total * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, total * sizeof(uint16_t), f->stream));
         CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
             f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
             total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
@@ -1342,7 +1343,7 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
 
         f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
         FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
-        CUDA_OK(cudaMemset(f->out_fast, 0, total * sizeof(uint16_t)));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, total * sizeof(uint16_t), f->stream));
         for ( uint32_t rep = 0u; rep < 8u; ++rep )
             CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
                 f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
@@ -1358,6 +1359,103 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
               __atomic_load_n(&f->responder.hybrid_dma_count, __ATOMIC_ACQUIRE) == 8u &&
               __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
             "phase5 hybrid PAIR_ONLY PairGather 4096B DMA matches reference 0-ULP with zero revokes");
+    }
+
+    {
+        const uint32_t per_peer = 7168u, total = per_peer * degree;
+        uint16_t *a2a_local = (uint16_t *)malloc(total * sizeof(uint16_t));
+        uint16_t *a2a_ref = (uint16_t *)malloc(total * sizeof(uint16_t));
+        uint16_t *a2a_fast = (uint16_t *)malloc(total * sizeof(uint16_t));
+        for ( uint32_t p = 0u; p < degree; ++p )
+            for ( uint32_t i = 0u; i < per_peer; ++i )
+            {
+                a2a_local[(size_t)p * per_peer + i] = PatternBf16(rank, p * 4096u + i, 1361u);
+                f->responder.peer_payloads[p][i] = PatternBf16(p, rank * 4096u + i, 1361u);
+            }
+        f->gate_host->capabilities = 0u;
+        FixtureResetEpoch(f, rank, degree, (uint64_t)per_peer * sizeof(uint16_t));
+        CUDA_OK(cudaMemcpy(f->local_dev, a2a_local, total * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CUDA_OK(cudaMemsetAsync(f->out_ref, 0, total * sizeof(uint16_t), f->stream));
+        CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
+            per_peer, SPARK_TP_MESH_OPERATION_ALL_TO_ALL, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(a2a_ref, f->out_ref, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+        FixtureResetEpoch(f, rank, degree, (uint64_t)per_peer * sizeof(uint16_t));
+        CUDA_OK(cudaMemsetAsync(f->out_fast, 0, total * sizeof(uint16_t), f->stream));
+        cudaGraph_t graph = 0; cudaGraphExec_t exec = 0;
+        CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+        CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
+            per_peer, SPARK_TP_MESH_OPERATION_ALL_TO_ALL, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamEndCapture(f->stream, &graph));
+        CHECK(CaptureNodeCount(graph) == 1u, "phase6 hybrid ALL_TO_ALL 7168 captures as 1 CUDA Graph node");
+        CUDA_OK(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+        for ( uint32_t rep = 0u; rep < 8u; ++rep )
+            CUDA_OK(cudaGraphLaunch(exec, f->stream));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(a2a_fast, f->out_fast, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+        SparkTpMeshRoundControl ctrl;
+        CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+        CHECK(memcmp(a2a_ref, a2a_fast, total * sizeof(uint16_t)) == 0 && ctrl.error_word == 0u && ctrl.rounds_done == 8u &&
+              __atomic_load_n(&f->responder.hybrid_dma_count, __ATOMIC_ACQUIRE) == 8u &&
+              __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u &&
+              __atomic_load_n(&f->responder.alt_count, __ATOMIC_ACQUIRE) == 0u,
+            "phase6 hybrid fused 1-CTA ALL_TO_ALL 7168 DMA matches reference 0-ULP with zero revokes");
+        cudaGraphExecDestroy(exec); cudaGraphDestroy(graph);
+        free(a2a_fast); free(a2a_ref); free(a2a_local);
+    }
+
+    {
+        const uint32_t max_sizes[2] = { 1u, 16u };
+        for ( uint32_t si = 0u; si < 2u; ++si )
+        {
+            const uint32_t elems = max_sizes[si];
+            uint64_t u_local[16u], u_ref[16u], u_fast[16u];
+            for ( uint32_t p = 0u; p < degree; ++p )
+            {
+                uint64_t *pp = (uint64_t *)f->responder.peer_payloads[p];
+                for ( uint32_t i = 0u; i < elems; ++i )
+                    pp[i] = ((uint64_t)((p * 17u + i * 31u + si * 7u) & 255u) << 32u) | (uint64_t)(p * 100u + i);
+            }
+            memcpy(u_local, f->responder.peer_payloads[rank], elems * sizeof(uint64_t));
+            f->gate_host->capabilities = 0u;
+            FixtureResetEpoch(f, rank, degree, (uint64_t)elems * sizeof(uint64_t));
+            CUDA_OK(cudaMemcpy(f->local_dev, u_local, elems * sizeof(uint64_t), cudaMemcpyHostToDevice));
+            CUDA_OK(cudaMemsetAsync(f->out_ref, 0, elems * sizeof(uint64_t), f->stream));
+            CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
+                elems, 2u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+            CUDA_OK(cudaStreamSynchronize(f->stream));
+            CUDA_OK(cudaMemcpy(u_ref, f->out_ref, elems * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+            f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+            FixtureResetEpoch(f, rank, degree, (uint64_t)elems * sizeof(uint64_t));
+            CUDA_OK(cudaMemcpy(f->out_fast, u_local, elems * sizeof(uint64_t), cudaMemcpyHostToDevice));
+            cudaGraph_t graph = 0; cudaGraphExec_t exec = 0;
+            CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, rank, degree,
+                si == 0u ? (const void *)f->local_dev : (const void *)f->out_fast, f->out_fast, f->scratch,
+                elems, 2u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+            CUDA_OK(cudaStreamEndCapture(f->stream, &graph));
+            CHECK(CaptureNodeCount(graph) == 1u, "phase6 hybrid MAX_U64 captures as 1 CUDA Graph node");
+            CUDA_OK(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+            for ( uint32_t rep = 0u; rep < 8u; ++rep )
+                CUDA_OK(cudaGraphLaunch(exec, f->stream));
+            CUDA_OK(cudaStreamSynchronize(f->stream));
+            CUDA_OK(cudaMemcpy(u_fast, f->out_fast, elems * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+            SparkTpMeshRoundControl ctrl;
+            CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+            CHECK(memcmp(u_ref, u_fast, elems * sizeof(uint64_t)) == 0 && ctrl.error_word == 0u && ctrl.rounds_done == 8u &&
+                  __atomic_load_n(&f->responder.hybrid_inline_count, __ATOMIC_ACQUIRE) == 8u &&
+                  __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u &&
+                  __atomic_load_n(&f->responder.alt_count, __ATOMIC_ACQUIRE) == 0u,
+                "phase6 hybrid fused 1-CTA MAX_U64 inline matches reference 0-ULP with zero revokes");
+            cudaGraphExecDestroy(exec); cudaGraphDestroy(graph);
+        }
     }
 
     SparkTpMeshFastHybridClearOverride(f->gate_dev);
@@ -1382,6 +1480,8 @@ static void RunBenchmarks(MeshFixture *f)
         { "PAIR_GATHER_32768", 0u, 32768u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR,
             SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR | SPARK_TP_MESH_ROUTES_PAIR_ONLY },
         { "ALL_TO_ALL_6144", SPARK_TP_MESH_OPERATION_ALL_TO_ALL, 6144u, SPARK_TP_MESH_ROUTES_PEER, SPARK_TP_MESH_ROUTES_PEER },
+        { "ALL_TO_ALL_7168", SPARK_TP_MESH_OPERATION_ALL_TO_ALL, 7168u, SPARK_TP_MESH_ROUTES_PEER, SPARK_TP_MESH_ROUTES_PEER },
+        { "MAX_U64_1", 2u, 1u, SPARK_TP_MESH_ROUTES_PEER, SPARK_TP_MESH_ROUTES_PEER },
     };
     for ( uint32_t skew = 0u; skew <= 1u; ++skew )
     {
