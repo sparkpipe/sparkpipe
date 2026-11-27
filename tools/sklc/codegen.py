@@ -33,7 +33,7 @@ STG_SPEC = {
     "stg32_stream": (isa.STG_W_32, isa.STG_CACHE_EF), "stg32_sys": (isa.STG_W_32, isa.STG_CACHE_STRONG_SYS),
     "stg16": (isa.STG_W_U16, isa.STG_CACHE_DEFAULT), "stg8": (isa.STG_W_U8, isa.STG_CACHE_DEFAULT),
 }
-STORE_CALLS = set(STG_SPEC) | {"stg256", "sts32", "dyn_sts32"}
+STORE_CALLS = set(STG_SPEC) | {"stg256", "sts32", "sts128", "dyn_sts32", "dyn_sts128"}
 SR_CALLS = ("ctaid_x", "ctaid_y", "ctaid_z", "tid_x", "lane_id", "ntid_x", "ntid_y", "grid_x", "grid_y", "warp_id")
 SR_S2R = {"ctaid_x": isa.SR_CTAID_X, "ctaid_y": isa.SR_CTAID_Y, "ctaid_z": isa.SR_CTAID_Z, "tid_x": isa.SR_TID_X, "lane_id": isa.SR_LANEID}
 SR_LDC = {"ntid_x": isa.C0_NTID_X, "ntid_y": isa.C0_NTID_Y, "grid_x": isa.C0_NCTAID_X, "grid_y": isa.C0_NCTAID_Y}
@@ -116,7 +116,7 @@ class KernelCompiler:
     def __init__(self, kdef, consts, strict_reg_budget=False):
         self.kdef, self.consts, self.strict_reg_budget = kdef, dict(consts), strict_reg_budget
         self.alloc, self.ops, self.scopes, self.smem, self.smem_bytes = RegAlloc(), [], [{}], {}, 0
-        self.barriers = self.bssy_depth = self.label_counter = self.batch_counter = 0
+        self.barriers = self.bssy_depth = self.label_counter = self.batch_counter = self._zpred = 0
         self.ur_desc = 4
         self.cached_sr, self.param_offsets, self.param_meta, self.param_loaded = {}, {}, [], {}
         self.temp_stack, self.recent_mem_addr, self.assigned_vars = [], set(), set()
@@ -396,38 +396,49 @@ class KernelCompiler:
         self.emit_label(lbl_reconv)
         self.bssy_depth -= 1
 
-    def _emit_smem_store(self, base_off, elem_bytes, idx_e, val_e, pred=isa.PT):
-        idx_c = try_eval_const(idx_e, self.consts)
-        val = self.eval_expr(val_e)
-        if idx_c is not None:
-            off = base_off + int(idx_c) * elem_bytes
-            self.emit(Op(lambda wr, rd, wait, stall, rv=val.r0, o=off, p=pred: isa.encode_sts(isa.RZ, rv, offset=o, pred=p, neg=False, rd_bar=rd, stall=stall, wait=wait), reads=(val.r0,), preads=(pred,), mem_addr_reads=(val.r0,), is_store=True))
+    def _split_smem_idx(self, idx_e, elem_bytes):
+        c = try_eval_const(idx_e, self.consts)
+        if c is not None: return None, int(c) * elem_bytes
+        if idx_e[0] == "bin" and idx_e[1] == "+":
+            lc, rc = try_eval_const(idx_e[2], self.consts), try_eval_const(idx_e[3], self.consts)
+            if rc is not None: b, o = self._split_smem_idx(idx_e[2], elem_bytes); return b, o + int(rc) * elem_bytes
+            if lc is not None: b, o = self._split_smem_idx(idx_e[3], elem_bytes); return b, o + int(lc) * elem_bytes
+        return idx_e, 0
+
+    def _emit_smem_store(self, base_off, elem_bytes, idx_e, val_e, pred=isa.PT, is_128=False):
+        base_e, c_off = self._split_smem_idx(idx_e, elem_bytes)
+        val, off = self.eval_expr(val_e), base_off + c_off
+        if base_e is None:
+            self.emit(Op(lambda wr, rd, wait, stall, rv=val.r0, o=off, p=pred, w=is_128: isa.encode_sts(isa.RZ, rv, offset=o, pred=p, neg=False, w128=w, rd_bar=rd, stall=stall, wait=wait), reads=val.regs, preads=(pred,), mem_addr_reads=val.regs, is_store=True))
         else:
-            idx_v = self.eval_expr(idx_e)
-            raddr = self.alloc_val("u32", temp=True)
-            self.emit(Op(lambda wr, rd, wait, stall, d=raddr.r0, a=idx_v.r0, eb=elem_bytes: isa.encode_imad_i(d, a, eb, stall=stall, wait=wait), reads=(idx_v.r0,), writes=(raddr.r0,)))
-            self.emit(Op(lambda wr, rd, wait, stall, ra=raddr.r0, rv=val.r0, o=base_off, p=pred: isa.encode_sts(ra, rv, offset=o, pred=p, neg=False, rd_bar=rd, stall=stall, wait=wait), reads=(raddr.r0, val.r0), preads=(pred,), mem_addr_reads=(raddr.r0, val.r0), is_store=True))
+            idx_v = self.eval_expr(base_e)
+            if elem_bytes == 1: raddr = idx_v
+            else:
+                raddr = self.alloc_val("u32", temp=True)
+                self.emit(Op(lambda wr, rd, wait, stall, d=raddr.r0, a=idx_v.r0, eb=elem_bytes: isa.encode_imad_i(d, a, eb, stall=stall, wait=wait), reads=(idx_v.r0,), writes=(raddr.r0,)))
+            self.emit(Op(lambda wr, rd, wait, stall, ra=raddr.r0, rv=val.r0, o=off, p=pred, w=is_128: isa.encode_sts(ra, rv, offset=o, pred=p, neg=False, w128=w, rd_bar=rd, stall=stall, wait=wait), reads=(raddr.r0, *val.regs), preads=(pred,), mem_addr_reads=(raddr.r0, *val.regs), is_store=True))
 
     def _emit_smem_load(self, base_off, elem_bytes, idx_e, dst, is_128=False):
-        enc = isa.encode_lds128 if is_128 else isa.encode_lds
-        idx_c = try_eval_const(idx_e, self.consts)
-        if idx_c is not None:
-            off = base_off + int(idx_c) * elem_bytes
+        enc, (base_e, c_off) = (isa.encode_lds128 if is_128 else isa.encode_lds), self._split_smem_idx(idx_e, elem_bytes)
+        off = base_off + c_off
+        if base_e is None:
             self.emit(Op(lambda wr, rd, wait, stall, r=dst.r0, o=off, fn=enc: fn(r, isa.RZ, offset=o, wr=wr, rd_bar=rd, stall=stall, wait=wait), writes=dst.regs, var_lat=True))
         else:
-            idx_v = self.eval_expr(idx_e)
-            raddr = self.alloc_val("u32", temp=True)
-            self.emit(Op(lambda wr, rd, wait, stall, r=raddr.r0, a=idx_v.r0, eb=elem_bytes: isa.encode_imad_i(r, a, eb, stall=stall, wait=wait), reads=(idx_v.r0,), writes=(raddr.r0,)))
-            self.emit(Op(lambda wr, rd, wait, stall, r=dst.r0, ra=raddr.r0, o=base_off, fn=enc: fn(r, ra, offset=o, wr=wr, rd_bar=rd, stall=stall, wait=wait), reads=(raddr.r0,), mem_addr_reads=(raddr.r0,), writes=dst.regs, var_lat=True))
+            idx_v = self.eval_expr(base_e)
+            if elem_bytes == 1: raddr = idx_v
+            else:
+                raddr = self.alloc_val("u32", temp=True)
+                self.emit(Op(lambda wr, rd, wait, stall, r=raddr.r0, a=idx_v.r0, eb=elem_bytes: isa.encode_imad_i(r, a, eb, stall=stall, wait=wait), reads=(idx_v.r0,), writes=(raddr.r0,)))
+            self.emit(Op(lambda wr, rd, wait, stall, r=dst.r0, ra=raddr.r0, o=off, fn=enc: fn(r, ra, offset=o, wr=wr, rd_bar=rd, stall=stall, wait=wait), reads=(raddr.r0,), mem_addr_reads=(raddr.r0,), writes=dst.regs, var_lat=True))
         return dst
 
     def emit_store(self, name, args, pred=isa.PT):
-        if name == "dyn_sts32":
-            self._emit_smem_store((self.smem_bytes + 15) & ~15, 4, args[0], args[1], pred=pred)
+        if name in ("dyn_sts32", "dyn_sts128"):
+            self._emit_smem_store((self.smem_bytes + 15) & ~15, 4, args[0], args[1], pred=pred, is_128=(name == "dyn_sts128"))
             return
-        if name == "sts32":
+        if name in ("sts32", "sts128"):
             base_off, _, elem_bytes, _ = self.smem[args[0][1]]
-            self._emit_smem_store(base_off, elem_bytes, args[1], args[2], pred=pred)
+            self._emit_smem_store(base_off, elem_bytes, args[1], args[2], pred=pred, is_128=(name == "sts128"))
             return
         ur = self.ur_desc
         if name == "stg256":
@@ -794,6 +805,19 @@ class KernelCompiler:
             self.recent_mem_addr = set(addr_reads)
             self.emit(Op(lambda wr, rd, wait, stall, sm=rsm.r0, pa=ptr.regs[0], u=ur, o=goff: isa.encode_ldgsts128(sm, pa, u, offset=o, rd_bar=rd, stall=stall, wait=wait), reads=addr_reads, mem_addr_reads=addr_reads, ureads=(ur, ur + 1), is_store=True))
             return Val("u32", (isa.RZ,))
+        if name == "ldgsts128_z":
+            rsm, (ptr, goff), vc = self.eval_expr(args[0]), self.eval_addr_offset(args[1]), try_eval_const(args[2], self.consts)
+            ur = self.ur_desc
+            if vc == 1: zp = isa.PT
+            else: zp = self.eval_cond(args[2], pred=1 + (self._zpred & 3)); self._zpred += 1
+            addr_reads = (ptr.regs[0], ptr.regs[1], rsm.r0)
+            self.recent_mem_addr = set(addr_reads)
+            self.emit(Op(lambda wr, rd, wait, stall, sm=rsm.r0, pa=ptr.regs[0], u=ur, o=goff, z=zp: isa.encode_ldgsts128(sm, pa, u, offset=o, zfill_pred=z, rd_bar=rd, stall=stall, wait=wait), reads=addr_reads, preads=(zp,) if zp != isa.PT else (), mem_addr_reads=addr_reads, ureads=(ur, ur + 1), is_store=True))
+            return Val("u32", (isa.RZ,))
+        if name in ("ldsm_x4", "ldsm_x4_t"):
+            ra, d, tr = self.eval_expr(args[0]), self.dst_for("u32x4", hint_dst), (name == "ldsm_x4_t")
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, a=ra.r0, t=tr: isa.encode_ldsm_x4(r, a, trans=t, wr=wr, rd_bar=rd, stall=stall, wait=wait), reads=(ra.r0,), mem_addr_reads=(ra.r0,), writes=d.regs, var_lat=True))
+            return d
         if name == "ldgdepbar":
             self.emit(Op(lambda wr, rd, wait, stall: isa.encode_ldgdepbar(wr=0, stall=stall, wait=wait), is_bar=True, forced_wr=0))
             return Val("u32", (isa.RZ,))
@@ -801,10 +825,10 @@ class KernelCompiler:
             cnt = int(try_eval_const(args[0], self.consts))
             self.emit(Op(lambda wr, rd, wait, stall, c=cnt: isa.encode_depbar_le(count=c, stall=max(stall, 7), wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
-        if name == "hmma16816_bf16":
-            a, b, c = self.eval_expr(args[0]), self.eval_expr(args[1]), self.eval_expr(args[2])
+        if name in ("hmma16816_bf16", "hmma1688_tf32"):
+            a, b, c, tf = self.eval_expr(args[0]), self.eval_expr(args[1]), self.eval_expr(args[2]), (name == "hmma1688_tf32")
             d = self.dst_for("f32x4", hint_dst)
-            self.emit(Op(lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, stall=stall, wait=wait), reads=a.regs + b.regs + c.regs, writes=d.regs, fixed_lat=28, pipe="mma"))
+            self.emit(Op(lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0, t=tf: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, tf32=t, stall=stall, wait=wait), reads=a.regs + b.regs + c.regs, writes=d.regs, fixed_lat=28, pipe="mma"))
             return d
         if name == "barrier":
             self.barriers = max(self.barriers, 1)
@@ -848,9 +872,16 @@ class KernelCompiler:
             d = self.dst_for({"param_u32": "u32", "param_f32": "f32", "param_u64": "u64"}[name], hint_dst)
             self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, o=c_off + boff, w=width: isa.encode_ldc(r, o, width=w, wr=wr, stall=stall, wait=wait), writes=d.regs, var_lat=True))
             return d
-        if name in ("dyn_lds32", "dyn_lds32_f32"):
-            vtype = "f32" if name == "dyn_lds32_f32" else "u32"
-            return self._emit_smem_load((self.smem_bytes + 15) & ~15, 4, args[0], self.dst_for(vtype, hint_dst, any_scalar=True))
+        if name in ("dyn_lds32", "dyn_lds32_f32", "dyn_lds32_bf32", "dyn_lds128", "dyn_lds128_f32"):
+            is128, eb = "128" in name, (1 if name == "dyn_lds32_bf32" else 4)
+            vtype = ("f32x4" if is128 else "f32") if name.endswith("f32") else ("u32x4" if is128 else "u32")
+            return self._emit_smem_load((self.smem_bytes + 15) & ~15, eb, args[0], self.dst_for(vtype, hint_dst, any_scalar=not is128), is_128=is128)
+        if name in ("lo_u32x2", "hi_u32x2"):
+            v = self.eval_expr(args[0])
+            return Val("u32x2", v.regs[:2] if name[0] == "l" else v.regs[2:])
+        if name == "smem_base":
+            d, bo = self.dst_for("u32", hint_dst, non_f32=True), self.smem[args[0][1]][0]
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, im=bo: isa.encode_mov_i(r, im, stall=stall, wait=wait), writes=(d.r0,))); return d
         if name in ("lds128", "lds32"):
             base_off, vtype, elem_bytes, _ = self.smem[args[0][1]]
             if name == "lds128":
@@ -1131,7 +1162,7 @@ class KernelCompiler:
                 if r in rd_bar: wait_mask |= 1 << rd_bar[r]
             for u in op.ureads | op.uwrites:
                 if u in ureg_bar: wait_mask |= 1 << ureg_bar[u]
-            if op.is_bar or (op.is_exit and not op.preads):
+            if (op.is_bar and op.forced_wr != 0) or (op.is_exit and not op.preads):
                 for b in all_b: wait_mask |= 1 << b
             elif op.is_branch:
                 pending_b = sum(1 << b for b in all_b if not has_forced or b < 4)

@@ -352,73 +352,73 @@ instantiate qwen_exact_bf16_gate_up_swiglu_tpl<2, 4, 4, 4, 128> as qwen_exact_bf
 instantiate qwen_exact_bf16_gate_up_swiglu_tpl<4, 2, 4, 4, 128> as qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4;
 instantiate qwen_exact_bf16_gate_up_swiglu_tpl<4, 2, 8, 2, 128> as qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2;
 
-macro qmma_load_row16(DYN, sm_buf, sm_off, src_ptr, elem_idx, valid) {
-    reg u32x4 v = pack_u32x4(0, 0, 0, 0);
-    if (valid != 0) { v = ldg128_stream(ptr_add(src_ptr, elem_idx, 16)); }
-    unroll (w = 0..4) {
-        if constexpr (DYN == 1) { dyn_sts32(sm_off + w, v[w]); }
-        else { sts32(sm_buf, sm_off + w, v[w]); }
+macro qmma_issue_k(A_PER_T, B_PER_T, a_sm, b_sm, a_src, b_src, a_mask, b_mask, st_off, kp) {
+    unroll (q = 0..A_PER_T) { ldgsts128_z(st_off + a_sm[q], ptr_add(a_src[q], kp, 128), (a_mask >> q) & 1); }
+    unroll (q = 0..B_PER_T) { ldgsts128_z(st_off + b_sm[q], ptr_add(b_src[q], kp, 128), (b_mask >> q) & 1); }
+}
+
+macro qmma_load_frag(FUSED, MF, NF_H, stage_s, ks, a_off, bg_off, bu_off, a_reg, bg_reg, bu_reg) {
+    unroll (ii = 0..MF) { a_reg[ii] = ldsm_x4(stage_s + (a_off[ii] ^ (ks << 5))); }
+    unroll (jh = 0..NF_H) {
+        bg_reg[jh] = ldsm_x4(stage_s + (bg_off[jh] ^ (ks << 5)));
+        if constexpr (FUSED == 1) { bu_reg[jh] = ldsm_x4(stage_s + (bu_off[jh] ^ (ks << 5))); }
     }
 }
 
-macro qmma_stage_k16(DYN, FUSED, TILE_M, TILE_N, THREADS, sm_a, sm_b, b_off_dyn, act, wgt, row0, col0, rows, N, k_vec16, kt, tid) {
-    for (reg u32 idx = tid; idx < TILE_M * 2; idx += THREADS) {
-        reg u32 r = idx >> 1;
-        reg u32 h = idx & 1;
-        reg u32 ok = (row0 + r < rows) ? 1 : 0;
-        qmma_load_row16(DYN, sm_a, idx << 2, act, (row0 + r) * k_vec16 + kt * 2 + h, ok);
-    }
-    for (reg u32 idx = tid; idx < (1 + FUSED) * TILE_N * 2; idx += THREADS) {
-        reg u32 br = idx >> 1;
-        reg u32 h = idx & 1;
-        reg u32 is_u = 0;
-        if constexpr (FUSED == 1) {
-            if (br >= TILE_N) { is_u = 1; }
-        }
-        reg u32 tn = (is_u != 0) ? (br - TILE_N) : br;
-        reg u32 gn = col0 + tn;
-        reg u32 ok = (gn < N) ? 1 : 0;
-        reg u32 wrow = (is_u != 0) ? (N + gn) : gn;
-        qmma_load_row16(DYN, sm_b, (DYN == 1 ? b_off_dyn : 0) + (idx << 2), wgt, wrow * k_vec16 + kt * 2 + h, ok);
-    }
-    barrier();
-}
-
-macro qmma_read_sm(DYN, sm_buf, off, out_v) {
-    if constexpr (DYN == 1) { out_v = dyn_lds32(off); }
-    else { out_v = lds32(sm_buf, off); }
-}
-
-macro qmma_hmma_frag(DYN, sm_b, bo, fa, acc, base_i) {
-    reg u32 b0 = 0; reg u32 b1 = 0;
-    qmma_read_sm(DYN, sm_b, bo, b0);
-    qmma_read_sm(DYN, sm_b, bo + 4, b1);
-    reg f32x4 d = pack_f32x4(acc[base_i], acc[base_i + 1], acc[base_i + 2], acc[base_i + 3]);
-    d = hmma16816_bf16(fa, pack_u32x2(b0, b1), d);
-    acc[base_i] = d[0]; acc[base_i + 1] = d[1];
-    acc[base_i + 2] = d[2]; acc[base_i + 3] = d[3];
-}
-
-macro qmma_compute_step(DYN, FUSED, MF, NF, TILE_N, sm_a, sm_b, b_off_dyn, wm_r0, wn_n0, gid, tg, acc_g, acc_u) {
+macro qmma_mma_step(FUSED, MF, NF_H, a_reg, bg_reg, bu_reg, acc_g, acc_u) {
     unroll (i = 0..MF) {
-        reg u32 ar0 = wm_r0 + (i << 4) + gid;
-        reg u32 ar1 = ar0 + 8;
-        reg u32 a0 = 0; reg u32 a1 = 0; reg u32 a2 = 0; reg u32 a3 = 0;
-        qmma_read_sm(DYN, sm_a, (ar0 << 3) + tg, a0);
-        qmma_read_sm(DYN, sm_a, (ar1 << 3) + tg, a1);
-        qmma_read_sm(DYN, sm_a, (ar0 << 3) + tg + 4, a2);
-        qmma_read_sm(DYN, sm_a, (ar1 << 3) + tg + 4, a3);
-        reg u32x4 fa = pack_u32x4(a0, a1, a2, a3);
-        unroll (j = 0..NF) {
-            reg u32 br = wn_n0 + (j << 3) + gid;
-            reg u32 bo = (DYN == 1 ? b_off_dyn : 0) + (br << 3) + tg;
-            qmma_hmma_frag(DYN, sm_b, bo, fa, acc_g, (i * NF + j) * 4);
+        unroll (jh = 0..NF_H) {
+            acc_g[(i * NF_H + jh) * 2] = hmma16816_bf16(a_reg[i], lo_u32x2(bg_reg[jh]), acc_g[(i * NF_H + jh) * 2]);
+            acc_g[(i * NF_H + jh) * 2 + 1] = hmma16816_bf16(a_reg[i], hi_u32x2(bg_reg[jh]), acc_g[(i * NF_H + jh) * 2 + 1]);
             if constexpr (FUSED == 1) {
-                qmma_hmma_frag(DYN, sm_b, bo + (TILE_N << 3), fa, acc_u, (i * NF + j) * 4);
+                acc_u[(i * NF_H + jh) * 2] = hmma16816_bf16(a_reg[i], lo_u32x2(bu_reg[jh]), acc_u[(i * NF_H + jh) * 2]);
+                acc_u[(i * NF_H + jh) * 2 + 1] = hmma16816_bf16(a_reg[i], hi_u32x2(bu_reg[jh]), acc_u[(i * NF_H + jh) * 2 + 1]);
             }
         }
     }
-    barrier();
+}
+
+macro qmma_adv_stage(STAGES, STAGE_BYTES, off) {
+    if constexpr (STAGES == 2) { off = off ^ STAGE_BYTES; }
+    else { off = (off + STAGE_BYTES == STAGES * STAGE_BYTES) ? 0 : (off + STAGE_BYTES); }
+}
+
+macro qmma_init_ptrs(FUSED, TILE_M, TILE_N, THREADS, A_PER_T, B_PER_T, act, wgt, row0, col0, rows, k_dim, n_dim, tid, a_sm, b_sm, a_src, b_src, a_mask, b_mask) {
+    reg u32 r0 = tid >> 3;
+    reg u32 c0 = tid & 7;
+    unroll (q = 0..A_PER_T) {
+        reg u32 r = r0 + q * (THREADS >> 3);
+        reg u32 va = (row0 + r < rows) ? 1 : 0;
+        a_sm[q] = (r << 7) | ((c0 ^ (((r & 1) << 2) | ((r >> 1) & 3))) << 4);
+        a_src[q] = ptr_add(act, ((va != 0) ? ((row0 + r) * k_dim + (c0 << 3)) : 0), 2);
+        a_mask = a_mask | (va << q);
+    }
+    unroll (q = 0..B_PER_T) {
+        reg u32 br = r0 + q * (THREADS >> 3);
+        reg u32 is_u = 0;
+        if constexpr (FUSED == 1) { is_u = (br >= TILE_N) ? 1 : 0; }
+        reg u32 gn = col0 + ((is_u != 0) ? (br - TILE_N) : br);
+        reg u32 vb = (gn < n_dim) ? 1 : 0;
+        reg u32 wrow = (is_u != 0) ? (n_dim + gn) : gn;
+        b_sm[q] = (TILE_M << 7) + ((br << 7) | ((c0 ^ (((br & 1) << 2) | ((br >> 1) & 3))) << 4));
+        b_src[q] = ptr_add(wgt, ((vb != 0) ? (wrow * k_dim + (c0 << 3)) : 0), 2);
+        b_mask = b_mask | (vb << q);
+    }
+}
+
+macro qmma_init_foffs(FUSED, MF, NF_H, TILE_M, TILE_N, wm_r0, wn_n0, lane, a_off, bg_off, bu_off) {
+    reg u32 ac0 = (lane >> 4) & 1;
+    unroll (ii = 0..MF) {
+        reg u32 ar = wm_r0 + (ii << 4) + (lane & 15);
+        a_off[ii] = (ar << 7) | ((ac0 ^ (((ar & 1) << 2) | ((ar >> 1) & 3))) << 4);
+    }
+    reg u32 bc0 = (lane >> 3) & 1;
+    unroll (jh = 0..NF_H) {
+        reg u32 br = wn_n0 + (jh << 4) + (lane & 7) + (((lane >> 4) & 1) << 3);
+        reg u32 swz = bc0 ^ (((br & 1) << 2) | ((br >> 1) & 3));
+        bg_off[jh] = (TILE_M << 7) + ((br << 7) | (swz << 4));
+        if constexpr (FUSED == 1) { bu_off[jh] = ((TILE_M + TILE_N) << 7) + ((br << 7) | (swz << 4)); }
+    }
 }
 
 macro qmma_store_pair(FUSED, out_ptr, r, col, N, g0, g1, u0, u1) {
@@ -438,160 +438,208 @@ macro qmma_store_pair(FUSED, out_ptr, r, col, N, g0, g1, u0, u1) {
     }
 }
 
-macro qmma_store_ij(FUSED, output, r0, r1, c0, rows, n_dim, acc_g, acc_u, bidx) {
-    if (r0 < rows) {
-        if constexpr (FUSED == 1) {
-            qmma_store_pair(1, output, r0, c0, n_dim, acc_g[bidx], acc_g[bidx + 1], acc_u[bidx], acc_u[bidx + 1]);
-        } else {
-            qmma_store_pair(0, output, r0, c0, n_dim, acc_g[bidx], acc_g[bidx + 1], acc_u[0], acc_u[0]);
+macro qmma_store_ij(FUSED, output, r0, r1, c0, rows, n_dim, g_v, u_v) {
+    if (r0 < rows) { qmma_store_pair(FUSED, output, r0, c0, n_dim, g_v[0], g_v[1], u_v[0], u_v[1]); }
+    if (r1 < rows) { qmma_store_pair(FUSED, output, r1, c0, n_dim, g_v[2], g_v[3], u_v[2], u_v[3]); }
+}
+
+macro qmma_ksteps_body(FUSED, MF, NF_H, STAGES, STAGE_BYTES, DO_PREFETCH_NEXT, sc_off, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u) {
+    if constexpr (STAGES == 2) { qmma_load_frag(FUSED, MF, NF_H, sc_off, 0, a_off, bg_off, bu_off, a0, bg0, bu0); }
+    qmma_load_frag(FUSED, MF, NF_H, sc_off, 1, a_off, bg_off, bu_off, a1, bg1, bu1);
+    qmma_mma_step(FUSED, MF, NF_H, a0, bg0, bu0, acc_g, acc_u);
+    qmma_load_frag(FUSED, MF, NF_H, sc_off, 2, a_off, bg_off, bu_off, a0, bg0, bu0);
+    qmma_mma_step(FUSED, MF, NF_H, a1, bg1, bu1, acc_g, acc_u);
+    qmma_load_frag(FUSED, MF, NF_H, sc_off, 3, a_off, bg_off, bu_off, a1, bg1, bu1);
+    qmma_mma_step(FUSED, MF, NF_H, a0, bg0, bu0, acc_g, acc_u);
+    if constexpr (STAGES == 3 && DO_PREFETCH_NEXT == 1) {
+        depbar_le(1); barrier();
+        qmma_adv_stage(3, STAGE_BYTES, sc_off);
+        qmma_load_frag(FUSED, MF, NF_H, sc_off, 0, a_off, bg_off, bu_off, a0, bg0, bu0);
+    }
+    qmma_mma_step(FUSED, MF, NF_H, a1, bg1, bu1, acc_g, acc_u);
+    if constexpr (STAGES == 2) { qmma_adv_stage(2, STAGE_BYTES, sc_off); }
+}
+
+macro qmma_run_pipeline(STAGES, FUSED, MF, NF_H, A_PER_T, B_PER_T, STAGE_BYTES, k_tiles, sbase, a_sm, b_sm, a_src, b_src, a_mask, b_mask, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u) {
+    reg u32 sp_off = sbase; reg u32 sc_off = sbase;
+    unroll (s = 0..(STAGES - 1)) {
+        if (s < k_tiles) { qmma_issue_k(A_PER_T, B_PER_T, a_sm, b_sm, a_src, b_src, a_mask, b_mask, sp_off, s); }
+        ldgdepbar();
+        qmma_adv_stage(STAGES, STAGE_BYTES, sp_off);
+    }
+    if constexpr (STAGES == 3) {
+        depbar_le(1); barrier();
+        qmma_load_frag(FUSED, MF, NF_H, sc_off, 0, a_off, bg_off, bu_off, a0, bg0, bu0);
+        for (reg u32 kt = 0; kt + 2 < k_tiles; kt += 1) {
+            qmma_issue_k(A_PER_T, B_PER_T, a_sm, b_sm, a_src, b_src, a_mask, b_mask, sp_off, kt + 2);
+            qmma_adv_stage(3, STAGE_BYTES, sp_off);
+            ldgdepbar();
+            qmma_ksteps_body(FUSED, MF, NF_H, 3, STAGE_BYTES, 1, sc_off, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
+        }
+        if (k_tiles >= 2) {
+            ldgdepbar();
+            qmma_ksteps_body(FUSED, MF, NF_H, 3, STAGE_BYTES, 1, sc_off, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
+        }
+        if (k_tiles >= 1) {
+            qmma_ksteps_body(FUSED, MF, NF_H, 3, STAGE_BYTES, 0, sc_off, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
+        }
+    } else {
+        for (reg u32 kt = 0; kt + 1 < k_tiles; kt += 1) {
+            depbar_le(0); barrier();
+            qmma_issue_k(A_PER_T, B_PER_T, a_sm, b_sm, a_src, b_src, a_mask, b_mask, sp_off, kt + 1);
+            qmma_adv_stage(2, STAGE_BYTES, sp_off);
+            ldgdepbar();
+            qmma_ksteps_body(FUSED, MF, NF_H, 2, STAGE_BYTES, 0, sc_off, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
+        }
+        if (k_tiles >= 1) {
+            depbar_le(0); barrier();
+            qmma_ksteps_body(FUSED, MF, NF_H, 2, STAGE_BYTES, 0, sc_off, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
         }
     }
-    if (r1 < rows) {
-        if constexpr (FUSED == 1) {
-            qmma_store_pair(1, output, r1, c0, n_dim, acc_g[bidx + 2], acc_g[bidx + 3], acc_u[bidx + 2], acc_u[bidx + 3]);
-        } else {
-            qmma_store_pair(0, output, r1, c0, n_dim, acc_g[bidx + 2], acc_g[bidx + 3], acc_u[0], acc_u[0]);
-        }
-    }
+    depbar_le(0);
 }
 
 @pdl
 @concept(linear)
-template kernel[THREADS, REGS] qwen_bf16_mma_tpl<TILE_M, TILE_N, THREADS, WARPS_M, FUSED, DYN_SMEM, REGS>(
+template kernel[THREADS, REGS] qwen_bf16_mma_tpl<TILE_M, TILE_N, THREADS, WARPS_M, STAGES, FUSED, DYN_SMEM, REGS>(
     global u32* weight, global u32* activation, global u32* output,
     u32 rows, u32 k_dim, u32 n_dim
 ) {
-    shared u32 sm_a[DYN_SMEM == 1 ? 4 : TILE_M * 8];
-    shared u32 sm_b[DYN_SMEM == 1 ? 4 : (1 + FUSED) * TILE_N * 8];
+    if constexpr (DYN_SMEM == 0) { shared u32 smem[STAGES * (TILE_M + (1 + FUSED) * TILE_N) * 32]; }
     acqbulk();
     reg u32 m_blocks = (rows + TILE_M - 1) >> ((TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : ((TILE_M == 64) ? 6 : 7)));
     reg u32 n_block = 0; reg u32 m_block = 0;
     u32_divmod(ctaid_x(), m_blocks, n_block, m_block);
-    reg u32 row0 = m_block * TILE_M;
-    reg u32 col0 = n_block * TILE_N;
-    if (row0 >= rows || col0 >= n_dim) {
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
-    reg u32 gid = lane >> 2;
-    reg u32 tg = lane & 3;
+    reg u32 row0 = m_block * TILE_M; reg u32 col0 = n_block * TILE_N;
+    if (row0 >= rows || col0 >= n_dim) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
     reg u32 wm = (((THREADS / 32) / WARPS_M) == 4) ? (wid >> 2) : (wid >> 1);
     reg u32 wn = wid & (((THREADS / 32) / WARPS_M) - 1);
     reg u32 wm_r0 = wm * (TILE_M / WARPS_M);
     reg u32 wn_n0 = wn * (TILE_N / ((THREADS / 32) / WARPS_M));
-    reg f32 acc_g[((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) * 4];
-    reg f32 acc_u[FUSED == 1 ? (((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) * 4) : 1];
-    unroll (z = 0..(((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) * 4)) {
-        acc_g[z] = 0.0f;
-        if constexpr (FUSED == 1) { acc_u[z] = 0.0f; }
+    reg u32 a_sm[(TILE_M * 8) / THREADS]; reg u32 b_sm[((1 + FUSED) * TILE_N * 8) / THREADS];
+    reg u64 a_src[(TILE_M * 8) / THREADS]; reg u64 b_src[((1 + FUSED) * TILE_N * 8) / THREADS];
+    reg u32 a_mask = 0; reg u32 b_mask = 0;
+    qmma_init_ptrs(FUSED, TILE_M, TILE_N, THREADS, (TILE_M * 8) / THREADS, ((1 + FUSED) * TILE_N * 8) / THREADS, activation, weight, row0, col0, rows, k_dim, n_dim, tid, a_sm, b_sm, a_src, b_src, a_mask, b_mask);
+    reg u32 a_off[(TILE_M / WARPS_M) / 16];
+    reg u32 bg_off[(TILE_N / ((THREADS / 32) / WARPS_M)) / 16];
+    reg u32 bu_off[FUSED == 1 ? ((TILE_N / ((THREADS / 32) / WARPS_M)) / 16) : 1];
+    qmma_init_foffs(FUSED, (TILE_M / WARPS_M) / 16, (TILE_N / ((THREADS / 32) / WARPS_M)) / 16, TILE_M, TILE_N, wm_r0, wn_n0, lane, a_off, bg_off, bu_off);
+    reg u32x4 a0[(TILE_M / WARPS_M) / 16]; reg u32x4 a1[(TILE_M / WARPS_M) / 16];
+    reg u32x4 bg0[(TILE_N / ((THREADS / 32) / WARPS_M)) / 16]; reg u32x4 bg1[(TILE_N / ((THREADS / 32) / WARPS_M)) / 16];
+    reg u32x4 bu0[FUSED == 1 ? ((TILE_N / ((THREADS / 32) / WARPS_M)) / 16) : 1];
+    reg u32x4 bu1[FUSED == 1 ? ((TILE_N / ((THREADS / 32) / WARPS_M)) / 16) : 1];
+    reg f32x4 acc_g[((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8)];
+    reg f32x4 acc_u[FUSED == 1 ? (((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8)) : 1];
+    unroll (z = 0..(((TILE_M / WARPS_M) / 16) * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8))) {
+        acc_g[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+        if constexpr (FUSED == 1) { acc_u[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
     }
-    if constexpr (FUSED == 0) { acc_u[0] = 0.0f; }
-    reg u32 k_vec16 = k_dim >> 3;
-    reg u32 k_tiles = k_dim >> 4;
-    for (reg u32 kt = 0; kt < k_tiles; kt += 1) {
-        qmma_stage_k16(DYN_SMEM, FUSED, TILE_M, TILE_N, THREADS, sm_a, sm_b, TILE_M * 8, activation, weight, row0, col0, rows, n_dim, k_vec16, kt, tid);
-        qmma_compute_step(DYN_SMEM, FUSED, (TILE_M / WARPS_M) / 16, (TILE_N / ((THREADS / 32) / WARPS_M)) / 8, TILE_N, sm_a, sm_b, TILE_M * 8, wm_r0, wn_n0, gid, tg, acc_g, acc_u);
-    }
-    if constexpr (DYN_SMEM == 1) { sts32(sm_a, 0, 0); sts32(sm_b, 0, 0); }
+    if constexpr (FUSED == 0) { acc_u[0] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
+    reg u32 sbase = 0;
+    if constexpr (DYN_SMEM == 0) { sbase = smem_base(smem); }
+    qmma_run_pipeline(STAGES, FUSED, (TILE_M / WARPS_M) / 16, (TILE_N / ((THREADS / 32) / WARPS_M)) / 16, (TILE_M * 8) / THREADS, ((1 + FUSED) * TILE_N * 8) / THREADS, (TILE_M + (1 + FUSED) * TILE_N) * 128, k_dim >> 6, sbase, a_sm, b_sm, a_src, b_src, a_mask, b_mask, a_off, bg_off, bu_off, a0, a1, bg0, bg1, bu0, bu1, acc_g, acc_u);
+    reg u32 gid = lane >> 2; reg u32 tg = lane & 3;
     unroll (i = 0..((TILE_M / WARPS_M) / 16)) {
         unroll (j = 0..((TILE_N / ((THREADS / 32) / WARPS_M)) / 8)) {
             reg u32 r0 = row0 + wm_r0 + (i << 4) + gid;
-            reg u32 r1 = r0 + 8;
             reg u32 c0 = col0 + wn_n0 + (j << 3) + (tg << 1);
-            qmma_store_ij(FUSED, output, r0, r1, c0, rows, n_dim, acc_g, acc_u, (i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j) * 4);
+            if constexpr (FUSED == 1) { qmma_store_ij(1, output, r0, r0 + 8, c0, rows, n_dim, acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j], acc_u[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j]); }
+            else { qmma_store_ij(0, output, r0, r0 + 8, c0, rows, n_dim, acc_g[i * ((TILE_N / ((THREADS / 32) / WARPS_M)) / 8) + j], acc_u[0]); }
         }
     }
     preexit();
 }
 
-instantiate qwen_bf16_mma_tpl<16, 64, 128, 1, 0, 0, 96> as qwen_bf16_dense_mma_16x64;
-instantiate qwen_bf16_mma_tpl<32, 64, 256, 2, 0, 0, 96> as qwen_bf16_dense_mma_32x64;
-instantiate qwen_bf16_mma_tpl<64, 64, 256, 2, 0, 0, 128> as qwen_bf16_dense_mma_64x64;
-instantiate qwen_bf16_mma_tpl<128, 64, 256, 4, 0, 0, 160> as qwen_bf16_dense_mma_128x64;
-instantiate qwen_bf16_mma_tpl<16, 64, 128, 1, 1, 0, 128> as qwen_bf16_fused_swiglu_mma_16x64;
-instantiate qwen_bf16_mma_tpl<32, 64, 256, 2, 1, 0, 128> as qwen_bf16_fused_swiglu_mma_32x64;
-instantiate qwen_bf16_mma_tpl<64, 32, 256, 4, 1, 0, 128> as qwen_bf16_fused_swiglu_mma_64x32;
-instantiate qwen_bf16_mma_tpl<128, 64, 256, 4, 1, 1, 192> as qwen_bf16_fused_swiglu_mma_128x64;
+instantiate qwen_bf16_mma_tpl<16, 64, 128, 1, 3, 0, 0, 96> as qwen_bf16_dense_mma_16x64;
+instantiate qwen_bf16_mma_tpl<32, 64, 256, 2, 3, 0, 0, 96> as qwen_bf16_dense_mma_32x64;
+instantiate qwen_bf16_mma_tpl<64, 64, 256, 2, 3, 0, 0, 128> as qwen_bf16_dense_mma_64x64;
+instantiate qwen_bf16_mma_tpl<128, 64, 256, 4, 2, 0, 0, 128> as qwen_bf16_dense_mma_128x64;
+instantiate qwen_bf16_mma_tpl<16, 64, 128, 1, 2, 1, 0, 128> as qwen_bf16_fused_swiglu_mma_16x64;
+instantiate qwen_bf16_mma_tpl<32, 64, 256, 2, 2, 1, 0, 128> as qwen_bf16_fused_swiglu_mma_32x64;
+instantiate qwen_bf16_mma_tpl<64, 32, 256, 4, 3, 1, 0, 128> as qwen_bf16_fused_swiglu_mma_64x32;
+instantiate qwen_bf16_mma_tpl<128, 64, 256, 4, 3, 1, 1, 192> as qwen_bf16_fused_swiglu_mma_128x64;
+
+macro qsmalln_issue(TILE_M, dst_base, kt, a_sm, b_sm, a_src, b_src, a_mask, b_mask) {
+    unroll (q = 0..(TILE_M / 4)) { ldgsts128_z(dst_base + a_sm[q], ptr_add(a_src[q], kt, 128), (a_mask >> q) & 1); }
+    unroll (q = 0..4) { ldgsts128_z(dst_base + b_sm[q], ptr_add(b_src[q], kt, 128), (b_mask >> q) & 1); }
+    ldgdepbar();
+}
+
+macro qsmalln_store_red(DYN_SMEM, smem, rbase, v0, v1) {
+    if constexpr (DYN_SMEM == 1) {
+        dyn_sts32(rbase, f32_as_u32(v0[0])); dyn_sts32(rbase + 1, f32_as_u32(v0[1]));
+        dyn_sts32(rbase + 128, f32_as_u32(v0[2])); dyn_sts32(rbase + 129, f32_as_u32(v0[3]));
+        dyn_sts32(rbase + 8, f32_as_u32(v1[0])); dyn_sts32(rbase + 9, f32_as_u32(v1[1]));
+        dyn_sts32(rbase + 136, f32_as_u32(v1[2])); dyn_sts32(rbase + 137, f32_as_u32(v1[3]));
+    } else {
+        sts32(smem, rbase, f32_as_u32(v0[0])); sts32(smem, rbase + 1, f32_as_u32(v0[1]));
+        sts32(smem, rbase + 128, f32_as_u32(v0[2])); sts32(smem, rbase + 129, f32_as_u32(v0[3]));
+        sts32(smem, rbase + 8, f32_as_u32(v1[0])); sts32(smem, rbase + 9, f32_as_u32(v1[1]));
+        sts32(smem, rbase + 136, f32_as_u32(v1[2])); sts32(smem, rbase + 137, f32_as_u32(v1[3]));
+    }
+}
 
 @pdl
 @concept(linear)
-template kernel[128, REGS] qwen_bf16_smalln_mma_tpl<TILE_M, REGS>(
+template kernel[128, REGS] qwen_bf16_smalln_mma_tpl<TILE_M, DYN_SMEM, REGS>(
     global u32* weight, global u32* activation, global u32* output,
     u32 rows, u32 k_dim, u32 n_dim
 ) {
-    shared u32 sm_ab[4 * (TILE_M + 16) * 8];
-    shared f32 sm_red[4 * TILE_M * 16];
+    if constexpr (DYN_SMEM == 0) { shared u32 smem[4 * 2 * (TILE_M + 16) * 32]; }
     acqbulk();
-    reg u32 m_blocks = (rows + TILE_M - 1) >> ((TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : ((TILE_M == 64) ? 6 : 7)));
+    reg u32 m_blocks = (rows + TILE_M - 1) >> ((TILE_M == 16) ? 4 : 5);
     reg u32 n_block = 0; reg u32 m_block = 0;
     u32_divmod(ctaid_x(), m_blocks, n_block, m_block);
-    reg u32 row0 = m_block * TILE_M;
-    reg u32 col0 = n_block * 16;
-    if (row0 >= rows || col0 >= n_dim) {
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
-    reg u32 gid = lane >> 2;
-    reg u32 tg = lane & 3;
-    reg u32 k_vec16 = k_dim >> 3;
-    reg u32 k_tiles = k_dim >> 4;
-    reg u32 slice_u32 = (TILE_M + 16) * 8;
-    reg u32 w_base = wid * slice_u32;
-    reg u32 b_base = w_base + TILE_M * 8;
-    reg f32 acc[(TILE_M / 16) * 8];
-    unroll (z = 0..((TILE_M / 16) * 8)) { acc[z] = 0.0f; }
+    reg u32 row0 = m_block * TILE_M; reg u32 col0 = n_block * 16;
+    if (row0 >= rows || col0 >= n_dim) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 a_sm[TILE_M / 4]; reg u32 b_sm[4];
+    reg u64 a_src[TILE_M / 4]; reg u64 b_src[4];
+    reg u32 a_mask = 0; reg u32 b_mask = 0;
+    qmma_init_ptrs(0, TILE_M, 16, 32, TILE_M / 4, 4, activation, weight, row0, col0, rows, k_dim, n_dim, lane, a_sm, b_sm, a_src, b_src, a_mask, b_mask);
+    reg u32 a_off[TILE_M / 16]; reg u32 b_off[1]; reg u32 d_off[1];
+    qmma_init_foffs(0, TILE_M / 16, 1, TILE_M, 16, 0, 0, lane, a_off, b_off, d_off);
+    reg u32 slice_b = (TILE_M + 16) * 128;
+    reg u32 wbase = wid * (slice_b << 1);
+    reg u32 k_tiles = k_dim >> 6;
+    reg f32x4 acc[(TILE_M / 16) * 2];
+    unroll (z = 0..((TILE_M / 16) * 2)) { acc[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
+    reg u32 cur = 0;
+    if (wid < k_tiles) { qsmalln_issue(TILE_M, wbase, wid, a_sm, b_sm, a_src, b_src, a_mask, b_mask); }
     for (reg u32 kt = wid; kt < k_tiles; kt += 4) {
-        unroll (q = 0..(TILE_M / 16)) {
-            reg u32 idx = q * 32 + lane;
-            reg u32 r = idx >> 1;
-            reg u32 h = idx & 1;
-            qmma_load_row16(0, sm_ab, w_base + (idx << 2), activation, (row0 + r) * k_vec16 + kt * 2 + h, (row0 + r < rows) ? 1 : 0);
+        if (kt + 4 < k_tiles) {
+            qsmalln_issue(TILE_M, wbase + ((cur ^ 1) * slice_b), kt + 4, a_sm, b_sm, a_src, b_src, a_mask, b_mask);
+            depbar_le(1);
+        } else { depbar_le(0); }
+        reg u32 st = shfl_idx(wbase + cur * slice_b, 0);
+        unroll (ks = 0..4) {
+            reg u32x4 bf = ldsm_x4(st + (b_off[0] ^ (ks << 5)));
+            unroll (ii = 0..(TILE_M / 16)) {
+                reg u32x4 af = ldsm_x4(st + (a_off[ii] ^ (ks << 5)));
+                acc[ii * 2] = hmma16816_bf16(af, lo_u32x2(bf), acc[ii * 2]);
+                acc[ii * 2 + 1] = hmma16816_bf16(af, hi_u32x2(bf), acc[ii * 2 + 1]);
+            }
         }
-        reg u32 br_l = lane >> 1;
-        reg u32 bh_l = lane & 1;
-        qmma_load_row16(0, sm_ab, b_base + (lane << 2), weight, (col0 + br_l) * k_vec16 + kt * 2 + bh_l, (col0 + br_l < n_dim) ? 1 : 0);
-        w_base = shfl_idx(w_base, 0);
-        reg u32 b00 = lds32(sm_ab, b_base + (gid << 3) + tg);
-        reg u32 b01 = lds32(sm_ab, b_base + (gid << 3) + tg + 4);
-        reg u32 b10 = lds32(sm_ab, b_base + ((gid + 8) << 3) + tg);
-        reg u32 b11 = lds32(sm_ab, b_base + ((gid + 8) << 3) + tg + 4);
-        unroll (i = 0..(TILE_M / 16)) {
-            reg u32 ar0 = (i << 4) + gid;
-            reg u32x4 fa = pack_u32x4(
-                lds32(sm_ab, w_base + (ar0 << 3) + tg), lds32(sm_ab, w_base + ((ar0 + 8) << 3) + tg),
-                lds32(sm_ab, w_base + (ar0 << 3) + tg + 4), lds32(sm_ab, w_base + ((ar0 + 8) << 3) + tg + 4)
-            );
-            reg f32x4 d0 = hmma16816_bf16(fa, pack_u32x2(b00, b01), pack_f32x4(acc[i * 8], acc[i * 8 + 1], acc[i * 8 + 2], acc[i * 8 + 3]));
-            reg f32x4 d1 = hmma16816_bf16(fa, pack_u32x2(b10, b11), pack_f32x4(acc[i * 8 + 4], acc[i * 8 + 5], acc[i * 8 + 6], acc[i * 8 + 7]));
-            acc[i * 8] = d0[0]; acc[i * 8 + 1] = d0[1]; acc[i * 8 + 2] = d0[2]; acc[i * 8 + 3] = d0[3];
-            acc[i * 8 + 4] = d1[0]; acc[i * 8 + 5] = d1[1]; acc[i * 8 + 6] = d1[2]; acc[i * 8 + 7] = d1[3];
-        }
-        w_base = shfl_idx(w_base, 0);
+        cur = cur ^ 1;
     }
+    depbar_le(0); barrier();
+    reg u32 gid = lane >> 2; reg u32 tg = lane & 3;
     unroll (i = 0..(TILE_M / 16)) {
-        reg u32 rbase = (wid * TILE_M + (i << 4) + gid) * 16 + (tg << 1);
-        sts32(sm_red, rbase, acc[i * 8]); sts32(sm_red, rbase + 1, acc[i * 8 + 1]);
-        sts32(sm_red, rbase + 128, acc[i * 8 + 2]); sts32(sm_red, rbase + 129, acc[i * 8 + 3]);
-        sts32(sm_red, rbase + 8, acc[i * 8 + 4]); sts32(sm_red, rbase + 9, acc[i * 8 + 5]);
-        sts32(sm_red, rbase + 136, acc[i * 8 + 6]); sts32(sm_red, rbase + 137, acc[i * 8 + 7]);
+        qsmalln_store_red(DYN_SMEM, smem, (wid * TILE_M + (i << 4) + gid) * 16 + (tg << 1), acc[i * 2], acc[i * 2 + 1]);
     }
     barrier();
     for (reg u32 idx = tid; idx < TILE_M * 16; idx += 128) {
-        reg u32 r = idx >> 4;
-        reg u32 c = idx & 15;
+        reg u32 r = idx >> 4; reg u32 c = idx & 15;
         if (row0 + r < rows && col0 + c < n_dim) {
-            reg f32 s = lds32(sm_red, idx) + lds32(sm_red, TILE_M * 16 + idx) + lds32(sm_red, TILE_M * 32 + idx) + lds32(sm_red, TILE_M * 48 + idx);
+            reg f32 s = 0.0f;
+            if constexpr (DYN_SMEM == 1) { s = dyn_lds32_f32(idx) + dyn_lds32_f32(TILE_M * 16 + idx) + dyn_lds32_f32(TILE_M * 32 + idx) + dyn_lds32_f32(TILE_M * 48 + idx); }
+            else { s = u32_as_f32(lds32(smem, idx)) + u32_as_f32(lds32(smem, TILE_M * 16 + idx)) + u32_as_f32(lds32(smem, TILE_M * 32 + idx)) + u32_as_f32(lds32(smem, TILE_M * 48 + idx)); }
             stg16(ptr_add(ptr_add(output, row0 + r, n_dim << 1), col0 + c, 2), f32_to_bf16(s));
         }
     }
     preexit();
 }
 
-instantiate qwen_bf16_smalln_mma_tpl<16, 96> as qwen_bf16_smalln_mma_16;
-instantiate qwen_bf16_smalln_mma_tpl<32, 112> as qwen_bf16_smalln_mma_wide_32;
+instantiate qwen_bf16_smalln_mma_tpl<16, 0, 96> as qwen_bf16_smalln_mma_16;
+instantiate qwen_bf16_smalln_mma_tpl<32, 1, 112> as qwen_bf16_smalln_mma_wide_32;
