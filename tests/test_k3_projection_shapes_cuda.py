@@ -20,9 +20,10 @@ def main():
         return 0
     if shutil.which(NVCC) is None:
         raise SystemExit(f"FAIL {NAME}: an sm_121 device is present but nvcc is unavailable")
+    subprocess.run(["make", "-s", "build/skl2_k3_embedded.h"], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix=NAME + "-") as directory:
         binary = str(Path(directory) / "probe")
-        subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a", "-I.", "-Iinclude",
+        subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a", "-I.", "-Ibuild", "-Iinclude",
                         "-Imodel-families/common/include", "-Imodel-families/k3/include", "tests/cuda/k3_projection_shapes_cuda.cu", "-lcuda",
                         "-o", binary], cwd=ROOT, check=True)
         subprocess.run([binary], check=True, timeout=300)

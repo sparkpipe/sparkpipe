@@ -516,9 +516,9 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, SparkG
 #if !defined(LM_HOST_CUDA_PRELUDE) && defined(__CUDACC__)
 		if ( score_weight != 0 && LmIsAligned16(b->attnres_bank_bf16) && LmIsAligned16(b->attnres_partial_bf16) &&
 			LmIsAligned16(state->row_share_device) && LmIsAligned16(score_weight) )
-			LM_LAUNCH_DEPENDENT((K3PartialAddAttnResSliceKernel), count, 256u, 0, stream,
+			(void)K3Skl2Launch(K3SKL2_k3_partial_add_attnres_slice_256, count, 256u, 0u, stream,
 				b->attnres_bank_bf16, b->attnres_partial_bf16, state->row_share_device, (const uint16_t *)score_weight,
-				sources, rows, first, count, set_partial, K3_RMS_EPSILON);
+				sources, rows, first, count, set_partial, (uint32_t)K3_HIDDEN, (float)K3_RMS_EPSILON);
 		else
 #endif
 		{

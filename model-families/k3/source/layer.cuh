@@ -784,19 +784,19 @@ static void K3AttnResWithNorm(K3LayerBuffers *b, const void *score_weight, const
 			LmWeightPrefetchNote(stream, nw, (uint64_t)K3_HIDDEN * sizeof(uint16_t));
 		if ( rows <= 64u && b->attnres_score_f32 != 0 )
 		{
-			LM_LAUNCH_DEPENDENT((K3AttnResScoreAddKernel), dim3(rows, sources), 256u, 0, stream,
+			(void)K3Skl2Launch(K3SKL2_k3_attnres_score_add_256, dim3(rows, sources), 256u, 0u, stream,
 				b->attnres_bank_bf16, b->attnres_partial_bf16, addend, (const uint16_t *)score_weight,
-				b->attnres_score_f32, sources, rows, K3_RMS_EPSILON);
-			LM_LAUNCH_DEPENDENT((K3AttnResMixNormKernel), rows, 256u, 0, stream,
+				b->attnres_score_f32, sources, rows, (uint32_t)K3_HIDDEN, (uint32_t)K3_ATTNRES_MAX_SOURCES, (float)K3_RMS_EPSILON);
+			(void)K3Skl2Launch(K3SKL2_k3_attnres_mix_norm_256, rows, 256u, 0u, stream,
 				b->attnres_bank_bf16, b->attnres_partial_bf16, b->attnres_score_f32, nw,
-				b->hidden_bf16, b->normed_bf16, sources, rows, K3_RMS_EPSILON);
+				b->hidden_bf16, b->normed_bf16, sources, rows, (uint32_t)K3_HIDDEN, (uint32_t)K3_ATTNRES_MAX_SOURCES, (float)K3_RMS_EPSILON);
 			b->normed_ready = nw != 0 ? 1u : 0u;
 			return;
 		}
 		const uint32_t blocks = rows < K3_ATTNRES_PERSISTENT_BLOCKS ? rows : K3_ATTNRES_PERSISTENT_BLOCKS;
-		LM_LAUNCH_DEPENDENT((K3PartialAddAttnResNormKernel), blocks, 256u, 0, stream,
+		(void)K3Skl2Launch(K3SKL2_k3_partial_add_attnres_norm_256, blocks, 256u, 0u, stream,
 			b->attnres_bank_bf16, b->attnres_partial_bf16, addend, (const uint16_t *)score_weight, nw,
-			b->hidden_bf16, b->normed_bf16, sources, rows, K3_RMS_EPSILON);
+			b->hidden_bf16, b->normed_bf16, sources, rows, (uint32_t)K3_HIDDEN, (float)K3_RMS_EPSILON);
 		b->normed_ready = nw != 0 ? 1u : 0u;
 		return;
 	}
@@ -1278,11 +1278,9 @@ static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_
 		LmWeightPrefetchNote(stream, b->kda_gate_weight, (uint64_t)gate_rows * K3_HIDDEN * sizeof(uint16_t));
 		if ( decay != 0u )
 			LmWeightPrefetchNote(stream, b->kda_decay_down_weight, (uint64_t)decay_rows * K3_HIDDEN * sizeof(uint16_t));
-		if ( rows <= 32u )
-			LM_LAUNCH_DEPENDENT((K3KdaProjMmaKernel<32u>), total_tiles, 128u, 0u, stream, mma);
-		else
-			LM_LAUNCH_DEPENDENT((K3KdaProjMmaKernel<64u>), total_tiles, 128u, 0u, stream, mma);
-		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		const SparkGpuError err = K3Skl2Launch(rows <= 32u ? K3SKL2_k3_kda_proj_mma_32x32 : K3SKL2_k3_kda_proj_mma_64x32,
+			total_tiles, 128u, 0u, stream, mma, (uint32_t)K3_HIDDEN);
+		return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 	}
 #endif
 #if !defined(LM_HOST_CUDA_PRELUDE)
@@ -1437,23 +1435,14 @@ static int32_t K3LayerKdaFinish(const K3LayerBuffers *b, uint32_t rows, uint16_t
 		LmIsAligned16(b->kda_out_weight) && LmIsAligned16(destination) )
 	{
 		LmWeightPrefetchNote(stream, b->kda_out_weight, (uint64_t)K3_HIDDEN * 6u * K3_KDA_VALUE_DIM * sizeof(uint16_t));
-		if ( rows == 1u )
-			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<1u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
-				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
-				destination, rows, K3_RMS_EPSILON);
-		else if ( rows <= 4u )
-			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<4u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
-				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
-				destination, rows, K3_RMS_EPSILON);
-		else if ( rows <= 8u )
-			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<8u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
-				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
-				destination, rows, K3_RMS_EPSILON);
-		else
-			LM_LAUNCH_DEPENDENT((K3KdaNormGateOutKernel<12u>), dim3(K3_HIDDEN / 32u, (rows + 11u) / 12u), 256u, 0u, stream,
-				b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
-				destination, rows, K3_RMS_EPSILON);
-		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		const uint32_t kid = rows == 1u ? K3SKL2_k3_kda_norm_gate_out_r1 :
+			(rows <= 4u ? K3SKL2_k3_kda_norm_gate_out_r4 :
+			(rows <= 8u ? K3SKL2_k3_kda_norm_gate_out_r8 : K3SKL2_k3_kda_norm_gate_out_r12));
+		const uint32_t gy = rows <= 8u ? 1u : (rows + 11u) / 12u;
+		const SparkGpuError err = K3Skl2Launch(kid, dim3(K3_HIDDEN / 32u, gy), 256u, 0u, stream,
+			b->attention_out_bf16, b->gate_bf16, b->kda_out_norm_weight, (const uint16_t *)b->kda_out_weight,
+			destination, rows, (uint32_t)K3_HIDDEN, (float)K3_RMS_EPSILON);
+		return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 	}
 #endif
 	const int32_t status = K3LayerKdaGate(b,rows,stream);
@@ -1754,10 +1743,10 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 	{
 		if ( (rows <= LM_SKINNY_ROWS_WIDE && b->prefill_wave == 0u) || b->row_invariant != 0u )
 		{
-			LM_LAUNCH_DEPENDENT((K3IndexQExactSkipKernel), K3_INDEX_QUERY / 8u, 128u, 0, stream,
-				(const uint16_t *)b->mla_index_query_weight,b->latent_bf16,b->index_query_bf16,
-				b->sequence_of_row,b->context_length,b->positions,rows);
-			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+			if ( K3Skl2Launch(K3SKL2_k3_index_q_exact_skip_128, K3_INDEX_QUERY / 8u, 128u, 0u, stream,
+				(const uint16_t *)b->mla_index_query_weight, b->latent_bf16, b->index_query_bf16,
+				b->sequence_of_row, b->context_length, b->positions, rows,
+				(uint32_t)K3_Q_LORA_RANK, (uint32_t)K3_INDEX_QUERY, (uint32_t)K3_INDEX_TOPK) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		}
 		else
@@ -1771,18 +1760,21 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 			return(LM_LAUNCH_OK);
 		if ( LmIsAligned16(b->mla_index_head_weight) && LmIsAligned16(b->normed_bf16) )
 		{
+			SparkGpuError err;
 			if ( (rows <= 64u && b->prefill_wave == 0u) || b->row_invariant != 0u )
-				LM_LAUNCH_DEPENDENT((K3IndexHeadSkipKernel), dim3((K3_INDEX_HEADS + 3u) / 4u, rows), 128u, 0, stream,
-					(const uint16_t *)b->mla_index_head_weight,b->normed_bf16,b->index_head_bf16,
-					b->sequence_of_row,b->context_length,b->positions,rows);
+				err = K3Skl2Launch(K3SKL2_k3_index_head_skip_128, dim3((K3_INDEX_HEADS + 3u) / 4u, rows), 128u, 0u, stream,
+					(const uint16_t *)b->mla_index_head_weight, b->normed_bf16, b->index_head_bf16,
+					b->sequence_of_row, b->context_length, b->positions, rows,
+					(uint32_t)K3_HIDDEN, (uint32_t)K3_INDEX_HEADS, (uint32_t)K3_INDEX_TOPK);
 			else
 			{
 				LmWeightPrefetchNote(stream, b->mla_index_head_weight, (uint64_t)K3_INDEX_HEADS * K3_HIDDEN * sizeof(uint16_t));
-				LM_LAUNCH_DEPENDENT((K3IndexHeadMmaSkipKernel), (rows + 31u) / 32u, 128u, 0, stream,
-					(const uint8_t *)b->mla_index_head_weight,b->normed_bf16,b->index_head_bf16,
-					b->sequence_of_row,b->context_length,b->positions,rows);
+				err = K3Skl2Launch(K3SKL2_k3_index_head_mma_skip_32x32, (rows + 31u) / 32u, 128u, 0u, stream,
+					(const uint8_t *)b->mla_index_head_weight, b->normed_bf16, b->index_head_bf16,
+					b->sequence_of_row, b->context_length, b->positions, rows,
+					(uint32_t)K3_HIDDEN, (uint32_t)K3_INDEX_HEADS, (uint32_t)K3_INDEX_TOPK);
 			}
-			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+			return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 		}
 		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_index_head_weight,0,b->index_head_bf16,rows,K3_HIDDEN,K3_INDEX_HEADS,multiprocessors,stream));
 	}
@@ -1902,19 +1894,13 @@ static int32_t K3LayerMlaOutput(const K3LayerBuffers *b, uint32_t rows, uint16_t
 				return(gs);
 		}
 		LmWeightPrefetchNote(stream, b->mla_out_weight, (uint64_t)K3_HIDDEN * 6u * K3_V_HEAD_DIM * sizeof(uint16_t));
-		if ( rows == 1u )
-			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<1u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
-				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
-		else if ( rows <= 4u )
-			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<4u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
-				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
-		else if ( rows <= 8u )
-			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<8u>), dim3(K3_HIDDEN / 32u, 1u), 256u, 0u, stream,
-				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
-		else
-			LM_LAUNCH_DEPENDENT((K3MlaGateOutKernel<12u>), dim3(K3_HIDDEN / 32u, (rows + 11u) / 12u), 256u, 0u, stream,
-				b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows);
-		return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		const uint32_t kid = rows == 1u ? K3SKL2_k3_mla_gate_out_r1 :
+			(rows <= 4u ? K3SKL2_k3_mla_gate_out_r4 :
+			(rows <= 8u ? K3SKL2_k3_mla_gate_out_r8 : K3SKL2_k3_mla_gate_out_r12));
+		const uint32_t gy = rows <= 8u ? 1u : (rows + 11u) / 12u;
+		const SparkGpuError err = K3Skl2Launch(kid, dim3(K3_HIDDEN / 32u, gy), 256u, 0u, stream,
+			b->value_bf16, b->gate_bf16, (const uint16_t *)b->mla_out_weight, b->attention_out_bf16, rows, (uint32_t)K3_HIDDEN);
+		return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 	}
 #endif
 	const int32_t status = K3LayerMlaGated<Format>(b,rows,gate_ready,multiprocessors,stream);
@@ -3123,20 +3109,21 @@ static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,
 	{
 		if ( rows == 1u )
 		{
-			LM_LAUNCH_DEPENDENT((K3TopkRouteBuildRow1Kernel), 1u, 256u, 0, stream,
+			const SparkGpuError err = K3Skl2Launch(K3SKL2_k3_topk_route_build_row1_256, 1u, 256u, 0u, stream,
 				b->router_logits, b->router_bias, b->route_expert, b->route_weight, b->route_fault,
-				b->group_row_offset, b->route_packed_row, b->route_source_token, b->group_tile_prefix_w1);
-			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+				b->group_row_offset, b->route_packed_row, b->route_source_token, b->group_tile_prefix_w1,
+				(uint32_t)K3_EXPERTS, (float)K3_ROUTED_SCALE);
+			return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 		}
 		if ( packed_rows <= 65535u )
 		{
 			if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
 				b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,b->route_fault,stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
-			LM_LAUNCH_DEPENDENT((K3RouteBuildFastKernel), 1u, 256u, 0, stream,
-				b->route_expert, packed_rows, b->group_row_offset, b->route_packed_row,
-				b->route_source_token, b->group_tile_prefix_w1);
-			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+			const SparkGpuError err = K3Skl2Launch(K3SKL2_k3_route_build_fast_256, 1u, 256u, 0u, stream,
+				b->route_expert, packed_rows, (uint32_t)K3_EXPERTS, (uint32_t)K3_TOP_K, b->group_row_offset,
+				b->route_packed_row, b->route_source_token, b->group_tile_prefix_w1);
+			return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 		}
 	}
 #endif
@@ -3224,19 +3211,14 @@ static int32_t K3LayerSharedUp(const K3LayerBuffers *b, uint32_t rows, uint16_t 
 		if ( (rows <= 12u && b->prefill_wave == 0u) || b->row_invariant != 0u )
 		{
 			LmWeightPrefetchNote(stream, b->shared_w1_weight, (uint64_t)w1_rows * K3_HIDDEN * sizeof(uint16_t));
-			if ( rows == 1u )
-				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<1u>), dim3(ch, 1u), 256u, 0u, stream,
-					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
-			else if ( rows <= 4u )
-				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<4u>), dim3(ch, 1u), 256u, 0u, stream,
-					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
-			else if ( rows <= 8u )
-				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<8u>), dim3(ch, 1u), 256u, 0u, stream,
-					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
-			else
-				LM_LAUNCH_DEPENDENT((K3SharedW1SituSkinnyKernel<12u>), dim3(ch, (rows + 11u) / 12u), 256u, 0u, stream,
-					(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows, ch);
-			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+			const uint32_t kid = rows == 1u ? K3SKL2_k3_shared_w1_situ_skinny_r1 :
+				(rows <= 4u ? K3SKL2_k3_shared_w1_situ_skinny_r4 :
+				(rows <= 8u ? K3SKL2_k3_shared_w1_situ_skinny_r8 : K3SKL2_k3_shared_w1_situ_skinny_r12));
+			const uint32_t gy = rows <= 8u ? 1u : (rows + 11u) / 12u;
+			const SparkGpuError err = K3Skl2Launch(kid, dim3(ch, gy), 256u, 0u, stream,
+				(const uint16_t *)b->shared_w1_weight, b->normed_bf16, intermediate, rows,
+				(uint32_t)K3_HIDDEN, ch, (float)K3_SITU_BETA, (float)K3_SITU_LINEAR_BETA);
+			return(err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 		}
 	}
 #endif
