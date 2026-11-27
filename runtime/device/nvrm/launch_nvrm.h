@@ -139,6 +139,19 @@ static SparkGpuError LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 g
 	(LmPackValue<Parameters>(packed,table.items,index,arguments), ...);
 	return(SparkNvrmLaunchCluster((const void *)kernel,shape,shape + 3,cluster,dependent,shared,stream,packed,table.items,(uint32_t)sizeof...(Parameters),table.bytes));
 }
+
+template<typename BundleTag, typename... Args>
+static inline SparkGpuError LmLaunchEmbedded(const uint8_t *cubin, uint64_t cubin_bytes, const char *manifest, uint64_t manifest_bytes,
+	const char *const *names, uint32_t count, uint32_t id, dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, Args... args)
+{
+	static const LmParameterTable<Args...> table = LmBuildParameterTable<Args...>();
+	alignas(16) uint8_t packed[LmParameterBytes<Args...>() + 1u];
+	const uint32_t shape[6] = { grid.x, grid.y, grid.z, block.x, block.y, block.z };
+	uint32_t index = 0u;
+	(LmPackValue<Args>(packed, table.items, index, args), ...);
+	return(SparkNvrmLaunchEmbedded(cubin, cubin, cubin_bytes, manifest, manifest_bytes, names, count, id, shape, shape + 3, 1u, shared, stream,
+		packed, table.items, (uint32_t)sizeof...(Args), table.bytes));
+}
 #endif
 
 static inline int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)

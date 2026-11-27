@@ -942,13 +942,23 @@ SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceE
 	return(SPARK_STATUS_OK);
 }
 
+static _Thread_local const SparkNvrmMemoryImage *nvrm_memory_image;
+
+void SparkNvrmMemoryLibrarySet(const SparkNvrmMemoryImage *image)
+{
+	nvrm_memory_image = image;
+}
+
 SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path)
 {
 	NvrmLibrary *nvrm = (NvrmLibrary *)calloc(1u,sizeof(*nvrm));
 	SparkStatus status;
 	if ( nvrm == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"library_load",library->owner,ENOMEM,"out of host memory"));
-	status = SparkNvrmProgramLoadFile(&nvrm_gpu,path,&nvrm->program,library->owner);
+	status = nvrm_memory_image != 0 ?
+		SparkNvrmProgramLoad(&nvrm_gpu,nvrm_memory_image->cubin,nvrm_memory_image->cubin_bytes,
+			nvrm_memory_image->manifest,nvrm_memory_image->manifest_bytes,&nvrm->program,library->owner) :
+		SparkNvrmProgramLoadFile(&nvrm_gpu,path,&nvrm->program,library->owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		free(nvrm);

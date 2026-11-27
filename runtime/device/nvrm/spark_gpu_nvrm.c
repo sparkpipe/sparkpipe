@@ -135,6 +135,60 @@ SparkGpuError SparkNvrmGpuDefaultStream(SparkGpuStream *stream)
 	return(SPARK_GPU_SUCCESS);
 }
 
+typedef struct GpuEmbeddedBundle
+{
+	const void *key;
+	SparkDeviceLibrary *library;
+	SparkDeviceKernel **kernels;
+	const char *const *names;
+	uint64_t *launches;
+	uint32_t count;
+	struct GpuEmbeddedBundle *next;
+} GpuEmbeddedBundle;
+
+static GpuEmbeddedBundle *gpu_embedded_bundles;
+static uint64_t gpu_embedded_generation = 1u;
+static uint32_t gpu_embedded_atexit;
+
+static void GpuEmbeddedStatsDump(void)
+{
+	GpuEmbeddedBundle *bundle;
+	if ( SparkNvrmOverlayStatsEnabled() == 0u )
+		return;
+	pthread_mutex_lock(&gpu_mutex);
+	for (bundle = gpu_embedded_bundles; bundle != 0; bundle = bundle->next)
+		for (uint32_t i = 0u; i < bundle->count; i++)
+		{
+			const uint64_t n = __atomic_load_n(&bundle->launches[i],__ATOMIC_ACQUIRE);
+			if ( n != 0u )
+				fprintf(stderr,"nvrm: skl2-native stats: kernel=%s launches=%llu\n",bundle->names[i],(unsigned long long)n);
+		}
+	fflush(stderr);
+	pthread_mutex_unlock(&gpu_mutex);
+}
+
+static SparkStatus GpuEmbeddedRelease(void)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	GpuEmbeddedBundle *bundle;
+	pthread_mutex_lock(&gpu_mutex);
+	while ( (bundle = gpu_embedded_bundles) != 0 )
+	{
+		gpu_embedded_bundles = bundle->next;
+		for (uint32_t i = 0u; i < bundle->count; i++)
+			if ( bundle->kernels[i] != 0 && SparkDeviceKernelDestroy(bundle->kernels[i]) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+				status = SparkDeviceLastError()->status;
+		if ( bundle->library != 0 && SparkDeviceLibraryUnload(bundle->library) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+			status = SparkDeviceLastError()->status;
+		free(bundle->kernels);
+		free(bundle->launches);
+		free(bundle);
+	}
+	(void)__atomic_add_fetch(&gpu_embedded_generation,1u,__ATOMIC_RELEASE);
+	pthread_mutex_unlock(&gpu_mutex);
+	return(status);
+}
+
 SparkGpuError SparkNvrmGpuRelease(void)
 {
 	SparkStatus status = SPARK_STATUS_OK;
@@ -142,6 +196,8 @@ SparkGpuError SparkNvrmGpuRelease(void)
 	if ( gpu_default_queue != 0 && (status = SparkDeviceQueueDestroy(gpu_default_queue)) == SPARK_STATUS_OK )
 		gpu_default_queue = 0;
 	pthread_mutex_unlock(&gpu_mutex);
+	if ( status == SPARK_STATUS_OK )
+		status = GpuEmbeddedRelease();
 	if ( status == SPARK_STATUS_OK )
 		status = SparkNvrmRegisteredRelease();
 	pthread_mutex_lock(&gpu_staging_mutex);
@@ -284,6 +340,116 @@ SparkGpuError SparkNvrmLaunchCluster(const void *function, const uint32_t grid[3
 	if ( cluster == 0u )
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a cluster launch names a cluster of at least one block");
 	return(GpuLaunch(function,grid,block,cluster,dependent != 0u ? 1u : 0u,shared_bytes,stream,parameters,layout,count,bytes));
+}
+
+typedef struct GpuEmbeddedCache
+{
+	const void *key;
+	GpuEmbeddedBundle *bundle;
+	uint64_t generation;
+} GpuEmbeddedCache;
+
+static _Thread_local GpuEmbeddedCache gpu_embedded_cache;
+
+static SparkStatus GpuEmbeddedLoad(const void *key, const uint8_t *cubin, uint64_t cubin_bytes, const char *manifest, uint64_t manifest_bytes,
+	const char *const *names, uint32_t count, GpuEmbeddedBundle **out)
+{
+	GpuEmbeddedBundle *bundle;
+	SparkNvrmMemoryImage img = { cubin, cubin_bytes, manifest, manifest_bytes };
+	SparkStatus status = GpuReady();
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	pthread_mutex_lock(&gpu_mutex);
+	for (bundle = gpu_embedded_bundles; bundle != 0; bundle = bundle->next)
+		if ( bundle->key == key )
+		{
+			*out = bundle;
+			pthread_mutex_unlock(&gpu_mutex);
+			return(SPARK_STATUS_OK);
+		}
+	bundle = (GpuEmbeddedBundle *)calloc(1u,sizeof(*bundle));
+	if ( bundle == 0 || (bundle->kernels = (SparkDeviceKernel **)calloc(count,sizeof(*bundle->kernels))) == 0 ||
+		(bundle->launches = (uint64_t *)calloc(count,sizeof(*bundle->launches))) == 0 )
+	{
+		if ( bundle != 0 ) { free(bundle->kernels); free(bundle->launches); free(bundle); }
+		pthread_mutex_unlock(&gpu_mutex);
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"library_load",GPU_OWNER,0,"out of host memory for embedded skl2 bundle"));
+	}
+	bundle->key = key;
+	bundle->names = names;
+	bundle->count = count;
+	SparkNvrmMemoryLibrarySet(&img);
+	status = SparkDeviceLibraryLoad(&bundle->library,"memory:skl2","skl2 embedded");
+	SparkNvrmMemoryLibrarySet(0);
+	for (uint32_t i = 0u; status == SPARK_STATUS_OK && i < count; i++)
+		status = SparkDeviceKernelCreate(&bundle->kernels[i],bundle->library,names[i]);
+	if ( status != SPARK_STATUS_OK )
+	{
+		for (uint32_t i = 0u; i < count; i++)
+			if ( bundle->kernels[i] != 0 )
+				(void)SparkDeviceKernelDestroy(bundle->kernels[i]);
+		if ( bundle->library != 0 )
+			(void)SparkDeviceLibraryUnload(bundle->library);
+		free(bundle->kernels);
+		free(bundle->launches);
+		free(bundle);
+		pthread_mutex_unlock(&gpu_mutex);
+		return(status);
+	}
+	if ( gpu_embedded_atexit == 0u )
+	{
+		(void)atexit(GpuEmbeddedStatsDump);
+		gpu_embedded_atexit = 1u;
+	}
+	bundle->next = gpu_embedded_bundles;
+	gpu_embedded_bundles = bundle;
+	*out = bundle;
+	pthread_mutex_unlock(&gpu_mutex);
+	return(SPARK_STATUS_OK);
+}
+
+SparkGpuError SparkNvrmLaunchEmbedded(const void *bundle_key, const uint8_t *cubin, uint64_t cubin_bytes, const char *manifest,
+	uint64_t manifest_bytes, const char *const *names, uint32_t kernel_count, uint32_t kernel_index, const uint32_t grid[3],
+	const uint32_t block[3], uint32_t dependent, size_t shared_bytes, SparkGpuStream stream, const void *parameters,
+	const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
+{
+	const uint64_t generation = __atomic_load_n(&gpu_embedded_generation,__ATOMIC_ACQUIRE);
+	GpuEmbeddedBundle *bundle = 0;
+	SparkDeviceLaunch launch;
+	SparkGpuError error;
+	if ( bundle_key == 0 || cubin == 0 || manifest == 0 || names == 0 || kernel_index >= kernel_count || grid == 0 || block == 0 ||
+		(count != 0u && (layout == 0 || parameters == 0)) || shared_bytes > UINT32_MAX )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"an embedded skl2 launch needs a valid bundle, kernel index, grid, block and parameters");
+	if ( gpu_embedded_cache.generation == generation && gpu_embedded_cache.key == bundle_key && gpu_embedded_cache.bundle != 0 &&
+		SparkDeviceGetProperties() != 0 )
+		bundle = gpu_embedded_cache.bundle;
+	else
+	{
+		GPU_TRY(GpuEmbeddedLoad(bundle_key,cubin,cubin_bytes,manifest,manifest_bytes,names,kernel_count,&bundle));
+		gpu_embedded_cache.key = bundle_key;
+		gpu_embedded_cache.bundle = bundle;
+		gpu_embedded_cache.generation = __atomic_load_n(&gpu_embedded_generation,__ATOMIC_ACQUIRE);
+	}
+	if ( (error = GpuLayoutAgrees(bundle->kernels[kernel_index],layout,count,bytes,names[kernel_index])) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(error);
+	if ( stream == 0 && (error = SparkNvrmGpuDefaultStream(&stream)) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(error);
+	memset(&launch,0,sizeof(launch));
+	launch.groups.x = grid[0];
+	launch.groups.y = grid[1];
+	launch.groups.z = grid[2];
+	launch.threads.x = block[0];
+	launch.threads.y = block[1];
+	launch.threads.z = block[2];
+	launch.shared_bytes = (uint32_t)shared_bytes;
+	launch.constants = bytes != 0u ? parameters : 0;
+	launch.constant_bytes = bytes;
+	launch.dependent = dependent != 0u ? 1u : 0u;
+	if ( SparkDeviceKernelLaunch(stream,bundle->kernels[kernel_index],&launch) != SPARK_STATUS_OK )
+		GPU_FAIL(SparkDeviceLastError()->status);
+	if ( SparkNvrmOverlayStatsEnabled() != 0u )
+		(void)__atomic_add_fetch(&bundle->launches[kernel_index],1u,__ATOMIC_RELAXED);
+	return(SPARK_GPU_SUCCESS);
 }
 
 SparkGpuError SparkNvrmSharedMemoryOptIn(const void *function, uint32_t shared_bytes)

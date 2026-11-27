@@ -11,7 +11,7 @@ if SKLC_DIR not in sys.path: sys.path.append(SKLC_DIR)
 
 from cubin_elf import build_manifest
 from skl2_frontend import Skl2CompileError, load_unit
-from skl2_lower import build_lockfile, compile_unit, emit_c_header, resolve_models, verify_lockfile
+from skl2_lower import build_lockfile, compile_unit, emit_c_header, emit_embedded_c_header, resolve_models, verify_lockfile
 
 
 def main(argv=None):
@@ -22,14 +22,15 @@ def main(argv=None):
     ap.add_argument("inputs", nargs="+")
     for flg, kw in (
         (("-o", "--output"), {"default": None}), (("--manifest",), {"default": None}),
-        (("--arch",), {"default": "sm121", "choices": ["sm121", "sm121a", "sm120", "sm120a"]}),
+        (("--arch",), {"default": "sm121", "choices": ["sm121", "sm121a", "sm_121", "sm_121a", "sm120", "sm120a", "sm_120", "sm_120a"]}),
         (("--only",), {"action": "append", "default": []}), (("--rename",), {"action": "append", "default": []}),
         (("--model",), {"action": "append", "default": []}), (("--emit-model-manifest",), {"default": None}),
-        (("--emit-c-header",), {"default": None}),
+        (("--emit-c-header",), {"default": None}), (("--emit-embedded-h",), {"default": None}), (("--prefix",), {"default": "Skl2Embedded"}),
         (("--verify-lock",), {"default": None}), (("--check",), {"action": "store_true"}), (("--stats",), {"action": "store_true"}),
     ):
         ap.add_argument(*flg, **kw)
     args = ap.parse_args(raw)
+    args.arch = args.arch.replace("sm_", "sm")
 
     renames = {}
     for spec in args.rename:
@@ -61,11 +62,14 @@ def main(argv=None):
         with open(args.output, "wb") as f: f.write(cubin)
     if args.emit_c_header:
         with open(args.emit_c_header, "w", encoding="utf-8") as f: f.write(emit_c_header(images, model_plan=model_plan, arch=args.arch, unit=unit))
-    if args.manifest:
+    if args.manifest or args.emit_embedded_h:
         combined = [open(fp, "rb").read() for fp in unit["files"]]
         src_label = args.inputs[0] if len(args.inputs) == 1 else ",".join(args.inputs)
-        with open(args.manifest, "w", encoding="utf-8") as f:
-            f.write(build_manifest(images, cubin, src_label, b"\n".join(combined), arch=args.arch))
+        manifest_txt = build_manifest(images, cubin, src_label, b"\n".join(combined), arch=args.arch)
+        if args.manifest:
+            with open(args.manifest, "w", encoding="utf-8") as f: f.write(manifest_txt)
+        if args.emit_embedded_h:
+            with open(args.emit_embedded_h, "w", encoding="utf-8") as f: f.write(emit_embedded_c_header(images, cubin, manifest_txt, prefix=args.prefix))
     if args.stats or args.check:
         print(f"skl2c: {len(images)} kernels compiled for {args.arch} ({len(cubin)}B, sha256={hashlib.sha256(cubin).hexdigest()[:12]})")
         for k in images:

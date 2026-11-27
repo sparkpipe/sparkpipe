@@ -165,6 +165,10 @@ SparkGpuError SparkNvrmLaunchDependent(const void *function, const uint32_t grid
 	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes);
 SparkGpuError SparkNvrmLaunchCluster(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, uint32_t dependent,
 	size_t shared_bytes, SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes);
+SparkGpuError SparkNvrmLaunchEmbedded(const void *bundle_key, const uint8_t *cubin, uint64_t cubin_bytes, const char *manifest,
+	uint64_t manifest_bytes, const char *const *names, uint32_t kernel_count, uint32_t kernel_index, const uint32_t grid[3],
+	const uint32_t block[3], uint32_t dependent, size_t shared_bytes, SparkGpuStream stream, const void *parameters,
+	const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes);
 SparkGpuError SparkNvrmSharedMemoryOptIn(const void *function, uint32_t shared_bytes);
 SparkStatus SparkNvrmVideoMemoryInfo(uint64_t *free_bytes, uint64_t *total_bytes);
 

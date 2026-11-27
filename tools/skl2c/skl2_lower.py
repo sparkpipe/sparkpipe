@@ -431,3 +431,21 @@ def emit_c_header(images, model_plan=None, arch="sm121", unit=None):
         *launch_fns, "#ifdef __cplusplus", "}", "#endif", "#endif",
     ])
     return "\n".join(lines) + "\n"
+
+
+def emit_embedded_c_header(images, cubin, manifest, prefix="Skl2Embedded"):
+    up = _cid(prefix).upper()
+    mb = manifest.encode("utf-8") + b"\x00"
+    def fmt_bytes(data):
+        return ["\t" + ",".join(f"0x{b:02x}" for b in data[i:i + 24]) + "," for i in range(0, len(data), 24)]
+    cids = [_cid(k.name) for k in images]
+    u = "__attribute__((unused)) "
+    lines = [
+        f"#ifndef {up}_EMBEDDED_H", f"#define {up}_EMBEDDED_H", "#include <stdint.h>",
+        f"enum {prefix}Id {{ " + ", ".join(f"{up}_{c} = {i}" for i, c in enumerate(cids)) + f", {up}_COUNT = {len(cids)} }};",
+        f"static const char *const {u}k{prefix}Names[{max(1, len(cids))}] = {{ " + ", ".join(f'"{k.name}"' for k in images) + " };",
+        f"static const uint8_t {u}k{prefix}Cubin[{len(cubin)}] = {{", *fmt_bytes(cubin), "};",
+        f"static const uint8_t {u}k{prefix}Manifest[{len(mb)}] = {{", *fmt_bytes(mb), "};",
+        "#endif",
+    ]
+    return "\n".join(lines) + "\n"
