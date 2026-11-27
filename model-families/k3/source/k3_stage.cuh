@@ -707,8 +707,13 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		completion_context->boundary = boundary;
 		completion_context->phase = base;
 		completion_context->gate_up_elements = 0u;
+		const uint32_t arm_add = stage == K3_RUNNER_STAGE_ALL && !(base == 0u && boundary != 0u) &&
+			b->pending_partial_add == 0 && LmIsAligned16(b->attnres_partial_bf16) ? 1u : 0u;
+		if ( arm_add != 0u )
+			SparkTpMeshArEpilogueArmAdd(stream, (uint64_t)rows * K3_HIDDEN, b->attnres_partial_bf16);
 		(void)state->services->round(state->services->context, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
 			stage, rows, 0u, send_buf, recv_buf);
+		const uint32_t ep_fused = SparkTpMeshArEpilogueConsumed();
 		if ( stage == K3_RUNNER_STAGE_BEGIN )
 		{
 			if ( state->pending_tp != 0 )
@@ -719,7 +724,10 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			state->pending_tp = completion_context;
 			return;
 		}
-		K3RunnerTpApply(completion_context);
+		if ( ep_fused != 0u )
+			K3RunnerTpContextRelease(completion_context);
+		else
+			K3RunnerTpApply(completion_context);
 	}
 }
 
