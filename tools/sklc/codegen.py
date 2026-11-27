@@ -363,43 +363,36 @@ class KernelCompiler:
         else:
             raise ValueError(f"unsupported stmt: {kind}")
 
+    def _begin_bssy(self):
+        lbl, bar = self.new_label("RECONV"), self.bssy_depth
+        self.bssy_depth += 1
+        self.emit(Op(lambda delta, wr, rd, wait, stall, b=bar: isa.encode_bssy(delta, bar=b, stall=stall, wait=wait), is_branch=True, target_label=lbl))
+        return bar, lbl
+
+    def _end_bssy(self, lbl_end, bar, lbl_reconv):
+        self.emit_label(lbl_end)
+        self.emit(Op(lambda wr, rd, wait, stall, b=bar: isa.encode_bsync(bar=b, stall=stall, wait=wait), is_bar=True))
+        self.emit_label(lbl_reconv); self.bssy_depth -= 1
+
     def compile_runtime_if(self, cond, then_body, else_body):
         if len(then_body) == 1 and then_body[0][0] == "return" and not else_body:
-            self.push_temps()
-            pred = self.eval_cond(cond, pred=0)
+            self.push_temps(); pred = self.eval_cond(cond, pred=0)
             self.emit(Op(lambda wr, rd, wait, stall, p=pred: isa.encode_exit(pred=p, neg=False, stall=stall, wait=wait), preads=(pred,), is_exit=True))
-            self.pop_temps()
-            return
+            self.pop_temps(); return
         if not else_body and len(then_body) <= 8 and all(st[0] == "expr" and st[1][0] == "call" and st[1][1] in STORE_CALLS for st in then_body):
-            self.push_temps()
-            pred = self.eval_cond(cond, pred=0)
-            self.pop_temps()
+            self.push_temps(); pred = self.eval_cond(cond, pred=0); self.pop_temps()
             for st in then_body:
-                self.push_temps()
-                self.emit_store(st[1][1], st[1][2], pred=pred)
-                self.pop_temps()
+                self.push_temps(); self.emit_store(st[1][1], st[1][2], pred=pred); self.pop_temps()
             return
-        lbl_else, lbl_end, lbl_reconv = self.new_label("ELSE"), self.new_label("ENDIF"), self.new_label("RECONV")
-        conv_bar = self.bssy_depth
-        self.bssy_depth += 1
-        self.push_temps()
-        self.emit(Op(lambda delta, wr, rd, wait, stall, b=conv_bar: isa.encode_bssy(delta, bar=b, stall=stall, wait=wait), is_branch=True, target_label=lbl_reconv))
-        pred = self.eval_cond(cond, pred=0)
+        lbl_else, lbl_end = self.new_label("ELSE"), self.new_label("ENDIF")
+        conv_bar, lbl_reconv = self._begin_bssy()
+        self.push_temps(); pred = self.eval_cond(cond, pred=0)
         self.emit(Op(lambda delta, wr, rd, wait, stall, p=pred: isa.encode_bra(delta, pred=p, neg=True, stall=stall, wait=wait), preads=(pred,), is_branch=True, target_label=lbl_else if else_body else lbl_end))
-        self.pop_temps()
-        self.push_scope()
-        self.compile_stmts(then_body)
-        self.pop_scope()
+        self.pop_temps(); self.push_scope(); self.compile_stmts(then_body); self.pop_scope()
         if else_body:
             self.emit(Op(lambda delta, wr, rd, wait, stall: isa.encode_bra(delta, stall=stall, wait=wait), is_branch=True, target_label=lbl_end))
-            self.emit_label(lbl_else)
-            self.push_scope()
-            self.compile_stmts(else_body)
-            self.pop_scope()
-        self.emit_label(lbl_end)
-        self.emit(Op(lambda wr, rd, wait, stall, b=conv_bar: isa.encode_bsync(bar=b, stall=stall, wait=wait), is_bar=True))
-        self.emit_label(lbl_reconv)
-        self.bssy_depth -= 1
+            self.emit_label(lbl_else); self.push_scope(); self.compile_stmts(else_body); self.pop_scope()
+        self._end_bssy(lbl_end, conv_bar, lbl_reconv)
 
     def _split_smem_idx(self, idx_e, elem_bytes):
         c = try_eval_const(idx_e, self.consts)
@@ -480,6 +473,7 @@ class KernelCompiler:
         self.eval_into(init_e, ivar)
         self.pop_temps(keep=ivar)
         lbl_head, lbl_end = self.new_label("LOOP"), self.new_label("ENDLOOP")
+        conv_bar, lbl_reconv = self._begin_bssy()
         self.push_temps()
         pred = self.eval_cond(cond_e, pred=0)
         self.emit(Op(lambda delta, wr, rd, wait, stall, p=pred: isa.encode_bra(delta, pred=p, neg=True, stall=stall, wait=wait), preads=(pred,), is_branch=True, target_label=lbl_end))
@@ -493,7 +487,7 @@ class KernelCompiler:
         pred2 = self.eval_cond(cond_e, pred=0)
         self.emit(Op(lambda delta, wr, rd, wait, stall, p=pred2: isa.encode_bra(delta, pred=p, neg=False, stall=stall, wait=wait), preads=(pred2,), is_branch=True, target_label=lbl_head))
         self.pop_temps()
-        self.emit_label(lbl_end)
+        self._end_bssy(lbl_end, conv_bar, lbl_reconv)
         self.pop_scope()
 
     def compile_pipelined_for(self, vtype, var, init_e, cond_e, step_st, body):
@@ -514,6 +508,7 @@ class KernelCompiler:
             bank0[lname] = self.alloc_val(ltype, temp=False)
             bank1[lname] = self.alloc_val(ltype, temp=False)
         lbl_loop, lbl_epi0, lbl_epi1, lbl_end = self.new_label("PLOOP"), self.new_label("PEPI0"), self.new_label("PEPI1"), self.new_label("PEND")
+        conv_bar, lbl_reconv = self._begin_bssy()
         self.push_temps()
         p_init = self.eval_cond(("bin", "<", ("ident", var), limit_expr), pred=0)
         self.emit(Op(lambda delta, wr, rd, wait, stall, p=p_init: isa.encode_bra(delta, pred=p, neg=True, stall=stall, wait=wait), preads=(p_init,), is_branch=True, target_label=lbl_end))
@@ -571,7 +566,7 @@ class KernelCompiler:
         self.emit(Op(lambda delta, wr, rd, wait, stall: isa.encode_bra(delta, stall=stall, wait=wait), is_branch=True, target_label=lbl_end))
         self.emit_label(lbl_epi1)
         emit_bank_compute(bank1, bar_id=5)
-        self.emit_label(lbl_end)
+        self._end_bssy(lbl_end, conv_bar, lbl_reconv)
         for v in (*bank0.values(), *bank1.values(), inext): self.alloc.free(v.regs)
         self.pop_scope()
 

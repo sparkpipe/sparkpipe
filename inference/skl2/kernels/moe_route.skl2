@@ -104,7 +104,7 @@ macro moe_topk_warp_select(s_probs, experts, top_k, lane, fault, out_chosen, out
     div_nr1_f32(val, total, inv_t, out_weight);
 }
 
-macro moe_route_small_rank(s_exp, tile_inc, routes, top_k, tile_m, tid, route_packed_row, route_source_token) {
+macro moe_route_small_rank(s_exp, tile_inc, s_pr, routes, top_k, tile_m, tid, route_packed_row, route_source_token) {
     if (tid < routes) {
         reg u32 mine = lds32(s_exp, tid);
         reg u32 packed = 0; reg u32 first = 1; reg u32 eq_cnt = 0;
@@ -117,6 +117,7 @@ macro moe_route_small_rank(s_exp, tile_inc, routes, top_k, tile_m, tid, route_pa
                 if (j < tid) { packed = packed + 1; first = 0; }
             }
         }
+        sts32(s_pr, tid, packed);
         stg32(ptr_add(route_packed_row, tid, 4), packed);
         reg u32 src_tok = 0; reg u32 sr = 0;
         u32_divmod(tid, top_k, src_tok, sr);
@@ -164,6 +165,7 @@ kernel[MOE_BLK256, 96] moe_route_small_256(
     shared u32 s_exp[32];
     shared f32 s_wt[32];
     shared u32 tile_inc[32];
+    shared u32 s_pr[32];
     acqbulk();
     reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
     reg u32 routes = rows * top_k;
@@ -192,12 +194,12 @@ kernel[MOE_BLK256, 96] moe_route_small_256(
         stg32(ptr_add(route_weight, tid, 4), f32_as_u32(out_w));
     }
     barrier();
-    moe_route_small_rank(s_exp, tile_inc, routes, top_k, tile_m, tid, route_packed_row, route_source_token);
+    moe_route_small_rank(s_exp, tile_inc, s_pr, routes, top_k, tile_m, tid, route_packed_row, route_source_token);
     barrier();
     moe_route_small_offsets(s_exp, tile_inc, routes, local_experts + 1, n_up, n_down, tid, group_row_offset, tile_prefix_up, tile_prefix_down);
     barrier();
     if (tid < routes) {
-        reg u32 pr = ldg32_persist(ptr_add(route_packed_row, tid, 4));
+        reg u32 pr = lds32(s_pr, tid);
         stg32(ptr_add(packed_weight, pr, 4), f32_as_u32(lds32(s_wt, tid)));
         stg32(ptr_add(packed_expert, pr, 4), lds32(s_exp, tid));
     }
