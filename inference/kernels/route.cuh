@@ -197,7 +197,7 @@ static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_e
 			{
 				const uint32_t i = p + lane;
 				const bool active = i < w_end;
-				const uint32_t e = active ? __ldg(route_expert + i) : EXPERTS;
+				const uint32_t e = active ? route_expert[i] : EXPERTS;
 				const uint32_t amask = __ballot_sync(0xffffffffu, active);
 				if ( active && e < EXPERTS )
 				{
@@ -234,7 +234,7 @@ static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_e
 			{
 				const uint32_t i = p + lane;
 				const bool active = i < w_end;
-				const uint32_t e = active ? __ldg(route_expert + i) : EXPERTS;
+				const uint32_t e = active ? route_expert[i] : EXPERTS;
 				const uint32_t amask = __ballot_sync(0xffffffffu, active);
 				if ( active && e < EXPERTS )
 				{
