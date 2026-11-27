@@ -2422,7 +2422,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 					w1_bf16, w3_bf16, normed, state->packed_weight, state->group_row_offset, state->route_source_token,
 					state->expert_act, G::kLocalExperts, G::kHidden, G::kMoeInter) != SPARK_GPU_SUCCESS ||
 					QwenSkl2Launch(dn_id, dn_blk, thr, 0, stream,
-					w2_bf16, state->expert_act, state->expert_out, state->group_row_offset, G::kLocalExperts, G::kMoeInter, G::kHidden) != SPARK_GPU_SUCCESS )
+					w2_bf16, state->expert_act, state->group_row_offset, state->expert_out, G::kLocalExperts, G::kMoeInter, G::kHidden) != SPARK_GPU_SUCCESS )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
