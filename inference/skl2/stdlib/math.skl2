@@ -2,12 +2,14 @@
 macro u32_divmod(num, den, out_q, out_r) {
     reg u32 qv = 0;
     reg u32 rv = 0;
+    reg u32 nv = num;
     for (reg u32 bit = 0; bit < 32; bit += 1) {
-        reg u32 sh = 31 - bit;
-        rv = (rv << 1) | ((num >> sh) & 1);
+        rv = (rv << 1) | (nv >> 31);
+        nv = nv << 1;
+        qv = qv << 1;
         if (rv >= den) {
             rv = rv - den;
-            qv = qv | (1 << sh);
+            qv = qv | 1;
         }
     }
     out_q = qv;

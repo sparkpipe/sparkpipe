@@ -804,7 +804,7 @@ class KernelCompiler:
         if name == "hmma16816_bf16":
             a, b, c = self.eval_expr(args[0]), self.eval_expr(args[1]), self.eval_expr(args[2])
             d = self.dst_for("f32x4", hint_dst)
-            self.emit(Op(lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, stall=stall, wait=wait), reads=a.regs + b.regs + c.regs, writes=d.regs, fixed_lat=14, pipe="mma"))
+            self.emit(Op(lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, stall=stall, wait=wait), reads=a.regs + b.regs + c.regs, writes=d.regs, fixed_lat=22, pipe="mma"))
             return d
         if name == "barrier":
             self.barriers = max(self.barriers, 1)
@@ -1184,13 +1184,14 @@ class KernelCompiler:
                 bar_count[op.rd] += 1
             real_ops.append(op)
 
-        ready_r, war_ready_r, ready_p, bar_issue_cycle, cur_cycle, last_real = {}, {}, {}, {}, 0, None
+        ready_r, war_ready_r, ready_p, bar_issue_cycle, cur_cycle, last_real, sched_ops = {}, {}, {}, {}, 0, None, []
         for op in real_ops:
             if op.label is not None:
                 if last_real is not None and last_real.stall < 6: last_real.stall = 6
                 ready_r.clear(); war_ready_r.clear(); ready_p.clear()
                 cur_cycle += 6
                 last_real = None
+                sched_ops.append(op)
                 continue
             need = cur_cycle
             for r in op.reads:
@@ -1211,25 +1212,28 @@ class KernelCompiler:
             gap = need - cur_cycle
             if gap > 0 and last_real is not None:
                 add = min(gap, 15 - last_real.stall)
-                last_real.stall += add
-                cur_cycle += add
+                last_real.stall += add; cur_cycle += add; gap -= add
+            while gap > 0:
+                nop = Op(lambda wr, rd, wait, stall: isa.encode_nop(stall=stall, wait=wait))
+                nop.stall = min(gap, 15); sched_ops.append(nop); cur_cycle += nop.stall; gap -= nop.stall
             op.stall = 5 if (op.is_exit or op.is_branch or op.is_bar) else 1
             for r in op.writes: ready_r[r] = (cur_cycle, op.pipe, op.fixed_lat)
             for r in op.mem_addr_reads: war_ready_r[r] = max(war_ready_r.get(r, 0), cur_cycle + 6)
-            if op.var_lat:
+            if op.var_lat or op.pipe == "mma":
                 for r in op.reads: war_ready_r[r] = max(war_ready_r.get(r, 0), cur_cycle + 6)
             for p in op.pwrites: ready_p[p] = cur_cycle + 5
             if op.var_lat: bar_issue_cycle[op.wr] = cur_cycle
             if op.mem_addr_reads: bar_issue_cycle[op.rd] = cur_cycle
             cur_cycle += op.stall
+            sched_ops.append(op)
             last_real = op
 
         label_pc, pc = {}, 0
-        for op in real_ops:
+        for op in sched_ops:
             if op.label is not None: label_pc[op.label] = pc
             else: pc += 16
         insns, pc = [], 0
-        for op in real_ops:
+        for op in sched_ops:
             if op.label is not None: continue
             insns.append(op.encoder(label_pc[op.target_label] - (pc + 16), op.wr, op.rd, op.wait, op.stall) if op.is_branch else op.encoder(op.wr, op.rd, op.wait, op.stall))
             pc += 16

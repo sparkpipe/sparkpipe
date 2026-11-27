@@ -379,8 +379,7 @@ template kernel[THREADS, REGS] qwen_bf16_mma_tpl<TILE_M, TILE_N, THREADS, WARPS_
     shared u32 sm_a[DYN_SMEM == 1 ? 4 : TILE_M * 8];
     shared u32 sm_b[DYN_SMEM == 1 ? 4 : (1 + FUSED) * TILE_N * 8];
     acqbulk();
-    reg u32 m_shift = (TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : ((TILE_M == 64) ? 6 : 7));
-    reg u32 m_blocks = (rows + TILE_M - 1) >> m_shift;
+    reg u32 m_blocks = (rows + TILE_M - 1) >> ((TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : ((TILE_M == 64) ? 6 : 7)));
     reg u32 n_block = 0; reg u32 m_block = 0;
     u32_divmod(ctaid_x(), m_blocks, n_block, m_block);
     reg u32 row0 = m_block * TILE_M;
@@ -441,8 +440,7 @@ template kernel[128, REGS] qwen_bf16_smalln_mma_tpl<TILE_M, REGS>(
     shared u32 sm_ab[4 * (TILE_M + 16) * 8];
     shared f32 sm_red[4 * TILE_M * 16];
     acqbulk();
-    reg u32 m_shift = (TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : ((TILE_M == 64) ? 6 : 7));
-    reg u32 m_blocks = (rows + TILE_M - 1) >> m_shift;
+    reg u32 m_blocks = (rows + TILE_M - 1) >> ((TILE_M == 16) ? 4 : ((TILE_M == 32) ? 5 : ((TILE_M == 64) ? 6 : 7)));
     reg u32 n_block = 0; reg u32 m_block = 0;
     u32_divmod(ctaid_x(), m_blocks, n_block, m_block);
     reg u32 row0 = m_block * TILE_M;
