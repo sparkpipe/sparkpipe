@@ -379,9 +379,10 @@ macro gqa_decode_tile_step(s_k, s_v, st_off, cnt, lane, qk_scale, qf, acc, rmax,
         reg f32 rescale = exp2_ftz((prev - rmax) * 1.4426950408889634f);
         reg f32 w = exp2_ftz((score - rmax) * 1.4426950408889634f);
         rsum = fma(rsum, rescale, w);
+        reg f32 vw = bf16_lo(f32_to_bf16(w));
         unroll (i = 0..4) {
-            acc[i * 2] = fma(acc[i * 2], rescale, w * bf16_lo(vv[i]));
-            acc[i * 2 + 1] = fma(acc[i * 2 + 1], rescale, w * bf16_hi(vv[i]));
+            acc[i * 2] = fma(acc[i * 2], rescale, vw * bf16_lo(vv[i]));
+            acc[i * 2 + 1] = fma(acc[i * 2 + 1], rescale, vw * bf16_hi(vv[i]));
         }
     }
 }

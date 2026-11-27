@@ -960,6 +960,7 @@ kernel[BLOCK_CONV, 120] qwen_gdn_scalar_chunk_128_128_128_pdl(
                 reg u32 out_row = dyn_lds32(12352 + t);
                 stg16(ptr_add(ptr_add(output_bf16, out_row * heads + head, 256), v, 2), f32_to_bf16(dyn_lds32_f32(12416 + v) + dyn_lds32_f32(12544 + v)));
             }
+            barrier();
         }
     }
     if (commit != 0) {
