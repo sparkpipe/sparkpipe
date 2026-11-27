@@ -246,11 +246,10 @@ def test_differential_models_and_dedup():
 
 
 def test_full_cubin_emission_and_cli():
+    assert not list((ROOT / "inference" / "kernels" / "skl").glob("*.skl")), "legacy .skl v1 files must be retired"
     inputs = [
         str(SKL2_DIR / "stdlib" / "allreduce.skl2"),
-        str(SKL2_DIR / "kernels" / "linear.skl2"),
-        str(SKL2_DIR / "kernels" / "mma_gemm.skl2"),
-        str(SKL2_DIR / "kernels" / "norm_rope.skl2"),
+        *(str(p) for p in sorted((SKL2_DIR / "kernels").glob("*.skl2"))),
     ]
     for arch, expected_sm in (("sm121", 121), ("sm120", 120)):
         with tempfile.TemporaryDirectory() as tmp:
@@ -274,6 +273,14 @@ def test_full_cubin_emission_and_cli():
                 "mma_bf16_gemm_bf16", "mma_bf16_gemm_f32",
                 "rmsnorm_bf16_vec16", "fused_residual_rmsnorm_bf16x8", "rmsnorm_rope_bf16", "rmsnorm_rope_fp8_bf16",
                 "allreduce_wqe_stg128", "allreduce_combine_rmsnorm_bf16",
+                "latent_attn_decode_512_64", "gqa_split_reduce_sigmoid_gate_pdl_exact_bf16",
+                "delta_rule_decode1_256_128_128_4_pdl", "gdn_conv_split_tiled_4_128_pdl",
+                "causal_conv_serial_256_4_swish_bf16_pdl", "causal_conv_tiled_4_swish_bf16_pdl",
+                "router_softmax_256", "router_softmax_bf16_256", "mx_quantize_e4m3_ue8m0",
+                "head_certified_reduce_f32", "head_certified_rescore_batched_f32_bf16",
+                "head_certified_fp8_score_1024", "head_candidate_256_1024_pdl_bf16", "head_softmax_pdl_f32",
+                "stage_embedding_lookup_pdl_bf16x8", "stage_row_dot_pdl_bf16x8",
+                "tp_f32_to_bf16_vec16", "device_program_copy_exact", "device_program_fill_exact",
             ):
                 assert f"kernel {required} " in mtxt, f"missing {required} in {arch} manifest"
             assert "spill_stores 0 spill_loads 0" in mtxt
@@ -294,7 +301,7 @@ def main():
     test_stdlib_policy_versioning_and_lockfile()
     test_differential_models_and_dedup()
     test_full_cubin_emission_and_cli()
-    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, differential models, and 53 sm_121a/sm_120a kernels")
+    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, differential models, and 91 sm_121a/sm_120a kernels (0 legacy .skl files)")
     return 0
 
 

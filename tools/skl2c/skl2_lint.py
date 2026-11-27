@@ -1,147 +1,96 @@
 import hashlib
 from skl2_frontend import Skl2CompileError
 
-MAX_CCN = 16
-MAX_NESTING = 4
-MAX_KERNEL_STMTS = 80
-DUP_WINDOW = 10
-
+MAX_CCN, MAX_NESTING, MAX_KERNEL_STMTS, DUP_WINDOW = 16, 4, 80, 10
 STORE_CALLS = {
     "stg256", "stg128", "stg128_stream", "stg128_sys",
     "stg64", "stg32", "stg32_stream", "stg32_sys", "stg16", "stg8",
 }
-PDL_WAIT_CALLS = {"pdl_wait", "acqbulk"}
-PDL_RELEASE_CALLS = {"pdl_release", "preexit"}
+PDL_WAIT_CALLS, PDL_RELEASE_CALLS = {"pdl_wait", "acqbulk"}, {"pdl_release", "preexit"}
+
+
+def _sub_blocks(st):
+    k = st[0]
+    if k in ("if", "if_constexpr"): return (st[2], st[3])
+    if k == "unroll": return (st[4],)
+    if k in ("for", "pipeline_for"): return (st[7],)
+    return ()
 
 
 def _count_stmts(stmts):
-    total = 0
-    for st in stmts:
-        total += 1
-        k = st[0]
-        if k in ("if", "if_constexpr"):
-            total += _count_stmts(st[2]) + _count_stmts(st[3])
-        elif k == "unroll":
-            total += _count_stmts(st[4])
-        elif k in ("for", "pipeline_for"):
-            total += _count_stmts(st[7])
-    return total
+    return sum(1 + sum(_count_stmts(b) for b in _sub_blocks(st)) for st in stmts)
 
 
-def _expr_ccn(expr):
-    if not isinstance(expr, tuple):
-        return 0
-    k = expr[0]
-    if k == "ternary":
-        return 1 + _expr_ccn(expr[1]) + _expr_ccn(expr[2]) + _expr_ccn(expr[3])
-    if k == "bin":
-        add = 1 if expr[1] in ("&&", "||") else 0
-        return add + _expr_ccn(expr[2]) + _expr_ccn(expr[3])
-    if k == "un":
-        return _expr_ccn(expr[2])
-    if k == "call":
-        return sum(_expr_ccn(a) for a in expr[2])
-    if k == "index":
-        return _expr_ccn(expr[1]) + _expr_ccn(expr[2])
-    if k == "field":
-        return _expr_ccn(expr[1])
+def _expr_ccn(e):
+    if not isinstance(e, tuple): return 0
+    k = e[0]
+    if k == "ternary": return 1 + _expr_ccn(e[1]) + _expr_ccn(e[2]) + _expr_ccn(e[3])
+    if k == "bin": return (1 if e[1] in ("&&", "||") else 0) + _expr_ccn(e[2]) + _expr_ccn(e[3])
+    if k == "call": return sum(_expr_ccn(a) for a in e[2])
+    if k == "index": return _expr_ccn(e[1]) + _expr_ccn(e[2])
+    if k in ("un", "field"): return _expr_ccn(e[2 if k == "un" else 1])
     return 0
 
 
 def _ccn_and_depth(stmts, depth=0):
-    ccn = 0
-    max_d = depth
+    ccn, max_d = 0, depth
     for st in stmts:
         k = st[0]
         if k in ("if", "if_constexpr"):
-            ccn += 1 + _expr_ccn(st[1])
             c1, d1 = _ccn_and_depth(st[2], depth + 1)
-            ccn += c1
+            ccn += 1 + _expr_ccn(st[1]) + c1
             max_d = max(max_d, d1)
             if st[3]:
-                if len(st[3]) == 1 and st[3][0][0] in ("if", "if_constexpr"):
-                    c2, d2 = _ccn_and_depth(st[3], depth)
-                else:
-                    c2, d2 = _ccn_and_depth(st[3], depth + 1)
+                ed = depth if (len(st[3]) == 1 and st[3][0][0] in ("if", "if_constexpr")) else depth + 1
+                c2, d2 = _ccn_and_depth(st[3], ed)
                 ccn += c2
                 max_d = max(max_d, d2)
         elif k in ("for", "pipeline_for"):
-            ccn += 1 + _expr_ccn(st[5])
             c1, d1 = _ccn_and_depth(st[7], depth + 1)
-            ccn += c1
+            ccn += 1 + _expr_ccn(st[5]) + c1
             max_d = max(max_d, d1)
         elif k == "unroll":
             c1, d1 = _ccn_and_depth(st[4], depth + 1)
             ccn += c1
             max_d = max(max_d, d1)
-        elif k == "decl" and st[4] is not None:
-            ccn += _expr_ccn(st[4])
-        elif k == "assign":
-            ccn += _expr_ccn(st[2]) + _expr_ccn(st[3])
-        elif k == "expr":
-            ccn += _expr_ccn(st[1])
+        elif k == "decl" and st[4] is not None: ccn += _expr_ccn(st[4])
+        elif k == "assign": ccn += _expr_ccn(st[2]) + _expr_ccn(st[3])
+        elif k == "expr": ccn += _expr_ccn(st[1])
     return ccn, max_d
 
 
-def _norm_expr(expr, vmap):
-    if not isinstance(expr, tuple):
-        return repr(expr)
-    k = expr[0]
-    if k in ("int", "float", "str"):
-        return f"{k}:{expr[1]}"
-    if k == "ident":
-        nm = expr[1]
-        if nm not in vmap:
-            vmap[nm] = f"${len(vmap)}"
-        return vmap[nm]
-    if k == "un":
-        return f"({expr[1]}{_norm_expr(expr[2], vmap)})"
-    if k == "bin":
-        return f"({_norm_expr(expr[2], vmap)}{expr[1]}{_norm_expr(expr[3], vmap)})"
-    if k == "ternary":
-        return f"({_norm_expr(expr[1], vmap)}?{_norm_expr(expr[2], vmap)}:{_norm_expr(expr[3], vmap)})"
-    if k == "call":
-        args = ",".join(_norm_expr(a, vmap) for a in expr[2])
-        return f"{expr[1]}({args})"
-    if k == "index":
-        return f"{_norm_expr(expr[1], vmap)}[{_norm_expr(expr[2], vmap)}]"
-    if k == "field":
-        return f"{_norm_expr(expr[1], vmap)}.{expr[2]}"
-    return repr(expr)
+def _norm_expr(e, vmap):
+    if not isinstance(e, tuple): return repr(e)
+    k = e[0]
+    if k in ("int", "float", "str"): return f"{k}:{e[1]}"
+    if k == "ident": return vmap.setdefault(e[1], f"${len(vmap)}")
+    if k == "un": return f"({e[1]}{_norm_expr(e[2], vmap)})"
+    if k == "bin": return f"({_norm_expr(e[2], vmap)}{e[1]}{_norm_expr(e[3], vmap)})"
+    if k == "ternary": return f"({_norm_expr(e[1], vmap)}?{_norm_expr(e[2], vmap)}:{_norm_expr(e[3], vmap)})"
+    if k == "call": return f"{e[1]}({','.join(_norm_expr(a, vmap) for a in e[2])})"
+    if k == "index": return f"{_norm_expr(e[1], vmap)}[{_norm_expr(e[2], vmap)}]"
+    if k == "field": return f"{_norm_expr(e[1], vmap)}.{e[2]}"
+    return repr(e)
 
 
 def _norm_stmt(st, vmap):
     k = st[0]
-    if k == "shared":
-        if st[2] not in vmap:
-            vmap[st[2]] = f"${len(vmap)}"
-        return f"shared {st[1]} {vmap[st[2]]}[{_norm_expr(st[3], vmap)}]"
+    if k == "shared": return f"shared {st[1]} {vmap.setdefault(st[2], f'${len(vmap)}')}[{_norm_expr(st[3], vmap)}]"
+    if k == "reg_array": return f"{st[1]} {st[2]} {vmap.setdefault(st[3], f'${len(vmap)}')}[{_norm_expr(st[4], vmap)}]"
     if k == "decl":
         init = _norm_expr(st[4], vmap) if st[4] is not None else ""
-        if st[3] not in vmap:
-            vmap[st[3]] = f"${len(vmap)}"
-        return f"{st[1]} {st[2]} {vmap[st[3]]}={init}"
-    if k == "return":
-        return "ret"
-    if k == "assign":
-        return f"{_norm_expr(st[2], vmap)}{st[1]}{_norm_expr(st[3], vmap)}"
-    if k == "expr":
-        return _norm_expr(st[1], vmap)
+        return f"{st[1]} {st[2]} {vmap.setdefault(st[3], f'${len(vmap)}')}={init}"
+    if k == "return": return "ret"
+    if k == "assign": return f"{_norm_expr(st[2], vmap)}{st[1]}{_norm_expr(st[3], vmap)}"
+    if k == "expr": return _norm_expr(st[1], vmap)
     if k in ("if", "if_constexpr"):
-        c = _norm_expr(st[1], vmap)
-        t = ";".join(_norm_stmt(x, vmap) for x in st[2])
-        e = ";".join(_norm_stmt(x, vmap) for x in st[3])
-        return f"{k}({c}){{{t}}}else{{{e}}}"
+        return f"{k}({_norm_expr(st[1], vmap)}){{{';'.join(_norm_stmt(x, vmap) for x in st[2])}}}else{{{';'.join(_norm_stmt(x, vmap) for x in st[3])}}}"
     if k == "unroll":
-        if st[1] not in vmap:
-            vmap[st[1]] = f"${len(vmap)}"
-        b = ";".join(_norm_stmt(x, vmap) for x in st[4])
-        return f"unroll({vmap[st[1]]}={_norm_expr(st[2], vmap)}..{_norm_expr(st[3], vmap)}){{{b}}}"
+        v = vmap.setdefault(st[1], f"${len(vmap)}")
+        return f"unroll({v}={_norm_expr(st[2], vmap)}..{_norm_expr(st[3], vmap)}){{{';'.join(_norm_stmt(x, vmap) for x in st[4])}}}"
     if k in ("for", "pipeline_for"):
-        if st[3] not in vmap:
-            vmap[st[3]] = f"${len(vmap)}"
-        b = ";".join(_norm_stmt(x, vmap) for x in st[7])
-        return f"{k}({st[2]} {vmap[st[3]]}={_norm_expr(st[4], vmap)};{_norm_expr(st[5], vmap)};{_norm_stmt(st[6], vmap)}){{{b}}}"
+        v = vmap.setdefault(st[3], f"${len(vmap)}")
+        return f"{k}({st[2]} {v}={_norm_expr(st[4], vmap)};{_norm_expr(st[5], vmap)};{_norm_stmt(st[6], vmap)}){{{';'.join(_norm_stmt(x, vmap) for x in st[7])}}}"
     return repr(st)
 
 
@@ -149,284 +98,146 @@ def _flat_stmts(stmts):
     out = []
     for st in stmts:
         out.append(st)
-        k = st[0]
-        if k in ("if", "if_constexpr"):
-            out.extend(_flat_stmts(st[2]))
-            out.extend(_flat_stmts(st[3]))
-        elif k == "unroll":
-            out.extend(_flat_stmts(st[4]))
-        elif k in ("for", "pipeline_for"):
-            out.extend(_flat_stmts(st[7]))
+        for b in _sub_blocks(st): out.extend(_flat_stmts(b))
     return out
 
 
 def _check_dup_subtrees(items):
     seen = {}
-    for owner_name, file, stmts in items:
+    for owner, file, stmts in items:
         flat = _flat_stmts(stmts)
-        if len(flat) < DUP_WINDOW:
-            continue
-        for i in range(0, len(flat) - DUP_WINDOW + 1):
-            window = flat[i:i + DUP_WINDOW]
-            vmap = {}
-            canon = "\n".join(_norm_stmt(s, vmap) for s in window)
-            digest = hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
-            ln = window[0][-1]
+        for i in range(max(0, len(flat) - DUP_WINDOW + 1)):
+            win, vmap = flat[i:i + DUP_WINDOW], {}
+            digest = hashlib.sha256("\n".join(_norm_stmt(s, vmap) for s in win).encode("utf-8")).hexdigest()[:16]
             if digest in seen:
-                p_owner, p_file, p_line, p_idx = seen[digest]
-                if p_owner != owner_name or abs(i - p_idx) >= DUP_WINDOW:
-                    raise Skl2CompileError(
-                        "E_DUP_SUBTREE",
-                        f"duplicated {DUP_WINDOW}-statement subtree in {owner_name} matches "
-                        f"{p_owner} at {p_file}:{p_line}; extract a macro or template",
-                        file,
-                        ln,
-                    )
+                po, pf, pl, pi = seen[digest]
+                if po != owner or abs(i - pi) >= DUP_WINDOW:
+                    raise Skl2CompileError("E_DUP_SUBTREE", f"duplicated {DUP_WINDOW}-statement subtree in {owner} matches {po} at {pf}:{pl}; extract a macro or template", file, win[0][-1])
             else:
-                seen[digest] = (owner_name, file, ln, i)
+                seen[digest] = (owner, file, win[0][-1], i)
+
+
+def _walk_expr(e, refs=None, calls=None):
+    if not isinstance(e, tuple): return
+    k = e[0]
+    if k == "ident" and refs is not None: refs.add(e[1])
+    elif k == "call":
+        if calls is not None: (calls.append if isinstance(calls, list) else calls.add)(e[1])
+        for a in e[2]: _walk_expr(a, refs, calls)
+    elif k in ("un", "field"): _walk_expr(e[2 if k == "un" else 1], refs, calls)
+    elif k in ("bin", "index"): _walk_expr(e[2 if k == "bin" else 1], refs, calls); _walk_expr(e[3 if k == "bin" else 2], refs, calls)
+    elif k == "ternary":
+        for a in e[1:4]: _walk_expr(a, refs, calls)
 
 
 def _collect_refs_and_calls(stmts, refs, calls):
-    def walk_e(e):
-        if not isinstance(e, tuple):
-            return
-        k = e[0]
-        if k == "ident":
-            refs.add(e[1])
-        elif k == "call":
-            calls.add(e[1])
-            for a in e[2]:
-                walk_e(a)
-        elif k == "un":
-            walk_e(e[2])
-        elif k == "bin":
-            walk_e(e[2])
-            walk_e(e[3])
-        elif k == "ternary":
-            walk_e(e[1])
-            walk_e(e[2])
-            walk_e(e[3])
-        elif k == "index":
-            walk_e(e[1])
-            walk_e(e[2])
-        elif k == "field":
-            walk_e(e[1])
-
     for st in stmts:
         k = st[0]
-        if k == "shared":
-            walk_e(st[3])
-        elif k == "decl":
-            if st[4] is not None:
-                walk_e(st[4])
+        if k in ("shared", "reg_array"): _walk_expr(st[3 if k == "shared" else 4], refs, calls)
+        elif k == "decl" and st[4] is not None: _walk_expr(st[4], refs, calls)
         elif k == "assign":
-            if st[1] != "=":
-                walk_e(st[2])
-            elif st[2][0] != "ident":
-                walk_e(st[2])
-            walk_e(st[3])
-        elif k == "expr":
-            walk_e(st[1])
+            if st[1] != "=" or st[2][0] != "ident": _walk_expr(st[2], refs, calls)
+            _walk_expr(st[3], refs, calls)
+        elif k == "expr": _walk_expr(st[1], refs, calls)
         elif k in ("if", "if_constexpr"):
-            walk_e(st[1])
-            _collect_refs_and_calls(st[2], refs, calls)
-            _collect_refs_and_calls(st[3], refs, calls)
+            _walk_expr(st[1], refs, calls); _collect_refs_and_calls(st[2], refs, calls); _collect_refs_and_calls(st[3], refs, calls)
         elif k == "unroll":
-            walk_e(st[2])
-            walk_e(st[3])
-            _collect_refs_and_calls(st[4], refs, calls)
+            _walk_expr(st[2], refs, calls); _walk_expr(st[3], refs, calls); _collect_refs_and_calls(st[4], refs, calls)
         elif k in ("for", "pipeline_for"):
-            walk_e(st[4])
-            walk_e(st[5])
-            _collect_refs_and_calls([st[6]], refs, calls)
-            _collect_refs_and_calls(st[7], refs, calls)
+            _walk_expr(st[4], refs, calls); _walk_expr(st[5], refs, calls)
+            _collect_refs_and_calls([st[6]], refs, calls); _collect_refs_and_calls(st[7], refs, calls)
 
 
-def _check_dead_locals_and_unreachable(stmts, owner, file, macro_params=()):
-    refs, _ = set(), set()
+def _check_dead_locals(stmts, owner, file, macro_params=()):
+    refs = set()
     _collect_refs_and_calls(stmts, refs, set())
 
     def walk(block):
         terminated = False
         for st in block:
-            ln = st[-1]
-            if terminated:
-                raise Skl2CompileError("E_DEAD_CODE", f"unreachable statement after return in {owner}", file, ln)
-            k = st[0]
-            if k == "return":
-                terminated = True
-            elif k == "shared":
-                if st[2] not in refs:
-                    raise Skl2CompileError("E_DEAD_CODE", f"unused shared array {st[2]!r} in {owner}", file, ln)
-            elif k == "decl":
-                if st[3] not in refs and st[3] not in macro_params:
-                    raise Skl2CompileError("E_DEAD_CODE", f"unused local register {st[3]!r} in {owner}", file, ln)
+            ln, k = st[-1], st[0]
+            if terminated: raise Skl2CompileError("E_DEAD_CODE", f"unreachable statement after return in {owner}", file, ln)
+            if k == "return": terminated = True
+            elif k == "shared" and st[2] not in refs: raise Skl2CompileError("E_DEAD_CODE", f"unused shared array {st[2]!r} in {owner}", file, ln)
+            elif k in ("decl", "reg_array") and st[3] not in refs and st[3] not in macro_params:
+                raise Skl2CompileError("E_DEAD_CODE", f"unused local register {st[3]!r} in {owner}", file, ln)
             elif k in ("if", "if_constexpr"):
-                t_ret = walk(st[2])
-                e_ret = walk(st[3]) if st[3] else False
-                if t_ret and e_ret:
-                    terminated = True
-            elif k == "unroll":
-                walk(st[4])
-            elif k in ("for", "pipeline_for"):
-                walk(st[7])
+                if walk(st[2]) and (walk(st[3]) if st[3] else False): terminated = True
+            elif k in ("unroll", "for", "pipeline_for"):
+                walk(st[4 if k == "unroll" else 7])
         return terminated
 
     walk(stmts)
 
 
-def _expr_calls(expr, out):
-    if not isinstance(expr, tuple):
-        return
-    k = expr[0]
-    if k == "call":
-        out.append(expr[1])
-        for a in expr[2]:
-            _expr_calls(a, out)
-    elif k == "un":
-        _expr_calls(expr[2], out)
-    elif k == "bin":
-        _expr_calls(expr[2], out)
-        _expr_calls(expr[3], out)
-    elif k == "ternary":
-        _expr_calls(expr[1], out)
-        _expr_calls(expr[2], out)
-        _expr_calls(expr[3], out)
-    elif k == "index":
-        _expr_calls(expr[1], out)
-        _expr_calls(expr[2], out)
-    elif k == "field":
-        _expr_calls(expr[1], out)
-
-
 def _check_pdl(kernel, macros):
-    is_pdl = bool(kernel.get("attrs", {}).get("pdl"))
     all_calls = set()
     _collect_refs_and_calls(kernel["body"], set(), all_calls)
-    if not is_pdl and not (all_calls & (PDL_WAIT_CALLS | PDL_RELEASE_CALLS)):
+    if not kernel.get("attrs", {}).get("pdl") and not (all_calls & (PDL_WAIT_CALLS | PDL_RELEASE_CALLS)):
         return
-    file = kernel["file"]
-    name = kernel["name"]
+    file, name = kernel["file"], kernel["name"]
 
-    def step_stmts(stmts, acq, rel):
+    def step(stmts, acq, rel):
         for st in stmts:
-            ln = st[-1]
-            k = st[0]
+            ln, k = st[-1], st[0]
             if k == "expr" and st[1][0] == "call" and st[1][1] in macros:
-                m = macros[st[1][1]]
-                acq, rel, exited = step_stmts(m["body"], acq, rel)
-                if exited:
-                    return acq, rel, True
+                acq, rel, exited = step(macros[st[1][1]]["body"], acq, rel)
+                if exited: return acq, rel, True
                 continue
             calls = []
-            if k == "expr":
-                _expr_calls(st[1], calls)
-            elif k == "decl" and st[4] is not None:
-                _expr_calls(st[4], calls)
-            elif k == "assign":
-                _expr_calls(st[3], calls)
+            if k == "expr": _walk_expr(st[1], calls=calls)
+            elif k == "decl" and st[4] is not None: _walk_expr(st[4], calls=calls)
+            elif k == "assign": _walk_expr(st[3], calls=calls)
             for c in calls:
-                if c in PDL_WAIT_CALLS:
-                    acq = True
-                elif c in PDL_RELEASE_CALLS:
-                    rel = True
+                if c in PDL_WAIT_CALLS: acq = True
+                elif c in PDL_RELEASE_CALLS: rel = True
                 elif c in STORE_CALLS and not acq:
-                    raise Skl2CompileError(
-                        "E_PDL_HAZARD",
-                        f"PDL kernel {name} performs global write {c}() before acqbulk()/pdl_wait()",
-                        file,
-                        ln,
-                    )
+                    raise Skl2CompileError("E_PDL_HAZARD", f"PDL kernel {name} performs global write {c}() before acqbulk()/pdl_wait()", file, ln)
             if k == "return":
-                if not rel:
-                    raise Skl2CompileError(
-                        "E_PDL_HAZARD",
-                        f"PDL kernel {name} returns without calling preexit()/pdl_release()",
-                        file,
-                        ln,
-                    )
+                if not rel: raise Skl2CompileError("E_PDL_HAZARD", f"PDL kernel {name} returns without calling preexit()/pdl_release()", file, ln)
                 return acq, rel, True
             if k in ("if", "if_constexpr"):
-                a1, r1, e1 = step_stmts(st[2], acq, rel)
+                a1, r1, e1 = step(st[2], acq, rel)
                 if st[3]:
-                    a2, r2, e2 = step_stmts(st[3], acq, rel)
-                    if e1 and e2:
-                        return a1 and a2, r1 and r2, True
-                    if e1:
-                        acq, rel = a2, r2
-                    elif e2:
-                        acq, rel = a1, r1
-                    else:
-                        acq, rel = a1 and a2, r1 and r2
-                else:
-                    if not e1:
-                        acq, rel = acq and a1, rel and r1
-            elif k in ("unroll",):
-                acq, rel, exited = step_stmts(st[4], acq, rel)
-                if exited:
-                    return acq, rel, True
+                    a2, r2, e2 = step(st[3], acq, rel)
+                    if e1 and e2: return a1 and a2, r1 and r2, True
+                    acq, rel = (a2, r2) if e1 else ((a1, r1) if e2 else (a1 and a2, r1 and r2))
+                elif not e1:
+                    acq, rel = acq and a1, rel and r1
+            elif k == "unroll":
+                acq, rel, exited = step(st[4], acq, rel)
+                if exited: return acq, rel, True
             elif k in ("for", "pipeline_for"):
-                step_stmts(st[7], acq, rel)
+                step(st[7], acq, rel)
         return acq, rel, False
 
-    _, rel_end, exited = step_stmts(kernel["body"], False, False)
+    _, rel_end, exited = step(kernel["body"], False, False)
     if not exited and not rel_end:
-        raise Skl2CompileError(
-            "E_PDL_HAZARD",
-            f"PDL kernel {name} exits without calling preexit()/pdl_release()",
-            file,
-            kernel["line"],
-        )
+        raise Skl2CompileError("E_PDL_HAZARD", f"PDL kernel {name} exits without calling preexit()/pdl_release()", file, kernel["line"])
 
 
 def check_anti_slop(unit, allow_unused_lib=False):
-    dup_items = []
-    all_calls = set()
+    dup_items, all_calls = [], set()
     used_templates = {inst["template"] for inst in unit["instantiations"]}
-
     for mname, m in unit["macros"].items():
         ccn, depth = _ccn_and_depth(m["body"])
-        ccn += 1
-        if ccn > MAX_CCN or depth > MAX_NESTING:
-            raise Skl2CompileError(
-                "E_COMPLEXITY",
-                f"macro {mname} has CCN={ccn} (max {MAX_CCN}) and nesting={depth} (max {MAX_NESTING})",
-                m["file"],
-                m["line"],
-            )
-        _check_dead_locals_and_unreachable(m["body"], f"macro {mname}", m["file"], set(m["params"]))
+        if ccn + 1 > MAX_CCN or depth > MAX_NESTING:
+            raise Skl2CompileError("E_COMPLEXITY", f"macro {mname} has CCN={ccn + 1} (max {MAX_CCN}) and nesting={depth} (max {MAX_NESTING})", m["file"], m["line"])
+        _check_dead_locals(m["body"], f"macro {mname}", m["file"], set(m["params"]))
         dup_items.append((f"macro {mname}", m["file"], m["body"]))
-
-    all_kobjs = list(unit["templates"].values()) + list(unit["kernels"])
-    for k in all_kobjs:
-        name = k["name"]
-        scount = _count_stmts(k["body"])
-        if scount > MAX_KERNEL_STMTS:
-            raise Skl2CompileError(
-                "E_KERNEL_TOO_LONG",
-                f"kernel {name} has {scount} statements (max {MAX_KERNEL_STMTS}); compose with macro/codec/epilogue",
-                k["file"],
-                k["line"],
-            )
+        _collect_refs_and_calls(m["body"], set(), all_calls)
+    for k in list(unit["templates"].values()) + list(unit["kernels"]):
+        name, sc = k["name"], _count_stmts(k["body"])
+        if sc > MAX_KERNEL_STMTS:
+            raise Skl2CompileError("E_KERNEL_TOO_LONG", f"kernel {name} has {sc} statements (max {MAX_KERNEL_STMTS}); compose with macro/codec/epilogue", k["file"], k["line"])
         ccn, depth = _ccn_and_depth(k["body"])
-        ccn += 1
-        if ccn > MAX_CCN or depth > MAX_NESTING:
-            raise Skl2CompileError(
-                "E_COMPLEXITY",
-                f"kernel {name} has CCN={ccn} (max {MAX_CCN}) and nesting={depth} (max {MAX_NESTING})",
-                k["file"],
-                k["line"],
-            )
-        _check_dead_locals_and_unreachable(k["body"], f"kernel {name}", k["file"])
+        if ccn + 1 > MAX_CCN or depth > MAX_NESTING:
+            raise Skl2CompileError("E_COMPLEXITY", f"kernel {name} has CCN={ccn + 1} (max {MAX_CCN}) and nesting={depth} (max {MAX_NESTING})", k["file"], k["line"])
+        _check_dead_locals(k["body"], f"kernel {name}", k["file"])
         _check_pdl(k, unit["macros"])
         _collect_refs_and_calls(k["body"], set(), all_calls)
         dup_items.append((f"kernel {name}", k["file"], k["body"]))
-
-    for m in unit["macros"].values():
-        _collect_refs_and_calls(m["body"], set(), all_calls)
-
     _check_dup_subtrees(dup_items)
-
     if not allow_unused_lib:
         for mname, m in unit["macros"].items():
             if mname not in all_calls and not m.get("attrs", {}).get("export"):

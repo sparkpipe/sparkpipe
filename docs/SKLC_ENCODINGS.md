@@ -223,14 +223,13 @@ synthetic encoder coverage suite covering every encoder in
 | `inference/kernels/skl/tp_mesh_mem.skl` | 3 | 98 | PASS | PASS | 0 |
 | Exhaustive `isa_sm121.py` encoder suite | 1 | 84 | PASS | PASS | 0 |
 | `inference/skl2/` Slice 1 (`allreduce`, `linear`, `mma_gemm`, `norm_rope`) | 53 | 15,856 | PASS | PASS | 0 |
-| **Total** | **67** | **19,053** | **PASS** | **PASS** | **0** |
+| `inference/skl2/` Full Slice 2 (all 91 kernels, 0 spills, 100% `.skl` v1 retired) | 91 | 24,520 | PASS | PASS | 0 |
+| **Total (active `skl2` + exhaustive encoder suite)** | **92** | **24,604** | **PASS** | **PASS** | **0** |
 
 To reproduce disassembly verification on any host with CUDA 13.0 tools:
 
 ```sh
-for f in inference/kernels/skl/*.skl; do
-  python3 tools/sklc/sklc.py "$f" --arch sm121 -o "/tmp/$(basename "$f").cubin"
-  cuobjdump --dump-sass "/tmp/$(basename "$f").cubin" | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
-  nvdisasm "/tmp/$(basename "$f").cubin" | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
-done
+python3 tools/skl2c/skl2c.py --arch sm121a inference/skl2/stdlib/allreduce.skl2 inference/skl2/kernels/*.skl2 -o /tmp/skl2_all.cubin
+cuobjdump --dump-sass /tmp/skl2_all.cubin | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
+nvdisasm /tmp/skl2_all.cubin | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
 ```

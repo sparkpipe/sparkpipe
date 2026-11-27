@@ -8,17 +8,15 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKLC = ROOT / "tools" / "sklc" / "sklc.py"
-SKL_DIR = ROOT / "inference" / "kernels" / "skl"
 SKL2_DIR = ROOT / "inference" / "skl2" / "kernels"
 SUITES = [
     SKL2_DIR / "linear.skl2",
-    SKL_DIR / "linear_attn.skl",
-    SKL_DIR / "mx_gemm.skl",
+    SKL2_DIR / "recurrent.skl2",
+    SKL2_DIR / "route_quant.skl2",
     SKL2_DIR / "norm_rope.skl2",
-    SKL_DIR / "stage_ops.skl",
-    SKL_DIR / "attn_decode.skl",
-    SKL_DIR / "moe_route.skl",
-    SKL_DIR / "tp_mesh_mem.skl",
+    SKL2_DIR / "head.skl2",
+    SKL2_DIR / "stage_mem.skl2",
+    SKL2_DIR / "attention.skl2",
 ]
 EXPECTED_KERNELS = [
     "skinny_nvfp4_b1",
@@ -177,7 +175,6 @@ def verify_codegen_invariants():
     sys.path.append(str(ROOT / "tools" / "skl2c"))
     import isa_sm121 as isa
     from codegen import compile_program
-    from frontend import parse_skl
     from skl2_frontend import load_unit
     from skl2_lower import lower_unit
 
@@ -187,34 +184,30 @@ def verify_codegen_invariants():
     except KeyError:
         pass
 
-    for suite in SUITES:
-        if suite.suffix == ".skl2":
-            unit = load_unit([str(suite)], search_roots=[str(ROOT / "inference" / "skl2")])
-            kernels = compile_program(lower_unit(unit), strict_reg_budget=True)
-        else:
-            text = suite.read_text(encoding="utf-8")
-            kernels = compile_program(parse_skl(text))
-        for k in kernels:
-            assert k.stack_bytes == 0, f"unexpected stack usage in {k.name}: {k.stack_bytes}"
-            if k.name == "latent_attn_decode_512_64":
-                assert k.registers <= 80, f"expected <=80 regs for {k.name}, got {k.registers}"
-            if k.name == "head_certified_fp8_score_1024":
-                assert k.registers <= 64, f"expected <=64 regs for 1024-thread {k.name}, got {k.registers}"
-            if k.name == "skinny_bf16_dense_l32_r1_n1_pdl":
-                assert k.registers <= 88, f"expected <=88 regs for 8-way {k.name}, got {k.registers}"
-            if k.name in ("skinny_bf16_multi_l32_r1_n1_pdl", "skinny_bf16_split_r1_pdl"):
-                assert k.registers <= 56, f"expected <=56 regs for 4-way {k.name}, got {k.registers}"
-            for idx, (lo, hi) in enumerate(k.insns):
-                wr = (hi >> 46) & 0x7
-                rd = (hi >> 49) & 0x7
-                wait = (hi >> 52) & 0x3F
-                if wr < 6:
-                    assert (wait & (1 << wr)) == 0, f"self-wait on wr barrier {wr} in {k.name} at insn {idx}"
-                if rd < 6:
-                    assert (wait & (1 << rd)) == 0, f"self-wait on rd barrier {rd} in {k.name} at insn {idx}"
-                if (lo & 0xFFFF) == 0x7B1D:
-                    assert (hi & 0x10000) == 0, f"BAR.SYNC must not set DEFER_BLOCKING in {k.name}"
-                    assert idx + 1 < len(k.insns) and (k.insns[idx + 1][0] & 0xFFFF) == 0x7918, f"BAR.SYNC must be followed by NOP in {k.name}"
+    assert not list((ROOT / "inference" / "kernels" / "skl").glob("*.skl")), "legacy .skl v1 files must be retired"
+    unit = load_unit([str(s) for s in SUITES], search_roots=[str(ROOT / "inference" / "skl2")])
+    kernels = compile_program(lower_unit(unit), strict_reg_budget=True)
+    for k in kernels:
+        assert k.stack_bytes == 0, f"unexpected stack usage in {k.name}: {k.stack_bytes}"
+        if k.name == "latent_attn_decode_512_64":
+            assert k.registers <= 80, f"expected <=80 regs for {k.name}, got {k.registers}"
+        if k.name == "head_certified_fp8_score_1024":
+            assert k.registers <= 64, f"expected <=64 regs for 1024-thread {k.name}, got {k.registers}"
+        if k.name == "skinny_bf16_dense_l32_r1_n1_pdl":
+            assert k.registers <= 88, f"expected <=88 regs for 8-way {k.name}, got {k.registers}"
+        if k.name in ("skinny_bf16_multi_l32_r1_n1_pdl", "skinny_bf16_split_r1_pdl"):
+            assert k.registers <= 56, f"expected <=56 regs for 4-way {k.name}, got {k.registers}"
+        for idx, (lo, hi) in enumerate(k.insns):
+            wr = (hi >> 46) & 0x7
+            rd = (hi >> 49) & 0x7
+            wait = (hi >> 52) & 0x3F
+            if wr < 6:
+                assert (wait & (1 << wr)) == 0, f"self-wait on wr barrier {wr} in {k.name} at insn {idx}"
+            if rd < 6:
+                assert (wait & (1 << rd)) == 0, f"self-wait on rd barrier {rd} in {k.name} at insn {idx}"
+            if (lo & 0xFFFF) == 0x7B1D:
+                assert (hi & 0x10000) == 0, f"BAR.SYNC must not set DEFER_BLOCKING in {k.name}"
+                assert idx + 1 < len(k.insns) and (k.insns[idx + 1][0] & 0xFFFF) == 0x7918, f"BAR.SYNC must be followed by NOP in {k.name}"
 
 
 def verify_new_builtins():

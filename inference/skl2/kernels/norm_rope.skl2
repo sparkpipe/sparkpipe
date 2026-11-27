@@ -2,45 +2,6 @@ import "stdlib/math.skl2";
 
 const BLOCK = 256;
 
-macro block_reduce_sum_exact(total, reduction, wid, lane, out_sum) {
-    total = total + shfl_down(total, 16);
-    total = total + shfl_down(total, 8);
-    total = total + shfl_down(total, 4);
-    total = total + shfl_down(total, 2);
-    total = total + shfl_down(total, 1);
-    if (lane == 0) { sts32(reduction, wid, total); }
-    barrier();
-    reg f32 b = 0.0f;
-    if (lane < 8) { b = lds32(reduction, lane); }
-    b = b + shfl_down(b, 4);
-    b = b + shfl_down(b, 2);
-    b = b + shfl_down(b, 1);
-    out_sum = shfl_idx(b, 0);
-}
-
-macro rsqrt_exact_div(sum_sq, dim_f, eps, out_scale) {
-    reg f32 r = rcp(dim_f);
-    r = fma(r, fma(-dim_f, r, 1.0f), r);
-    reg f32 q = sum_sq * r;
-    q = fma(r, fma(-dim_f, q, sum_sq), q);
-    out_scale = rsqrt(q + eps);
-}
-
-macro silu_exact_f32(g, out_q) {
-    reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
-    reg f32 r = rcp(d);
-    r = fma(r, fma(-d, r, 1.0f), r);
-    reg f32 q = g * r;
-    out_q = fma(r, fma(-d, q, g), q);
-}
-
-macro sigmoid_exact_f32(g, out_s) {
-    reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
-    reg f32 s = rcp(d);
-    s = fma(s, fma(-d, s, 1.0f), s);
-    out_s = fma(s, fma(-d, s, 1.0f), s);
-}
-
 macro norm_vec16_sum_pass(HAS_RES, x_row, r_row, tid, chunks16, s0, s1, s2, s3) {
     for (reg u32 c = tid; c < chunks16; c += BLOCK) {
         if constexpr (HAS_RES == 1) {

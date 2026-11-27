@@ -13,3 +13,137 @@ macro u32_divmod(num, den, out_q, out_r) {
     out_q = qv;
     out_r = rv;
 }
+
+@export
+macro warp_sum_down(val) {
+    val = val + shfl_down(val, 16);
+    val = val + shfl_down(val, 8);
+    val = val + shfl_down(val, 4);
+    val = val + shfl_down(val, 2);
+    val = val + shfl_down(val, 1);
+}
+
+@export
+macro block_reduce_sum_exact(total, reduction, wid, lane, out_sum) {
+    warp_sum_down(total);
+    if (lane == 0) { sts32(reduction, wid, total); }
+    barrier();
+    reg f32 b = 0.0f;
+    if (lane < 8) { b = lds32(reduction, lane); }
+    b = b + shfl_down(b, 4);
+    b = b + shfl_down(b, 2);
+    b = b + shfl_down(b, 1);
+    out_sum = shfl_idx(b, 0);
+}
+
+@export
+macro block_reduce_max_exact(val, reduction, wid, lane, out_max) {
+    val = maxf(val, shfl_down(val, 16));
+    val = maxf(val, shfl_down(val, 8));
+    val = maxf(val, shfl_down(val, 4));
+    val = maxf(val, shfl_down(val, 2));
+    val = maxf(val, shfl_down(val, 1));
+    if (lane == 0) { sts32(reduction, wid, val); }
+    barrier();
+    reg f32 b = u32_as_f32(0xFF800000);
+    if (lane < 8) { b = lds32(reduction, lane); }
+    b = maxf(b, shfl_down(b, 4));
+    b = maxf(b, shfl_down(b, 2));
+    b = maxf(b, shfl_down(b, 1));
+    out_max = shfl_idx(b, 0);
+}
+
+@export
+macro rcp_nr1_f32(denom, out_inv) {
+    reg f32 r = rcp(denom);
+    out_inv = fma(r, fma(-denom, r, 1.0f), r);
+}
+
+@export
+macro rcp_nr2_f32(denom, out_inv) {
+    reg f32 r = rcp(denom);
+    r = fma(r, fma(-denom, r, 1.0f), r);
+    out_inv = fma(r, fma(-denom, r, 1.0f), r);
+}
+
+@export
+macro div_nr1_f32(num, denom, inv_d, out_q) {
+    reg f32 q = num * inv_d;
+    out_q = fma(inv_d, fma(-denom, q, num), q);
+}
+
+@export
+macro rsqrt_exact_div(sum_sq, dim_f, eps, out_scale) {
+    reg f32 r = 0.0f;
+    rcp_nr1_f32(dim_f, r);
+    reg f32 q = 0.0f;
+    div_nr1_f32(sum_sq, dim_f, r, q);
+    out_scale = rsqrt(q + eps);
+}
+
+@export
+macro silu_exact_f32(g, out_q) {
+    reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
+    reg f32 r = 0.0f;
+    rcp_nr1_f32(d, r);
+    div_nr1_f32(g, d, r, out_q);
+}
+
+@export
+macro sigmoid_exact_f32(g, out_s) {
+    reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
+    rcp_nr2_f32(d, out_s);
+}
+
+@export
+macro argmax_tiebreak_step(cand_s, cand_i, best_s, best_i) {
+    if (cand_s > best_s) {
+        best_s = cand_s;
+        best_i = cand_i;
+    } else if (cand_s == best_s) {
+        if (cand_i < best_i) {
+            best_s = cand_s;
+            best_i = cand_i;
+        }
+    }
+}
+
+@export
+macro warp_argmax_tiebreak(best_s, best_i) {
+    reg f32 os16 = shfl_down(best_s, 16);
+    reg u32 oi16 = shfl_down(best_i, 16);
+    argmax_tiebreak_step(os16, oi16, best_s, best_i);
+    reg f32 os8 = shfl_down(best_s, 8);
+    reg u32 oi8 = shfl_down(best_i, 8);
+    argmax_tiebreak_step(os8, oi8, best_s, best_i);
+    reg f32 os4 = shfl_down(best_s, 4);
+    reg u32 oi4 = shfl_down(best_i, 4);
+    argmax_tiebreak_step(os4, oi4, best_s, best_i);
+    reg f32 os2 = shfl_down(best_s, 2);
+    reg u32 oi2 = shfl_down(best_i, 2);
+    argmax_tiebreak_step(os2, oi2, best_s, best_i);
+    reg f32 os1 = shfl_down(best_s, 1);
+    reg u32 oi1 = shfl_down(best_i, 1);
+    argmax_tiebreak_step(os1, oi1, best_s, best_i);
+}
+
+@export
+macro block_argmax_tiebreak_to_smem(best_s, best_i, sh_s, sh_i, wid, lane) {
+    warp_argmax_tiebreak(best_s, best_i);
+    if (lane == 0) {
+        sts32(sh_s, wid, best_s);
+        sts32(sh_i, wid, best_i);
+    }
+    barrier();
+}
+
+@export
+macro block_argmax_tiebreak_finish(sh_s, sh_i, out_s, out_i) {
+    out_s = lds32(sh_s, 0);
+    out_i = lds32(sh_i, 0);
+    unroll (w = 1..8) {
+        reg f32 ws = lds32(sh_s, w);
+        reg u32 wi = lds32(sh_i, w);
+        argmax_tiebreak_step(ws, wi, out_s, out_i);
+    }
+}
