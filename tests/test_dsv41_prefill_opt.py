@@ -25,14 +25,18 @@ def main():
     if nvcc is None or not detect_sm121():
         print("SKIP test_dsv41_prefill_opt (no sm_12x CUDA toolchain on this host)")
         return 0
+    emb = subprocess.run(["make", "-s", "build/skl2_dsv41_embedded.h"], cwd=ROOT, capture_output=True, text=True)
+    if emb.returncode != 0:
+        print(emb.stdout + emb.stderr, end="")
+        return 1
     with tempfile.TemporaryDirectory(prefix="dsv41_prefill_opt_") as tmp:
         binary = Path(tmp) / "test_dsv41_prefill_opt"
         cmd = [
             nvcc, "-O3", "-std=c++17",
             "-gencode", "arch=compute_121a,code=sm_121a",
-            f"-I{ROOT}", f"-I{ROOT / 'include'}", f"-I{ROOT / 'model-families/dsv41_flash/include'}",
+            f"-I{ROOT}", f"-I{ROOT / 'build'}", f"-I{ROOT / 'include'}", f"-I{ROOT / 'model-families/dsv41_flash/include'}",
             f"-I{ROOT / 'model-families/dsv41_flash/source'}",
-            str(SOURCE), "-o", str(binary),
+            str(SOURCE), "-lcuda", "-o", str(binary),
         ]
         comp = subprocess.run(cmd, capture_output=True, text=True)
         if comp.returncode != 0:

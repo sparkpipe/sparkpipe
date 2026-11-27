@@ -437,7 +437,7 @@ int main(void)
 			if ( r == 0u ) r0_rec = rctx;
 			if ( D41SharedSplitStep(st, nr) != 0u )
 			{
-				D41MoeFinalizeF32Kernel<<<dim3(D41Blocks(D41_HIDDEN / 8u), nr), D41_THREADS>>>(st->expert_slice, st->route_packed_row,
+				D41MoeFinalizeF32Launch(dim3(D41Blocks(D41_HIDDEN / 8u), nr), D41_THREADS, (SparkGpuStream)0, st->expert_slice, st->route_packed_row,
 					st->route_expert, (const float *)st->shared_out, f32_ref_buf, D41_TOPK, groups0, D41_HIDDEN);
 				CHECK(cudaDeviceSynchronize());
 				CHECK(cudaMemcpy(rank_f32.data(), f32_ref_buf, elems * sizeof(float), cudaMemcpyDeviceToHost));
@@ -633,10 +633,10 @@ int main(void)
 		L.sh_w3_split = layer_idx == 0u ? sh_w3_s[0] : sh2_w3_s[0];
 		L.sh_w2_split = layer_idx == 0u ? sh_w2_s[0] : sh2_w2_s[0];
 		LM_LAUNCH((LmRowLanesKernel), step.sequences, 256u, 0, (SparkGpuStream)0, step.sequence_row_begin, step.sequence_row_indices, st->row_lane, st->row_ordinal);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio2, nr, 2u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
 		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
 		CHECK(cudaMemcpy(st->streams, in_st, (uint64_t)nr * row_el * 2u, cudaMemcpyDeviceToDevice));
 		CHECK(cudaMemcpy(st->pre_init, in_pr, (uint64_t)nr * D41K_HC * 4u, cudaMemcpyDeviceToDevice));

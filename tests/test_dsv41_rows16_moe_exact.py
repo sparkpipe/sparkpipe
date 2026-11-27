@@ -23,7 +23,7 @@ def main():
     nvcc = os.environ.get("NVCC", "nvcc")
     if shutil.which(nvcc) is None:
         raise SystemExit("FAIL test_dsv41_rows16_moe_exact: sm_121 device present but nvcc unavailable")
-    built = subprocess.run(["make", "-s", "-j4", *LIBS], cwd=ROOT, capture_output=True, text=True)
+    built = subprocess.run(["make", "-s", "-j4", "build/skl2_dsv41_embedded.h", *LIBS], cwd=ROOT, capture_output=True, text=True)
     if built.returncode != 0:
         print(built.stdout + built.stderr, end="")
         return 1
@@ -38,6 +38,7 @@ def main():
             '-DDSV41_FLASH_MODULE_TAG="dsv41_flash_rows16_stage"',
             '-DDSV41_FLASH_CONTRACT_SHA256="0"',
             f"-I{ROOT}",
+            f"-I{ROOT / 'build'}",
             f"-I{ROOT / 'include'}",
             f"-I{ROOT / 'src'}",
             f"-I{ROOT / 'modules/dsv41_flash_resident_decode_stage/include'}",

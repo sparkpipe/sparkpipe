@@ -88,7 +88,7 @@ static void Partials(const RankInputs *in, uint32_t row_first, uint32_t rows, fl
 		cudaMemcpyHostToDevice));
 	CUDA(cudaMemcpy(device_packed, in->packed.data(), in->packed.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
 	CUDA(cudaMemcpy(device_shared, in->shared.data() + (uint64_t)row_first * WIDTH, (uint64_t)rows * WIDTH * sizeof(float), cudaMemcpyHostToDevice));
-	D41MoeFinalizeF32Kernel<<<dim3((WIDTH + 255u) / 256u, rows), 256u>>>(device_packed, device_packed_row, device_expert, device_shared,
+	D41MoeFinalizeF32Launch(dim3((WIDTH + 255u) / 256u, rows), 256u, (SparkGpuStream)0, device_packed, device_packed_row, device_expert, device_shared,
 		device_partial, TOPK, LOCAL, WIDTH);
 	CUDA(cudaGetLastError());
 }
@@ -107,7 +107,7 @@ static std::vector<uint16_t> Combine(const std::vector<RankInputs> &ranks, uint3
 	CUDA(cudaMalloc(&out, (uint64_t)ROWS * WIDTH * sizeof(uint16_t)));
 	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
 		Partials(&ranks[rank], row_first, rows, gathered + (uint64_t)rank * rows * WIDTH, expert, packed_row, packed, shared);
-	D41SumSourcesF32Kernel<<<64u, 256u>>>(gathered, out, (uint64_t)rows * WIDTH, RANKS);
+	D41SumSourcesF32Launch(64u, 256u, (SparkGpuStream)0, gathered, out, (uint64_t)rows * WIDTH, RANKS);
 	CUDA(cudaGetLastError());
 	CUDA(cudaMemcpy(result.data(), out, result.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 	CUDA(cudaFree(expert));

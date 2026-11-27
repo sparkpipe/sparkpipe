@@ -25,6 +25,16 @@
 #include "dsv41_flash_kernels.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
+#include "skl2_dsv41_embedded.h"
+
+struct D41Skl2BundleTag {};
+
+template<typename... Args>
+static inline SparkGpuError D41Skl2Launch(uint32_t id, dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, Args... args)
+{
+	return LmLaunchEmbedded<D41Skl2BundleTag>(kD41Skl2Cubin, sizeof(kD41Skl2Cubin), (const char *)kD41Skl2Manifest,
+		sizeof(kD41Skl2Manifest) - 1u, kD41Skl2Names, (uint32_t)D41SKL2_COUNT, id, grid, block, shared, stream, args...);
+}
 
 #define D41K_THREADS 256u
 #define D41K_HC 4u
@@ -136,21 +146,9 @@ static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t h
 	LmDependentRelease();
 }
 
-static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ block_scale, uint8_t *__restrict__ weight,
-	uint8_t *__restrict__ row_scale, uint16_t *__restrict__ wide, uint32_t columns, uint32_t row_first, uint32_t column_first,
-	uint32_t output_columns)
-{
-	const uint32_t row = row_first + blockIdx.x, scale_columns = columns / 32u, output_groups = output_columns / 32u;
-	for ( uint32_t group = threadIdx.x; group < output_groups; group += blockDim.x )
-		row_scale[(uint64_t)blockIdx.x * output_groups + group] = block_scale[(uint64_t)(row / 32u) * scale_columns + column_first / 32u + group];
-	if ( weight != 0 )
-		for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
-			weight[(uint64_t)blockIdx.x * output_columns + index] = payload[(uint64_t)row * columns + column_first + index];
-	if ( wide != 0 )
-		for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
-			wide[(uint64_t)blockIdx.x * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column_first + index]) *
-				LmE8m0ToFloat(block_scale[(uint64_t)(row / 32u) * scale_columns + (column_first + index) / 32u]));
-}
+static inline SparkGpuError D41Fp8SliceLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *payload, const uint8_t *block_scale,
+	uint8_t *weight, uint8_t *row_scale, uint16_t *wide, uint32_t columns, uint32_t row_first, uint32_t column_first, uint32_t output_columns)
+{ return D41Skl2Launch(D41SKL2_d41_fp8_slice_256, grid, block, 0, stream, payload, block_scale, weight, row_scale, wide, columns, row_first, column_first, output_columns); }
 
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
 	uint32_t *__restrict__ emit_row, float *__restrict__ state, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
@@ -221,53 +219,14 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 	LmDependentRelease();
 }
 
-static __global__ void D41CompressorSaveKernel(const float *__restrict__ kv, const float *__restrict__ score, float *__restrict__ state,
-	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
-	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint32_t rows, uint32_t ratio,
-	uint32_t state_stride_floats, uint32_t width, uint32_t commit, const uint32_t *__restrict__ lane_count,
-	const uint32_t *__restrict__ path_rows = 0)
-{
-	LmDependentWait();
-	LmDependentRelease();
-	if ( commit == 0u )
-		return;
-	uint32_t row = blockIdx.x, lane;
-	if ( path_rows != 0 )
-	{
-		const uint32_t count = lane_count != 0 ? lane_count[0] : 0u;
-		if ( blockIdx.x != 0u || count == 0u )
-			return;
-		row = path_rows[count - 1u];
-		if ( (positions[row] + 1u) % ratio == 0u )
-			return;
-		lane = 0u;
-	}
-	else
-	{
-		if ( row >= rows || (positions[row] + 1u) % ratio == 0u )
-			return;
-		lane = row_lane[row];
-		const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
-		if ( row_ordinal[row] + 1u != count )
-			return;
-	}
-	float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
-	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
-	{
-		slot_state[c] = kv[(uint64_t)row * width + c];
-		slot_state[width + c] = score[(uint64_t)row * width + c];
-	}
-}
+static inline SparkGpuError D41CompressorSaveLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const float *kv, const float *score, float *state,
+	const uint32_t *positions, const uint32_t *row_lane, const uint32_t *row_ordinal, const uint32_t *sequence_row_begin, const uint32_t *recurrent_slot,
+	uint32_t rows, uint32_t ratio, uint32_t state_stride_floats, uint32_t width, uint32_t commit, const uint32_t *lane_count, const uint32_t *path_rows = 0)
+{ return D41Skl2Launch(D41SKL2_d41_compressor_save_256, grid, block, 0, stream, kv, score, state, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_slot, rows, ratio, state_stride_floats, width, commit, lane_count, path_rows); }
 
-static __global__ void D41CompressedTreeMapKernel(const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets,
-	uint32_t *__restrict__ compressed_fork, uint32_t *__restrict__ compressed_offset, uint32_t rows, uint32_t ratio)
-{
-	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row >= rows )
-		return;
-	compressed_fork[row] = fork_positions[row] == D41K_NO_ROW ? D41K_NO_ROW : fork_positions[row] / ratio;
-	compressed_offset[row] = slot_offsets[row] / ratio;
-}
+static inline SparkGpuError D41CompressedTreeMapLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *fork_positions,
+	const uint32_t *slot_offsets, uint32_t *compressed_fork, uint32_t *compressed_offset, uint32_t rows, uint32_t ratio)
+{ return D41Skl2Launch(D41SKL2_d41_compressed_tree_map_256, grid, block, 0, stream, fork_positions, slot_offsets, compressed_fork, compressed_offset, rows, ratio); }
 
 template<class Geometry, uint32_t THREADS>
 static __global__ __launch_bounds__(THREADS, 1)
@@ -335,27 +294,13 @@ static __global__ void D41TreeNgramHashKernel(const uint32_t *__restrict__ token
 	}
 }
 
-static __global__ void D41CompressedEmitPositionKernel(const uint32_t *__restrict__ positions, uint32_t *__restrict__ bound_position,
-	uint32_t rows, uint32_t ratio)
-{
-	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( row >= rows )
-		return;
-	const uint32_t visible = (positions[row] + 1u) / ratio;
-	bound_position[row] = visible == 0u ? D41K_NO_ROW : visible - 1u;
-}
+static inline SparkGpuError D41CompressedEmitPositionLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *positions,
+	uint32_t *bound_position, uint32_t rows, uint32_t ratio)
+{ return D41Skl2Launch(D41SKL2_d41_compressed_emit_position_256, grid, block, 0, stream, positions, bound_position, rows, ratio); }
 
-static __global__ void D41CompressedLengthKernel(const uint32_t *__restrict__ context_length, uint32_t *__restrict__ compressed_length,
-	uint32_t sequences, uint32_t ratio)
-{
-	const uint32_t sequence = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( sequence < sequences )
-		compressed_length[sequence] = context_length[sequence] / ratio;
-}
+static inline SparkGpuError D41CompressedLengthLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *context_length,
+	uint32_t *compressed_length, uint32_t sequences, uint32_t ratio)
+{ return D41Skl2Launch(D41SKL2_d41_compressed_length_256, grid, block, 0, stream, context_length, compressed_length, sequences, ratio); }
 
 template<class Geometry>
 static __global__ void D41StoreCompressedKernel(LmKvShardView view, const uint16_t *__restrict__ latent, const uint16_t *__restrict__ index_key,
@@ -503,38 +448,19 @@ static __global__ void D41IndexQueryPrepKernel(uint16_t *__restrict__ query, uin
 	LmDependentRelease();
 }
 
-static __global__ void D41GatherPlanKernel(uint32_t *__restrict__ plan, uint32_t capacity, const uint32_t *__restrict__ sequence_of_row,
-	const uint32_t *__restrict__ length)
-{
-	const uint32_t sequence = sequence_of_row[0];
-	plan[0] = sequence;
-	plan[capacity + sequence] = 0u;
-	plan[2u * capacity + sequence] = length[sequence];
-}
+static inline SparkGpuError D41GatherPlanLaunch(SparkGpuStream stream, uint32_t *plan, uint32_t capacity, const uint32_t *sequence_of_row,
+	const uint32_t *length)
+{ return D41Skl2Launch(D41SKL2_d41_gather_plan_32, 1u, 32u, 0, stream, plan, capacity, sequence_of_row, length); }
 
-static __global__ void D41RingPackKernel(const uint16_t *__restrict__ rings, const uint32_t *__restrict__ recurrent_slot, uint64_t slot_stride,
-	uint32_t ring_elements, uint16_t *__restrict__ send)
-{
-	const uint16_t *ring = rings + (uint64_t)blockIdx.x * ring_elements + (uint64_t)recurrent_slot[0] * slot_stride;
-	uint16_t *target = send + (uint64_t)blockIdx.x * ring_elements;
-	for ( uint32_t element = threadIdx.x; element < ring_elements; element += blockDim.x )
-		target[element] = ring[element];
-}
-
-static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t span, uint32_t destinations)
-{
-	LmDependentWait();
-	LmDependentRelease();
-	for ( uint32_t destination = 0u; destination < destinations; ++destination )
-		for ( uint32_t offset = blockIdx.x * blockDim.x + threadIdx.x; offset < span; offset += gridDim.x * blockDim.x )
-			records[(uint64_t)destination * destination_stride + offset] = offset % D41K_RECORD == 0u ? -INFINITY : 0.0f;
-}
+static inline SparkGpuError D41RingPackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *rings, const uint32_t *recurrent_slot,
+	uint64_t slot_stride, uint32_t ring_elements, uint16_t *send)
+{ return D41Skl2Launch(D41SKL2_d41_ring_pack_256, grid, block, 0, stream, rings, recurrent_slot, slot_stride, ring_elements, send); }
 
 static inline void D41InitRecords(float *records, uint64_t destination_stride, uint32_t rows, uint32_t heads_per_destination, uint32_t destinations,
 	SparkGpuStream stream)
 {
 	const uint32_t span = rows * heads_per_destination * D41K_RECORD, blocks = (span + D41K_THREADS - 1u) / D41K_THREADS;
-	LM_LAUNCH_DEPENDENT((D41InitRecordsKernel), blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream, records, destination_stride, span, destinations);
+	D41Skl2Launch(D41SKL2_d41_init_records_256, blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream, records, destination_stride, span, destinations);
 }
 
 #define D41K_WINDOW_KEYS 128u
@@ -1123,19 +1049,6 @@ static __device__ __forceinline__ uint4 D41DequantE4m3x8(uint2 codes, float scal
 		D41DequantE4m3x2(codes.y, scale), D41DequantE4m3x2(codes.y >> 16u, scale));
 }
 
-static __device__ __forceinline__ void D41DequantRowE4m3(const uint8_t *__restrict__ src, const uint8_t *__restrict__ scales,
-	uint16_t *__restrict__ dst, uint32_t width)
-{
-	if ( (width & 7u) == 0u && LmIsAligned8(src) && LmIsAligned16(dst) )
-	{
-		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < (width >> 3u); q += gridDim.x * blockDim.x )
-			((uint4 *)dst)[q] = D41DequantE4m3x8(((const uint2 *)src)[q], __uint_as_float((uint32_t)scales[(q * 8u) / SPARK_DSV41_FLASH_FP8_BLOCK] << 23u));
-		return;
-	}
-	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < width; i += gridDim.x * blockDim.x )
-		dst[i] = LmFloatToBf16(LmE4m3ToFloat(src[i]) * __uint_as_float((uint32_t)scales[i / SPARK_DSV41_FLASH_FP8_BLOCK] << 23u));
-}
-
 static __device__ __forceinline__ uint8_t D41QuantFp8Block(uint16_t value, uint8_t *exponent)
 {
 	const float activation = LmBf16ToFloat(value);
@@ -1185,18 +1098,6 @@ static __device__ __forceinline__ void D41Fp8Quant8(const float vals[8], uint2 *
 	const uint32_t p2 = LmFloatPairToE4m3(vals[4] * inv, vals[5] * inv), p3 = LmFloatPairToE4m3(vals[6] * inv, vals[7] * inv);
 	*codes = make_uint2(p0 | (p1 << 16u), p2 | (p3 << 16u));
 	*exponent = (uint8_t)(sbits >> 23u);
-}
-
-static __device__ __forceinline__ uint4 D41Swiglu8(uint4 g_raw, uint4 u_raw, float weight, float limit, float out[8])
-{
-	float g[8], u[8];
-	LmLoadBf16x8AsFloat(g_raw, g);
-	LmLoadBf16x8AsFloat(u_raw, u);
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k ) out[k] = SparkMathGateLimitedGlu(g[k], u[k], limit) * weight;
-	const uint4 packed = LmPackUint4FloatToBf16(out);
-	LmLoadBf16x8AsFloat(packed, out);
-	return packed;
 }
 
 static __device__ __forceinline__ void D41MergeSinkHead(const float *__restrict__ partials, uint64_t source_stride, uint32_t sources, uint32_t heads,
@@ -1685,143 +1586,27 @@ D41WindowFoldSpreadClusterKernel(const float *__restrict__ records, uint32_t has
 	LmDependentRelease();
 }
 
-static __global__ void D41SwigluRowsKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t width, float limit)
-{ LmDependentWait(); LmDependentRelease(); const uint64_t row_base = (uint64_t)blockIdx.y * width; LmBinaryBf16GridBody(gate + row_base, up + row_base, output + row_base, width, LmSiluGateLimitOp{limit}); }
+static inline SparkGpuError D41SwigluRowsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate, const uint16_t *up, uint16_t *output, uint32_t width, float limit)
+{ return D41Skl2Launch(D41SKL2_d41_swiglu_rows_256, grid, block, 0, stream, gate, up, output, width, limit); }
 
-static __global__ void D41SwigluQdqRowsKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t width, float limit)
-{
-	const uint32_t octets = width >> 3u, q = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	if ( q < octets )
-	{
-		const uint64_t base = (uint64_t)blockIdx.y * octets + q;
-		float v[8];
-		D41Swiglu8(((const uint4 *)gate)[base], ((const uint4 *)up)[base], 1.0f, limit, v);
-		((uint4 *)output)[base] = D41Fp8Qdq8(v);
-	}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41SwigluQdqRowsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate, const uint16_t *up, uint16_t *output, uint32_t width, float limit)
+{ return D41Skl2Launch(D41SKL2_d41_swiglu_qdq_rows_256, grid, block, 0, stream, gate, up, output, width, limit); }
 
-static __global__ void D41SwigluMxKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint8_t *__restrict__ codes,
-	uint8_t *__restrict__ scales, uint32_t width, float limit)
-{
-	const uint32_t octets = width >> 3u, q = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	if ( q < octets )
-	{
-		const uint64_t base = (uint64_t)blockIdx.y * octets + q;
-		float v[8]; uint2 packed; uint8_t sc;
-		D41Swiglu8(((const uint4 *)gate)[base], ((const uint4 *)up)[base], 1.0f, limit, v);
-		D41Fp8Quant8(v, &packed, &sc);
-		((uint2 *)codes)[base] = packed;
-		if ( (q & 3u) == 0u ) scales[base >> 2u] = sc;
-	}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41SwigluMxLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate, const uint16_t *up, uint8_t *codes, uint8_t *scales, uint32_t width, float limit)
+{ return D41Skl2Launch(D41SKL2_d41_swiglu_mx_256, grid, block, 0, stream, gate, up, codes, scales, width, limit); }
 
-static __global__ void D41RankMajorMxKernel(const uint16_t *__restrict__ gathered, uint8_t *__restrict__ codes, uint8_t *__restrict__ scales,
-	uint32_t rows, uint32_t width, uint32_t ranks, uint32_t first_rank)
-{
-	const uint32_t total_octets = (ranks * width) >> 3u, q = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	if ( q < total_octets )
-	{
-		const uint32_t width_octets = width >> 3u, r = q / width_octets, within = q - r * width_octets;
-		float v[8]; uint2 packed; uint8_t sc;
-		LmLoadBf16x8AsFloat(((const uint4 *)gathered)[((uint64_t)(first_rank + r) * rows + blockIdx.y) * width_octets + within], v);
-		D41Fp8Quant8(v, &packed, &sc);
-		const uint64_t dst = (uint64_t)blockIdx.y * total_octets + q;
-		((uint2 *)codes)[dst] = packed;
-		if ( (q & 3u) == 0u ) scales[dst >> 2u] = sc;
-	}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41RankMajorMxLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gathered, uint8_t *codes, uint8_t *scales, uint32_t rows, uint32_t width, uint32_t ranks, uint32_t first_rank)
+{ return D41Skl2Launch(D41SKL2_d41_rank_major_mx_256, grid, block, 0, stream, gathered, codes, scales, rows, width, ranks, first_rank); }
 
-static __global__ void D41RankMajorQdqKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ target,
-	uint32_t rows, uint32_t width, uint32_t ranks, uint32_t first_rank)
-{
-	const uint32_t total_octets = (ranks * width) >> 3u, q = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	if ( q < total_octets )
-	{
-		const uint32_t width_octets = width >> 3u, r = q / width_octets, within = q - r * width_octets;
-		float v[8];
-		LmLoadBf16x8AsFloat(((const uint4 *)gathered)[((uint64_t)(first_rank + r) * rows + blockIdx.y) * width_octets + within], v);
-		((uint4 *)target)[(uint64_t)blockIdx.y * total_octets + q] = D41Fp8Qdq8(v);
-	}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41RankMajorQdqLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gathered, uint16_t *target, uint32_t rows, uint32_t width, uint32_t ranks, uint32_t first_rank)
+{ return D41Skl2Launch(D41SKL2_d41_rank_major_qdq_256, grid, block, 0, stream, gathered, target, rows, width, ranks, first_rank); }
 
 template<uint32_t STREAMS, uint32_t MODE>
-static __global__ __launch_bounds__(256)
-void D41HcPostFusedKernel(const void *__restrict__ gathered, const float *__restrict__ post, const float *__restrict__ comb,
-	uint16_t *__restrict__ streams, uint32_t rows, uint32_t width, uint32_t degree, uint32_t slice_width)
+static inline SparkGpuError D41HcPostFusedLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const void *gathered, const float *post, const float *comb, uint16_t *streams, uint32_t rows, uint32_t width, uint32_t degree, uint32_t slice_width)
 {
-	__shared__ float sp[STREAMS], sc[STREAMS][STREAMS];
-	const uint32_t row = blockIdx.y, octets = width >> 3u;
-	LmDependentWait();
-	if ( threadIdx.x < STREAMS ) sp[threadIdx.x] = __ldg(post + (uint64_t)row * STREAMS + threadIdx.x);
-	if ( threadIdx.x < STREAMS * STREAMS )
-		sc[threadIdx.x / STREAMS][threadIdx.x % STREAMS] = __ldg(comb + (uint64_t)row * STREAMS * STREAMS + threadIdx.x);
-	__syncthreads();
-	for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < octets; q += gridDim.x * blockDim.x )
-	{
-		uint4 sub;
-		if constexpr ( MODE == 1u )
-		{
-			const uint32_t sw_oct = slice_width >> 3u, r = q / sw_oct, within = q - r * sw_oct;
-			sub = __ldg((const uint4 *)gathered + ((uint64_t)r * rows + row) * sw_oct + within);
-		}
-		else if constexpr ( MODE == 2u )
-		{
-			const float *gf = (const float *)gathered;
-			const uint64_t elems = (uint64_t)rows * width, base = (uint64_t)row * width + ((uint64_t)q << 3u);
-			float s[8] = {}, v[8];
-			for ( uint32_t src = 0u; src < degree; ++src )
-			{
-				LmLoadFloat8(gf + (uint64_t)src * elems + base, v);
-				#pragma unroll
-				for ( uint32_t k = 0u; k < 8u; ++k ) s[k] += v[k];
-			}
-			sub = LmPackUint4FloatToBf16(s);
-		}
-		else
-		{
-			const uint4 *gb = (const uint4 *)gathered;
-			const uint64_t row_oct = (uint64_t)rows * octets, base = (uint64_t)row * octets + q;
-			float s[8] = {};
-			for ( uint32_t src = 0u; src < degree; ++src ) LmAddBf16x8(s, gb[(uint64_t)src * row_oct + base]);
-			sub = LmPackUint4FloatToBf16(s);
-		}
-		const uint32_t offset = q << 3u;
-		uint4 sraw[STREAMS];
-		#pragma unroll
-		for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
-			sraw[copy] = *(const uint4 *)(streams + ((uint64_t)row * STREAMS + copy) * width + offset);
-		const uint32_t subw[4] = { sub.x, sub.y, sub.z, sub.w };
-		for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
-		{
-			const float pc = sp[copy];
-			uint32_t outw[4];
-			#pragma unroll
-			for ( uint32_t w = 0u; w < 4u; ++w )
-			{
-				float t0 = 0.0f, t1 = 0.0f;
-				#pragma unroll
-				for ( uint32_t from = 0u; from < STREAMS; ++from )
-				{
-					const uint32_t sw = w == 0u ? sraw[from].x : w == 1u ? sraw[from].y : w == 2u ? sraw[from].z : sraw[from].w;
-					const float cf = sc[from][copy];
-					t0 += cf * __uint_as_float(sw << 16u);
-					t1 += cf * __uint_as_float(sw & 0xffff0000u);
-				}
-				const float x0 = __uint_as_float(subw[w] << 16u), x1 = __uint_as_float(subw[w] & 0xffff0000u);
-				outw[w] = LmPackBf16Pair(pc * x0 + t0, pc * x1 + t1);
-			}
-			*(uint4 *)(streams + ((uint64_t)row * STREAMS + copy) * width + offset) = make_uint4(outw[0], outw[1], outw[2], outw[3]);
-		}
-	}
-	LmDependentRelease();
+	static_assert(STREAMS == 4u && MODE >= 1u && MODE <= 3u, "hc post fused skl2 supports 4 streams and modes 1..3");
+	const uint32_t id = MODE == 1u ? (uint32_t)D41SKL2_d41_hc_post_fused_m1_256 : MODE == 2u ? (uint32_t)D41SKL2_d41_hc_post_fused_m2_256 : (uint32_t)D41SKL2_d41_hc_post_fused_m3_256;
+	return D41Skl2Launch(id, grid, block, 0, stream, gathered, post, comb, streams, rows, width, degree, slice_width);
 }
 
 static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uint32_t source_stride, uint16_t *__restrict__ target, uint32_t target_stride, uint32_t width)
@@ -1835,228 +1620,37 @@ static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uin
 	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < width; i += gridDim.x * blockDim.x ) dst[i] = src[i];
 }
 
-static __global__ void D41IndexPackKernel(const uint16_t *__restrict__ query, const uint16_t *__restrict__ weight, uint16_t *__restrict__ packed,
-	uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
-{
-	LmDependentWait();
-	LmDependentRelease();
-	uint16_t *p_row = packed + (uint64_t)blockIdx.x * pack_width;
-	LmCopySliceBf16<D41K_THREADS>(query + (uint64_t)blockIdx.x * query_width, p_row, query_width);
-	for ( uint32_t i = threadIdx.x; i < pack_width - query_width; i += D41K_THREADS ) p_row[query_width + i] = i < weight_width ? weight[(uint64_t)blockIdx.x * weight_width + i] : (uint16_t)0u;
-}
+static inline SparkGpuError D41IndexPackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *query, const uint16_t *weight, uint16_t *packed, uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
+{ return D41Skl2Launch(D41SKL2_d41_index_pack_256, grid, block, 0, stream, query, weight, packed, query_width, weight_width, pack_width); }
 
-static __global__ void D41IndexUnpackKernel(const uint16_t *__restrict__ packed, uint64_t rank_stride, uint16_t *__restrict__ query,
-	uint16_t *__restrict__ weight, uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
-{
-	LmDependentWait();
-	LmDependentRelease();
-	const uint16_t *src = packed + (uint64_t)blockIdx.y * rank_stride + (uint64_t)blockIdx.x * pack_width;
-	LmCopySliceBf16<D41K_THREADS>(src, query + ((uint64_t)blockIdx.x * gridDim.y + blockIdx.y) * query_width, query_width);
-	LmCopySliceBf16<D41K_THREADS>(src + query_width, weight + ((uint64_t)blockIdx.x * gridDim.y + blockIdx.y) * weight_width, weight_width);
-}
+static inline SparkGpuError D41IndexUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *packed, uint64_t rank_stride, uint16_t *query, uint16_t *weight, uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
+{ return D41Skl2Launch(D41SKL2_d41_index_unpack_256, grid, block, 0, stream, packed, rank_stride, query, weight, query_width, weight_width, pack_width); }
 
 static inline dim3 D41ItemGrid(uint32_t blocks, uint32_t items) { const uint32_t span = items < D41K_GRID_ITEMS ? (items != 0u ? items : 1u) : D41K_GRID_ITEMS; return dim3(blocks, span, (items + span - 1u) / span); }
 
-static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
-	const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t routes, uint32_t rows, uint32_t slice, uint32_t hidden_slice,
-	uint32_t degree, uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
-{
-	const uint32_t item = blockIdx.z * gridDim.y + blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( item < routes )
-	{
-		const uint32_t route = item;
-		if ( element >= slice )
-			return;
-		const uint16_t value = LmSwigluPackedValue(gate_up[(uint64_t)route * 2u * slice + element], gate_up[(uint64_t)route * 2u * slice + slice + element],
-			packed_weight[route], limit);
-		if ( codes == 0u )
-		{
-			for ( uint32_t destination = 0u; destination < degree; ++destination )
-				send[(uint64_t)destination * destination_stride + (uint64_t)route * slice + element] = value;
-			return;
-		}
-		uint8_t exponent;
-		const uint8_t code = D41QuantFp8Block(value, &exponent);
-		for ( uint32_t destination = 0u; destination < degree; ++destination )
-		{
-			uint8_t *bytes = (uint8_t *)(send + (uint64_t)destination * destination_stride);
-			bytes[(uint64_t)route * slice + element] = code;
-			if ( element % SPARK_DSV41_FLASH_FP8_BLOCK == 0u )
-				bytes[(uint64_t)routes * slice + (uint64_t)route * (slice / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK] = exponent;
-		}
-		return;
-	}
-	const uint32_t row = item - routes;
-	if ( row >= rows || element >= hidden_slice * degree )
-		return;
-	send[(uint64_t)(element / hidden_slice) * destination_stride + (uint64_t)routes * route_elements + (uint64_t)row * hidden_slice +
-		element % hidden_slice] = shared[(uint64_t)row * hidden_slice * degree + element];
-}
+static inline SparkGpuError D41MoeSendLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate_up, const float *packed_weight, const uint16_t *shared, uint16_t *send, uint32_t routes, uint32_t rows, uint32_t slice, uint32_t hidden_slice, uint32_t degree, uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
+{ return D41Skl2Launch(D41SKL2_d41_moe_send_256, grid, block, 0, stream, gate_up, packed_weight, shared, send, routes, rows, slice, hidden_slice, degree, destination_stride, limit, route_elements, codes); }
 
-static __global__ void D41ActAssembleMxKernel(const uint16_t *__restrict__ received, uint8_t *__restrict__ codes, uint32_t slice, uint32_t width,
-	uint64_t source_stride, uint32_t routes)
-{
-	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, q = blockIdx.x * blockDim.x + threadIdx.x, octets = width >> 3u;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( route >= routes || q >= octets ) return;
-	const uint32_t element = q << 3u, source = element / slice, within = element - source * slice;
-	float v[8];
-	LmLoadBf16x8AsFloat(*(const uint4 *)(received + (uint64_t)source * source_stride + (uint64_t)route * slice + within), v);
-	uint2 packed;
-	uint8_t sc;
-	D41Fp8Quant8(v, &packed, &sc);
-	*(uint2 *)(codes + (uint64_t)route * width + element) = packed;
-	if ( (q & 3u) == 0u ) codes[(uint64_t)routes * width + (uint64_t)route * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + (q >> 2u)] = sc;
-}
+static inline SparkGpuError D41ActAssembleMxLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *received, uint8_t *codes, uint32_t slice, uint32_t width, uint64_t source_stride, uint32_t routes)
+{ return D41Skl2Launch(D41SKL2_d41_act_assemble_mx_256, grid, block, 0, stream, received, codes, slice, width, source_stride, routes); }
 
-static __global__ void D41ActAssembleQdqKernel(const uint16_t *__restrict__ received, uint16_t *__restrict__ act, uint32_t slice, uint32_t width,
-	uint64_t source_stride, uint32_t routes, uint32_t codes)
-{
-	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = element / slice;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( route >= routes || element >= width )
-		return;
-	if ( codes != 0u )
-	{
-		const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
-		const uint32_t within = element - source * slice;
-		const uint32_t exponent = bytes[(uint64_t)routes * slice + (uint64_t)route * (slice / SPARK_DSV41_FLASH_FP8_BLOCK) +
-			within / SPARK_DSV41_FLASH_FP8_BLOCK];
-		act[(uint64_t)route * width + element] = LmFloatToBf16(LmE4m3ToFloat(bytes[(uint64_t)route * slice + within]) * __uint_as_float(exponent << 23u));
-		return;
-	}
-	act[(uint64_t)route * width + element] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(
-		received[(uint64_t)source * source_stride + (uint64_t)route * slice + element - source * slice]));
-}
+static inline SparkGpuError D41ActAssembleQdqLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *received, uint16_t *act, uint32_t slice, uint32_t width, uint64_t source_stride, uint32_t routes, uint32_t codes)
+{ return D41Skl2Launch(D41SKL2_d41_act_assemble_qdq_256, grid, block, 0, stream, received, act, slice, width, source_stride, routes, codes); }
 
-static __global__ void D41MoeSendVecKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
-	const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t routes, uint32_t rows, uint32_t slice, uint32_t hidden_slice,
-	uint32_t degree, uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
-{
-	const uint32_t item = blockIdx.z * gridDim.y + blockIdx.y, q = blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( item < routes )
-	{
-		const uint32_t route = item, octets = slice >> 3u;
-		if ( q >= octets )
-			return;
-		const uint64_t g_base = (uint64_t)route * 2u * octets + q;
-		float v[8];
-		const uint4 bf = D41Swiglu8(((const uint4 *)gate_up)[g_base], ((const uint4 *)gate_up)[g_base + octets], packed_weight[route], limit, v);
-		if ( codes == 0u )
-		{
-			for ( uint32_t d = 0u; d < degree; ++d )
-				((uint4 *)(send + (uint64_t)d * destination_stride + (uint64_t)route * slice))[q] = bf;
-			return;
-		}
-		uint2 packed;
-		uint8_t sc;
-		D41Fp8Quant8(v, &packed, &sc);
-		const uint32_t s_blocks = slice / SPARK_DSV41_FLASH_FP8_BLOCK;
-		for ( uint32_t d = 0u; d < degree; ++d )
-		{
-			uint8_t *bytes = (uint8_t *)(send + (uint64_t)d * destination_stride);
-			*(uint2 *)(bytes + (uint64_t)route * slice + (q << 3u)) = packed;
-			if ( (q & 3u) == 0u )
-				bytes[(uint64_t)routes * slice + (uint64_t)route * s_blocks + (q >> 2u)] = sc;
-		}
-		return;
-	}
-	const uint32_t row = item - routes, h_oct = hidden_slice >> 3u;
-	if ( row >= rows || q >= h_oct * degree )
-		return;
-	const uint32_t d = q / h_oct, within = q - d * h_oct;
-	((uint4 *)(send + (uint64_t)d * destination_stride + (uint64_t)routes * route_elements + (uint64_t)row * hidden_slice))[within] =
-		((const uint4 *)(shared + (uint64_t)row * hidden_slice * degree))[q];
-}
+static inline SparkGpuError D41MoeSendVecLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate_up, const float *packed_weight, const uint16_t *shared, uint16_t *send, uint32_t routes, uint32_t rows, uint32_t slice, uint32_t hidden_slice, uint32_t degree, uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
+{ return D41Skl2Launch(D41SKL2_d41_moe_send_vec_256, grid, block, 0, stream, gate_up, packed_weight, shared, send, routes, rows, slice, hidden_slice, degree, destination_stride, limit, route_elements, codes); }
 
-static __global__ void D41ActAssembleQdqVecKernel(const uint16_t *__restrict__ received, uint16_t *__restrict__ act, uint32_t slice, uint32_t width,
-	uint64_t source_stride, uint32_t routes, uint32_t codes)
-{
-	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, q = blockIdx.x * blockDim.x + threadIdx.x, octets = width >> 3u;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( route >= routes || q >= octets )
-		return;
-	const uint32_t element = q << 3u, source = element / slice, within = element - source * slice;
-	if ( codes != 0u )
-	{
-		const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
-		const uint32_t s_blocks = slice / SPARK_DSV41_FLASH_FP8_BLOCK;
-		const uint32_t exponent = bytes[(uint64_t)routes * slice + (uint64_t)route * s_blocks + within / SPARK_DSV41_FLASH_FP8_BLOCK];
-		const uint2 c = *(const uint2 *)(bytes + (uint64_t)route * slice + within);
-		((uint4 *)(act + (uint64_t)route * width))[q] = D41DequantE4m3x8(c, __uint_as_float(exponent << 23u));
-		return;
-	}
-	float v[8];
-	LmLoadBf16x8AsFloat(*(const uint4 *)(received + (uint64_t)source * source_stride + (uint64_t)route * slice + within), v);
-	((uint4 *)(act + (uint64_t)route * width))[q] = D41Fp8Qdq8(v);
-}
+static inline SparkGpuError D41ActAssembleQdqVecLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *received, uint16_t *act, uint32_t slice, uint32_t width, uint64_t source_stride, uint32_t routes, uint32_t codes)
+{ return D41Skl2Launch(D41SKL2_d41_act_assemble_qdq_vec_256, grid, block, 0, stream, received, act, slice, width, source_stride, routes, codes); }
 
-static __global__ void D41ActAssembleCodesKernel(const uint16_t *__restrict__ received, uint8_t *__restrict__ codes, uint32_t slice, uint32_t width,
-	uint64_t source_stride, uint32_t routes)
-{
-	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, vector = blockIdx.x * blockDim.x + threadIdx.x;
-	const uint32_t code_vectors = width / 16u, blocks = slice / SPARK_DSV41_FLASH_FP8_BLOCK;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( route >= routes || vector >= code_vectors + width / (2u * SPARK_DSV41_FLASH_FP8_BLOCK) )
-		return;
-	if ( vector < code_vectors )
-	{
-		const uint32_t element = vector * 16u, source = element / slice;
-		const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
-		*(uint4 *)(codes + (uint64_t)route * width + element) = *(const uint4 *)(bytes + (uint64_t)route * slice + element - source * slice);
-		return;
-	}
-	const uint32_t block = (vector - code_vectors) * 2u, source = block / blocks;
-	const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
-	*(uint16_t *)(codes + (uint64_t)routes * width + (uint64_t)route * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + block) =
-		*(const uint16_t *)(bytes + (uint64_t)routes * slice + (uint64_t)route * blocks + block - source * blocks);
-}
+static inline SparkGpuError D41ActAssembleCodesLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *received, uint8_t *codes, uint32_t slice, uint32_t width, uint64_t source_stride, uint32_t routes)
+{ return D41Skl2Launch(D41SKL2_d41_act_assemble_codes_256, grid, block, 0, stream, received, codes, slice, width, source_stride, routes); }
 
-static __global__ void D41SharedSendKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ send,
-	uint32_t rows, uint32_t width, uint32_t degree, uint64_t destination_stride, float limit)
-{
-	const uint32_t row = blockIdx.y, q = blockIdx.x * blockDim.x + threadIdx.x, octets = width >> 3u;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( row >= rows || q >= octets ) return;
-	const uint64_t base = (uint64_t)row * octets + q;
-	float v[8];
-	D41Swiglu8(((const uint4 *)gate)[base], ((const uint4 *)up)[base], 1.0f, limit, v);
-	uint2 packed;
-	uint8_t sc;
-	D41Fp8Quant8(v, &packed, &sc);
-	const uint32_t s_blocks = width / SPARK_DSV41_FLASH_FP8_BLOCK;
-	for ( uint32_t d = 0u; d < degree; ++d )
-	{
-		uint8_t *bytes = (uint8_t *)(send + (uint64_t)d * destination_stride);
-		*(uint2 *)(bytes + (uint64_t)row * width + (q << 3u)) = packed;
-		if ( (q & 3u) == 0u ) bytes[(uint64_t)rows * width + (uint64_t)row * s_blocks + (q >> 2u)] = sc;
-	}
-}
+static inline SparkGpuError D41SharedSendLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate, const uint16_t *up, uint16_t *send, uint32_t rows, uint32_t width, uint32_t degree, uint64_t destination_stride, float limit)
+{ return D41Skl2Launch(D41SKL2_d41_shared_send_256, grid, block, 0, stream, gate, up, send, rows, width, degree, destination_stride, limit); }
 
-static __global__ void D41SharedDequantAllKernel(const uint16_t *__restrict__ received, uint16_t *__restrict__ act, uint32_t rows, uint64_t stride,
-	uint32_t degree, uint32_t total_granules, uint32_t granule)
-{
-	const uint32_t row = blockIdx.y, source = blockIdx.z;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( row >= rows || source >= degree )
-		return;
-	const uint32_t base = total_granules / degree, extra = total_granules % degree;
-	const uint32_t first = (source * base + (source < extra ? source : extra)) * granule;
-	const uint32_t width = (base + (source < extra ? 1u : 0u)) * granule;
-	const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * stride);
-	D41DequantRowE4m3(bytes + (uint64_t)row * width, bytes + (uint64_t)rows * width + (uint64_t)row * (width / SPARK_DSV41_FLASH_FP8_BLOCK),
-		act + (uint64_t)first * rows + (uint64_t)row * width, width);
-}
+static inline SparkGpuError D41SharedDequantAllLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *received, uint16_t *act, uint32_t rows, uint64_t stride, uint32_t degree, uint32_t total_granules, uint32_t granule)
+{ return D41Skl2Launch(D41SKL2_d41_shared_dequant_all_256, grid, block, 0, stream, received, act, rows, stride, degree, total_granules, granule); }
 
 static __global__ void D41L2PrefetchKernel(const uint8_t *__restrict__ ptr0, uint64_t bytes0, const uint8_t *__restrict__ ptr1, uint64_t bytes1)
 {
@@ -2071,58 +1665,14 @@ static __global__ void D41L2PrefetchKernel(const uint8_t *__restrict__ ptr0, uin
 			LmPrefetchL2(ptr1 + off, (uint32_t)(bytes1 - off < PIECE ? bytes1 - off : PIECE));
 }
 
-static __global__ void D41SharedDequantKernel(const uint8_t *__restrict__ bytes, uint16_t *__restrict__ act, uint32_t rows, uint32_t width)
-{
-	const uint32_t row = blockIdx.y;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( row >= rows )
-		return;
-	D41DequantRowE4m3(bytes + (uint64_t)row * width, bytes + (uint64_t)rows * width + (uint64_t)row * (width / SPARK_DSV41_FLASH_FP8_BLOCK),
-		act + (uint64_t)row * width, width);
-}
+static inline SparkGpuError D41SharedDequantLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *bytes, uint16_t *act, uint32_t rows, uint32_t width)
+{ return D41Skl2Launch(D41SKL2_d41_shared_dequant_256, grid, block, 0, stream, bytes, act, rows, width); }
 
-static __global__ void D41FfnPackKernel(const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint8_t *__restrict__ block,
-	uint32_t own, uint32_t routed, uint32_t hidden, uint32_t top_k)
-{
-	const uint32_t item = blockIdx.x * blockDim.x + threadIdx.x;
-	const uint64_t ids = (uint64_t)own * (hidden + hidden / SPARK_DSV41_FLASH_FP8_BLOCK);
-	LmDependentWait();
-	LmDependentRelease();
-	if ( item >= routed * top_k )
-		return;
-	((uint32_t *)(block + ids))[item] = route_expert[item];
-	((float *)(block + ids + (uint64_t)own * top_k * sizeof(uint32_t)))[item] = route_weight[item];
-}
+static inline SparkGpuError D41FfnPackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *route_expert, const float *route_weight, uint8_t *block_out, uint32_t own, uint32_t routed, uint32_t hidden, uint32_t top_k)
+{ return D41Skl2Launch(D41SKL2_d41_ffn_pack_256, grid, block, 0, stream, route_expert, route_weight, block_out, own, routed, hidden, top_k); }
 
-static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, uint16_t *__restrict__ xq, uint8_t *__restrict__ mx_codes,
-	uint8_t *__restrict__ mx_scales, uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t own, uint32_t hidden,
-	uint32_t top_k, uint64_t block_bytes)
-{
-	const uint32_t row = blockIdx.y, source = row / own, index = row - source * own;
-	const uint8_t *block = received + (uint64_t)source * block_bytes;
-	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	const uint64_t ids = (uint64_t)own * (hidden + scale_bytes);
-	LmDependentWait();
-	LmDependentRelease();
-	for ( uint32_t k = blockIdx.x * blockDim.x + threadIdx.x; k < top_k; k += gridDim.x * blockDim.x )
-	{
-		route_expert[(uint64_t)row * top_k + k] = ((const uint32_t *)(block + ids))[(uint64_t)index * top_k + k];
-		route_weight[(uint64_t)row * top_k + k] =
-			((const float *)(block + ids + (uint64_t)own * top_k * sizeof(uint32_t)))[(uint64_t)index * top_k + k];
-	}
-	if ( mx_codes != 0 )
-	{
-		const uint32_t lane = blockIdx.x * blockDim.x + threadIdx.x, lanes = gridDim.x * blockDim.x;
-		for ( uint32_t i = lane; i < hidden / 16u; i += lanes )
-			((uint4 *)(mx_codes + (uint64_t)row * hidden))[i] = ((const uint4 *)(block + (uint64_t)index * hidden))[i];
-		for ( uint32_t i = lane; i < scale_bytes / 4u; i += lanes )
-			((uint32_t *)(mx_scales + (uint64_t)row * scale_bytes))[i] =
-				((const uint32_t *)(block + (uint64_t)own * hidden + (uint64_t)index * scale_bytes))[i];
-		return;
-	}
-	D41DequantRowE4m3(block + (uint64_t)index * hidden, block + (uint64_t)own * hidden + (uint64_t)index * scale_bytes, xq + (uint64_t)row * hidden, hidden);
-}
+static inline SparkGpuError D41FfnUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *received, uint16_t *xq, uint8_t *mx_codes, uint8_t *mx_scales, uint32_t *route_expert, float *route_weight, uint32_t own, uint32_t hidden, uint32_t top_k, uint64_t block_bytes)
+{ return D41Skl2Launch(D41SKL2_d41_ffn_unpack_256, grid, block, 0, stream, received, xq, mx_codes, mx_scales, route_expert, route_weight, own, hidden, top_k, block_bytes); }
 
 #define D41K_BACKUP_FLAG 0x80000000u
 #define D41K_BACKUP_EXPERT_ROUTES 93u
@@ -2199,36 +1749,10 @@ static __global__ void D41ExchangeCountsKernel(const uint32_t *__restrict__ rout
 }
 
 template <uint32_t RANKS, uint32_t EXPERTS>
-static __global__ void D41ExchangeTotalsKernel(const uint8_t *__restrict__ gathered, uint64_t stride, uint32_t backups,
-	D41ExchangeTotals<RANKS, EXPERTS> *__restrict__ totals)
+static inline SparkGpuError D41ExchangeTotalsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *gathered, uint64_t stride, uint32_t backups, D41ExchangeTotals<RANKS, EXPERTS> *totals)
 {
-	constexpr uint32_t P = RANKS * RANKS, S = RANKS * EXPERTS;
-	const uint32_t items = 2u * P + (backups != 0u ? EXPERTS + 2u * S : 0u);
-	for ( uint32_t item = blockIdx.x * blockDim.x + threadIdx.x; item < items; item += gridDim.x * blockDim.x )
-	{
-		if ( item >= P && item < 2u * P )
-		{
-			const uint32_t idx = item - P;
-			totals->direct_pair[idx] = ((const D41ExchangeCounts<RANKS, EXPERTS> *)(gathered + (idx / RANKS) * stride))->direct_pair[idx % RANKS];
-			continue;
-		}
-		if ( item >= 2u * P + EXPERTS + S )
-		{
-			const uint32_t idx = item - (2u * P + EXPERTS + S);
-			totals->direct_sole[idx] = ((const D41ExchangeCounts<RANKS, EXPERTS> *)(gathered + (idx / EXPERTS) * stride))->direct_sole[idx % EXPERTS];
-			continue;
-		}
-		uint32_t total = 0u;
-		for ( uint32_t sender = 0u; sender < RANKS; ++sender )
-		{
-			const D41ExchangeCounts<RANKS, EXPERTS> *counts = (const D41ExchangeCounts<RANKS, EXPERTS> *)(gathered + sender * stride);
-			total += item < P ? counts->pair[item] : item < 2u * P + EXPERTS ? (uint32_t)counts->routes[item - 2u * P] :
-				(uint32_t)counts->sole[item - 2u * P - EXPERTS];
-		}
-		if ( item < P ) totals->pair[item] = total;
-		else if ( item < 2u * P + EXPERTS ) totals->routes[item - 2u * P] = total;
-		else totals->sole[item - 2u * P - EXPERTS] = (uint16_t)total;
-	}
+	static_assert((RANKS == 4u || RANKS == 16u) && EXPERTS == 384u, "exchange totals skl2 supports 4 or 16 ranks and 384 experts");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_exchange_totals_r4_e384 : D41SKL2_d41_exchange_totals_r16_e384, grid, block, 0, stream, gathered, stride, backups, totals);
 }
 
 template <uint32_t RANKS, uint32_t EXPERTS, uint32_t LOCAL, uint32_t COPIES>
@@ -3505,25 +3029,8 @@ void D41HcMixNormK40Kernel(const uint16_t *__restrict__ streams, const float *__
 }
 
 template<uint32_t QLORA>
-static __global__ __launch_bounds__(128)
-void D41UnpackQCodesKernel(const uint8_t *__restrict__ received, uint8_t *__restrict__ codes, uint8_t *__restrict__ scales,
-	uint32_t own, uint64_t segment)
-{
-	constexpr uint32_t CODE_VECS = QLORA / 16u, SCALE_WORDS = QLORA / 128u;
-	static_assert(QLORA % 128u == 0u && CODE_VECS + SCALE_WORDS <= 128u, "q_coded unpack fits one block");
-	const uint32_t row = blockIdx.y, source = row / own, local = row - source * own;
-	const uint8_t *seg = received + (uint64_t)source * segment;
-	LmDependentWait();
-	if ( threadIdx.x < CODE_VECS )
-		((uint4 *)(codes + (uint64_t)row * QLORA))[threadIdx.x] = ((const uint4 *)(seg + (uint64_t)local * QLORA))[threadIdx.x];
-	else if ( threadIdx.x < CODE_VECS + SCALE_WORDS )
-	{
-		const uint32_t j = threadIdx.x - CODE_VECS;
-		((uint32_t *)(scales + (uint64_t)row * (QLORA / 32u)))[j] =
-			((const uint32_t *)(seg + (uint64_t)own * QLORA + (uint64_t)local * (QLORA / 32u)))[j];
-	}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41UnpackQCodesLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *received, uint8_t *codes, uint8_t *scales, uint32_t own, uint64_t segment)
+{ return D41Skl2Launch(D41SKL2_d41_unpack_q_codes_128, grid, block, 0, stream, received, codes, scales, own, segment, QLORA); }
 
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t WARPS_N, uint32_t STAGES, bool OUT_F32>
 static __global__ __launch_bounds__(WARPS_M * WARPS_N * 32u)
@@ -3681,31 +3188,8 @@ void D41MxGemmSmallKernel(const uint8_t *__restrict__ act, const uint8_t *__rest
 	LmDependentRelease();
 }
 
-static __global__ void D41ExchangePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint32_t *__restrict__ slot, const uint8_t *__restrict__ owner,
-	uint32_t ranks, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint32_t experts, uint64_t record_bytes, uint8_t *__restrict__ send)
-{
-	const uint32_t row = blockIdx.x, home = blockIdx.y, at = slot[(uint64_t)row * ranks + home];
-	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	if ( at == UINT32_MAX )
-		return;
-	const uint32_t backup = at / capacity != home ? 1u : 0u;
-	uint8_t *record = send + (uint64_t)at * record_bytes;
-	for ( uint32_t i = threadIdx.x; i < hidden / 16u; i += blockDim.x )
-		((uint4 *)record)[i] = ((const uint4 *)(codes + (uint64_t)row * hidden))[i];
-	if ( (scale_bytes & 15u) == 0u )
-		for ( uint32_t i = threadIdx.x; i < scale_bytes / 16u; i += blockDim.x )
-			((uint4 *)(record + hidden))[i] = ((const uint4 *)(scales + (uint64_t)row * scale_bytes))[i];
-	else
-		for ( uint32_t i = threadIdx.x; i < scale_bytes; i += blockDim.x )
-			record[hidden + i] = scales[(uint64_t)row * scale_bytes + i];
-	for ( uint32_t k = threadIdx.x; k < top_k; k += blockDim.x )
-	{
-		const uint32_t expert = route_expert[(uint64_t)row * top_k + k];
-		((uint32_t *)(record + hidden + scale_bytes))[k] = backup == 0u ? expert : owner[expert] == home ? expert | D41K_BACKUP_FLAG : experts;
-		((float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[k] = route_weight[(uint64_t)row * top_k + k];
-	}
-}
+static inline SparkGpuError D41ExchangePackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *codes, const uint8_t *scales, const uint32_t *route_expert, const float *route_weight, const uint32_t *slot, const uint8_t *owner, uint32_t ranks, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint32_t experts, uint64_t record_bytes, uint8_t *send)
+{ return D41Skl2Launch(D41SKL2_d41_exchange_pack_256, grid, block, 0, stream, codes, scales, route_expert, route_weight, slot, owner, ranks, capacity, hidden, top_k, experts, record_bytes, send); }
 
 template <uint32_t RANKS>
 struct D41ReceivedRows
@@ -3714,98 +3198,31 @@ struct D41ReceivedRows
 };
 
 template <uint32_t RANKS>
-static __device__ __forceinline__ uint32_t D41ReceivedSource(const D41ReceivedRows<RANKS> &received, uint32_t row)
+static inline SparkGpuError D41ExchangeUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *codes, uint8_t *scales, uint32_t *route_expert, float *route_weight)
 {
-	uint32_t source = 0u;
-	while ( source + 1u < RANKS && received.first[source + 1u] <= row )
-		++source;
-	return source;
+	static_assert(RANKS == 4u || RANKS == 16u, "exchange unpack skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_exchange_unpack_r4 : D41SKL2_d41_exchange_unpack_r16, grid, block, 0, stream, received_bytes, received, capacity, hidden, top_k, record_bytes, codes, scales, route_expert, route_weight);
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity,
-	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ codes, uint8_t *__restrict__ scales,
-	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
+static inline SparkGpuError D41RecordPlaceLaunch(dim3 grid, dim3 block, SparkGpuStream stream, uint32_t *source_token, uint32_t count, D41ReceivedRows<RANKS> received, uint32_t capacity)
 {
-	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
-	const uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x, scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	const uint8_t *record = received_bytes + ((uint64_t)source * capacity + index) * record_bytes;
-	if ( vector < top_k )
-	{
-		route_expert[(uint64_t)row * top_k + vector] = ((const uint32_t *)(record + hidden + scale_bytes))[vector];
-		route_weight[(uint64_t)row * top_k + vector] = ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[vector];
-	}
-	if ( codes != 0 && vector * 16u < hidden )
-		((uint4 *)(codes + (uint64_t)row * hidden))[vector] = ((const uint4 *)record)[vector];
-	if ( scales != 0 && vector < scale_bytes )
-		scales[(uint64_t)row * scale_bytes + vector] = record[hidden + vector];
+	static_assert(RANKS == 4u || RANKS == 16u, "record place skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_record_place_r4 : D41SKL2_d41_record_place_r16, grid, block, 0, stream, source_token, count, received, capacity);
 }
 
 template <uint32_t RANKS>
-static __global__ void D41RecordPlaceKernel(uint32_t *__restrict__ source_token, uint32_t count, D41ReceivedRows<RANKS> received, uint32_t capacity)
+static inline SparkGpuError D41ExchangeFinalizeLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *packed, const uint32_t *route_packed_row, const uint32_t *route_expert, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts, uint32_t width, uint32_t skip_single, uint16_t *output)
 {
-	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( index >= count )
-		return;
-	const uint32_t row = source_token[index];
-	if ( row >= received.first[RANKS] )
-		return;
-	const uint32_t source = D41ReceivedSource<RANKS>(received, row);
-	source_token[index] = source * capacity + row - received.first[source];
+	static_assert(RANKS == 4u || RANKS == 16u, "exchange finalize skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_exchange_finalize_r4 : D41SKL2_d41_exchange_finalize_r16, grid, block, 0, stream, packed, route_packed_row, route_expert, received, capacity, top_k, local_experts, width, skip_single, output);
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ExchangeFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts,
-	uint32_t width, uint32_t skip_single, uint16_t *__restrict__ output)
+static inline SparkGpuError D41FinalizeMapLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *route_expert, const uint32_t *route_packed_row, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts, uint32_t rows, uint32_t mapped, uint32_t *output_row)
 {
-	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
-	uint4 *out = (uint4 *)(output + ((uint64_t)source * capacity + index) * width);
-	if ( skip_single != 0u )
-	{
-		uint32_t local = 0u;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-			local += route_expert[row * top_k + k] < local_experts ? 1u : 0u;
-		if ( local == 1u )
-			return;
-	}
-	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < width; vector += gridDim.x * blockDim.x )
-	{
-		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-		for ( uint32_t k = 0u; k < top_k; ++k )
-		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] < local_experts )
-				LmAddBf16x8(total, ((const uint4 *)(packed + (uint64_t)route_packed_row[route] * width))[vector]);
-		}
-		out[vector] = LmPackUint4FloatToBf16(total);
-	}
-}
-
-template <uint32_t RANKS>
-static __global__ void D41FinalizeMapKernel(const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row,
-	D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts, uint32_t rows, uint32_t mapped,
-	uint32_t *__restrict__ output_row)
-{
-	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
-	uint32_t local = 0u, only = 0u;
-	if ( row >= rows )
-		return;
-	for ( uint32_t k = 0u; k < top_k; ++k )
-		if ( route_expert[row * top_k + k] < local_experts )
-		{
-			local++;
-			only = row * top_k + k;
-		}
-	if ( local == 1u )
-	{
-		const uint32_t source = D41ReceivedSource<RANKS>(received, row);
-		output_row[route_packed_row[only]] = mapped | (source * capacity + row - received.first[source]);
-		return;
-	}
-	for ( uint32_t k = 0u; k < top_k; ++k )
-		if ( route_expert[row * top_k + k] < local_experts )
-			output_row[route_packed_row[row * top_k + k]] = route_packed_row[row * top_k + k];
+	static_assert(RANKS == 4u || RANKS == 16u, "finalize map skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_finalize_map_r4 : D41SKL2_d41_finalize_map_r16, grid, block, 0, stream, route_expert, route_packed_row, received, capacity, top_k, local_experts, rows, mapped, output_row);
 }
 
 static __host__ __device__ __forceinline__ uint32_t D41ShuffleLive(uint32_t source, uint32_t rows, uint32_t own)
@@ -3820,121 +3237,35 @@ static __host__ __device__ __forceinline__ uint32_t D41ShuffleCount(uint32_t sou
 	return live > offset ? (live - offset - 1u) / ranks + 1u : 0u;
 }
 
-static __global__ void D41ShufflePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint32_t first, uint32_t ranks, uint32_t capacity,
-	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ send)
+static inline SparkGpuError D41ShufflePackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *codes, const uint8_t *scales, const uint32_t *route_expert, const float *route_weight, uint32_t first, uint32_t ranks, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *send)
+{ return D41Skl2Launch(D41SKL2_d41_shuffle_pack_256, grid, block, 0, stream, codes, scales, route_expert, route_weight, first, ranks, capacity, hidden, top_k, record_bytes, send); }
+
+template <uint32_t RANKS>
+static inline SparkGpuError D41ShuffleUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *codes, uint8_t *scales, uint32_t *route_expert, float *route_weight)
 {
-	const uint32_t row = blockIdx.x, target = (first + row) % ranks, index = row / ranks;
-	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	uint8_t *record = send + ((uint64_t)target * capacity + index) * record_bytes;
-	for ( uint32_t i = threadIdx.x; i < hidden / 16u; i += blockDim.x )
-		((uint4 *)record)[i] = ((const uint4 *)(codes + (uint64_t)row * hidden))[i];
-	if ( (scale_bytes & 15u) == 0u )
-		for ( uint32_t i = threadIdx.x; i < scale_bytes / 16u; i += blockDim.x )
-			((uint4 *)(record + hidden))[i] = ((const uint4 *)(scales + (uint64_t)row * scale_bytes))[i];
-	else
-		for ( uint32_t i = threadIdx.x; i < scale_bytes; i += blockDim.x )
-			record[hidden + i] = scales[(uint64_t)row * scale_bytes + i];
-	for ( uint32_t k = threadIdx.x; k < top_k; k += blockDim.x )
-	{
-		((uint32_t *)(record + hidden + scale_bytes))[k] = route_expert[(uint64_t)row * top_k + k];
-		((float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[k] = route_weight[(uint64_t)row * top_k + k];
-	}
+	static_assert(RANKS == 4u || RANKS == 16u, "shuffle unpack skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_shuffle_unpack_r4 : D41SKL2_d41_shuffle_unpack_r16, grid, block, 0, stream, received_bytes, received, capacity, hidden, top_k, record_bytes, codes, scales, route_expert, route_weight);
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ShuffleUnpackKernel(const uint8_t *__restrict__ received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity,
-	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ codes, uint8_t *__restrict__ scales,
-	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
+static inline SparkGpuError D41ShuffleSumLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *landing, const uint32_t *slot, D41ReceivedRows<RANKS> received, uint32_t shuffle, uint32_t hidden, uint16_t *output)
 {
-	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
-	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	const uint8_t *record = received_bytes + ((uint64_t)source * capacity + index) * record_bytes;
-	const uint32_t lane = blockIdx.x * blockDim.x + threadIdx.x, lanes = gridDim.x * blockDim.x;
-	for ( uint32_t i = lane; i < hidden / 16u; i += lanes )
-		((uint4 *)(codes + (uint64_t)row * hidden))[i] = ((const uint4 *)record)[i];
-	if ( (scale_bytes & 15u) == 0u )
-		for ( uint32_t i = lane; i < scale_bytes / 16u; i += lanes )
-			((uint4 *)(scales + (uint64_t)row * scale_bytes))[i] = ((const uint4 *)(record + hidden))[i];
-	else
-		for ( uint32_t i = lane; i < scale_bytes; i += lanes )
-			scales[(uint64_t)row * scale_bytes + i] = record[hidden + i];
-	if ( lane < top_k )
-	{
-		route_expert[(uint64_t)row * top_k + lane] = ((const uint32_t *)(record + hidden + scale_bytes))[lane];
-		route_weight[(uint64_t)row * top_k + lane] = ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[lane];
-	}
+	static_assert(RANKS == 4u || RANKS == 16u, "shuffle sum skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_shuffle_sum_r4 : D41SKL2_d41_shuffle_sum_r16, grid, block, 0, stream, landing, slot, received, shuffle, hidden, output);
 }
+
+static inline SparkGpuError D41ShuffleFinishLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *back, const uint16_t *shared, uint32_t live, uint32_t first, uint32_t ranks, uint32_t shuffle, uint32_t hidden, uint16_t *output)
+{ return D41Skl2Launch(D41SKL2_d41_shuffle_finish_256, grid, block, 0, stream, back, shared, live, first, ranks, shuffle, hidden, output); }
 
 template <uint32_t RANKS>
-static __global__ void D41ShuffleSumKernel(const uint16_t *__restrict__ landing, const uint32_t *__restrict__ slot,
-	D41ReceivedRows<RANKS> received, uint32_t shuffle, uint32_t hidden, uint16_t *__restrict__ output)
+static inline SparkGpuError D41DirectFinishLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *landing, const uint32_t *slot, const uint16_t *shared, uint32_t live, uint32_t hidden, uint16_t *output)
 {
-	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
-	uint4 *out = (uint4 *)(output + ((uint64_t)source * shuffle + index) * hidden);
-	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < hidden; vector += gridDim.x * blockDim.x )
-	{
-		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-		{
-			const uint32_t at = slot[(uint64_t)row * RANKS + rank];
-			if ( at != UINT32_MAX )
-				LmAddBf16x8(total, ((const uint4 *)(landing + (uint64_t)at * hidden))[vector]);
-		}
-		out[vector] = LmPackUint4FloatToBf16(total);
-	}
+	static_assert(RANKS == 4u || RANKS == 16u, "direct finish skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_direct_finish_r4 : D41SKL2_d41_direct_finish_r16, grid, block, 0, stream, landing, slot, shared, live, hidden, output);
 }
 
-static __global__ void D41ShuffleFinishKernel(const uint16_t *__restrict__ back, const uint16_t *__restrict__ shared, uint32_t live, uint32_t first,
-	uint32_t ranks, uint32_t shuffle, uint32_t hidden, uint16_t *__restrict__ output)
-{
-	const uint32_t row = blockIdx.y, target = (first + row) % ranks, index = row / ranks;
-	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < hidden; vector += gridDim.x * blockDim.x )
-	{
-		if ( row >= live )
-		{
-			((uint4 *)(output + (uint64_t)row * hidden))[vector] = make_uint4(0u, 0u, 0u, 0u);
-			continue;
-		}
-		float sum[8];
-		LmLoadBf16x8AsFloat(((const uint4 *)(back + ((uint64_t)target * shuffle + index) * hidden))[vector], sum);
-		LmAddBf16x8(sum, ((const uint4 *)(shared + (uint64_t)row * hidden))[vector]);
-		((uint4 *)(output + (uint64_t)row * hidden))[vector] = LmPackUint4FloatToBf16(sum);
-	}
-}
-
-template <uint32_t RANKS>
-static __global__ void D41DirectFinishKernel(const uint16_t *__restrict__ landing, const uint32_t *__restrict__ slot,
-	const uint16_t *__restrict__ shared, uint32_t live, uint32_t hidden, uint16_t *__restrict__ output)
-{
-	const uint32_t row = blockIdx.y;
-	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < hidden; vector += gridDim.x * blockDim.x )
-	{
-		if ( row >= live ) { ((uint4 *)(output + (uint64_t)row * hidden))[vector] = make_uint4(0u, 0u, 0u, 0u); continue; }
-		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-		{
-			const uint32_t at = slot[(uint64_t)row * RANKS + rank];
-			if ( at != UINT32_MAX ) LmAddBf16x8(total, ((const uint4 *)(landing + (uint64_t)at * hidden))[vector]);
-		}
-		LmLoadBf16x8AsFloat(LmPackUint4FloatToBf16(total), total);
-		LmAddBf16x8(total, ((const uint4 *)(shared + (uint64_t)row * hidden))[vector]);
-		((uint4 *)(output + (uint64_t)row * hidden))[vector] = LmPackUint4FloatToBf16(total);
-	}
-}
-
-static __global__ void D41WindowAssembleKernel(const uint16_t *__restrict__ own_kv, const uint16_t *__restrict__ edges, uint16_t *__restrict__ window_kv,
-	uint32_t own, uint32_t edge, uint32_t first)
-{
-	const uint32_t block = blockIdx.x;
-	const uint32_t rank = block < own ? 0u : (block - own) / edge, index = block < own ? block : (block - own) - rank * edge;
-	const uint4 *source = (const uint4 *)(block < own ? own_kv + (uint64_t)block * D41K_LATENT : edges + (uint64_t)(block - own) * D41K_LATENT);
-	uint4 *target = (uint4 *)(window_kv + (uint64_t)(block < own ? first + block : rank * own + own - edge + index) * D41K_LATENT);
-	LmDependentWait();
-	LmDependentRelease();
-	for ( uint32_t i = threadIdx.x; i < D41K_LATENT / 8u; i += blockDim.x )
-		target[i] = source[i];
-}
+static inline SparkGpuError D41WindowAssembleLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *own_kv, const uint16_t *edges, uint16_t *window_kv, uint32_t own, uint32_t edge, uint32_t first)
+{ return D41Skl2Launch(D41SKL2_d41_window_assemble_256, grid, block, 0, stream, own_kv, edges, window_kv, own, edge, first); }
 
 static_assert(D41K_HC * sizeof(float) == sizeof(uint4), "a row's four stream weights travel as one 16-byte vector after its streams");
 
@@ -3952,65 +3283,17 @@ static __host__ __device__ inline uint32_t D41TailSpan(uint32_t source, uint32_t
 	return end > begin ? end - begin : 0u;
 }
 
-static __global__ void D41TailPackKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre, uint32_t rank, uint32_t rows,
-	uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint32_t width, uint4 *__restrict__ send,
-	uint4 *__restrict__ send_pre)
-{
-	const uint32_t target = blockIdx.z, slot = blockIdx.y, vectors = width / 8u;
-	uint32_t low;
-	if ( slot >= D41TailSpan(rank, target, rows, source_first, own, first, tail_own, &low) )
-		return;
-	const uint64_t row = (uint64_t)low + slot - source_first, record = (uint64_t)target * capacity + slot;
-	const uint4 *source = (const uint4 *)(streams + row * width);
-	uint4 *target_streams = send + record * vectors;
-	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < vectors; i += gridDim.x * blockDim.x )
-		target_streams[i] = source[i];
-	if ( blockIdx.x == 0u && threadIdx.x == 0u )
-		send_pre[record] = *(const uint4 *)(pre + row * D41K_HC);
-}
+static inline SparkGpuError D41TailPackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *streams, const float *pre, uint32_t rank, uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint32_t width, uint4 *send, uint4 *send_pre)
+{ return D41Skl2Launch(D41SKL2_d41_tail_pack_256, grid, block, 0, stream, streams, pre, rank, rows, source_first, own, first, tail_own, capacity, width, send, send_pre); }
 
-static __global__ void D41TailUnpackKernel(const uint4 *__restrict__ received, const uint4 *__restrict__ received_pre, uint32_t rank, uint32_t rows,
-	uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint32_t width, uint16_t *__restrict__ streams,
-	float *__restrict__ pre)
-{
-	const uint32_t source = blockIdx.z, slot = blockIdx.y, vectors = width / 8u;
-	uint32_t low;
-	if ( slot >= D41TailSpan(source, rank, rows, source_first, own, first, tail_own, &low) )
-		return;
-	const uint64_t row = (uint64_t)low + slot - first, record = (uint64_t)source * capacity + slot;
-	const uint4 *source_streams = received + record * vectors;
-	uint4 *target = (uint4 *)(streams + row * width);
-	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < vectors; i += gridDim.x * blockDim.x )
-		target[i] = source_streams[i];
-	if ( blockIdx.x == 0u && threadIdx.x == 0u )
-		*(uint4 *)(pre + row * D41K_HC) = received_pre[record];
-}
+static inline SparkGpuError D41TailUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint4 *received, const uint4 *received_pre, uint32_t rank, uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint32_t width, uint16_t *streams, float *pre)
+{ return D41Skl2Launch(D41SKL2_d41_tail_unpack_256, grid, block, 0, stream, received, received_pre, rank, rows, source_first, own, first, tail_own, capacity, width, streams, pre); }
 
-static __global__ void D41TailRowsPackKernel(const uint4 *__restrict__ rows_data, uint32_t row_vectors, uint32_t record_vectors, uint32_t rank,
-	uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint4 *__restrict__ send)
-{
-	const uint32_t target = blockIdx.z, slot = blockIdx.y;
-	uint32_t low;
-	if ( slot >= D41TailSpan(rank, target, rows, source_first, own, first, tail_own, &low) )
-		return;
-	const uint4 *source = rows_data + (uint64_t)(low + slot) * row_vectors;
-	uint4 *record = send + ((uint64_t)target * capacity + slot) * record_vectors;
-	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < row_vectors; i += gridDim.x * blockDim.x )
-		record[i] = source[i];
-}
+static inline SparkGpuError D41TailRowsPackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint4 *rows_data, uint32_t row_vectors, uint32_t record_vectors, uint32_t rank, uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint4 *send)
+{ return D41Skl2Launch(D41SKL2_d41_tail_rows_pack_256, grid, block, 0, stream, rows_data, row_vectors, record_vectors, rank, rows, source_first, own, first, tail_own, capacity, send); }
 
-static __global__ void D41TailRowsUnpackKernel(const uint4 *__restrict__ received, uint32_t row_vectors, uint32_t record_vectors, uint32_t rank,
-	uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint4 *__restrict__ rows_data)
-{
-	const uint32_t source = blockIdx.z, slot = blockIdx.y;
-	uint32_t low;
-	if ( slot >= D41TailSpan(source, rank, rows, source_first, own, first, tail_own, &low) )
-		return;
-	const uint4 *record = received + ((uint64_t)source * capacity + slot) * record_vectors;
-	uint4 *target = rows_data + (uint64_t)(low + slot) * row_vectors;
-	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < row_vectors; i += gridDim.x * blockDim.x )
-		target[i] = record[i];
-}
+static inline SparkGpuError D41TailRowsUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint4 *received, uint32_t row_vectors, uint32_t record_vectors, uint32_t rank, uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint4 *rows_data)
+{ return D41Skl2Launch(D41SKL2_d41_tail_rows_unpack_256, grid, block, 0, stream, received, row_vectors, record_vectors, rank, rows, source_first, own, first, tail_own, capacity, rows_data); }
 
 #define D41K_ENGRAM_DIM 256u
 #define D41K_ENGRAM_SCALES (D41K_ENGRAM_DIM / 32u)
@@ -4098,113 +3381,14 @@ static __global__ void D41EngramUnpackKernel(const int64_t *__restrict__ ids, co
 		target[c] = record != 0 ? LmFloatToBf16(LmE4m3ToFloat(record[c]) * LmE8m0ToFloat(record[D41K_ENGRAM_DIM + c / 32u])) : (uint16_t)0u;
 }
 
-static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice_out, const uint16_t *__restrict__ received,
-	const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row, uint16_t *__restrict__ output, uint32_t top_k,
-	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset,
-	const uint16_t *__restrict__ shared_partial)
-{
-	__shared__ uint32_t s_src[16];
-	__shared__ uint32_t s_pr[16];
-	const uint32_t row = blockIdx.y, total_experts = local_experts * degree;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( top_k <= 16u )
-	{
-		if ( threadIdx.x < top_k )
-		{
-			const uint32_t route = row * top_k + threadIdx.x, e = route_expert[route];
-			s_src[threadIdx.x] = e < total_experts ? e / local_experts : degree;
-			s_pr[threadIdx.x] = route_packed_row[route];
-		}
-		__syncthreads();
-	}
-	const bool aligned = (hidden_slice & 7u) == 0u && LmIsAligned16(slice_out) && LmIsAligned16(output) &&
-		(shared_partial != 0 ? LmIsAligned16(shared_partial) : (LmIsAligned16(received) && (source_stride & 7u) == 0u && (shared_offset & 7u) == 0u));
-	if ( aligned )
-	{
-		const uint32_t quads = hidden_slice >> 3u;
-		uint4 *out_q = (uint4 *)(output + (uint64_t)row * hidden_slice);
-		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += gridDim.x * blockDim.x )
-		{
-			float sum[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-			for ( uint32_t source = 0u; source < degree; ++source )
-			{
-				float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-				for ( uint32_t k = 0u; k < top_k; ++k )
-				{
-					const uint32_t rsrc = top_k <= 16u ? s_src[k] : (route_expert[row * top_k + k] < total_experts ? route_expert[row * top_k + k] / local_experts : degree);
-					if ( rsrc == source )
-					{
-						const uint32_t pr = top_k <= 16u ? s_pr[k] : route_packed_row[row * top_k + k];
-						LmAddBf16x8(total, ((const uint4 *)(slice_out + (uint64_t)pr * hidden_slice))[q]);
-					}
-				}
-				const uint4 sh = shared_partial != 0 ?
-					((const uint4 *)(shared_partial + ((uint64_t)source * gridDim.y + row) * hidden_slice))[q] :
-					((const uint4 *)(received + (uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice))[q];
-				LmAddBf16x8(total, sh);
-				for ( uint32_t i = 0u; i < 8u; ++i )
-					sum[i] += LmBf16ToFloat(LmFloatToBf16(total[i]));
-			}
-			out_q[q] = LmPackUint4FloatToBf16(sum);
-		}
-		return;
-	}
-	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < hidden_slice; element += gridDim.x * blockDim.x )
-	{
-		float sum = 0.0f;
-		for ( uint32_t source = 0u; source < degree; ++source )
-		{
-			float total = 0.0f;
-			for ( uint32_t k = 0u; k < top_k; ++k )
-			{
-				const uint32_t route = row * top_k + k, e = route_expert[route];
-				if ( e < total_experts && e / local_experts == source )
-					total += LmBf16ToFloat(slice_out[(uint64_t)route_packed_row[route] * hidden_slice + element]);
-			}
-			total += LmBf16ToFloat(shared_partial != 0 ? shared_partial[((uint64_t)source * gridDim.y + row) * hidden_slice + element] :
-				received[(uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice + element]);
-			sum += LmBf16ToFloat(LmFloatToBf16(total));
-		}
-		output[(uint64_t)row * hidden_slice + element] = LmFloatToBf16(sum);
-	}
-}
+static inline SparkGpuError D41FinalizeSliceLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *slice_out, const uint16_t *received, const uint32_t *route_expert, const uint32_t *route_packed_row, uint16_t *output, uint32_t top_k, uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset, const uint16_t *shared_partial)
+{ return D41Skl2Launch(D41SKL2_d41_finalize_slice_256, grid, block, 0, stream, slice_out, received, route_expert, route_packed_row, output, top_k, local_experts, degree, hidden_slice, source_stride, shared_offset, shared_partial); }
 
-static __global__ void D41SliceGatherKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint32_t rows, uint32_t hidden_slice,
-	uint32_t degree)
-{
-	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element < hidden_slice * degree )
-		output[(uint64_t)row * hidden_slice * degree + element] =
-			gathered[((uint64_t)(element / hidden_slice) * rows + row) * hidden_slice + element % hidden_slice];
-}
+static inline SparkGpuError D41SliceGatherLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gathered, uint16_t *output, uint32_t rows, uint32_t hidden_slice, uint32_t degree)
+{ return D41Skl2Launch(D41SKL2_d41_slice_gather_256, grid, block, 0, stream, gathered, output, rows, hidden_slice, degree); }
 
-static __global__ void D41ExpertActKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
-	const uint32_t *__restrict__ group_row_offset, uint32_t local_experts, uint8_t *__restrict__ codes, uint16_t *__restrict__ act, uint32_t routes,
-	uint32_t width, float limit)
-{
-	const uint32_t q = blockIdx.x * blockDim.x + threadIdx.x, octets = width >> 3u, s_blocks = width / SPARK_DSV41_FLASH_FP8_BLOCK;
-	LmDependentWait();
-	const uint32_t local = group_row_offset[local_experts], count = local < routes ? local : routes;
-	if ( q < octets )
-		for ( uint32_t route = blockIdx.y; route < count; route += gridDim.y )
-		{
-			const uint64_t g_base = (uint64_t)route * 2u * octets + q;
-			float v[8];
-			D41Swiglu8(((const uint4 *)gate_up)[g_base], ((const uint4 *)gate_up)[g_base + octets], packed_weight[route], limit, v);
-			uint2 packed;
-			uint8_t sc;
-			D41Fp8Quant8(v, &packed, &sc);
-			if ( act != 0 )
-			{
-				((uint4 *)act)[(uint64_t)route * octets + q] = D41DequantE4m3x8(packed, __uint_as_float((uint32_t)sc << 23u));
-				continue;
-			}
-			((uint2 *)codes)[(uint64_t)route * octets + q] = packed;
-			if ( (q & 3u) == 0u ) codes[(uint64_t)routes * width + (uint64_t)route * s_blocks + (q >> 2u)] = sc;
-		}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41ExpertActLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gate_up, const float *packed_weight, const uint32_t *group_row_offset, uint32_t local_experts, uint8_t *codes, uint16_t *act, uint32_t routes, uint32_t width, float limit)
+{ return D41Skl2Launch(D41SKL2_d41_expert_act_256, grid, block, 0, stream, gate_up, packed_weight, group_row_offset, local_experts, codes, act, routes, width, limit); }
 
 static void D41SharedPart(uint32_t part, uint32_t parts, uint32_t granules, uint32_t granule, uint32_t *first, uint32_t *width)
 {
@@ -4213,134 +3397,17 @@ static void D41SharedPart(uint32_t part, uint32_t parts, uint32_t granules, uint
 	*width = (base + (part < extra ? 1u : 0u)) * granule;
 }
 
-template<bool OUT_BF16>
-static __device__ __forceinline__ void D41MoeFinalizeF32Body(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, void *__restrict__ output, uint32_t top_k, uint32_t local_experts,
-	uint32_t width)
-{
-	__shared__ uint32_t active_rows[16];
-	__shared__ uint32_t active_count;
-	const uint32_t row = blockIdx.y;
-	LmDependentWait();
-	if ( threadIdx.x == 0u )
-	{
-		uint32_t n = 0u;
-		for ( uint32_t k = 0u; k < top_k && n < 16u; ++k )
-		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] < local_experts )
-				active_rows[n++] = route_packed_row[route];
-		}
-		active_count = n;
-	}
-	__syncthreads();
-	const uint32_t count = active_count;
-	if ( top_k <= 16u && (width & 7u) == 0u && LmIsAligned16(packed) && LmIsAligned16(shared) && LmIsAligned16(output) )
-	{
-		const uint32_t octets = width >> 3u;
-		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < octets; q += gridDim.x * blockDim.x )
-		{
-			const uint32_t offset = q << 3u;
-			float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f }, v[8], sh[8];
-			for ( uint32_t i = 0u; i < count; ++i )
-			{
-				LmLoadBf16x8AsFloat(__ldg((const uint4 *)(packed + (uint64_t)active_rows[i] * width + offset)), v);
-				#pragma unroll
-				for ( uint32_t j = 0u; j < 8u; ++j ) total[j] += v[j];
-			}
-			LmLoadFloat8(shared + (uint64_t)row * width + offset, sh);
-			#pragma unroll
-			for ( uint32_t j = 0u; j < 8u; ++j ) total[j] += sh[j];
-			if constexpr ( OUT_BF16 )
-				((uint4 *)((uint16_t *)output + (uint64_t)row * width))[q] = LmPackUint4FloatToBf16(total);
-			else
-				LmStoreFloat8((float *)output + (uint64_t)row * width + offset, total);
-		}
-		LmDependentRelease();
-		return;
-	}
-	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
-	{
-		float total = 0.0f;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] < local_experts )
-				total += LmBf16ToFloat(packed[(uint64_t)route_packed_row[route] * width + element]);
-		}
-		const float sum = total + shared[(uint64_t)row * width + element];
-		if constexpr ( OUT_BF16 )
-			((uint16_t *)output)[(uint64_t)row * width + element] = LmFloatToBf16(sum);
-		else
-			((float *)output)[(uint64_t)row * width + element] = sum;
-	}
-	LmDependentRelease();
-}
+static inline SparkGpuError D41MoeFinalizeF32Launch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *packed, const uint32_t *route_packed_row, const uint32_t *route_expert, const float *shared, float *output, uint32_t top_k, uint32_t local_experts, uint32_t width)
+{ return D41Skl2Launch(D41SKL2_d41_moe_finalize_f32_256, grid, block, 0, stream, packed, route_packed_row, route_expert, shared, output, top_k, local_experts, width); }
 
-static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, float *__restrict__ output, uint32_t top_k, uint32_t local_experts,
-	uint32_t width)
-{
-	D41MoeFinalizeF32Body<false>(packed, route_packed_row, route_expert, shared, output, top_k, local_experts, width);
-}
+static inline SparkGpuError D41MoeFinalizeF32ToBf16Launch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *packed, const uint32_t *route_packed_row, const uint32_t *route_expert, const float *shared, uint16_t *output, uint32_t top_k, uint32_t local_experts, uint32_t width)
+{ return D41Skl2Launch(D41SKL2_d41_moe_finalize_f32_bf16_256, grid, block, 0, stream, packed, route_packed_row, route_expert, shared, output, top_k, local_experts, width); }
 
-static __global__ void D41MoeFinalizeF32ToBf16Kernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, uint16_t *__restrict__ output, uint32_t top_k, uint32_t local_experts,
-	uint32_t width)
-{
-	D41MoeFinalizeF32Body<true>(packed, route_packed_row, route_expert, shared, output, top_k, local_experts, width);
-}
+static inline SparkGpuError D41SumSourcesF32Launch(dim3 grid, dim3 block, SparkGpuStream stream, const float *gathered, uint16_t *output, uint64_t elements, uint32_t degree)
+{ return D41Skl2Launch(D41SKL2_d41_sum_sources_f32_256, grid, block, 0, stream, gathered, output, elements, degree); }
 
-static __global__ void D41SumSourcesF32Kernel(const float *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
-{
-	LmDependentWait();
-	if ( (elements & 7u) == 0u && LmIsAligned16(gathered) && LmIsAligned16(output) )
-	{
-		for ( uint64_t q = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; q < (elements >> 3u); q += (uint64_t)gridDim.x * blockDim.x )
-		{
-			float s[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f }, v[8];
-			for ( uint32_t source = 0u; source < degree; ++source )
-			{
-				LmLoadFloat8(gathered + (uint64_t)source * elements + (q << 3u), v);
-				#pragma unroll
-				for ( uint32_t k = 0u; k < 8u; ++k ) s[k] += v[k];
-			}
-			((uint4 *)output)[q] = LmPackUint4FloatToBf16(s);
-		}
-		LmDependentRelease();
-		return;
-	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
-	{
-		float sum = 0.0f;
-		for ( uint32_t source = 0u; source < degree; ++source ) sum += gathered[(uint64_t)source * elements + index];
-		output[index] = LmFloatToBf16(sum);
-	}
-	LmDependentRelease();
-}
-
-static __global__ void D41SumGatheredKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
-{
-	LmDependentWait();
-	LmDependentRelease();
-	if ( (elements & 7u) == 0u && LmIsAligned16(gathered) && LmIsAligned16(output) )
-	{
-		const uint64_t quads = elements >> 3u;
-		for ( uint64_t q = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; q < quads; q += (uint64_t)gridDim.x * blockDim.x )
-		{
-			float sum[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-			for ( uint32_t source = 0u; source < degree; ++source ) LmAddBf16x8(sum, ((const uint4 *)gathered)[(uint64_t)source * quads + q]);
-			((uint4 *)output)[q] = LmPackUint4FloatToBf16(sum);
-		}
-		return;
-	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
-	{
-		float sum = 0.0f;
-		for ( uint32_t source = 0u; source < degree; ++source ) sum += LmBf16ToFloat(gathered[(uint64_t)source * elements + index]);
-		output[index] = LmFloatToBf16(sum);
-	}
-}
+static inline SparkGpuError D41SumGatheredLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gathered, uint16_t *output, uint64_t elements, uint32_t degree)
+{ return D41Skl2Launch(D41SKL2_d41_sum_gathered_256, grid, block, 0, stream, gathered, output, elements, degree); }
 
 static __device__ __forceinline__ void D41PackFp4Block8(const float v[8], uint32_t *out_nibbles, uint8_t *out_scale)
 {
@@ -4476,100 +3543,14 @@ void D41IndexScoreMxfp4Kernel(const uint32_t *__restrict__ q_codes, const uint32
 	LmDependentRelease();
 }
 
-static __device__ __forceinline__ uint32_t D41RowActiveKeys(uint32_t row, const uint32_t *seq, const uint32_t *len, const uint32_t *bound)
-{
-	uint32_t active = len[seq[row]];
-	if ( bound != 0 ) { const uint32_t b = bound[row]; active = b == D41K_NO_ROW ? 0u : (b + 1u < active ? b + 1u : active); }
-	return active;
-}
+static inline SparkGpuError D41WholeBlockMaxLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const float *scores, uint64_t score_stride, const uint32_t *seq, const uint32_t *len, const uint32_t *bound, float *block_scores, uint32_t block_stride, uint32_t grain, uint32_t dense_rows)
+{ return D41Skl2Launch(D41SKL2_d41_whole_block_max_256, grid, block, 0, stream, scores, score_stride, seq, len, bound, block_scores, block_stride, grain, dense_rows); }
 
-static __global__ void D41WholeBlockMaxKernel(const float *__restrict__ scores, uint64_t score_stride, const uint32_t *__restrict__ seq,
-	const uint32_t *__restrict__ len, const uint32_t *__restrict__ bound, float *__restrict__ block_scores, uint32_t block_stride,
-	uint32_t grain, uint32_t dense_rows)
-{
-	__shared__ float s_vals[256u * 8u];
-	const uint32_t row = blockIdx.y;
-	LmDependentWait();
-	LmDependentRelease();
-	const uint32_t active = D41RowActiveKeys(row, seq, len, bound);
-	if ( dense_rows != 0u && active <= dense_rows ) return;
-	const float *src = scores + (uint64_t)row * score_stride;
-	float *dst = block_scores + (uint64_t)row * block_stride;
-	const uint32_t b0 = blockIdx.x * blockDim.x, b = b0 + threadIdx.x;
-	if ( grain == 8u && blockDim.x == 256u && LmIsAligned16(src) )
-	{
-		const uint32_t base_k = b0 * 8u;
-		if ( base_k >= active )
-		{
-			if ( b < block_stride ) dst[b] = -INFINITY;
-			return;
-		}
-		#pragma unroll
-		for ( uint32_t pass = 0u; pass < 2u; ++pass )
-		{
-			const uint32_t q = pass * 256u + threadIdx.x, off = q * 4u, gk = base_k + off;
-			if ( gk + 3u < active && gk + 3u < score_stride )
-				((float4 *)s_vals)[q] = ((const float4 *)src)[gk >> 2u];
-			else
-			{
-				s_vals[off] = gk < active && gk < score_stride ? src[gk] : -INFINITY;
-				s_vals[off + 1u] = gk + 1u < active && gk + 1u < score_stride ? src[gk + 1u] : -INFINITY;
-				s_vals[off + 2u] = gk + 2u < active && gk + 2u < score_stride ? src[gk + 2u] : -INFINITY;
-				s_vals[off + 3u] = gk + 3u < active && gk + 3u < score_stride ? src[gk + 3u] : -INFINITY;
-			}
-		}
-		__syncthreads();
-		if ( b >= block_stride ) return;
-		const uint32_t o = threadIdx.x * 8u;
-		float mx = fmaxf(fmaxf(s_vals[o], s_vals[o + 1u]), fmaxf(s_vals[o + 2u], s_vals[o + 3u]));
-		mx = fmaxf(mx, fmaxf(fmaxf(s_vals[o + 4u], s_vals[o + 5u]), fmaxf(s_vals[o + 6u], s_vals[o + 7u])));
-		dst[b] = mx;
-		return;
-	}
-	if ( b >= block_stride ) return;
-	const uint32_t first = b * grain;
-	if ( first >= active ) { dst[b] = -INFINITY; return; }
-	float mx = -INFINITY;
-	const uint32_t last = first + grain < active ? first + grain : active;
-	for ( uint32_t i = first; i < last; ++i ) mx = fmaxf(mx, src[i]);
-	dst[b] = mx;
-}
+static inline SparkGpuError D41WholeBlockApplyLaunch(dim3 grid, dim3 block, SparkGpuStream stream, float *scores, uint64_t score_stride, uint32_t grain, const uint8_t *mask, uint32_t block_stride, const uint32_t *seq, const uint32_t *len, const uint32_t *bound, uint32_t dense_rows)
+{ return D41Skl2Launch(D41SKL2_d41_whole_block_apply_256, grid, block, 0, stream, scores, score_stride, grain, mask, block_stride, seq, len, bound, dense_rows); }
 
-static __global__ void D41WholeBlockApplyKernel(float *__restrict__ scores, uint64_t score_stride, uint32_t grain, const uint8_t *__restrict__ mask,
-	uint32_t block_stride, const uint32_t *__restrict__ seq, const uint32_t *__restrict__ len, const uint32_t *__restrict__ bound, uint32_t dense_rows)
-{
-	const uint32_t row = blockIdx.y;
-	const uint32_t active = D41RowActiveKeys(row, seq, len, bound);
-	if ( dense_rows != 0u && active <= dense_rows ) return;
-	const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( i >= active || i >= score_stride ) return;
-	const uint32_t b = i / grain;
-	if ( b >= block_stride || mask[(uint64_t)row * block_stride + b] == 0u )
-		scores[(uint64_t)row * score_stride + i] = -INFINITY;
-}
-
-static __global__ void D41WholeBlockMaskKernel(const float *__restrict__ block_scores, const uint32_t *__restrict__ chosen, uint32_t keep,
-	uint8_t *__restrict__ mask, uint32_t block_stride, const uint32_t *__restrict__ seq = 0, const uint32_t *__restrict__ len = 0,
-	const uint32_t *__restrict__ bound = 0, uint32_t grain = 0u, uint32_t dense_rows = 0u)
-{
-	uint8_t *line = mask + (uint64_t)blockIdx.x * block_stride;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( dense_rows != 0u && seq != 0 && len != 0 )
-	{
-		const uint32_t active = D41RowActiveKeys(blockIdx.x, seq, len, bound);
-		if ( active <= dense_rows )
-		{
-			const uint32_t active_blocks = (active + grain - 1u) / grain;
-			for ( uint32_t b = threadIdx.x; b < block_stride; b += blockDim.x ) line[b] = b < active_blocks ? 1u : 0u;
-			return;
-		}
-	}
-	const float *scores = block_scores + (uint64_t)blockIdx.x * block_stride;
-	for ( uint32_t b = threadIdx.x; b < block_stride; b += blockDim.x ) line[b] = 0u;
-	__syncthreads();
-	for ( uint32_t e = threadIdx.x; e < keep; e += blockDim.x ) { const uint32_t b = chosen[(uint64_t)blockIdx.x * keep + e]; if ( b < block_stride && scores[b] > -INFINITY ) line[b] = 1u; }
-}
+static inline SparkGpuError D41WholeBlockMaskLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const float *block_scores, const uint32_t *chosen, uint32_t keep, uint8_t *mask, uint32_t block_stride, const uint32_t *seq = 0, const uint32_t *len = 0, const uint32_t *bound = 0, uint32_t grain = 0u, uint32_t dense_rows = 0u)
+{ return D41Skl2Launch(D41SKL2_d41_whole_block_mask_256, grid, block, 0, stream, block_scores, chosen, keep, mask, block_stride, seq, len, bound, grain, dense_rows); }
 
 template<class Geometry, bool ROUND_BF16 = false>
 static __global__ __launch_bounds__(256)
@@ -5329,46 +4310,8 @@ void D41FusedRouterPackedKernel(const uint16_t *__restrict__ router_w, const uin
 }
 
 template<uint32_t EXPERTS>
-static __global__ __launch_bounds__(256)
-void D41CompactActiveExpertsKernel(const uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ active_out, uint32_t count = EXPERTS)
-{
-	__shared__ uint32_t s_warp[8];
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	LmDependentWait();
-	const uint32_t a0 = threadIdx.x < count && group_row_offset[threadIdx.x + 1u] > group_row_offset[threadIdx.x] ? 1u : 0u;
-	const uint32_t a1 = threadIdx.x + 256u < count && group_row_offset[threadIdx.x + 257u] > group_row_offset[threadIdx.x + 256u] ? 1u : 0u;
-	const uint32_t m0 = __ballot_sync(0xffffffffu, a0 != 0u);
-	if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m0);
-	__syncthreads();
-	if ( warp == 0u )
-	{
-		uint32_t w = lane < 8u ? s_warp[lane] : 0u;
-		#pragma unroll
-		for ( uint32_t d = 1u; d < 8u; d <<= 1u ) { const uint32_t u = __shfl_up_sync(0xffffffffu, w, d); if ( lane >= d ) w += u; }
-		if ( lane < 8u ) s_warp[lane] = w;
-	}
-	__syncthreads();
-	const uint32_t tot0 = s_warp[7];
-	const uint32_t off0 = (warp > 0u ? s_warp[warp - 1u] : 0u) + (uint32_t)__popc(m0 & ((1u << lane) - 1u));
-	if ( a0 != 0u ) active_out[off0] = threadIdx.x;
-	__syncthreads();
-	const uint32_t m1 = __ballot_sync(0xffffffffu, a1 != 0u);
-	if ( lane == 0u ) s_warp[warp] = (uint32_t)__popc(m1);
-	__syncthreads();
-	if ( warp == 0u )
-	{
-		uint32_t w = lane < 8u ? s_warp[lane] : 0u;
-		#pragma unroll
-		for ( uint32_t d = 1u; d < 8u; d <<= 1u ) { const uint32_t u = __shfl_up_sync(0xffffffffu, w, d); if ( lane >= d ) w += u; }
-		if ( lane < 8u ) s_warp[lane] = w;
-	}
-	__syncthreads();
-	const uint32_t tot1 = s_warp[7];
-	const uint32_t off1 = tot0 + (warp > 0u ? s_warp[warp - 1u] : 0u) + (uint32_t)__popc(m1 & ((1u << lane) - 1u));
-	if ( a1 != 0u ) active_out[off1] = threadIdx.x + 256u;
-	if ( threadIdx.x == 0u ) active_out[EXPERTS] = tot0 + tot1;
-	LmDependentRelease();
-}
+static inline SparkGpuError D41CompactActiveExpertsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *group_row_offset, uint32_t *active_out, uint32_t count = EXPERTS)
+{ return D41Skl2Launch(D41SKL2_d41_compact_active_experts_256, grid, block, 0, stream, group_row_offset, active_out, EXPERTS, count); }
 
 struct D41MxBatchDesc
 {
