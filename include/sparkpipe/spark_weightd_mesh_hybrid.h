@@ -9,7 +9,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ 256u
 #define SPARK_WEIGHTD_MESH_HYBRID_MAGIC UINT64_C(0x5350485942524433)
-#define SPARK_WEIGHTD_MESH_HYBRID_VERSION 1u
+#define SPARK_WEIGHTD_MESH_HYBRID_VERSION 2u
 #define SPARK_WEIGHTD_MESH_HYBRID_OFFSET 32768u
 #define SPARK_WEIGHTD_MESH_HYBRID_SHM_PATH_BYTES 128u
 #define SPARK_WEIGHTD_MESH_HYBRID_SHM_BYTES (16u * 1024u * 1024u)
@@ -69,17 +69,19 @@ typedef struct SparkWeightdMeshHybridCtrl
     char shm_path[SPARK_WEIGHTD_MESH_HYBRID_SHM_PATH_BYTES];
     uint64_t cpu_mode;
     uint64_t grant_gen;
-    uint64_t cpu_issued_seq;
-    uint64_t pad_cpu_mode[5];
+    uint64_t pad_cpu_mode[6];
     uint64_t gpu_busy;
     uint64_t gpu_last_gen;
-    uint64_t pad_gpu_busy[6];
+    uint64_t gpu_credits;
+    uint64_t pad_gpu_busy[5];
     SparkWeightdMeshHybridTrigger trigger[2];
     uint32_t gpu_pi[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
     uint32_t gpu_wrs[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
     uint32_t cpu_sq_limit[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
     uint32_t cpu_wr_limit[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
     SparkWeightdMeshHybridPeer peers[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
+    uint64_t cpu_issued_seq;
+    uint64_t pad_cpu_issued[7];
 } SparkWeightdMeshHybridCtrl;
 
 #define SparkWeightdMeshHybridMetaPack(peer_mask,ds,num_bb,grant_gen) \
@@ -103,7 +105,8 @@ _Static_assert(offsetof(SparkWeightdMeshHybridCtrl,cpu_mode) == 256u &&
     offsetof(SparkWeightdMeshHybridCtrl,gpu_pi) == 512u &&
     offsetof(SparkWeightdMeshHybridCtrl,cpu_sq_limit) == 640u &&
     offsetof(SparkWeightdMeshHybridCtrl,peers) == 768u &&
-    sizeof(SparkWeightdMeshHybridCtrl) == 1792u,
+    offsetof(SparkWeightdMeshHybridCtrl,cpu_issued_seq) == 1792u &&
+    sizeof(SparkWeightdMeshHybridCtrl) == 1856u,
     "hybrid control block keeps CPU, GPU, trigger, credit, and peer lines isolated");
 #endif
 
