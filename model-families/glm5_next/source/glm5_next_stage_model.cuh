@@ -728,8 +728,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		const uint32_t idx_row_elems = candidates != 0u ? 4u * keep : 2u * local_stride;
 		const uint64_t idx_a2a_bytes = (uint64_t)padded_rows * idx_row_elems * sizeof(uint16_t);
 		const uint64_t sel_gather_bytes = (uint64_t)padded_rows * keep * sizeof(uint32_t);
-		const uint32_t union_blocks = (rows + 3u) / 4u;
-		const uint32_t union_capacity = 4u * G5N_INDEX_WIDTH;
+		const uint32_t union_blocks = (rows + 7u) / 8u;
+		const uint32_t union_capacity = 8u * G5N_INDEX_WIDTH;
 		const uint64_t union_pos_bytes = (uint64_t)union_blocks * union_capacity * sizeof(uint32_t);
 		const uint64_t union_mask_bytes = (((uint64_t)union_blocks * union_capacity + 15u) & ~UINT64_C(15));
 		const uint64_t union_total_bytes = union_pos_bytes + union_mask_bytes + (uint64_t)union_blocks * sizeof(uint32_t);

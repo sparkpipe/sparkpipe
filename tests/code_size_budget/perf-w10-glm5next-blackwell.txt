@@ -1,0 +1,2 @@
++896
+Wave-10 glm5_next Blackwell sm_121a P1+P3+P4 optimizations: L2-resident N-sliced MoE W2 + SharedDownFinalizeAdd MMA for prefill and B32/B64, fused SharedDownFinalizeExact for B5..16/verify, parallel 2D KDA prefill causal conv + window commit, fused KDA QKV+Beta+DecayGate MMA, tiled KDA UpDecayBeta & NormGateOut for B2..8, fused DSA head projection MMA, SMEM-padded bank-conflict-free PoolScore MMA, 32-query (8-row) MLA gather prefill, and fused HC Post+Dot for B5..15.

@@ -700,13 +700,14 @@ static void BenchMoeCodec(const char *tag, cudaStream_t stream)
 
 static void Check5cBatchInvariance(cudaStream_t stream)
 {
-	printf("\n=== 5. 5c Batch Invariance (B1 == B4 == B8, 0-ULP, row_invariant=1) ===\n");
-	const uint32_t max_b = 8u;
+	printf("\n=== 5. 5c Batch Invariance (B1 == B4 == B8 == B16, 0-ULP) + Wave-10 Kernel Exactness ===\n");
+	const uint32_t max_b = 16u;
 	uint16_t *act = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HIDDEN * 2u);
 	uint16_t *w_lin = (uint16_t *)DevAlloc((uint64_t)1536u * G5N_HIDDEN * 2u);
 	uint16_t *o_b1 = (uint16_t *)DevAlloc((uint64_t)max_b * 1536u * 2u);
 	uint16_t *o_b4 = (uint16_t *)DevAlloc((uint64_t)max_b * 1536u * 2u);
 	uint16_t *o_b8 = (uint16_t *)DevAlloc((uint64_t)max_b * 1536u * 2u);
+	uint16_t *o_b16 = (uint16_t *)DevAlloc((uint64_t)max_b * 1536u * 2u);
 	FillBf16(act, (uint64_t)max_b * G5N_HIDDEN, 501u, 0.0f, 0.3f, stream);
 	FillBf16(w_lin, (uint64_t)1536u * G5N_HIDDEN, 502u, 0.0f, 0.05f, stream);
 
@@ -718,16 +719,20 @@ static void Check5cBatchInvariance(cudaStream_t stream)
 		CHECK_OK(Glm5NextLinear(&b, act + (uint64_t)r * G5N_HIDDEN, w_lin, o_b1 + (uint64_t)r * 1536u, 1u, G5N_HIDDEN, 1536u, g_sms, (SparkGpuStream)stream));
 	CHECK_OK(Glm5NextLinear(&b, act, w_lin, o_b4, 4u, G5N_HIDDEN, 1536u, g_sms, (SparkGpuStream)stream));
 	CHECK_OK(Glm5NextLinear(&b, act, w_lin, o_b8, 8u, G5N_HIDDEN, 1536u, g_sms, (SparkGpuStream)stream));
+	CHECK_OK(Glm5NextLinear(&b, act, w_lin, o_b16, 16u, G5N_HIDDEN, 1536u, g_sms, (SparkGpuStream)stream));
 	CheckTol("5c Glm5NextLinear B1==B4 0-ULP", CompareBf16(o_b4, o_b1, 4u * 1536u, stream), 0.0, 0.0, true);
 	CheckTol("5c Glm5NextLinear B1==B8 0-ULP", CompareBf16(o_b8, o_b1, 8u * 1536u, stream), 0.0, 0.0, true);
+	CheckTol("5c Glm5NextLinear B1==B16 0-ULP", CompareBf16(o_b16, o_b1, 16u * 1536u, stream), 0.0, 0.0, true);
 
 	uint16_t *s_in = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HC_FLAT * 2u);
 	uint16_t *p_out = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HIDDEN * 2u);
 	uint16_t *s_b1 = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HC_FLAT * 2u);
 	uint16_t *s_b8 = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HC_FLAT * 2u);
+	uint16_t *s_b16 = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HC_FLAT * 2u);
 	uint16_t *nw = (uint16_t *)DevAlloc(G5N_HIDDEN * 2u);
 	uint16_t *n_b1 = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HIDDEN * 2u);
 	uint16_t *n_b8 = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HIDDEN * 2u);
+	uint16_t *n_b16 = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HIDDEN * 2u);
 	float *fn = (float *)DevAlloc((uint64_t)G5N_HC_MIX * G5N_HC_FLAT * 4u);
 	float *base = (float *)DevAlloc(G5N_HC_MIX * 4u);
 	float *sc = (float *)DevAlloc(3u * 4u);
@@ -737,6 +742,8 @@ static void Check5cBatchInvariance(cudaStream_t stream)
 	float *c1 = (float *)DevAlloc((uint64_t)max_b * 16u * 4u);
 	float *p8 = (float *)DevAlloc((uint64_t)max_b * G5N_HC * 4u);
 	float *c8 = (float *)DevAlloc((uint64_t)max_b * 16u * 4u);
+	float *p16 = (float *)DevAlloc((uint64_t)max_b * G5N_HC * 4u);
+	float *c16 = (float *)DevAlloc((uint64_t)max_b * 16u * 4u);
 	uint16_t *hc_col = (uint16_t *)DevAlloc((uint64_t)max_b * G5N_HIDDEN * 2u);
 	FillBf16(s_in, (uint64_t)max_b * G5N_HC_FLAT, 503u, 0.0f, 0.5f, stream);
 	FillBf16(p_out, (uint64_t)max_b * G5N_HIDDEN, 504u, 0.0f, 0.5f, stream);
@@ -750,6 +757,8 @@ static void Check5cBatchInvariance(cudaStream_t stream)
 	CHECK_CUDA(cudaMemcpyAsync(c1, ci, (uint64_t)max_b * 16u * 4u, cudaMemcpyDeviceToDevice, stream));
 	CHECK_CUDA(cudaMemcpyAsync(p8, pi, (uint64_t)max_b * G5N_HC * 4u, cudaMemcpyDeviceToDevice, stream));
 	CHECK_CUDA(cudaMemcpyAsync(c8, ci, (uint64_t)max_b * 16u * 4u, cudaMemcpyDeviceToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(p16, pi, (uint64_t)max_b * G5N_HC * 4u, cudaMemcpyDeviceToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(c16, ci, (uint64_t)max_b * 16u * 4u, cudaMemcpyDeviceToDevice, stream));
 
 	for ( uint32_t r = 0u; r < max_b; ++r )
 	{
@@ -770,14 +779,106 @@ static void Check5cBatchInvariance(cudaStream_t stream)
 	b8.hc_post_f32 = p8;
 	b8.hc_comb_f32 = c8;
 	b8.normed_bf16 = n_b8;
-	CHECK_OK(Glm5NextHcPostNorm(&b8, s_in, p_out, s_b8, fn, base, sc, nw, max_b, (SparkGpuStream)stream));
-	CheckTol("5c HcPostNorm streams B1==B8 0-ULP", CompareBf16(s_b8, s_b1, (uint64_t)max_b * G5N_HC_FLAT, stream), 0.0, 0.0, true);
-	CheckTol("5c HcPostNorm normed B1==B8 0-ULP", CompareBf16(n_b8, n_b1, (uint64_t)max_b * G5N_HIDDEN, stream), 0.0, 0.0, true);
+	CHECK_OK(Glm5NextHcPostNorm(&b8, s_in, p_out, s_b8, fn, base, sc, nw, 8u, (SparkGpuStream)stream));
+	CheckTol("5c HcPostNorm streams B1==B8 0-ULP", CompareBf16(s_b8, s_b1, 8u * G5N_HC_FLAT, stream), 0.0, 0.0, true);
+	CheckTol("5c HcPostNorm normed B1==B8 0-ULP", CompareBf16(n_b8, n_b1, 8u * G5N_HIDDEN, stream), 0.0, 0.0, true);
 
-	cudaFree(act); cudaFree(w_lin); cudaFree(o_b1); cudaFree(o_b4); cudaFree(o_b8);
-	cudaFree(s_in); cudaFree(p_out); cudaFree(s_b1); cudaFree(s_b8); cudaFree(nw);
-	cudaFree(n_b1); cudaFree(n_b8); cudaFree(fn); cudaFree(base); cudaFree(sc);
-	cudaFree(pi); cudaFree(ci); cudaFree(p1); cudaFree(c1); cudaFree(p8); cudaFree(c8); cudaFree(hc_col);
+	Glm5NextLayerBuffers b16;
+	memset(&b16, 0, sizeof(b16));
+	b16.row_invariant = 1u;
+	b16.hc_collapsed_bf16 = hc_col;
+	b16.hc_post_f32 = p16;
+	b16.hc_comb_f32 = c16;
+	b16.normed_bf16 = n_b16;
+	CHECK_OK(Glm5NextHcPostNorm(&b16, s_in, p_out, s_b16, fn, base, sc, nw, 16u, (SparkGpuStream)stream));
+	CheckTol("5c HcPostNorm streams B1==B16 0-ULP", CompareBf16(s_b16, s_b1, 16u * G5N_HC_FLAT, stream), 0.0, 0.0, true);
+	CheckTol("5c HcPostNorm normed B1==B16 0-ULP", CompareBf16(n_b16, n_b1, 16u * G5N_HIDDEN, stream), 0.0, 0.0, true);
+
+	const uint32_t kda_rows = 256u, rank_qk = 512u, heads = 4u;
+	uint16_t *win_ref = (uint16_t *)DevAlloc(3u * rank_qk * 4u * 2u);
+	uint16_t *win_opt = (uint16_t *)DevAlloc(3u * rank_qk * 4u * 2u);
+	uint16_t *in_qkv = (uint16_t *)DevAlloc(3u * (uint64_t)kda_rows * rank_qk * 2u);
+	uint16_t *w_conv = (uint16_t *)DevAlloc(3u * rank_qk * 4u * 2u);
+	uint16_t *out_conv_ref = (uint16_t *)DevAlloc(3u * (uint64_t)kda_rows * rank_qk * 2u);
+	uint16_t *out_conv_opt = (uint16_t *)DevAlloc(3u * (uint64_t)kda_rows * rank_qk * 2u);
+	uint32_t *s_idx = (uint32_t *)DevAlloc(4u);
+	uint32_t *s_beg = (uint32_t *)DevAlloc(8u);
+	FillBf16(win_ref, 3u * rank_qk * 4u, 520u, 0.0f, 0.5f, stream);
+	CHECK_CUDA(cudaMemcpyAsync(win_opt, win_ref, 3u * rank_qk * 4u * 2u, cudaMemcpyDeviceToDevice, stream));
+	FillBf16(in_qkv, 3u * (uint64_t)kda_rows * rank_qk, 521u, 0.0f, 0.5f, stream);
+	FillBf16(w_conv, 3u * rank_qk * 4u, 522u, 0.0f, 0.5f, stream);
+	const uint32_t h_beg[2] = { 0u, kda_rows }, h_sidx = 0u;
+	CHECK_CUDA(cudaMemcpyAsync(s_idx, &h_sidx, 4u, cudaMemcpyHostToDevice, stream));
+	CHECK_CUDA(cudaMemcpyAsync(s_beg, h_beg, 8u, cudaMemcpyHostToDevice, stream));
+	LmCausalConvStreams<uint16_t> conv;
+	for ( uint32_t s = 0u; s < 3u; ++s )
+	{
+		conv.window[s] = win_ref + s * rank_qk * 4u;
+		conv.input_bf16[s] = in_qkv + (uint64_t)s * kda_rows * rank_qk;
+		conv.weight[s] = w_conv + s * rank_qk * 4u;
+		conv.output_bf16[s] = out_conv_ref + (uint64_t)s * kda_rows * rank_qk;
+		conv.channels[s] = rank_qk;
+	}
+	CHECK_OK(LmCausalConvStreamsLaunch<G5N_KDA_CONV, LM_CONV_SWISH, uint16_t>(conv, s_idx, s_beg, 0, 1u, 1u, 0, kda_rows, (SparkGpuStream)stream, 0) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	LM_LAUNCH_DEPENDENT((Glm5NextKdaCausalConvPrefillKernel), dim3((kda_rows + 7u) / 8u, 3u * (rank_qk / 128u)), 128u, 0, (SparkGpuStream)stream,
+		win_opt, win_opt + rank_qk * 4u, win_opt + 2u * rank_qk * 4u, s_idx, s_beg, (const uint32_t *)0,
+		in_qkv, in_qkv + (uint64_t)kda_rows * rank_qk, in_qkv + 2u * (uint64_t)kda_rows * rank_qk,
+		w_conv, w_conv + rank_qk * 4u, w_conv + 2u * rank_qk * 4u,
+		out_conv_opt, out_conv_opt + (uint64_t)kda_rows * rank_qk, out_conv_opt + 2u * (uint64_t)kda_rows * rank_qk, rank_qk, kda_rows);
+	LM_LAUNCH_DEPENDENT((Glm5NextKdaConvWindowCommitKernel), 3u * (rank_qk / 128u), 128u, 0, (SparkGpuStream)stream,
+		win_opt, win_opt + rank_qk * 4u, win_opt + 2u * rank_qk * 4u, s_idx, s_beg, (const uint32_t *)0,
+		in_qkv, in_qkv + (uint64_t)kda_rows * rank_qk, in_qkv + 2u * (uint64_t)kda_rows * rank_qk, rank_qk, kda_rows);
+	CheckTol("KDA CausalConvPrefill output 0-ULP", CompareBf16(out_conv_opt, out_conv_ref, 3u * (uint64_t)kda_rows * rank_qk, stream), 0.0, 0.0, true);
+	CheckTol("KDA ConvWindowCommit state 0-ULP", CompareBf16(win_opt, win_ref, 3u * rank_qk * 4u, stream), 0.0, 0.0, true);
+
+	uint16_t *mixed = (uint16_t *)DevAlloc((uint64_t)8u * rank_qk * 2u);
+	uint16_t *kgate = (uint16_t *)DevAlloc((uint64_t)8u * rank_qk * 2u);
+	float *knw = (float *)DevAlloc(128u * 4u);
+	uint16_t *kout_w = (uint16_t *)DevAlloc((uint64_t)G5N_HIDDEN * rank_qk * 2u);
+	uint16_t *kout_1 = (uint16_t *)DevAlloc((uint64_t)8u * G5N_HIDDEN * 2u);
+	uint16_t *kout_8 = (uint16_t *)DevAlloc((uint64_t)8u * G5N_HIDDEN * 2u);
+	FillBf16(mixed, 8u * rank_qk, 523u, 0.0f, 0.5f, stream);
+	FillBf16(kgate, 8u * rank_qk, 524u, 0.0f, 0.5f, stream);
+	FillF32(knw, 128u, 525u, 1.0f, 0.1f, stream);
+	FillBf16(kout_w, (uint64_t)G5N_HIDDEN * rank_qk, 526u, 0.0f, 0.05f, stream);
+	constexpr uint32_t kda_cols = (G5N_THREADS / 32u) * 2u;
+	for ( uint32_t r = 0u; r < 8u; ++r )
+		LM_LAUNCH_DEPENDENT((Glm5NextKdaNormGateOutKernel<1u>), dim3((G5N_HIDDEN + kda_cols - 1u) / kda_cols, 1u), G5N_THREADS, 0, (SparkGpuStream)stream,
+			mixed + (uint64_t)r * rank_qk, kgate + (uint64_t)r * rank_qk, knw, kout_w, kout_1 + (uint64_t)r * G5N_HIDDEN, 1u);
+	LM_LAUNCH_DEPENDENT((Glm5NextKdaNormGateOutKernel<8u>), dim3((G5N_HIDDEN + kda_cols - 1u) / kda_cols, 1u), G5N_THREADS, 0, (SparkGpuStream)stream,
+		mixed, kgate, knw, kout_w, kout_8, 8u);
+	CheckTol("5c KdaNormGateOut B1==B8 0-ULP", CompareBf16(kout_8, kout_1, 8u * G5N_HIDDEN, stream), 0.0, 0.0, true);
+
+	uint16_t *sh_w2 = (uint16_t *)DevAlloc((uint64_t)G5N_HIDDEN * 128u * 2u);
+	uint16_t *sh_in = (uint16_t *)DevAlloc((uint64_t)8u * 128u * 2u);
+	uint16_t *e_out = (uint16_t *)DevAlloc((uint64_t)8u * G5N_TOP_K * G5N_HIDDEN * 2u);
+	uint16_t *sh_tmp = (uint16_t *)DevAlloc((uint64_t)8u * G5N_HIDDEN * 2u);
+	uint16_t *fin_ref = (uint16_t *)DevAlloc((uint64_t)8u * G5N_HIDDEN * 2u);
+	uint16_t *fin_opt = (uint16_t *)DevAlloc((uint64_t)8u * G5N_HIDDEN * 2u);
+	uint32_t *r_pack = (uint32_t *)DevAlloc(8u * G5N_TOP_K * 4u);
+	float *r_w = (float *)DevAlloc(8u * G5N_TOP_K * 4u);
+	FillBf16(sh_w2, (uint64_t)G5N_HIDDEN * 128u, 527u, 0.0f, 0.05f, stream);
+	FillBf16(sh_in, 8u * 128u, 528u, 0.0f, 0.5f, stream);
+	FillBf16(e_out, (uint64_t)8u * G5N_TOP_K * G5N_HIDDEN, 529u, 0.0f, 0.5f, stream);
+	FillF32(r_w, 8u * G5N_TOP_K, 530u, 0.125f, 0.05f, stream);
+	std::vector<uint32_t> h_rp(8u * G5N_TOP_K);
+	for ( uint32_t i = 0u; i < 8u * G5N_TOP_K; ++i ) h_rp[i] = i;
+	CHECK_CUDA(cudaMemcpyAsync(r_pack, h_rp.data(), 8u * G5N_TOP_K * 4u, cudaMemcpyHostToDevice, stream));
+	CHECK_OK(Glm5NextLinear(&b, sh_in, sh_w2, sh_tmp, 8u, 128u, G5N_HIDDEN, g_sms, (SparkGpuStream)stream));
+	LM_LAUNCH_DEPENDENT((Glm5NextMoeFinalizeAddKernel), dim3((G5N_HIDDEN / 8u + 255u) / 256u, 8u), 256u, 0, (SparkGpuStream)stream,
+		e_out, r_pack, r_w, sh_tmp, fin_ref, 8u);
+	LM_LAUNCH_DEPENDENT((Glm5NextSharedDownFinalizeExactKernel<8u>), dim3(G5N_HIDDEN / 16u, 1u), 256u, 0, (SparkGpuStream)stream,
+		sh_w2, sh_in, e_out, r_pack, r_w, fin_opt, 8u);
+	CheckTol("5c SharedDownFinalizeExact B8 0-ULP", CompareBf16(fin_opt, fin_ref, 8u * G5N_HIDDEN, stream), 0.0, 0.0, true);
+
+	(void)heads;
+	cudaFree(act); cudaFree(w_lin); cudaFree(o_b1); cudaFree(o_b4); cudaFree(o_b8); cudaFree(o_b16);
+	cudaFree(s_in); cudaFree(p_out); cudaFree(s_b1); cudaFree(s_b8); cudaFree(s_b16); cudaFree(nw);
+	cudaFree(n_b1); cudaFree(n_b8); cudaFree(n_b16); cudaFree(fn); cudaFree(base); cudaFree(sc);
+	cudaFree(pi); cudaFree(ci); cudaFree(p1); cudaFree(c1); cudaFree(p8); cudaFree(c8); cudaFree(p16); cudaFree(c16); cudaFree(hc_col);
+	cudaFree(win_ref); cudaFree(win_opt); cudaFree(in_qkv); cudaFree(w_conv); cudaFree(out_conv_ref); cudaFree(out_conv_opt);
+	cudaFree(s_idx); cudaFree(s_beg); cudaFree(mixed); cudaFree(kgate); cudaFree(knw); cudaFree(kout_w); cudaFree(kout_1); cudaFree(kout_8);
+	cudaFree(sh_w2); cudaFree(sh_in); cudaFree(e_out); cudaFree(sh_tmp); cudaFree(fin_ref); cudaFree(fin_opt); cudaFree(r_pack); cudaFree(r_w);
 }
 
 int main(void)
