@@ -1155,7 +1155,9 @@ static void SetupHybrid2dCtrl(LargeFixture *f, SparkWeightdMeshHybridCtrl *ctrl_
     ctrl_host->all_peers_mask = ((1u << degree) - 1u) & ~(1u << rank);
     ctrl_host->min_max_inline = 828u;
     ctrl_host->dbrec_in_shm = 0u;
-    ctrl_host->grant_gen = 1u;
+    static uint64_t s_grant_gen = 0u;
+    s_grant_gen += 1000u;
+    ctrl_host->grant_gen = s_grant_gen;
     ctrl_host->cpu_issued_seq = 0u;
     for ( uint32_t i = 0u, target = 0u; target < degree; ++target )
     {

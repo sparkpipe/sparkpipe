@@ -615,7 +615,7 @@ static void TestPairGatherExact(MeshFixture *f, uint32_t rank, uint32_t local_el
     SparkWeightdMeshRoute route;
     route.word = __atomic_load_n(&f->responder.last_route_word, __ATOMIC_ACQUIRE);
     CHECK(route.fields.peer_mask == (1u << partner), "pair-only pair gather masks only partner peer");
-    CHECK(route.fields.pair == 1u, "pair-only pair gather keeps pair route bit");
+    CHECK(route.fields.pair == 0u, "pair-only pair gather clears pair route bit to enable compact/hybrid");
     CHECK(memcmp(h_ref + (size_t)rank * local_elements, h_fast + (size_t)rank * local_elements, local_elements * sizeof(uint16_t)) == 0,
         "pair-only pair gather own slice exact");
     CHECK(memcmp(h_ref + (size_t)partner * local_elements, h_fast + (size_t)partner * local_elements, local_elements * sizeof(uint16_t)) == 0,
@@ -1236,6 +1236,11 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
               __atomic_load_n(&f->responder.alt_count, __ATOMIC_ACQUIRE) == 8u,
             "phase3 Dekker revoke (cpu_mode=0) seamlessly falls back to Phase 2 doorbell with 0-ULP match");
 
+        for ( uint32_t i = 0u; i < ctrl_host->peer_count; ++i )
+        {
+            ctrl_host->gpu_pi[i] = f->responder.hybrid_pi[i];
+            ctrl_host->gpu_wrs[i] = f->responder.hybrid_wrs[i];
+        }
         __atomic_store_n(&ctrl_host->grant_gen, 2u, __ATOMIC_RELEASE);
         __atomic_store_n(&ctrl_host->cpu_mode, 1u, __ATOMIC_SEQ_CST);
         for ( uint32_t rep = 0u; rep < 8u; ++rep )
@@ -1317,6 +1322,42 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
               __atomic_load_n(&f->responder.hybrid_inline_count, __ATOMIC_ACQUIRE) == 8u &&
               __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
             "phase3 hybrid PublishKernel AllGather 648B inline matches reference 0-ULP");
+    }
+
+    {
+        const uint32_t local_elems = 2048u, total = local_elems * degree, partner = rank ^ 1u;
+        for ( uint32_t p = 0u; p < degree; ++p )
+            for ( uint32_t i = 0u; i < local_elems; ++i )
+                f->responder.peer_payloads[p][i] = PatternBf16(p, i, 1327u);
+        memcpy(h_local, f->responder.peer_payloads[rank], local_elems * sizeof(uint16_t));
+        f->gate_host->capabilities = 0u;
+        FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
+        CUDA_OK(cudaMemcpy(f->local_dev, h_local, local_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
+        CUDA_OK(cudaMemset(f->out_ref, 0, total * sizeof(uint16_t)));
+        CUDA_OK(SparkTpLaunchMeshHardware(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+            f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
+            total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(h_ref, f->out_ref, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+
+        f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+        FixtureResetEpoch(f, rank, degree, (uint64_t)local_elems * sizeof(uint16_t));
+        CUDA_OK(cudaMemset(f->out_fast, 0, total * sizeof(uint16_t)));
+        for ( uint32_t rep = 0u; rep < 8u; ++rep )
+            CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
+                total, 0u, 1u, 1u, SPARK_TP_MESH_ROUTES_PEER | SPARK_TP_MESH_ROUTES_PAIR | SPARK_TP_MESH_ROUTES_PAIR_ONLY,
+                f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+        CUDA_OK(cudaStreamSynchronize(f->stream));
+        CUDA_OK(cudaMemcpy(h_fast, f->out_fast, total * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+        SparkTpMeshRoundControl ctrl;
+        CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+        CHECK(memcmp(h_ref + (size_t)rank * local_elems, h_fast + (size_t)rank * local_elems, local_elems * sizeof(uint16_t)) == 0 &&
+              memcmp(h_ref + (size_t)partner * local_elems, h_fast + (size_t)partner * local_elems, local_elems * sizeof(uint16_t)) == 0 &&
+              ctrl.error_word == 0u && ctrl.rounds_done == 8u &&
+              __atomic_load_n(&f->responder.hybrid_dma_count, __ATOMIC_ACQUIRE) == 8u &&
+              __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
+            "phase5 hybrid PAIR_ONLY PairGather 4096B DMA matches reference 0-ULP with zero revokes");
     }
 
     SparkTpMeshFastHybridClearOverride(f->gate_dev);
