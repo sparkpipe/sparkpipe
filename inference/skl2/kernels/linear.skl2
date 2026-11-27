@@ -328,7 +328,7 @@ kernel[BLOCK256, 80] skinny_bf16_dense_l32_r1_n1_pdl(blob[216, 8] args) {
         u32_divmod(task, out_dim, pair, neuron);
         group = ldg32_persist(ptr_add(route_expert, pair, 4));
         reg u64 rpr = param_u64(args, 40);
-        target = ((rpr[0] | rpr[1]) != 0) ? ldg32_persist(ptr_add(rpr, pair, 4)) : pair;
+        target = pair; if ((rpr[0] | rpr[1]) != 0) { target = ldg32_persist(ptr_add(rpr, pair, 4)); }
         if (param_u32(args, 156) != 0) {
             source = target;
         } else {

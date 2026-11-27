@@ -674,13 +674,13 @@ class KernelCompiler:
             _, cond, t_e, f_e = expr
             cv = try_eval_const(cond, self.consts)
             if cv is not None: return self.eval_expr(t_e if cv else f_e, hint_dst=hint_dst)
-            pred, tv, fc = self.eval_cond(cond, pred=1), self.eval_expr(t_e), try_eval_const(f_e, self.consts)
+            tv, fc = self.eval_expr(t_e), try_eval_const(f_e, self.consts)
             d = self.dst_for(tv.vtype, hint_dst)
             if fc is not None and len(d.regs) == 1:
-                imm = isa.f32_bits(fc) if tv.vtype == "f32" else (int(fc) & 0xFFFFFFFF)
+                pred, imm = self.eval_cond(cond, pred=1), (isa.f32_bits(fc) if tv.vtype == "f32" else (int(fc) & 0xFFFFFFFF))
                 self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, a=tv.r0, im=imm, p=pred: isa.encode_sel_i(r, a, im, p, stall=stall, wait=wait), reads=(tv.r0,), preads=(pred,), writes=(d.r0,)))
                 return d
-            fv = self.eval_expr(f_e)
+            fv, pred = self.eval_expr(f_e), self.eval_cond(cond, pred=1)
             for dr, tr, fr in zip(d.regs, tv.regs, fv.regs):
                 self.emit(Op(lambda wr, rd, wait, stall, r=dr, a=tr, b=fr, p=pred: isa.encode_sel_r(r, a, b, p, stall=stall, wait=wait), reads=(tr, fr), preads=(pred,), writes=(dr,)))
             return d
@@ -804,7 +804,7 @@ class KernelCompiler:
         if name == "hmma16816_bf16":
             a, b, c = self.eval_expr(args[0]), self.eval_expr(args[1]), self.eval_expr(args[2])
             d = self.dst_for("f32x4", hint_dst)
-            self.emit(Op(lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, stall=stall, wait=wait), reads=a.regs + b.regs + c.regs, writes=d.regs, fixed_lat=14, pipe="mma"))
+            self.emit(Op(lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, stall=stall, wait=wait), reads=a.regs + b.regs + c.regs, writes=d.regs, fixed_lat=28, pipe="mma"))
             return d
         if name == "barrier":
             self.barriers = max(self.barriers, 1)
@@ -868,12 +868,14 @@ class KernelCompiler:
             a, b, d = self.eval_expr(args[0]), self.eval_expr(args[1]), self.dst_for("f32", hint_dst)
             self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, ra=a.r0, rb=b.r0, m=(name == "maxf"): isa.encode_fmnmx_r(r, ra, rb, is_max=m, stall=stall, wait=wait), reads=(a.r0, b.r0), writes=(d.r0,)))
             return d
+        if name == "fmul_rz":
+            a, fv, d = self.eval_expr(args[0]), float(try_eval_const(args[1], self.consts)), self.dst_for("f32", hint_dst)
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, ra=a.r0, f=fv: isa.encode_fmul_i(r, ra, f, rz=True, stall=stall, wait=wait), reads=(a.r0,), writes=(d.r0,), pipe="fp32")); return d
         if name == "fabsf":
             a, d = self.eval_expr(args[0]), self.dst_for("f32", hint_dst)
-            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, ra=a.r0: isa.encode_lop3_i(r, ra, 0x7FFFFFFF, lut=0xC0, stall=stall, wait=wait), reads=(a.r0,), writes=(d.r0,), pipe="lop3"))
-            return d
-        if name in ("rcp", "rsqrt", "exp2_ftz"):
-            a, d, op = self.eval_expr(args[0]), self.dst_for("f32", hint_dst), {"rcp": isa.MUFU_RCP, "rsqrt": isa.MUFU_RSQ, "exp2_ftz": isa.MUFU_EX2}[name]
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, ra=a.r0: isa.encode_lop3_i(r, ra, 0x7FFFFFFF, lut=0xC0, stall=stall, wait=wait), reads=(a.r0,), writes=(d.r0,), pipe="lop3")); return d
+        if name in ("rcp", "rsqrt", "exp2_ftz", "lg2_ftz", "sin_ftz", "cos_ftz"):
+            a, d, op = self.eval_expr(args[0]), self.dst_for("f32", hint_dst), {"rcp": isa.MUFU_RCP, "rsqrt": isa.MUFU_RSQ, "exp2_ftz": isa.MUFU_EX2, "lg2_ftz": isa.MUFU_LG2, "sin_ftz": isa.MUFU_SIN, "cos_ftz": isa.MUFU_COS}[name]
             self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, rb=a.r0, o=op: isa.encode_mufu(r, rb, op=o, wr=wr, stall=stall, wait=wait), reads=(a.r0,), writes=(d.r0,), var_lat=True))
             return d
         if name == "expf_fast":
@@ -1184,13 +1186,14 @@ class KernelCompiler:
                 bar_count[op.rd] += 1
             real_ops.append(op)
 
-        ready_r, war_ready_r, ready_p, bar_issue_cycle, cur_cycle, last_real = {}, {}, {}, {}, 0, None
+        ready_r, war_ready_r, ready_p, bar_issue_cycle, cur_cycle, last_real, sched_ops = {}, {}, {}, {}, 0, None, []
         for op in real_ops:
             if op.label is not None:
                 if last_real is not None and last_real.stall < 6: last_real.stall = 6
                 ready_r.clear(); war_ready_r.clear(); ready_p.clear()
                 cur_cycle += 6
                 last_real = None
+                sched_ops.append(op)
                 continue
             need = cur_cycle
             for r in op.reads:
@@ -1211,25 +1214,28 @@ class KernelCompiler:
             gap = need - cur_cycle
             if gap > 0 and last_real is not None:
                 add = min(gap, 15 - last_real.stall)
-                last_real.stall += add
-                cur_cycle += add
+                last_real.stall += add; cur_cycle += add; gap -= add
+            while gap > 0:
+                nop = Op(lambda wr, rd, wait, stall: isa.encode_nop(stall=stall, wait=wait))
+                nop.stall = min(gap, 15); sched_ops.append(nop); cur_cycle += nop.stall; gap -= nop.stall
             op.stall = 5 if (op.is_exit or op.is_branch or op.is_bar) else 1
             for r in op.writes: ready_r[r] = (cur_cycle, op.pipe, op.fixed_lat)
             for r in op.mem_addr_reads: war_ready_r[r] = max(war_ready_r.get(r, 0), cur_cycle + 6)
-            if op.var_lat:
-                for r in op.reads: war_ready_r[r] = max(war_ready_r.get(r, 0), cur_cycle + 6)
+            if op.var_lat or op.pipe == "mma":
+                for r in op.reads: war_ready_r[r] = max(war_ready_r.get(r, 0), cur_cycle + (18 if op.pipe == "mma" else 6))
             for p in op.pwrites: ready_p[p] = cur_cycle + 5
             if op.var_lat: bar_issue_cycle[op.wr] = cur_cycle
             if op.mem_addr_reads: bar_issue_cycle[op.rd] = cur_cycle
             cur_cycle += op.stall
+            sched_ops.append(op)
             last_real = op
 
         label_pc, pc = {}, 0
-        for op in real_ops:
+        for op in sched_ops:
             if op.label is not None: label_pc[op.label] = pc
             else: pc += 16
         insns, pc = [], 0
-        for op in real_ops:
+        for op in sched_ops:
             if op.label is not None: continue
             insns.append(op.encoder(label_pc[op.target_label] - (pc + 16), op.wr, op.rd, op.wait, op.stall) if op.is_branch else op.encoder(op.wr, op.rd, op.wait, op.stall))
             pc += 16

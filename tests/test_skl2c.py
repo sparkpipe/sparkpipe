@@ -177,41 +177,42 @@ def test_stdlib_policy_versioning_and_lockfile():
     unit = load_unit([str(SKL2_DIR / "models" / "families.skl2")], search_roots=[str(SKL2_DIR)])
 
     s_small = select_primitive_variant(unit, "std.allreduce", "latest", {"msg_bytes": 10240, "ranks": 16, "topology": "hybrid_mode0"})
-    assert s_small["variant"] == "hybrid_inline_128", s_small
+    assert s_small["version"] == "v2" and s_small["variant"] == "hybrid_single_acquire_128", s_small
+    s_v1 = select_primitive_variant(unit, "std.allreduce", "v1", {"msg_bytes": 10240, "ranks": 16, "topology": "hybrid_mode0"})
+    assert s_v1["version"] == "v1" and s_v1["variant"] == "hybrid_inline_128", s_v1
     s_2d = select_primitive_variant(unit, "std.allreduce", "latest", {"msg_bytes": 65536, "ranks": 16, "topology": "2d_4x4"})
     assert s_2d["variant"] == "two_d_4x4", s_2d
     s_ring = select_primitive_variant(unit, "std.allreduce", "latest", {"msg_bytes": 65536, "ranks": 16, "topology": "ring"})
     assert s_ring["variant"] == "hybrid_dma_ring", s_ring
 
-    ver_src = """
-primitive std.allreduce @v1 {
-    variant hybrid_inline_128 { max_inline_bytes = 16384; }
-    policy { default => hybrid_inline_128; }
-}
-primitive std.allreduce @v2 {
-    variant dual_rail_200g { max_inline_bytes = 32768; }
-    policy { default => dual_rail_200g; }
-}
-model ReferenceTransformer @v1 {
-    hidden = 4096;
-    use std.allreduce@latest;
-}
-model dev_model extends ReferenceTransformer@latest {
+    pin_src = """
+import "models/reference.skl2";
+model dev_hybrid extends ReferenceHybridTransformer@latest {
     hidden = 5120;
+    tp_degree = 16;
 }
-model pinned_model extends ReferenceTransformer@v1 {
+model pinned_hybrid extends ReferenceHybridTransformer@v1 {
     hidden = 5120;
+    tp_degree = 16;
     use std.allreduce@v1;
 }
 """
-    u_ver = parse_skl2_text(ver_src, "version_test.skl2")
-    plan_ver = resolve_models(u_ver, ["dev_model", "pinned_model"])
-    assert plan_ver["models"]["dev_model"]["resolved_primitives"]["std.allreduce"] == "v2:dual_rail_200g", plan_ver
-    assert plan_ver["models"]["pinned_model"]["resolved_primitives"]["std.allreduce"] == "v1:hybrid_inline_128", plan_ver
+    with tempfile.TemporaryDirectory() as tmp:
+        pin_p = pathlib.Path(tmp) / "version_test.skl2"
+        pin_p.write_text(pin_src, encoding="utf-8")
+        u_ver = load_unit([str(pin_p)], search_roots=[str(SKL2_DIR)])
+    plan_ver = resolve_models(u_ver, ["dev_hybrid", "pinned_hybrid"])
+    assert plan_ver["models"]["dev_hybrid"]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128", plan_ver
+    assert plan_ver["models"]["pinned_hybrid"]["resolved_primitives"]["std.allreduce"] == "v1:hybrid_inline_128", plan_ver
+    lock_dev = build_lockfile(u_ver, ["dev_hybrid"])
+    lock_pin = build_lockfile(u_ver, ["pinned_hybrid"])
+    assert lock_dev["models"]["dev_hybrid"]["sha256"] != lock_pin["models"]["pinned_hybrid"]["sha256"]
+    assert lock_dev["resolved_models"]["dev_hybrid"]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128"
+    assert lock_pin["resolved_models"]["pinned_hybrid"]["resolved_primitives"]["std.allreduce"] == "v1:hybrid_inline_128"
 
     lock_doc = build_lockfile(unit)
     assert lock_doc["schema"] == "skl2.lock.v1"
-    assert "std.allreduce" in lock_doc["primitives"]
+    assert lock_doc["primitives"]["std.allreduce"]["version"] == "v2"
     assert "std.linear" in lock_doc["primitives"]
     verify_lockfile(unit, lock_doc)
 
@@ -227,7 +228,12 @@ model pinned_model extends ReferenceTransformer@v1 {
 def test_differential_models_and_dedup():
     unit = load_unit([str(SKL2_DIR / "models" / "families.skl2")], search_roots=[str(SKL2_DIR)])
     plan = resolve_models(unit)
-    expected_models = {"qwen38_27b", "deepseek_v41_flash", "kimi_k31_pro", "glm53_flash"}
+    expected_models = {
+        "qwen38_27b", "qwen38_flash", "qwen38_max",
+        "deepseek_v41_flash", "kimi_k31_pro",
+        "glm53", "glm53_flash",
+        "gemma4_31b", "gemma4_26b_a4b", "ling_30_flash",
+    }
     assert set(plan["models"].keys()) == expected_models, plan["models"].keys()
     assert plan["models"]["deepseek_v41_flash"]["inheritance"] == [
         "deepseek_v41_flash@v1",
@@ -236,13 +242,20 @@ def test_differential_models_and_dedup():
         "ReferenceTransformer@v1",
     ]
     assert plan["models"]["qwen38_27b"]["spec"]["hidden"] == 5120
+    assert plan["models"]["qwen38_max"]["spec"]["hidden"] == 8192
     assert plan["models"]["kimi_k31_pro"]["spec"]["moe_experts"] == 896
+    assert plan["models"]["glm53"]["spec"]["layers"] == 78
     assert plan["models"]["glm53_flash"]["spec"]["layers"] == 45
-    assert plan["dedup_ratio"] >= 0.50, f"expected >=50% cross-model dedup, got {plan['dedup_ratio']}"
-    assert "allreduce.hybrid_inline_128_fused_rmsnorm" in plan["shared_kernels"]
+    assert plan["models"]["gemma4_31b"]["spec"]["vocab"] == 262144
+    assert plan["models"]["gemma4_26b_a4b"]["spec"]["moe_experts"] == 128
+    assert plan["models"]["ling_30_flash"]["spec"]["moe_experts"] == 512
+    for m in expected_models:
+        assert plan["models"][m]["resolved_primitives"]["std.allreduce"] == "v2:hybrid_single_acquire_128", (m, plan["models"][m])
+    assert plan["dedup_ratio"] >= 0.65, f"expected >=65% cross-model dedup across 10 models, got {plan['dedup_ratio']}"
+    assert "allreduce.hybrid_single_acquire_128_fused_rmsnorm" in plan["shared_kernels"]
 
     families_lines = len((SKL2_DIR / "models" / "families.skl2").read_text(encoding="utf-8").splitlines())
-    assert families_lines <= 80, f"expected all 4 differential models in <=80 lines, got {families_lines}"
+    assert families_lines <= 165, f"expected all 10 differential models in <=165 lines, got {families_lines}"
 
 
 def test_full_cubin_emission_and_cli():
@@ -271,6 +284,15 @@ def test_full_cubin_emission_and_cli():
                 "skinny_bf16_b1", "skinny_fp8_b1", "skinny_mxfp4_b1", "skinny_nvfp4_b1",
                 "skinny_bf16_b2", "skinny_bf16_b4", "skinny_bf16_b1_residual", "skinny_bf16_b1_silu",
                 "mma_bf16_gemm_bf16", "mma_bf16_gemm_f32",
+                "qwen_exact_bf16_multi_w1x4_r4_n4", "qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4",
+                "qwen_bf16_dense_mma_16x64", "qwen_bf16_dense_mma_128x64",
+                "qwen_bf16_fused_swiglu_mma_16x64", "qwen_bf16_fused_swiglu_mma_128x64",
+                "qwen_bf16_smalln_mma_16", "qwen_bf16_smalln_mma_wide_32",
+                "qwen_hybrid_attn_prep_tp1", "qwen_attn_prep_local_tp1", "qwen_prior_kv_direct_4_256",
+                "qwen_local_prefill_attn_4_256_direct", "qwen_gqa_split_decode_24_4_256", "qwen_gqa_direct_decode_gate_24_4_256",
+                "qwen_gdn_conv_split_serial_4_128_pdl", "qwen_gdn_conv_prefill_2d_4_128_pdl",
+                "qwen_gdn_conv_window_commit_4_pdl", "qwen_gdn_gate_only_128_pdl", "qwen_gdn_split_expand_gate_256_128_pdl",
+                "qwen_gdn_exact_edge_pre_128_128_pdl", "qwen_gdn_exact_edge_post_128_128_pdl", "qwen_gdn_scalar_chunk_128_128_128_pdl",
                 "rmsnorm_bf16_vec16", "fused_residual_rmsnorm_bf16x8", "rmsnorm_rope_bf16", "rmsnorm_rope_fp8_bf16",
                 "allreduce_wqe_stg128", "allreduce_combine_rmsnorm_bf16",
                 "latent_attn_decode_512_64", "gqa_split_reduce_sigmoid_gate_pdl_exact_bf16",
@@ -294,6 +316,73 @@ def test_full_cubin_emission_and_cli():
                 capture_output=True, text=True, check=False,
             )
             assert res_v.returncode == 0, res_v.stderr
+            hdr_path = pathlib.Path(tmp) / f"qwen38_27b_{arch}.h"
+            res_hdr = subprocess.run(
+                [sys.executable, str(SKL2C), "--arch", arch, "--model", "qwen38_27b", "--emit-c-header", str(hdr_path), str(SKL2_DIR / "models" / "families.skl2"), *inputs],
+                capture_output=True, text=True, check=False,
+            )
+            assert res_hdr.returncode == 0, f"skl2c --emit-c-header failed: {res_hdr.stderr}"
+            htxt = hdr_path.read_text(encoding="utf-8")
+            assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
+            for tok in (
+                "#define SKL2_QWEN38_27B_HIDDEN 5120u",
+                "SKL2_ORD_COUNT = 123",
+                "Skl2ModuleLoad",
+                "Skl2KernelLayout",
+                "Skl2Launch_qwen_bf16_dense_mma_16x64",
+                "Skl2Launch_qwen_local_prefill_attn_4_256_direct",
+                "Skl2Launch_qwen_gdn_scalar_chunk_128_128_128_pdl",
+                "Skl2Select_allreduce",
+                "Skl2Ordinal_allreduce",
+                "SKL2_VAR_ALLREDUCE_HYBRID_SINGLE_ACQUIRE_128",
+                "Skl2Select_linear",
+                "Skl2Select_attention",
+            ):
+                assert tok in htxt, f"missing {tok!r} in generated C99 header"
+            cc_res = subprocess.run(
+                ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", f"-I{ROOT / 'include'}", "-x", "c", str(hdr_path)],
+                capture_output=True, text=True, check=False,
+            )
+            assert cc_res.returncode == 0, f"generated C99 header failed cc -std=c99 -Wall -Wextra -Werror:\n{cc_res.stderr}"
+            if arch == "sm121":
+                c_test = pathlib.Path(tmp) / "test_policy_c99.c"
+                c_bin = pathlib.Path(tmp) / "test_policy_c99"
+                c_test.write_text(
+                    f'#include <assert.h>\n#include "{hdr_path.name}"\n'
+                    "int main(void) {\n"
+                    "    uint32_t cnt = 0u, bytes = 0u;\n"
+                    "    assert(Skl2Select_allreduce(10240u, 16u, SKL2_TAG_NONE) == SKL2_VAR_ALLREDUCE_HYBRID_SINGLE_ACQUIRE_128);\n"
+                    "    assert(Skl2Select_allreduce(65536u, 16u, SKL2_TAG_2D_4X4) == SKL2_VAR_ALLREDUCE_TWO_D_4X4);\n"
+                    "    assert(Skl2Select_allreduce(65536u, 16u, SKL2_TAG_NONE) == SKL2_VAR_ALLREDUCE_HYBRID_DMA_RING);\n"
+                    "    assert(Skl2Ordinal_allreduce(SKL2_VAR_ALLREDUCE_HYBRID_SINGLE_ACQUIRE_128) == SKL2_ORD_allreduce_wqe_stg128);\n"
+                    "    assert(Skl2Ordinal_allreduce(SKL2_VAR_ALLREDUCE_HYBRID_DMA_RING) == SKL2_ORD_allreduce_combine_rmsnorm_bf16);\n"
+                    "    assert(Skl2Select_linear(4u) == SKL2_VAR_LINEAR_SKINNY_GEMV);\n"
+                    "    assert(Skl2Select_linear(32u) == SKL2_VAR_LINEAR_MMA_GEMM);\n"
+                    "    assert(Skl2Select_moe(8u) == SKL2_VAR_MOE_GROUPED_SKINNY);\n"
+                    "    assert(Skl2Select_moe(16u) == SKL2_VAR_MOE_GROUPED_MMA);\n"
+                    "    assert(Skl2Select_attention(SKL2_TAG_MLA_SPARSE) == SKL2_VAR_ATTENTION_MLA_SPARSE_CSA2);\n"
+                    "    assert(Skl2Select_attention(SKL2_TAG_MLA) == SKL2_VAR_ATTENTION_MLA_LATENT);\n"
+                    "    assert(Skl2Select_attention(SKL2_TAG_NONE) == SKL2_VAR_ATTENTION_GQA_FLASH);\n"
+                    "    assert(Skl2Select_recurrent(SKL2_TAG_HYBRID_KDA) == SKL2_VAR_RECURRENT_KDA_DECODE);\n"
+                    "    assert(Skl2Select_recurrent(SKL2_TAG_NONE) == SKL2_VAR_RECURRENT_GDN_DECODE);\n"
+                    "    assert(Skl2Select_norm_rope(1u, 0u) == SKL2_VAR_NORM_ROPE_RMSNORM_ROPE_FP8);\n"
+                    "    assert(Skl2Select_norm_rope(0u, 1u) == SKL2_VAR_NORM_ROPE_FUSED_RESIDUAL_RMSNORM);\n"
+                    "    assert(Skl2Select_norm_rope(0u, 0u) == SKL2_VAR_NORM_ROPE_RMSNORM_VEC16);\n"
+                    "    assert(Skl2Select_route_topk() == SKL2_VAR_ROUTE_TOPK_WARP_EXACT_TOPK);\n"
+                    "    assert(Skl2Select_head(SKL2_TAG_BF16) == SKL2_VAR_HEAD_CERTIFIED_BF16);\n"
+                    "    assert(Skl2Select_head(SKL2_TAG_NONE) == SKL2_VAR_HEAD_CERTIFIED_FP8_RESCORE);\n"
+                    "    assert(Skl2KernelLayout(SKL2_ORD_qwen_bf16_dense_mma_16x64, &cnt, &bytes) != 0 && cnt == 6u && bytes == 36u);\n"
+                    "    return 0;\n"
+                    "}\n",
+                    encoding="utf-8",
+                )
+                cc_run = subprocess.run(
+                    ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", f"-I{ROOT / 'include'}", f"-I{tmp}", str(c_test), "-o", str(c_bin)],
+                    capture_output=True, text=True, check=False,
+                )
+                assert cc_run.returncode == 0, f"C99 runtime policy test failed to compile:\n{cc_run.stderr}"
+                exec_res = subprocess.run([str(c_bin)], capture_output=True, text=True, check=False)
+                assert exec_res.returncode == 0, f"C99 runtime policy test failed:\n{exec_res.stderr}"
 
 
 def main():
@@ -301,7 +390,7 @@ def main():
     test_stdlib_policy_versioning_and_lockfile()
     test_differential_models_and_dedup()
     test_full_cubin_emission_and_cli()
-    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, differential models, and 91 sm_121a/sm_120a kernels (0 legacy .skl files)")
+    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, C99 NVRM header gen, differential models, and 123 sm_121a/sm_120a kernels (0 legacy .skl files)")
     return 0
 
 

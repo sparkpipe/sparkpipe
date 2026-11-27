@@ -397,9 +397,9 @@ def encode_fmul_r(rd, ra, rb, pred=PT, neg=False, stall=1, wait=0):
     return (lo, hi)
 
 
-def encode_fmul_i(rd, ra, fval, pred=PT, neg=False, stall=1, wait=0):
+def encode_fmul_i(rd, ra, fval, pred=PT, neg=False, rz=False, stall=1, wait=0):
     lo = 0x820 | (pred_bits(pred, neg) << 12) | ((rd & 0xFF) << 16) | ((ra & 0xFF) << 24) | (f32_bits(fval) << 32)
-    hi = 0x00400000 | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    hi = (0x0040C000 if rz else 0x00400000) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
     return (lo, hi)
 
 
@@ -415,9 +415,7 @@ def encode_fmnmx_r(rd, ra, rb, is_max=True, abs_a=False, abs_b=False, stall=1, w
     return (lo, hi)
 
 
-MUFU_EX2 = 0x0800
-MUFU_RCP = 0x1000
-MUFU_RSQ = 0x1400
+MUFU_COS, MUFU_SIN, MUFU_EX2, MUFU_LG2, MUFU_RCP, MUFU_RSQ = 0x0000, 0x0400, 0x0800, 0x0C00, 0x1000, 0x1400
 
 
 def encode_mufu(rd, rb, op=MUFU_RCP, wr=0, stall=1, wait=0):

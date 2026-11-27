@@ -2,12 +2,14 @@
 macro u32_divmod(num, den, out_q, out_r) {
     reg u32 qv = 0;
     reg u32 rv = 0;
+    reg u32 nv = num;
     for (reg u32 bit = 0; bit < 32; bit += 1) {
-        reg u32 sh = 31 - bit;
-        rv = (rv << 1) | ((num >> sh) & 1);
+        rv = (rv << 1) | (nv >> 31);
+        nv = nv << 1;
+        qv = qv << 1;
         if (rv >= den) {
             rv = rv - den;
-            qv = qv | (1 << sh);
+            qv = qv | 1;
         }
     }
     out_q = qv;
@@ -145,5 +147,64 @@ macro block_argmax_tiebreak_finish(sh_s, sh_i, out_s, out_i) {
         reg f32 ws = lds32(sh_s, w);
         reg u32 wi = lds32(sh_i, w);
         argmax_tiebreak_step(ws, wi, out_s, out_i);
+    }
+}
+
+@export
+macro softplus_exact_f32(x, out_sp) {
+    if (x > 20.0f) {
+        out_sp = x;
+    } else if (x < -12.0f) {
+        out_sp = exp2_ftz(x * 1.4426950408889634f);
+    } else {
+        reg f32 y = exp2_ftz(x * 1.4426950408889634f) + 1.0f;
+        reg u32 yb = f32_as_u32(y);
+        reg u32 e = ((yb >> 23) & 0xFF) - 127;
+        reg f32 m = u32_as_f32((yb & 0x007FFFFF) | 0x3F800000);
+        if (m > 1.4142135623730951f) {
+            m = m * 0.5f;
+            e = e + 1;
+        }
+        reg f32 inv_mp = 0.0f;
+        rcp_nr1_f32(m + 1.0f, inv_mp);
+        reg f32 z = (m - 1.0f) * inv_mp;
+        reg f32 z2 = z * z;
+        reg f32 p = fma(0.1428571492433548f, z2, 0.20000000298023224f);
+        p = fma(p, z2, 0.3333333432674408f);
+        p = fma(p, z2, 1.0f);
+        out_sp = fma(u32_to_f32(e), 0.6931471805599453f, (z + z) * p);
+    }
+}
+
+@export
+macro gdn_decay_f32(a_log, shifted, out_decay) {
+    reg f32 sp = 0.0f;
+    softplus_exact_f32(shifted, sp);
+    reg f32 a_exp = exp2_ftz(a_log * 1.4426950408889634f);
+    out_decay = exp2_ftz((-a_exp * sp) * 1.4426950408889634f);
+}
+
+@export
+macro sincos_pos_f32(angle, out_sin, out_cos) {
+    reg f32 turns = fmul_rz(angle, 0.15915493667125702f);
+    out_sin = sin_ftz(turns);
+    out_cos = cos_ftz(turns);
+}
+
+@export
+macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
+    out_ok = 0;
+    out_addr = param_u64(kv_view, 0);
+    reg u32 pt_stride = param_u32(kv_view, 16);
+    reg u32 seq_cnt = param_u32(kv_view, 20);
+    reg u32 pool_pages = param_u32(kv_view, 24);
+    reg u32 page = pos >> 6;
+    if (seq < seq_cnt && page < pt_stride) {
+        reg u64 pt_ptr = param_u64(kv_view, 8);
+        reg u32 phys = ldg32_persist(ptr_add(pt_ptr, seq * pt_stride + page, 4));
+        if (phys < pool_pages) {
+            out_addr = ptr_add(out_addr, (phys << 6) + (pos & 63), slot_bytes);
+            out_ok = 1;
+        }
     }
 }

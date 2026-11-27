@@ -14,6 +14,36 @@ model qwen38_27b extends ReferenceHybridTransformer@latest {
     gdn_val_dim = 128;
 }
 
+model qwen38_flash extends ReferenceHybridTransformer@latest {
+    hidden = 2560;
+    layers = 48;
+    vocab = 248320;
+    heads = 24;
+    kv_heads = 2;
+    head_dim = 256;
+    moe_experts = 512;
+    moe_topk = 10;
+    moe_intermediate = 640;
+    hc_streams = 4;
+    ple_layer = 1;
+    index_heads = 4;
+    index_budget = 2048;
+}
+
+model qwen38_max extends ReferenceHybridTransformer@latest {
+    hidden = 8192;
+    layers = 92;
+    vocab = 248320;
+    heads = 64;
+    kv_heads = 4;
+    head_dim = 256;
+    moe_experts = 512;
+    moe_topk = 10;
+    moe_intermediate = 2048;
+    moe_codec = NVFP4_UE4M3;
+    rank_heads = true;
+}
+
 model deepseek_v41_flash extends ReferenceMlaTransformer@latest {
     hidden = 5120;
     layers = 40;
@@ -45,6 +75,21 @@ model kimi_k31_pro extends ReferenceHybridTransformer@latest {
     rms_eps = 1e-5;
 }
 
+model glm53 extends ReferenceMlaTransformer@latest {
+    hidden = 6144;
+    layers = 78;
+    vocab = 154880;
+    heads = 64;
+    q_lora_rank = 2048;
+    moe_experts = 256;
+    moe_topk = 8;
+    moe_intermediate = 2048;
+    dense_layers = 3;
+    index_heads = 32;
+    index_topk = 2048;
+    rms_eps = 1e-5;
+}
+
 model glm53_flash extends ReferenceMlaTransformer@latest {
     hidden = 4096;
     layers = 45;
@@ -58,4 +103,53 @@ model glm53_flash extends ReferenceMlaTransformer@latest {
     dense_layers = 3;
     kda_layers = 34;
     rms_eps = 1e-5;
+}
+
+model gemma4_31b extends ReferenceTransformer@latest {
+    hidden = 5376;
+    layers = 60;
+    vocab = 262144;
+    heads = 32;
+    kv_heads = 16;
+    head_dim = 256;
+    full_kv_heads = 4;
+    full_head_dim = 512;
+    sliding_window = 1024;
+    attention_period = 6;
+    ffn = geglu;
+    logit_softcap = 30.0;
+}
+
+model gemma4_26b_a4b extends ReferenceMoeTransformer@latest {
+    hidden = 2816;
+    layers = 30;
+    vocab = 262144;
+    heads = 16;
+    kv_heads = 8;
+    head_dim = 256;
+    full_kv_heads = 2;
+    full_head_dim = 512;
+    sliding_window = 1024;
+    attention_period = 6;
+    moe_experts = 128;
+    moe_topk = 8;
+    moe_intermediate = 704;
+    ffn = geglu;
+    logit_softcap = 30.0;
+}
+
+model ling_30_flash extends ReferenceHybridTransformer@latest {
+    hidden = 2560;
+    layers = 42;
+    vocab = 157184;
+    heads = 32;
+    mixer = hybrid_kda;
+    attention_period = 6;
+    attention_phase = 5;
+    kv_lora_rank = 512;
+    qk_rope_dim = 64;
+    moe_experts = 512;
+    moe_topk = 8;
+    moe_intermediate = 768;
+    dense_layers = 2;
 }
