@@ -212,6 +212,7 @@ macro attn_norm_rope_head256(v, norm_w, rope_smem, wid, lane, pos_f, out_v) {
             sts32(rope_smem, rbase + (lane << 3) + k * 2 + 1, out_v[k] >> 16);
         }
     }
+    rbase = shfl_idx(rbase, 0);
     reg f32 angle = pos_f * exp2_ftz(u32_to_f32(lane) * -0.7266717707566105f);
     reg f32 sv = 0.0f; reg f32 cv = 0.0f;
     sincos_pos_f32(angle, sv, cv);
@@ -219,10 +220,9 @@ macro attn_norm_rope_head256(v, norm_w, rope_smem, wid, lane, pos_f, out_v) {
     reg f32 sb = bf16_lo(f32_to_bf16(sv));
     reg f32 a = bf16_lo(lds32(rope_smem, rbase + lane));
     reg f32 b = bf16_lo(lds32(rope_smem, rbase + 32 + lane));
-    reg f32 lo_r = bf16_lo(f32_to_bf16(a * cb)) + bf16_lo(f32_to_bf16((-b) * sb));
-    reg f32 hi_r = bf16_lo(f32_to_bf16(b * cb)) + bf16_lo(f32_to_bf16(a * sb));
-    sts32(rope_smem, rbase + lane, f32_to_bf16(lo_r));
-    sts32(rope_smem, rbase + 32 + lane, f32_to_bf16(hi_r));
+    sts32(rope_smem, rbase + lane, f32_to_bf16(bf16_lo(f32_to_bf16(a * cb)) + bf16_lo(f32_to_bf16((-b) * sb))));
+    sts32(rope_smem, rbase + 32 + lane, f32_to_bf16(bf16_lo(f32_to_bf16(b * cb)) + bf16_lo(f32_to_bf16(a * sb))));
+    rbase = shfl_idx(rbase, 0);
     if (lane < 8) {
         unroll (k = 0..4) {
             reg u32 p0 = lds32(rope_smem, rbase + (lane << 3) + k * 2);
@@ -620,7 +620,7 @@ macro prefill_load_q_smem(query_bf16, row_first, row_end, rank_heads, local_h, t
     for (reg u32 idx = tid; idx < 1024; idx += 128) {
         reg u32 r = idx >> 5;
         reg u32 c = idx & 31;
-        reg u32x4 qv = (row_first + r < row_end) ? ldg128_persist(ptr_add(query_bf16, ((row_first + r) * rank_heads + local_h) * 32 + c, 16)) : pack_u32x4(0, 0, 0, 0);
+        reg u32x4 qv = pack_u32x4(0, 0, 0, 0); if (row_first + r < row_end) { qv = ldg128_persist(ptr_add(query_bf16, ((row_first + r) * rank_heads + local_h) * 32 + c, 16)); }
         unroll (w = 0..4) { sts32(sm_q, (idx << 2) + w, qv[w]); }
     }
     barrier();
@@ -684,8 +684,7 @@ kernel[128, 160] qwen_local_prefill_attn_4_256_direct(
     if (local_first >= s_rows) { preexit(); return; }
     reg u32 row_first = s_row_begin + local_first;
     reg u32 row_end = s_row_begin + ((local_first + 32 < s_rows) ? (local_first + 32) : s_rows);
-    reg u32 seq_id = (pcount == 1) ? ldg32_persist(sequence_of_row) : 0;
-    if (pcount != 1) { plan_read_u32(plan, 12, seq_idx, seq_id); }
+    reg u32 seq_id = 0; if (pcount == 1) { seq_id = ldg32_persist(sequence_of_row); } else { plan_read_u32(plan, 12, seq_idx, seq_id); }
     reg u32 tid = tid_x();
     prefill_load_q_smem(query_bf16, row_first, row_end, rank_heads, local_h, tid, sm_q);
     reg u32 wid = warp_id();
@@ -698,8 +697,8 @@ kernel[128, 160] qwen_local_prefill_attn_4_256_direct(
     reg u32 r_hi = r_lo + 8;
     reg u32 v0 = (r_lo < row_end) ? 1 : 0;
     reg u32 v1 = (r_hi < row_end) ? 1 : 0;
-    reg u32 rp0 = (v0 != 0) ? ldg32_persist(ptr_add(positions, r_lo, 4)) : 0;
-    reg u32 rp1 = (v1 != 0) ? ldg32_persist(ptr_add(positions, r_hi, 4)) : 0;
+    reg u32 rp0 = 0; if (v0 != 0) { rp0 = ldg32_persist(ptr_add(positions, r_lo, 4)); }
+    reg u32 rp1 = 0; if (v1 != 0) { rp1 = ldg32_persist(ptr_add(positions, r_hi, 4)); }
     reg u32 max_pos = ldg32_persist(ptr_add(positions, row_end - 1, 4));
     reg u32 kh_g = 0; reg u32 kh_rem = 0;
     u32_divmod(q_first + local_h, group, kh_g, kh_rem);

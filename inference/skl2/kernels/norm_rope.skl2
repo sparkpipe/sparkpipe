@@ -766,7 +766,7 @@ template kernel[BLOCK, 32] row_map_copy_pdl<IS_SCATTER>(
     preexit();
     reg u32 row = ctaid_y();
     if (row >= rows) { return; }
-    reg u32 mapped = ((row_map[0] | row_map[1]) != 0) ? ldg32_persist(ptr_add(row_map, row, 4)) : row;
+    reg u32 mapped = row; if ((row_map[0] | row_map[1]) != 0) { mapped = ldg32_persist(ptr_add(row_map, row, 4)); }
     reg u32 row_bytes = dimension << 1;
     ureg u64 src = ptr_add(source_bf16, IS_SCATTER == 1 ? row : mapped, row_bytes);
     ureg u64 dst = ptr_add(destination_bf16, IS_SCATTER == 1 ? mapped : row, row_bytes);
@@ -812,13 +812,13 @@ kernel[BLOCK, 40] lm_concat_rows_pdl_bf16x8(
         reg u32 left_v = left_width >> 3;
         reg u32 total_v = total >> 3;
         for (reg u32 v = tid; v < total_v; v += stride) {
-            reg u32x4 val = (v < left_v) ? ldg128_stream(ptr_add(left_row, v, 16)) : ldg128_stream(ptr_add(right_row, v - left_v, 16));
+            reg u32x4 val = pack_u32x4(0, 0, 0, 0); if (v < left_v) { val = ldg128_stream(ptr_add(left_row, v, 16)); } else { val = ldg128_stream(ptr_add(right_row, v - left_v, 16)); }
             stg128(ptr_add(out_row, v, 16), val);
         }
         return;
     }
     for (reg u32 idx = tid; idx < total; idx += stride) {
-        reg u32 val = (idx < left_width) ? ldg16_stream(ptr_add(left_row, idx, 2)) : ldg16_stream(ptr_add(right_row, idx - left_width, 2));
+        reg u32 val = 0; if (idx < left_width) { val = ldg16_stream(ptr_add(left_row, idx, 2)); } else { val = ldg16_stream(ptr_add(right_row, idx - left_width, 2)); }
         stg16(ptr_add(out_row, idx, 2), val);
     }
 }

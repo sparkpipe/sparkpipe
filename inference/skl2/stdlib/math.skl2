@@ -186,26 +186,9 @@ macro gdn_decay_f32(a_log, shifted, out_decay) {
 
 @export
 macro sincos_pos_f32(angle, out_sin, out_cos) {
-    reg f32 kf = (angle * 0.15915494309189535f + 8388608.0f) - 8388608.0f;
-    reg f32 r = fma(-kf, 6.283185005187988f, angle);
-    r = fma(-kf, 3.019916244140343e-7f, r);
-    reg f32 sign_c = 1.0f;
-    if (r > 1.5707963267948966f) {
-        r = 3.141592653589793f - r;
-        sign_c = -1.0f;
-    } else if (r < -1.5707963267948966f) {
-        r = -3.141592653589793f - r;
-        sign_c = -1.0f;
-    }
-    reg f32 r2 = r * r;
-    reg f32 ps = fma(2.7557314297e-6f, r2, -1.9841269841e-4f);
-    ps = fma(ps, r2, 8.3333333333e-3f);
-    ps = fma(ps, r2, -1.6666666667e-1f);
-    out_sin = r * fma(ps, r2, 1.0f);
-    reg f32 pc = fma(2.4801587302e-5f, r2, -1.3888888889e-3f);
-    pc = fma(pc, r2, 4.1666666667e-2f);
-    pc = fma(pc, r2, -0.5f);
-    out_cos = sign_c * fma(pc, r2, 1.0f);
+    reg f32 turns = fmul_rz(angle, 0.15915493667125702f);
+    out_sin = sin_ftz(turns);
+    out_cos = cos_ftz(turns);
 }
 
 @export
