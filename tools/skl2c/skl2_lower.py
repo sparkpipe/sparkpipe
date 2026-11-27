@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import sys
 
 TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -337,3 +338,86 @@ def resolve_models(unit, model_names=None):
         "shared_kernels": {k: v for k, v in sorted(kernel_registry.items()) if len(v) > 1},
         "dedup_ratio": round(1.0 - (len(unique_kernels) / max(total_slots, 1)), 4),
     }
+
+
+C99_PARAM_TYPES = {
+    "ptr": "SparkDeviceAddress", "u64": "uint64_t", "u32": "uint32_t",
+    "i32": "int32_t", "f32": "float", "u16": "uint16_t", "u8": "uint8_t", "b8": "const void *",
+}
+
+
+def emit_c_header(images, model_plan=None, arch="sm121"):
+    guard = "LAUNCH"
+    mdefs = []
+    if model_plan and len(model_plan.get("models", {})) == 1:
+        mname, minfo = next(iter(model_plan["models"].items()))
+        guard = re.sub(r"[^A-Za-z0-9_]", "_", mname).upper()
+        for fk, fv in sorted(minfo.get("spec", {}).items()):
+            mk = re.sub(r"[^A-Za-z0-9_]", "_", fk).upper()
+            if isinstance(fv, bool): mdefs.append(f"#define SKL2_{guard}_{mk} {1 if fv else 0}u")
+            elif isinstance(fv, int): mdefs.append(f"#define SKL2_{guard}_{mk} {fv}u")
+            elif isinstance(fv, float): mdefs.append(f"#define SKL2_{guard}_{mk} {fv:.9g}f")
+    cids = [re.sub(r"[^A-Za-z0-9_]", "_", k.name) for k in images]
+    lines = [
+        f"#ifndef SKL2_{guard}_H", f"#define SKL2_{guard}_H",
+        "#include <stdint.h>", "#include <string.h>", '#include "sparkpipe/spark_device.h"',
+        "#ifdef __cplusplus", 'extern "C" {', "#endif",
+        "#if defined(__GNUC__) || defined(__clang__)",
+        "#define SKL2_INLINE static inline __attribute__((unused))",
+        "#else",
+        "#define SKL2_INLINE static inline",
+        "#endif",
+        f'#define SKL2_{guard}_ARCH "{arch}"', *mdefs,
+        "typedef enum Skl2KernelOrdinal {",
+        *(f"\tSKL2_ORD_{cid} = {i}," for i, cid in enumerate(cids)),
+        f"\tSKL2_ORD_COUNT = {len(cids)}", "} Skl2KernelOrdinal;",
+        "typedef struct Skl2Module {",
+        "\tSparkDeviceLibrary *library;",
+        f"\tSparkDeviceKernel *kernels[{max(1, len(cids))}];",
+        "} Skl2Module;",
+        f"static const char *const kSkl2KernelNames[{max(1, len(cids))}] = {{ " + ", ".join(f'"{k.name}"' for k in images) + " };",
+    ]
+    layout_cases, launch_fns = [], []
+    for k, cid in zip(images, cids):
+        layout, pbytes = k.param_layout()
+        entries = ", ".join(f"{{ {poff}u, {pb}u, {pa}u }}" for _, _, pa, pb, poff in layout) or "{ 0u, 0u, 1u }"
+        lines.append(f"static const SparkDeviceParameter kSkl2Layout_{cid}[{max(1, len(layout))}] = {{ {entries} }};")
+        lines.append(f"#define SKL2_PARAM_BYTES_{cid} {pbytes}u")
+        lines.append(f"#define SKL2_BLOCK_THREADS_{cid} {k.max_threads}u")
+        lines.append(f"#define SKL2_STATIC_SMEM_{cid} {k.smem_bytes}u")
+        layout_cases.append(f"\tcase SKL2_ORD_{cid}: *count = {len(layout)}u; *bytes = {pbytes}u; return kSkl2Layout_{cid};")
+        p_sigs, p_copies = [], []
+        for idx, (pname, pkind, _, pb, poff) in enumerate(layout):
+            cname = f"p_{re.sub(r'[^A-Za-z0-9_]', '_', pname)}_{idx}"
+            ct = C99_PARAM_TYPES[pkind]
+            p_sigs.append(f"{ct}{cname}" if ct.endswith("*") else f"{ct} {cname}")
+            p_copies.append(f"\tmemcpy(buf + {poff}u, {cname if pkind == 'b8' else '&' + cname}, {pb}u);")
+        extra = (", " + ", ".join(p_sigs)) if p_sigs else ""
+        launch_fns.extend([
+            f"SKL2_INLINE SparkStatus Skl2Launch_{cid}(SparkDeviceQueue *queue, const Skl2Module *mod, uint32_t gx, uint32_t gy, uint32_t gz, uint32_t shared_bytes, uint32_t dependent{extra})",
+            "{", f"\tuint8_t buf[{max(1, pbytes)}];", "\tSparkDeviceLaunch launch;",
+            "\tmemset(buf, 0, sizeof(buf));", *p_copies, "\tmemset(&launch, 0, sizeof(launch));",
+            "\tlaunch.groups.x = gx; launch.groups.y = gy; launch.groups.z = gz;",
+            f"\tlaunch.threads.x = SKL2_BLOCK_THREADS_{cid}; launch.threads.y = 1u; launch.threads.z = 1u;",
+            f"\tlaunch.shared_bytes = shared_bytes; launch.constant_bytes = {pbytes}u;",
+            f"\tlaunch.constants = {'buf' if pbytes > 0 else '0'}; launch.dependent = dependent;",
+            f"\treturn SparkDeviceKernelLaunch(queue, mod->kernels[SKL2_ORD_{cid}], &launch);", "}",
+        ])
+    lines.extend([
+        "SKL2_INLINE void Skl2ModuleUnload(Skl2Module *mod) {",
+        "\tuint32_t i; if (mod == 0) return;",
+        "\tfor (i = 0u; i < (uint32_t)SKL2_ORD_COUNT; ++i) { if (mod->kernels[i] != 0) SparkDeviceKernelDestroy(mod->kernels[i]); mod->kernels[i] = 0; }",
+        "\tif (mod->library != 0) SparkDeviceLibraryUnload(mod->library); mod->library = 0;", "}",
+        "SKL2_INLINE SparkStatus Skl2ModuleLoad(Skl2Module *mod, const char *cubin_path, const char *owner) {",
+        "\tSparkStatus st; uint32_t i; if (mod == 0 || cubin_path == 0) return SPARK_STATUS_INVALID_ARGUMENT;",
+        "\tmemset(mod, 0, sizeof(*mod)); st = SparkDeviceLibraryLoad(&mod->library, cubin_path, owner);",
+        "\tif (st != SPARK_STATUS_OK) return st;",
+        "\tfor (i = 0u; i < (uint32_t)SKL2_ORD_COUNT; ++i) {",
+        "\t\tst = SparkDeviceKernelCreate(&mod->kernels[i], mod->library, kSkl2KernelNames[i]);",
+        "\t\tif (st != SPARK_STATUS_OK) { Skl2ModuleUnload(mod); return st; }",
+        "\t}", "\treturn SPARK_STATUS_OK;", "}",
+        "SKL2_INLINE const SparkDeviceParameter *Skl2KernelLayout(Skl2KernelOrdinal ord, uint32_t *count, uint32_t *bytes) {",
+        "\tswitch (ord) {", *layout_cases, "\tdefault: *count = 0u; *bytes = 0u; return 0;", "\t}", "}",
+        *launch_fns, "#ifdef __cplusplus", "}", "#endif", "#endif",
+    ])
+    return "\n".join(lines) + "\n"

@@ -271,6 +271,15 @@ def test_full_cubin_emission_and_cli():
                 "skinny_bf16_b1", "skinny_fp8_b1", "skinny_mxfp4_b1", "skinny_nvfp4_b1",
                 "skinny_bf16_b2", "skinny_bf16_b4", "skinny_bf16_b1_residual", "skinny_bf16_b1_silu",
                 "mma_bf16_gemm_bf16", "mma_bf16_gemm_f32",
+                "qwen_exact_bf16_multi_w1x4_r4_n4", "qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4",
+                "qwen_bf16_dense_mma_16x64", "qwen_bf16_dense_mma_128x64",
+                "qwen_bf16_fused_swiglu_mma_16x64", "qwen_bf16_fused_swiglu_mma_128x64",
+                "qwen_bf16_smalln_mma_16", "qwen_bf16_smalln_mma_wide_32",
+                "qwen_hybrid_attn_prep_tp1", "qwen_attn_prep_local_tp1", "qwen_prior_kv_direct_4_256",
+                "qwen_local_prefill_attn_4_256_direct", "qwen_gqa_split_decode_24_4_256", "qwen_gqa_direct_decode_gate_24_4_256",
+                "qwen_gdn_conv_split_serial_4_128_pdl", "qwen_gdn_conv_prefill_2d_4_128_pdl",
+                "qwen_gdn_conv_window_commit_4_pdl", "qwen_gdn_gate_only_128_pdl", "qwen_gdn_split_expand_gate_256_128_pdl",
+                "qwen_gdn_exact_edge_pre_128_128_pdl", "qwen_gdn_exact_edge_post_128_128_pdl", "qwen_gdn_scalar_chunk_128_128_128_pdl",
                 "rmsnorm_bf16_vec16", "fused_residual_rmsnorm_bf16x8", "rmsnorm_rope_bf16", "rmsnorm_rope_fp8_bf16",
                 "allreduce_wqe_stg128", "allreduce_combine_rmsnorm_bf16",
                 "latent_attn_decode_512_64", "gqa_split_reduce_sigmoid_gate_pdl_exact_bf16",
@@ -294,6 +303,29 @@ def test_full_cubin_emission_and_cli():
                 capture_output=True, text=True, check=False,
             )
             assert res_v.returncode == 0, res_v.stderr
+            hdr_path = pathlib.Path(tmp) / f"qwen38_27b_{arch}.h"
+            res_hdr = subprocess.run(
+                [sys.executable, str(SKL2C), "--arch", arch, "--model", "qwen38_27b", "--emit-c-header", str(hdr_path), str(SKL2_DIR / "models" / "families.skl2"), *inputs],
+                capture_output=True, text=True, check=False,
+            )
+            assert res_hdr.returncode == 0, f"skl2c --emit-c-header failed: {res_hdr.stderr}"
+            htxt = hdr_path.read_text(encoding="utf-8")
+            assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
+            for tok in (
+                "#define SKL2_QWEN38_27B_HIDDEN 5120u",
+                "SKL2_ORD_COUNT = 123",
+                "Skl2ModuleLoad",
+                "Skl2KernelLayout",
+                "Skl2Launch_qwen_bf16_dense_mma_16x64",
+                "Skl2Launch_qwen_local_prefill_attn_4_256_direct",
+                "Skl2Launch_qwen_gdn_scalar_chunk_128_128_128_pdl",
+            ):
+                assert tok in htxt, f"missing {tok!r} in generated C99 header"
+            cc_res = subprocess.run(
+                ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", f"-I{ROOT / 'include'}", "-x", "c", str(hdr_path)],
+                capture_output=True, text=True, check=False,
+            )
+            assert cc_res.returncode == 0, f"generated C99 header failed cc -std=c99 -Wall -Wextra -Werror:\n{cc_res.stderr}"
 
 
 def main():
@@ -301,7 +333,7 @@ def main():
     test_stdlib_policy_versioning_and_lockfile()
     test_differential_models_and_dedup()
     test_full_cubin_emission_and_cli()
-    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, differential models, and 91 sm_121a/sm_120a kernels (0 legacy .skl files)")
+    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, C99 NVRM header gen, differential models, and 123 sm_121a/sm_120a kernels (0 legacy .skl files)")
     return 0
 
 

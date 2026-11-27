@@ -147,3 +147,79 @@ macro block_argmax_tiebreak_finish(sh_s, sh_i, out_s, out_i) {
         argmax_tiebreak_step(ws, wi, out_s, out_i);
     }
 }
+
+@export
+macro softplus_exact_f32(x, out_sp) {
+    if (x > 20.0f) {
+        out_sp = x;
+    } else if (x < -12.0f) {
+        out_sp = exp2_ftz(x * 1.4426950408889634f);
+    } else {
+        reg f32 y = exp2_ftz(x * 1.4426950408889634f) + 1.0f;
+        reg u32 yb = f32_as_u32(y);
+        reg u32 e = ((yb >> 23) & 0xFF) - 127;
+        reg f32 m = u32_as_f32((yb & 0x007FFFFF) | 0x3F800000);
+        if (m > 1.4142135623730951f) {
+            m = m * 0.5f;
+            e = e + 1;
+        }
+        reg f32 inv_mp = 0.0f;
+        rcp_nr1_f32(m + 1.0f, inv_mp);
+        reg f32 z = (m - 1.0f) * inv_mp;
+        reg f32 z2 = z * z;
+        reg f32 p = fma(0.1428571492433548f, z2, 0.20000000298023224f);
+        p = fma(p, z2, 0.3333333432674408f);
+        p = fma(p, z2, 1.0f);
+        out_sp = fma(u32_to_f32(e), 0.6931471805599453f, (z + z) * p);
+    }
+}
+
+@export
+macro gdn_decay_f32(a_log, shifted, out_decay) {
+    reg f32 sp = 0.0f;
+    softplus_exact_f32(shifted, sp);
+    reg f32 a_exp = exp2_ftz(a_log * 1.4426950408889634f);
+    out_decay = exp2_ftz((-a_exp * sp) * 1.4426950408889634f);
+}
+
+@export
+macro sincos_pos_f32(angle, out_sin, out_cos) {
+    reg f32 kf = (angle * 0.15915494309189535f + 8388608.0f) - 8388608.0f;
+    reg f32 r = fma(-kf, 6.283185005187988f, angle);
+    r = fma(-kf, 3.019916244140343e-7f, r);
+    reg f32 sign_c = 1.0f;
+    if (r > 1.5707963267948966f) {
+        r = 3.141592653589793f - r;
+        sign_c = -1.0f;
+    } else if (r < -1.5707963267948966f) {
+        r = -3.141592653589793f - r;
+        sign_c = -1.0f;
+    }
+    reg f32 r2 = r * r;
+    reg f32 ps = fma(2.7557314297e-6f, r2, -1.9841269841e-4f);
+    ps = fma(ps, r2, 8.3333333333e-3f);
+    ps = fma(ps, r2, -1.6666666667e-1f);
+    out_sin = r * fma(ps, r2, 1.0f);
+    reg f32 pc = fma(2.4801587302e-5f, r2, -1.3888888889e-3f);
+    pc = fma(pc, r2, 4.1666666667e-2f);
+    pc = fma(pc, r2, -0.5f);
+    out_cos = sign_c * fma(pc, r2, 1.0f);
+}
+
+@export
+macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
+    out_ok = 0;
+    out_addr = param_u64(kv_view, 0);
+    reg u32 pt_stride = param_u32(kv_view, 16);
+    reg u32 seq_cnt = param_u32(kv_view, 20);
+    reg u32 pool_pages = param_u32(kv_view, 24);
+    reg u32 page = pos >> 6;
+    if (seq < seq_cnt && page < pt_stride) {
+        reg u64 pt_ptr = param_u64(kv_view, 8);
+        reg u32 phys = ldg32_persist(ptr_add(pt_ptr, seq * pt_stride + page, 4));
+        if (phys < pool_pages) {
+            out_addr = ptr_add(out_addr, (phys << 6) + (pos & 63), slot_bytes);
+            out_ok = 1;
+        }
+    }
+}
