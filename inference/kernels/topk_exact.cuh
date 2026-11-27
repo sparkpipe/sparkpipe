@@ -167,14 +167,10 @@ static __device__ __forceinline__ void LmTopkExactEmitKeys(Keys keys, uint32_t n
 		key = index < n ? keys(index) : 0u;
 		greater = index < n && key > threshold ? 1u : 0u;
 		equal = index < n && key == threshold ? 1u : 0u;
-#if defined(__CUDA_ARCH__)
 		if ( !__syncthreads_or((int)(greater | equal)) )
 			continue;
 		uint32_t *buf = scan + (phase * (2u * warps));
 		phase ^= 1u;
-#else
-		uint32_t *buf = scan;
-#endif
 		greater_mask = __ballot_sync(0xffffffffu,greater != 0u);
 		equal_mask = __ballot_sync(0xffffffffu,equal != 0u);
 		if ( lane == 0u )

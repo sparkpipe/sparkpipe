@@ -1860,7 +1860,7 @@ static void SnapTestBinaryDigestAndShardGuard(const char *directory)
 	SparkKvSnapshotStore store;
 	uint8_t first[SPARK_SHA256_DIGEST_BYTES],second[SPARK_SHA256_DIGEST_BYTES];
 	char first_path[SPARK_KV_SNAPSHOT_PATH_BYTES],second_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	char blocked_file[1200],blocked_link[1200],target_dir[1200],shard_path[1200];
+	char blocked_file[1200],blocked_link[1200],target_dir[1200],shard_path[1208];
 	int descriptor;
 	CHECK(SparkKvSnapshotBinaryDigest((const void *)&SnapTestBinaryDigestAndShardGuard,first,first_path,sizeof(first_path)) == SPARK_STATUS_OK);
 	CHECK(SparkKvSnapshotBinaryDigest((const void *)&SnapTestBinaryDigestAndShardGuard,second,second_path,sizeof(second_path)) == SPARK_STATUS_OK);
