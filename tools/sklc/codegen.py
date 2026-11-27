@@ -170,9 +170,10 @@ class RegAlloc:
 
 
 class KernelCompiler:
-    def __init__(self, kdef, consts):
+    def __init__(self, kdef, consts, strict_reg_budget=False):
         self.kdef = kdef
         self.consts = dict(consts)
+        self.strict_reg_budget = strict_reg_budget
         self.alloc = RegAlloc()
         self.ops = []
         self.scopes = [{}]
@@ -435,7 +436,14 @@ class KernelCompiler:
                 if r != isa.RZ and r > max_r:
                     max_r = r
         actual_peak = max(max_r + 1, 0)
-        reg_count = max(self.kdef["regs"], actual_peak + 2, 16)
+        needed_regs = max(actual_peak + 2, 16)
+        needed_regs = (needed_regs + 1) & ~1
+        if self.strict_reg_budget and needed_regs > self.kdef["regs"]:
+            raise RuntimeError(
+                f"E_REG_SPILL: kernel {self.kdef['name']} requires {needed_regs} registers "
+                f"(peak R{max_r}), exceeding declared budget {self.kdef['regs']}"
+            )
+        reg_count = max(self.kdef["regs"], needed_regs)
         reg_count = (reg_count + 1) & ~1
         return KernelImage(
             name=self.kdef["name"],
@@ -557,7 +565,7 @@ class KernelCompiler:
             self.pop_temps()
             return
         if not else_body and len(then_body) <= 8 and all(
-            st[0] == "expr" and st[1][0] == "call" and st[1][1] in ("stg256", "stg128", "stg128_stream", "stg64", "stg32", "stg32_stream", "stg16", "stg8", "sts32", "dyn_sts32")
+            st[0] == "expr" and st[1][0] == "call" and st[1][1] in ("stg256", "stg128", "stg128_stream", "stg128_sys", "stg64", "stg32", "stg32_stream", "stg32_sys", "stg16", "stg8", "sts32", "dyn_sts32")
             for st in then_body
         ):
             self.push_temps()
@@ -691,9 +699,11 @@ class KernelCompiler:
         wbits, cbits = {
             "stg128": (isa.STG_W_128, isa.STG_CACHE_DEFAULT),
             "stg128_stream": (isa.STG_W_128, isa.STG_CACHE_EF),
+            "stg128_sys": (isa.STG_W_128, isa.STG_CACHE_STRONG_SYS),
             "stg64": (isa.STG_W_64, isa.STG_CACHE_DEFAULT),
             "stg32": (isa.STG_W_32, isa.STG_CACHE_DEFAULT),
             "stg32_stream": (isa.STG_W_32, isa.STG_CACHE_EF),
+            "stg32_sys": (isa.STG_W_32, isa.STG_CACHE_STRONG_SYS),
             "stg16": (isa.STG_W_U16, isa.STG_CACHE_DEFAULT),
             "stg8": (isa.STG_W_U8, isa.STG_CACHE_DEFAULT),
         }[name]
@@ -1304,13 +1314,70 @@ class KernelCompiler:
         if name in SR_CALLS:
             return self.get_sr(name)
 
-        if name == "pdl_wait":
+        if name in ("pdl_wait", "acqbulk"):
             self.emit(Op(lambda wr, rd, wait, stall: isa.encode_acqbulk(stall=stall, wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
 
-        if name == "pdl_release":
+        if name in ("pdl_release", "preexit"):
             self.emit(Op(lambda wr, rd, wait, stall: isa.encode_preexit(stall=max(stall, 8), wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
+
+        if name == "membar_sys":
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_membar(isa.MEMBAR_SC_SYS, stall=max(stall, 6), wait=wait), is_bar=True))
+            return Val("u32", (isa.RZ,))
+
+        if name == "membar_all_sys":
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_membar(isa.MEMBAR_ALL_SYS, stall=max(stall, 6), wait=wait), is_bar=True))
+            return Val("u32", (isa.RZ,))
+
+        if name == "ldgsts128":
+            sname = args[0][1]
+            base_off, _, elem_bytes, _ = self.smem[sname]
+            idx_c = try_eval_const(args[1], self.consts)
+            ptr, goff = self.eval_addr_offset(args[2])
+            ur = self.ur_desc
+            rsm = self.alloc_val("u32", temp=True)
+            if idx_c is not None:
+                sm_off = (base_off + int(idx_c) * elem_bytes) & 0xFFFFFFFF
+                self.emit(Op(lambda wr, rd, wait, stall, r=rsm.r0, im=sm_off: isa.encode_mov_i(r, im, stall=stall, wait=wait), writes=(rsm.r0,)))
+            else:
+                idx_v = self.eval_expr(args[1])
+                self.emit(Op(lambda wr, rd, wait, stall, r=rsm.r0, a=idx_v.r0, eb=elem_bytes: isa.encode_imad_i(r, a, eb, stall=stall, wait=wait), reads=(idx_v.r0,), writes=(rsm.r0,)))
+                if base_off != 0:
+                    self.emit(Op(lambda wr, rd, wait, stall, r=rsm.r0, a=rsm.r0, bo=base_off: isa.encode_iadd3_i(r, a, bo, stall=stall, wait=wait), reads=(rsm.r0,), writes=(rsm.r0,)))
+            addr_reads = (ptr.regs[0], ptr.regs[1], rsm.r0)
+            self.recent_mem_addr = set(addr_reads)
+            self.emit(Op(
+                lambda wr, rd, wait, stall, sm=rsm.r0, pa=ptr.regs[0], u=ur, o=goff: isa.encode_ldgsts128(sm, pa, u, offset=o, rd_bar=rd, stall=stall, wait=wait),
+                reads=addr_reads,
+                mem_addr_reads=addr_reads,
+                ureads=(ur, ur + 1),
+                is_store=True,
+            ))
+            return Val("u32", (isa.RZ,))
+
+        if name == "ldgdepbar":
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_ldgdepbar(wr=0, stall=stall, wait=wait), is_bar=True, forced_wr=0))
+            return Val("u32", (isa.RZ,))
+
+        if name == "depbar_le":
+            cnt = int(try_eval_const(args[0], self.consts))
+            self.emit(Op(lambda wr, rd, wait, stall, c=cnt: isa.encode_depbar_le(count=c, stall=max(stall, 7), wait=wait), is_bar=True))
+            return Val("u32", (isa.RZ,))
+
+        if name == "hmma16816_bf16":
+            a = self.eval_expr(args[0])
+            b = self.eval_expr(args[1])
+            c = self.eval_expr(args[2])
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "f32x4") else self.alloc_val("f32x4", temp=True)
+            self.emit(Op(
+                lambda wr, rd, wait, stall, dr=d.r0, ar=a.r0, br=b.r0, cr=c.r0: isa.encode_hmma_16816_f32_bf16(dr, ar, br, cr, stall=stall, wait=wait),
+                reads=a.regs + b.regs + c.regs,
+                writes=d.regs,
+                fixed_lat=14,
+                pipe="mma",
+            ))
+            return d
 
         if name == "barrier":
             self.barriers = max(self.barriers, 1)
@@ -1362,7 +1429,7 @@ class KernelCompiler:
             self.emit_load_call(name, args, d)
             return d
 
-        if name in ("stg256", "stg128", "stg128_stream", "stg64", "stg32", "stg32_stream", "stg16", "stg8"):
+        if name in ("stg256", "stg128", "stg128_stream", "stg128_sys", "stg64", "stg32", "stg32_stream", "stg32_sys", "stg16", "stg8"):
             ur = self.ur_desc
             if name == "stg256":
                 ptr = self.eval_expr(args[0])
@@ -1384,9 +1451,11 @@ class KernelCompiler:
             wbits, cbits = {
                 "stg128": (isa.STG_W_128, isa.STG_CACHE_DEFAULT),
                 "stg128_stream": (isa.STG_W_128, isa.STG_CACHE_EF),
+                "stg128_sys": (isa.STG_W_128, isa.STG_CACHE_STRONG_SYS),
                 "stg64": (isa.STG_W_64, isa.STG_CACHE_DEFAULT),
                 "stg32": (isa.STG_W_32, isa.STG_CACHE_DEFAULT),
                 "stg32_stream": (isa.STG_W_32, isa.STG_CACHE_EF),
+                "stg32_sys": (isa.STG_W_32, isa.STG_CACHE_STRONG_SYS),
                 "stg16": (isa.STG_W_U16, isa.STG_CACHE_DEFAULT),
                 "stg8": (isa.STG_W_U8, isa.STG_CACHE_DEFAULT),
             }[name]
@@ -1816,6 +1885,13 @@ class KernelCompiler:
                 self.emit(Op(lambda wr, rd, wait, stall, r=dr, s=v.r0: isa.encode_mov_r(r, s, stall=stall, wait=wait), reads=(v.r0,), writes=(dr,)))
             return d
 
+        if name == "pack_f32x4":
+            vals = [self.eval_expr(a) for a in args]
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "f32x4") else self.alloc_val("f32x4", temp=True)
+            for dr, v in zip(d.regs, vals):
+                self.emit(Op(lambda wr, rd, wait, stall, r=dr, s=v.r0: isa.encode_mov_r(r, s, stall=stall, wait=wait), reads=(v.r0,), writes=(dr,)))
+            return d
+
         if name == "pack_u32x8":
             vals = [self.eval_expr(a) for a in args]
             d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u32x8") else self.alloc_val("u32x8", temp=True)
@@ -1991,10 +2067,14 @@ class KernelCompiler:
         bar_batch = {}
         bar_count = [0] * 6
         next_bar = 0
-        has_forced = any(op.forced_wr is not None for op in self.ops)
+        has_forced = any(op.forced_wr is not None and op.forced_wr >= 4 for op in self.ops)
+        reserve_sb0 = any(op.forced_wr == 0 for op in self.ops)
         dyn_bars = 4 if has_forced else 6
         rd_slot = dyn_bars - 1
         wr_bars = dyn_bars - 1
+        min_wr = 1 if reserve_sb0 else 0
+        if next_bar < min_wr:
+            next_bar = min_wr
         bar_cap = 28
 
         def clear_bars(mask):
@@ -2063,20 +2143,21 @@ class KernelCompiler:
                         wait_mask |= 1 << b
                 else:
                     b = None
-                    for step in range(wr_bars):
-                        cand = (next_bar + step) % wr_bars
+                    span = wr_bars - min_wr
+                    for step in range(span):
+                        cand = min_wr + ((next_bar - min_wr + step) % span)
                         if bar_count[cand] == 0 and not (wait_mask & (1 << cand)):
                             b = cand
-                            next_bar = (cand + 1) % wr_bars
+                            next_bar = min_wr + ((cand - min_wr + 1) % span)
                             break
                     if b is None:
-                        for cand in range(wr_bars - 1, -1, -1):
+                        for cand in range(wr_bars - 1, min_wr - 1, -1):
                             if bar_count[cand] < bar_cap and not (wait_mask & (1 << cand)):
                                 b = cand
                                 break
                     if b is None:
                         b = next_bar
-                        next_bar = (next_bar + 1) % wr_bars
+                        next_bar = min_wr + ((next_bar - min_wr + 1) % span)
                         wait_mask |= 1 << b
                 op.wr = b
 
@@ -2216,6 +2297,6 @@ class KernelCompiler:
         return insns
 
 
-def compile_program(prog):
+def compile_program(prog, strict_reg_budget=False):
     consts = prog["consts"]
-    return [KernelCompiler(kdef, consts).compile() for kdef in prog["kernels"]]
+    return [KernelCompiler(kdef, consts, strict_reg_budget=strict_reg_budget).compile() for kdef in prog["kernels"]]

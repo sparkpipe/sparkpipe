@@ -1,0 +1,41 @@
+epilogue plain {
+    code = 0;
+    op = identity;
+    needs_aux = 0;
+}
+
+epilogue bias {
+    code = 1;
+    op = add_bias;
+    needs_aux = 1;
+}
+
+epilogue residual_add {
+    code = 2;
+    op = add_residual;
+    needs_aux = 1;
+}
+
+epilogue silu_mul {
+    code = 3;
+    op = silu_gate;
+    needs_aux = 1;
+}
+
+epilogue gelu_mul {
+    code = 4;
+    op = gelu_gate;
+    needs_aux = 1;
+}
+
+epilogue rmsnorm {
+    code = 5;
+    op = rms_scale;
+    needs_aux = 1;
+}
+
+epilogue rope {
+    code = 6;
+    op = rotary_neox;
+    needs_aux = 1;
+}

@@ -533,6 +533,7 @@ STG_W_128 = 0x1D00
 
 STG_CACHE_DEFAULT = 0x0C100000
 STG_CACHE_EF = 0x0C000000
+STG_CACHE_STRONG_SYS = 0x0C114000
 
 
 def encode_stg(raddr, rval, ur_desc, width_bits=STG_W_128, cache=STG_CACHE_DEFAULT, offset=0, pred=PT, neg=False, rd=7, stall=1, wait=0):
@@ -599,4 +600,44 @@ def encode_sts(raddr, rval, offset=0, pred=PT, neg=False, rd_bar=7, stall=1, wai
 def encode_ublkpf_l2(ur_addr, ur_bytes, stall=1, wait=0):
     lo = 0x73BC | ((ur_addr & 0xFF) << 24)
     hi = 0x08000000 | (ur_bytes & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    return (lo, hi)
+
+
+def encode_hmma_16816_f32_bf16(rd, ra, rb, rc=RZ, stall=1, wait=0):
+    lo = 0x723C | ((rd & 0xFF) << 16) | ((ra & 0xFF) << 24) | ((rb & 0xFF) << 32)
+    hi = 0x00041800 | (rc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    return (lo, hi)
+
+
+def encode_ldgsts128(r_smem, r_gaddr, ur_desc, offset=0, pred=PT, neg=False, rd_bar=7, stall=1, wait=0):
+    lo = (
+        0x0FAE
+        | (pred_bits(pred, neg) << 12)
+        | ((r_smem & 0xFF) << 16)
+        | ((r_gaddr & 0xFF) << 24)
+        | ((offset & 0xFFFFFFFF) << 32)
+    )
+    hi = 0x0B981800 | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=7, rd=rd_bar, wait=wait)
+    return (lo, hi)
+
+
+def encode_ldgdepbar(wr=0, stall=1, wait=0):
+    lo = 0x79AF
+    hi = ctrl_bits(stall=stall, yield_=False, wr=wr, rd=7, wait=wait)
+    return (lo, hi)
+
+
+def encode_depbar_le(count=0, stall=7, wait=0):
+    lo = 0x791A | (0x8000 << 32) | ((count & 0x3F) << 38)
+    hi = ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    return (lo, hi)
+
+
+MEMBAR_SC_SYS = 0x00003000
+MEMBAR_ALL_SYS = 0x0000B000
+
+
+def encode_membar(mode=MEMBAR_SC_SYS, stall=6, wait=0):
+    lo = 0x7992
+    hi = mode | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
     return (lo, hi)

@@ -1,0 +1,146 @@
+import "stdlib/codecs.skl2";
+import "stdlib/epilogues.skl2";
+
+primitive std.linear @v1 {
+    concept = linear;
+    arch = sm_121a;
+    variant skinny_gemv {
+        load_w = ldg256_stream;
+        load_a = ldg256_persist;
+        max_batch = 8;
+        codecs = [BF16, FP8_E4M3, MXFP4_UE8M0, NVFP4_UE4M3];
+    }
+    variant mma_gemm {
+        mma_isa = hmma16816_bf16;
+        stage_isa = ldgsts128;
+        min_batch = 16;
+        tile_m = 32;
+        tile_n = 32;
+        tile_k = 16;
+    }
+    policy {
+        when batch <= 8 => skinny_gemv;
+        default => mma_gemm;
+    }
+    fuse {
+        w1 + w3 + silu -> swiglu_linear;
+        gemv + allreduce -> linear_ar;
+    }
+}
+
+primitive std.moe @v1 {
+    concept = moe;
+    arch = sm_121a;
+    variant grouped_skinny {
+        router = std.route_topk;
+        gemm = std.linear.skinny_gemv;
+        codecs = [MXFP4_UE8M0, NVFP4_UE4M3, FP8_E4M3, BF16];
+    }
+    variant grouped_mma {
+        router = std.route_topk;
+        gemm = std.linear.mma_gemm;
+    }
+    policy {
+        when batch <= 8 => grouped_skinny;
+        default => grouped_mma;
+    }
+}
+
+primitive std.attention @v1 {
+    concept = attention;
+    arch = sm_121a;
+    variant gqa_flash {
+        online_softmax = true;
+        load_kv = ldg256_stream;
+    }
+    variant mla_latent {
+        latent_dim = 512;
+        rope_dim = 64;
+        online_softmax = true;
+    }
+    variant mla_sparse_csa2 {
+        latent_dim = 512;
+        indexer = std.route_topk;
+        online_softmax = true;
+    }
+    policy {
+        when mixer == "mla_sparse" => mla_sparse_csa2;
+        when mixer == "mla" => mla_latent;
+        default => gqa_flash;
+    }
+}
+
+primitive std.recurrent @v1 {
+    concept = recurrent;
+    arch = sm_121a;
+    variant gdn_decode {
+        state_dtype = f32;
+        conv_kernel = 4;
+        swish = true;
+    }
+    variant kda_decode {
+        state_dtype = f32;
+        conv_kernel = 4;
+        qk_l2norm = true;
+    }
+    policy {
+        when mixer == "hybrid_kda" => kda_decode;
+        default => gdn_decode;
+    }
+}
+
+primitive std.norm_rope @v1 {
+    concept = norm_rope;
+    arch = sm_121a;
+    variant rmsnorm_vec16 {
+        load_isa = ldg256_persist;
+        single_pass = true;
+    }
+    variant fused_residual_rmsnorm {
+        load_isa = ldg256_stream;
+        single_pass = true;
+    }
+    variant rmsnorm_rope_fp8 {
+        load_isa = ldg256_persist;
+        rope = neox;
+        quant_out = FP8_E4M3;
+    }
+    policy {
+        when fuse_rope == 1 => rmsnorm_rope_fp8;
+        when fuse_residual == 1 => fused_residual_rmsnorm;
+        default => rmsnorm_vec16;
+    }
+    fuse {
+        residual + norm -> fused_residual_rmsnorm;
+    }
+}
+
+primitive std.route_topk @v1 {
+    concept = route_topk;
+    arch = sm_121a;
+    variant warp_exact_topk {
+        tie_break = lowest_index;
+        histogram = warp_ballot;
+    }
+    policy {
+        default => warp_exact_topk;
+    }
+}
+
+primitive std.head @v1 {
+    concept = head;
+    arch = sm_121a;
+    variant certified_fp8_rescore {
+        screen_codec = FP8_E4M3;
+        rescore_codec = BF16;
+        exact_argmax = true;
+    }
+    variant certified_bf16 {
+        rescore_codec = BF16;
+        exact_argmax = true;
+    }
+    policy {
+        when head_codec == "BF16" => certified_bf16;
+        default => certified_fp8_rescore;
+    }
+}

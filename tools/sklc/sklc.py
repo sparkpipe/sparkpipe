@@ -42,7 +42,22 @@ def main(argv=None):
 
     all_kernels = []
     combined_src = []
-    for path in args.inputs:
+    skl2_paths = [p for p in args.inputs if p.endswith(".skl2")]
+    skl_paths = [p for p in args.inputs if not p.endswith(".skl2")]
+    if skl2_paths:
+        skl2_dir = os.path.join(os.path.dirname(SCRIPT_DIR), "skl2c")
+        if skl2_dir not in sys.path:
+            sys.path.append(skl2_dir)
+        from skl2_frontend import load_unit
+        from skl2_lower import lower_unit
+        repo_root = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+        unit = load_unit(skl2_paths, search_roots=[os.path.join(repo_root, "inference", "skl2")])
+        prog2 = lower_unit(unit, only_set=only_set or None, renames=renames, allow_unused_lib=bool(only_set))
+        for fp in unit["files"]:
+            with open(fp, "r", encoding="utf-8") as f:
+                combined_src.append(f.read())
+        all_kernels.extend(compile_program(prog2, strict_reg_budget=True))
+    for path in skl_paths:
         with open(path, "r", encoding="utf-8") as f:
             text = f.read()
         combined_src.append(text)

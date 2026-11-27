@@ -1,0 +1,43 @@
+codec BF16 {
+    code = 0;
+    bits = 16;
+    group = 16;
+    scale = none;
+    scale_bytes = 0;
+    has_gscale = 0;
+    load = ldg256_stream;
+    unpack = bf16_f32;
+}
+
+codec FP8_E4M3 {
+    code = 1;
+    bits = 8;
+    group = 32;
+    scale = f32;
+    scale_bytes = 4;
+    has_gscale = 0;
+    load = ldg256_stream;
+    unpack = f2fp_e4m3;
+}
+
+codec MXFP4_UE8M0 {
+    code = 2;
+    bits = 4;
+    group = 32;
+    scale = ue8m0;
+    scale_bytes = 2;
+    has_gscale = 0;
+    load = ldg256_stream;
+    unpack = f2fp_e2m1;
+}
+
+codec NVFP4_UE4M3 {
+    code = 3;
+    bits = 4;
+    group = 16;
+    scale = ue4m3_global;
+    scale_bytes = 4;
+    has_gscale = 1;
+    load = ldg256_stream;
+    unpack = f2fp_e2m1;
+}

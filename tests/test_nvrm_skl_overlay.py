@@ -7,10 +7,10 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKLC = ROOT / "tools" / "sklc" / "sklc.py"
-NORM_ACT_SKL = ROOT / "inference" / "kernels" / "skl" / "norm_act.skl"
+NORM_ACT_SKL = ROOT / "inference" / "skl2" / "kernels" / "norm_rope.skl2"
 STAGE_OPS_SKL = ROOT / "inference" / "kernels" / "skl" / "stage_ops.skl"
 TP_MESH_MEM_SKL = ROOT / "inference" / "kernels" / "skl" / "tp_mesh_mem.skl"
-SKINNY_DECODE_SKL = ROOT / "inference" / "kernels" / "skl" / "skinny_decode.skl"
+SKINNY_DECODE_SKL = ROOT / "inference" / "skl2" / "kernels" / "linear.skl2"
 LINEAR_ATTN_SKL = ROOT / "inference" / "kernels" / "skl" / "linear_attn.skl"
 HOSTED_BIN = ROOT / "build" / "test_nvrm_hosted_launch"
 NVRM_LIB = ROOT / "build" / "runtime_libs" / "libsparkpipe_device_nvrm.so"

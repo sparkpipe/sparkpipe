@@ -1,0 +1,63 @@
+import "stdlib/concepts.skl2";
+import "stdlib/allreduce.skl2";
+
+use std.linear@latest;
+use std.moe@latest;
+use std.attention@latest;
+use std.recurrent@latest;
+use std.norm_rope@latest;
+use std.route_topk@latest;
+use std.head@latest;
+use std.allreduce@latest;
+
+model ReferenceTransformer @v1 {
+    arch = sm_121a;
+    act_dtype = bf16;
+    weight_codec = BF16;
+    head_codec = FP8_E4M3;
+    norm = rmsnorm;
+    rms_eps = 1e-6;
+    rope = true;
+    rope_mode = neox;
+    mixer = gqa;
+    ffn = swiglu;
+    moe_experts = 0;
+    moe_topk = 0;
+    shared_experts = 0;
+    tp_degree = 16;
+    topology = "hybrid_mode0";
+    use std.allreduce@latest;
+    fuse {
+        residual + norm -> fused_residual_rmsnorm;
+        w1 + w3 + silu -> swiglu_linear;
+        allreduce + norm -> ar_rmsnorm;
+    }
+}
+
+model ReferenceMoeTransformer @v1 extends ReferenceTransformer@latest {
+    moe_experts = 128;
+    moe_topk = 8;
+    shared_experts = 1;
+    moe_codec = MXFP4_UE8M0;
+    router = exact_topk;
+    use std.moe@latest;
+    use std.route_topk@latest;
+}
+
+model ReferenceMlaTransformer @v1 extends ReferenceMoeTransformer@latest {
+    mixer = mla_sparse;
+    kv_lora_rank = 512;
+    q_lora_rank = 1536;
+    qk_rope_dim = 64;
+    sparse_indexer = true;
+    hc_streams = 4;
+    use std.attention@latest;
+}
+
+model ReferenceHybridTransformer @v1 extends ReferenceTransformer@latest {
+    mixer = hybrid_gdn;
+    attention_period = 4;
+    attention_phase = 3;
+    conv_kernel = 4;
+    use std.recurrent@latest;
+}

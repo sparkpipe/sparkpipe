@@ -1,0 +1,475 @@
+import "stdlib/codecs.skl2";
+import "stdlib/epilogues.skl2";
+import "stdlib/math.skl2";
+
+const LANES = 32;
+const BLOCK128 = 128;
+const BLOCK256 = 256;
+
+macro bf16_dot4_pair(a0, a1, a2, a3, b0, b1, b2, b3, w0, w1, av) {
+    unroll (k = 0..4) {
+        reg f32 fx0 = bf16_lo(av[k * 2]);
+        reg f32 fx1 = bf16_hi(av[k * 2]);
+        reg f32 fx2 = bf16_lo(av[k * 2 + 1]);
+        reg f32 fx3 = bf16_hi(av[k * 2 + 1]);
+        a0 = fma(bf16_lo(w0[k * 2]), fx0, a0);
+        a1 = fma(bf16_hi(w0[k * 2]), fx1, a1);
+        a2 = fma(bf16_lo(w0[k * 2 + 1]), fx2, a2);
+        a3 = fma(bf16_hi(w0[k * 2 + 1]), fx3, a3);
+        b0 = fma(bf16_lo(w1[k * 2]), fx0, b0);
+        b1 = fma(bf16_hi(w1[k * 2]), fx1, b1);
+        b2 = fma(bf16_lo(w1[k * 2 + 1]), fx2, b2);
+        b3 = fma(bf16_hi(w1[k * 2 + 1]), fx3, b3);
+    }
+}
+
+macro fp4_dot16_pair(p0, p1, p2, p3, q0, q1, q2, q3, w0_lo, w0_hi, w1_lo, w1_hi, av) {
+    unroll (k = 0..4) {
+        reg f32 x0 = bf16_lo(av[k * 2]);
+        reg f32 x1 = bf16_hi(av[k * 2]);
+        reg f32 x2 = bf16_lo(av[k * 2 + 1]);
+        reg f32 x3 = bf16_hi(av[k * 2 + 1]);
+        reg f32x4 d = (k < 2) ? cvt_e2m1x4_f32x4(w0_lo, (k & 1) << 4) : cvt_e2m1x4_f32x4(w0_hi, (k & 1) << 4);
+        p0 = fma(d.x, x0, p0);
+        p1 = fma(d.y, x1, p1);
+        p2 = fma(d.z, x2, p2);
+        p3 = fma(d.w, x3, p3);
+        d = (k < 2) ? cvt_e2m1x4_f32x4(w1_lo, (k & 1) << 4) : cvt_e2m1x4_f32x4(w1_hi, (k & 1) << 4);
+        q0 = fma(d.x, x0, q0);
+        q1 = fma(d.y, x1, q1);
+        q2 = fma(d.z, x2, q2);
+        q3 = fma(d.w, x3, q3);
+    }
+}
+
+macro fp8_dot16_pair(a0, a1, a2, a3, b0, b1, b2, b3, w0_reg, w1_reg, av, sg0, sg1) {
+    unroll (k = 0..4) {
+        reg f32 x0 = bf16_lo(av[k * 2]);
+        reg f32 x1 = bf16_hi(av[k * 2]);
+        reg f32 x2 = bf16_lo(av[k * 2 + 1]);
+        reg f32 x3 = bf16_hi(av[k * 2 + 1]);
+        reg f32x4 d0 = cvt_e4m3x4_f32x4(w0_reg[k]);
+        a0 = fma(d0.x * sg0, x0, a0);
+        a1 = fma(d0.y * sg0, x1, a1);
+        a2 = fma(d0.z * sg0, x2, a2);
+        a3 = fma(d0.w * sg0, x3, a3);
+        reg f32x4 d1 = cvt_e4m3x4_f32x4(w1_reg[k]);
+        b0 = fma(d1.x * sg1, x0, b0);
+        b1 = fma(d1.y * sg1, x1, b1);
+        b2 = fma(d1.z * sg1, x2, b2);
+        b3 = fma(d1.w * sg1, x3, b3);
+    }
+}
+
+macro apply_epilogue_and_store(E, out_ptr, aux_ptr, out_idx, val) {
+    if constexpr (E.code == 0) {
+        stg16(ptr_add(out_ptr, out_idx, 2), f32_to_bf16(val));
+    } else if constexpr (E.code == 2) {
+        reg f32 rv = bf16_lo(ldg16_stream(ptr_add(aux_ptr, out_idx, 2)));
+        stg16(ptr_add(out_ptr, out_idx, 2), f32_to_bf16(val + rv));
+    } else if constexpr (E.code == 3) {
+        reg f32 uv = bf16_lo(ldg16_stream(ptr_add(aux_ptr, out_idx, 2)));
+        stg16(ptr_add(out_ptr, out_idx, 2), f32_to_bf16(silu(val) * uv));
+    }
+}
+
+macro gemv_bf16_body(E, BATCH_M, w_r0, w_r1, act_bf16, aux_bf16, out_bf16, chunks, out_dim, out_col_off, row0, lane) {
+    unroll (m = 0..BATCH_M) {
+        ureg u64 a_m = ptr_add(act_bf16, m * chunks, 32);
+        reg f32 a0 = 0.0f; reg f32 a1 = 0.0f; reg f32 a2 = 0.0f; reg f32 a3 = 0.0f;
+        reg f32 b0 = 0.0f; reg f32 b1 = 0.0f; reg f32 b2 = 0.0f; reg f32 b3 = 0.0f;
+        pipeline for (reg u32 c = lane; c < chunks; c += LANES) {
+            reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+            reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+            reg u32x8 av = ldg256_persist(ptr_add(a_m, c, 32));
+            bf16_dot4_pair(a0, a1, a2, a3, b0, b1, b2, b3, w0, w1, av);
+        }
+        reg f32 t0 = warp_sum((a0 + a1) + (a2 + a3));
+        reg f32 t1 = warp_sum((b0 + b1) + (b2 + b3));
+        if (lane == 0) {
+            reg u32 base_o = m * out_dim + out_col_off + row0;
+            apply_epilogue_and_store(E, out_bf16, aux_bf16, base_o, t0);
+            apply_epilogue_and_store(E, out_bf16, aux_bf16, base_o + 1, t1);
+        }
+    }
+}
+
+macro gemv_fp8_body(E, w_r0, w_r1, scales_ptr, act_bf16, aux_bf16, out_bf16, chunks, out_col_off, row0, lane) {
+    ureg u64 s_r0 = ptr_add(scales_ptr, row0 * chunks, 4);
+    ureg u64 s_r1 = ptr_add(s_r0, chunks, 4);
+    reg f32 a0 = 0.0f; reg f32 a1 = 0.0f; reg f32 a2 = 0.0f; reg f32 a3 = 0.0f;
+    reg f32 b0 = 0.0f; reg f32 b1 = 0.0f; reg f32 b2 = 0.0f; reg f32 b3 = 0.0f;
+    for (reg u32 c = lane; c < chunks; c += LANES) {
+        reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+        reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+        reg f32 sg0 = u32_as_f32(ldg32_stream(ptr_add(s_r0, c, 4)));
+        reg f32 sg1 = u32_as_f32(ldg32_stream(ptr_add(s_r1, c, 4)));
+        reg u32x8 av0 = ldg256_persist(ptr_add(act_bf16, c << 1, 32));
+        reg u32x8 av1 = ldg256_persist(ptr_add(act_bf16, (c << 1) + 1, 32));
+        reg u32x4 w0_lo = pack_u32x4(w0[0], w0[1], w0[2], w0[3]);
+        reg u32x4 w1_lo = pack_u32x4(w1[0], w1[1], w1[2], w1[3]);
+        fp8_dot16_pair(a0, a1, a2, a3, b0, b1, b2, b3, w0_lo, w1_lo, av0, sg0, sg1);
+        reg u32x4 w0_hi = pack_u32x4(w0[4], w0[5], w0[6], w0[7]);
+        reg u32x4 w1_hi = pack_u32x4(w1[4], w1[5], w1[6], w1[7]);
+        fp8_dot16_pair(a0, a1, a2, a3, b0, b1, b2, b3, w0_hi, w1_hi, av1, sg0, sg1);
+    }
+    reg f32 t0 = warp_sum((a0 + a1) + (a2 + a3));
+    reg f32 t1 = warp_sum((b0 + b1) + (b2 + b3));
+    if (lane == 0) {
+        apply_epilogue_and_store(E, out_bf16, aux_bf16, out_col_off + row0, t0);
+        apply_epilogue_and_store(E, out_bf16, aux_bf16, out_col_off + row0 + 1, t1);
+    }
+}
+
+macro gemv_mxfp4_body(E, w_r0, w_r1, scales_ptr, act_bf16, aux_bf16, out_bf16, chunks, out_col_off, row0, lane) {
+    ureg u64 s_r0 = ptr_add(scales_ptr, row0 * chunks, 2);
+    ureg u64 s_r1 = ptr_add(s_r0, chunks, 2);
+    reg f32 a0 = 0.0f; reg f32 a1 = 0.0f; reg f32 b0 = 0.0f; reg f32 b1 = 0.0f;
+    for (reg u32 c = lane; c < chunks; c += LANES) {
+        reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+        reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+        reg u32 sc0 = ldg16_stream(ptr_add(s_r0, c, 2));
+        reg u32 sc1 = ldg16_stream(ptr_add(s_r1, c, 2));
+        reg u32 ab = c << 2;
+        unroll (g = 0..2) {
+            reg f32 p0 = 0.0f; reg f32 p1 = 0.0f; reg f32 p2 = 0.0f; reg f32 p3 = 0.0f;
+            reg f32 q0 = 0.0f; reg f32 q1 = 0.0f; reg f32 q2 = 0.0f; reg f32 q3 = 0.0f;
+            unroll (h = 0..2) {
+                reg u32x8 av = ldg256_persist(ptr_add(act_bf16, ab + g * 2 + h, 32));
+                fp4_dot16_pair(p0, p1, p2, p3, q0, q1, q2, q3, w0[g * 4 + h * 2], w0[g * 4 + h * 2 + 1], w1[g * 4 + h * 2], w1[g * 4 + h * 2 + 1], av);
+            }
+            reg f32 sg0 = ue8m0_to_f32(sc0 >> (g << 3));
+            reg f32 sg1 = ue8m0_to_f32(sc1 >> (g << 3));
+            if (g == 0) {
+                a0 = fma(sg0, (p0 + p1) + (p2 + p3), a0);
+                b0 = fma(sg1, (q0 + q1) + (q2 + q3), b0);
+            } else {
+                a1 = fma(sg0, (p0 + p1) + (p2 + p3), a1);
+                b1 = fma(sg1, (q0 + q1) + (q2 + q3), b1);
+            }
+        }
+    }
+    reg f32 t0 = warp_sum(a0 + a1);
+    reg f32 t1 = warp_sum(b0 + b1);
+    if (lane == 0) {
+        apply_epilogue_and_store(E, out_bf16, aux_bf16, out_col_off + row0, t0);
+        apply_epilogue_and_store(E, out_bf16, aux_bf16, out_col_off + row0 + 1, t1);
+    }
+}
+
+macro gemv_nvfp4_body(E, w_r0, w_r1, scales_ptr, gscale_ptr, act_bf16, aux_bf16, out_bf16, chunks, out_col_off, row0, lane) {
+    ureg u64 s_r0 = ptr_add(scales_ptr, row0 * chunks, 4);
+    ureg u64 s_r1 = ptr_add(s_r0, chunks, 4);
+    reg f32 gscale = u32_as_f32(ldg32_persist(gscale_ptr));
+    reg f32 a0 = 0.0f; reg f32 a1 = 0.0f; reg f32 b0 = 0.0f; reg f32 b1 = 0.0f;
+    for (reg u32 c = lane; c < chunks; c += LANES) {
+        reg u32x8 w0 = ldg256_stream(ptr_add(w_r0, c, 32));
+        reg u32x8 w1 = ldg256_stream(ptr_add(w_r1, c, 32));
+        reg u32 sc0 = ldg32_stream(ptr_add(s_r0, c, 4));
+        reg u32 sc1 = ldg32_stream(ptr_add(s_r1, c, 4));
+        reg u32 ab = c << 2;
+        unroll (g = 0..4) {
+            reg u32x8 av = ldg256_persist(ptr_add(act_bf16, ab + g, 32));
+            reg f32 sg0 = ue4m3_to_f32((sc0 >> (g << 3)) & 0xff);
+            reg f32 sg1 = ue4m3_to_f32((sc1 >> (g << 3)) & 0xff);
+            reg f32 p0 = 0.0f; reg f32 p1 = 0.0f; reg f32 p2 = 0.0f; reg f32 p3 = 0.0f;
+            reg f32 q0 = 0.0f; reg f32 q1 = 0.0f; reg f32 q2 = 0.0f; reg f32 q3 = 0.0f;
+            fp4_dot16_pair(p0, p1, p2, p3, q0, q1, q2, q3, w0[g * 2], w0[g * 2 + 1], w1[g * 2], w1[g * 2 + 1], av);
+            if ((g & 1) == 0) {
+                a0 = fma(sg0, (p0 + p1) + (p2 + p3), a0);
+                b0 = fma(sg1, (q0 + q1) + (q2 + q3), b0);
+            } else {
+                a1 = fma(sg0, (p0 + p1) + (p2 + p3), a1);
+                b1 = fma(sg1, (q0 + q1) + (q2 + q3), b1);
+            }
+        }
+    }
+    reg f32 t0 = warp_sum(a0 + a1) * gscale;
+    reg f32 t1 = warp_sum(b0 + b1) * gscale;
+    if (lane == 0) {
+        apply_epilogue_and_store(E, out_bf16, aux_bf16, out_col_off + row0, t0);
+        apply_epilogue_and_store(E, out_bf16, aux_bf16, out_col_off + row0 + 1, t1);
+    }
+}
+
+@concept(linear)
+template kernel[BLOCK128, REGS] skinny_gemv<C, E, REGS, BATCH_M>(
+    global u32* weight,
+    global u32* act_bf16,
+    if (C.scale_bytes == 4) global u32* scales_ptr,
+    if (C.scale_bytes == 2) global u16* scales_ptr,
+    if (C.has_gscale == 1) global f32* global_scale_ptr,
+    if (E.needs_aux == 1) global u16* aux_bf16,
+    global u16* out_bf16,
+    u32 chunks,
+    u32 out_dim,
+    u32 out_col_off
+) {
+    reg u32 row0 = ((ctaid_x() << 2) + warp_id()) << 1;
+    reg u32 lane = lane_id();
+    if (row0 >= out_dim) { return; }
+    ureg u64 w_r0 = ptr_add(weight, row0 * chunks, 32);
+    ureg u64 w_r1 = ptr_add(w_r0, chunks, 32);
+    if constexpr (C.code == 0) {
+        gemv_bf16_body(E, BATCH_M, w_r0, w_r1, act_bf16, aux_bf16, out_bf16, chunks, out_dim, out_col_off, row0, lane);
+    } else if constexpr (C.code == 1) {
+        gemv_fp8_body(E, w_r0, w_r1, scales_ptr, act_bf16, aux_bf16, out_bf16, chunks, out_col_off, row0, lane);
+    } else if constexpr (C.code == 2) {
+        gemv_mxfp4_body(E, w_r0, w_r1, scales_ptr, act_bf16, aux_bf16, out_bf16, chunks, out_col_off, row0, lane);
+    } else if constexpr (C.code == 3) {
+        gemv_nvfp4_body(E, w_r0, w_r1, scales_ptr, global_scale_ptr, act_bf16, aux_bf16, out_bf16, chunks, out_col_off, row0, lane);
+    }
+}
+
+instantiate skinny_gemv<BF16, plain, 112, 1> as skinny_bf16_b1;
+instantiate skinny_gemv<FP8_E4M3, plain, 96, 1> as skinny_fp8_b1;
+instantiate skinny_gemv<MXFP4_UE8M0, plain, 104, 1> as skinny_mxfp4_b1;
+instantiate skinny_gemv<NVFP4_UE4M3, plain, 128, 1> as skinny_nvfp4_b1;
+instantiate skinny_gemv<BF16, plain, 112, 2> as skinny_bf16_b2;
+instantiate skinny_gemv<BF16, plain, 120, 4> as skinny_bf16_b4;
+instantiate skinny_gemv<BF16, residual_add, 112, 1> as skinny_bf16_b1_residual;
+instantiate skinny_gemv<BF16, silu_mul, 112, 1> as skinny_bf16_b1_silu;
+
+macro bf16_dot8_step(acc, wv, av) {
+    reg f32 p0 = fma(bf16_lo(wv[0]), bf16_lo(av[0]), 0.0f);
+    reg f32 p1 = bf16_hi(wv[0]) * bf16_hi(av[0]);
+    unroll (k = 1..4) {
+        p0 = fma(bf16_lo(wv[k]), bf16_lo(av[k]), p0);
+        p1 = fma(bf16_hi(wv[k]), bf16_hi(av[k]), p1);
+    }
+    acc = fma(p0 + p1, 1.0f, acc);
+}
+
+macro skinny_kloop_bf16x4(acc, w_base, a_base, sub, chunks) {
+    reg u32 lim4 = chunks & 0xFFFFFF80;
+    for (reg u32 c = sub; c < lim4; c += 128) {
+        reg u32x4 w0 = ldg128_stream(w_base);
+        reg u32x4 a0 = ldg128_persist(a_base);
+        reg u32x4 w1 = ldg128_stream(ptr_add(w_base, 32, 16));
+        reg u32x4 a1 = ldg128_persist(ptr_add(a_base, 32, 16));
+        reg u32x4 w2 = ldg128_stream(ptr_add(w_base, 64, 16));
+        reg u32x4 a2 = ldg128_persist(ptr_add(a_base, 64, 16));
+        reg u32x4 w3 = ldg128_stream(ptr_add(w_base, 96, 16));
+        reg u32x4 a3 = ldg128_persist(ptr_add(a_base, 96, 16));
+        bf16_dot8_step(acc, w0, a0);
+        bf16_dot8_step(acc, w1, a1);
+        bf16_dot8_step(acc, w2, a2);
+        bf16_dot8_step(acc, w3, a3);
+        w_base = ptr_add(w_base, 128, 16);
+        a_base = ptr_add(a_base, 128, 16);
+    }
+    for (reg u32 tc = lim4 + sub; tc < chunks; tc += 32) {
+        reg u32x4 wt = ldg128_stream(w_base);
+        reg u32x4 at = ldg128_persist(a_base);
+        bf16_dot8_step(acc, wt, at);
+        w_base = ptr_add(w_base, 32, 16);
+        a_base = ptr_add(a_base, 32, 16);
+    }
+}
+
+macro skinny_skip_guard(skip_max, rows, skip_seq, skip_ctx, skip_rp) {
+    if (skip_max != 0 && rows == 1) {
+        if ((skip_seq[0] | skip_seq[1]) != 0 && (skip_ctx[0] | skip_ctx[1]) != 0) {
+            reg u32 seq0 = ldg32_persist(skip_seq);
+            reg u32 bound = ldg32_persist(ptr_add(skip_ctx, seq0, 4));
+            if ((skip_rp[0] | skip_rp[1]) != 0) {
+                reg u32 rp1 = ldg32_persist(skip_rp) + 1;
+                if (rp1 < bound) { bound = rp1; }
+            }
+            if (bound <= skip_max) {
+                preexit();
+                return;
+            }
+        }
+    }
+}
+
+macro skinny_store_out(out_f32, out_bf16, out_row, out_stride, out_col, val) {
+    if ((out_f32[0] | out_f32[1]) != 0) {
+        stg32(ptr_add(ptr_add(out_f32, out_row, out_stride << 2), out_col, 4), f32_as_u32(val));
+    } else {
+        stg16(ptr_add(ptr_add(out_bf16, out_row, out_stride << 1), out_col, 2), f32_to_bf16(val));
+    }
+}
+
+@concept(linear)
+@pdl
+kernel[BLOCK256, 80] skinny_bf16_dense_l32_r1_n1_pdl(blob[216, 8] args) {
+    shared u32 meta[16];
+    reg u32 sub = lane_id();
+    reg u32 chunks = 0;
+    reg u64 w_base = param_u64(args, 0);
+    reg u64 a_base = param_u64(args, 8);
+    reg u32 rows = param_u32(args, 144);
+    reg u32 skip_max = param_u32(args, 208);
+    reg u64 skip_seq = param_u64(args, 184);
+    reg u64 skip_ctx = param_u64(args, 192);
+    reg u64 skip_rp = param_u64(args, 200);
+    skinny_skip_guard(skip_max, rows, skip_seq, skip_ctx, skip_rp);
+    acqbulk();
+    preexit();
+    reg u32 bx = ctaid_x();
+    reg u32 wid = warp_id();
+    reg u32 block_q = bx;
+    reg u32 first = 0;
+    if (rows > 1) { u32_divmod(bx, rows, block_q, first); }
+    reg u32 task = (block_q << 3) + wid;
+    reg u32 out_dim = param_u32(args, 168);
+    reg u64 route_expert = param_u64(args, 32);
+    reg u32 has_route = route_expert[0] | route_expert[1];
+    reg u32 total_tasks = (has_route != 0) ? (param_u32(args, 148) * out_dim) : out_dim;
+    if (task >= total_tasks) { return; }
+    reg u32 group = 0;
+    reg u32 source = 0;
+    reg u32 target = 0;
+    reg u32 neuron = task;
+    if (has_route != 0) {
+        reg u32 pair = 0;
+        u32_divmod(task, out_dim, pair, neuron);
+        group = ldg32_persist(ptr_add(route_expert, pair, 4));
+        reg u64 rpr = param_u64(args, 40);
+        target = ((rpr[0] | rpr[1]) != 0) ? ldg32_persist(ptr_add(rpr, pair, 4)) : pair;
+        if (param_u32(args, 156) != 0) {
+            source = target;
+        } else {
+            reg u32 srem = 0;
+            u32_divmod(pair, param_u32(args, 152), source, srem);
+            source = source + (srem & 0);
+        }
+    }
+    if (sub == 0) {
+        sts32(meta, wid, neuron);
+        sts32(meta, 8 + wid, target + first);
+    }
+    reg u32 in_dim = param_u32(args, 164);
+    chunks = in_dim >> 3;
+    reg u32 row_bytes = in_dim << 1;
+    if (group != 0) { w_base = ptr_add(w_base, group, param_u32(args, 136)); }
+    w_base = ptr_add(ptr_add(w_base, neuron, row_bytes), sub, 16);
+    a_base = ptr_add(ptr_add(a_base, source + first, row_bytes), sub, 16);
+    reg f32 acc = 0.0f;
+    skinny_kloop_bf16x4(acc, w_base, a_base, sub, chunks);
+    acc = warp_sum(acc);
+    if (sub == 0) {
+        reg u32 n_out = lds32(meta, wid);
+        reg u32 r_out = lds32(meta, 8 + wid);
+        if (n_out < param_u32(args, 168)) {
+            skinny_store_out(param_u64(args, 24), param_u64(args, 16), r_out, param_u32(args, 172), param_u32(args, 176) + n_out, acc);
+        }
+    }
+}
+
+@concept(linear)
+@pdl
+kernel[BLOCK256, 56] skinny_bf16_multi_l32_r1_n1_pdl(blob[888, 8] multi) {
+    reg u32 sub = lane_id();
+    reg u32 first = 0;
+    reg u32 part = 0;
+    reg u32 bx = ctaid_x();
+    reg u32 wid = warp_id();
+    reg u32 rows0 = param_u32(multi, 144);
+    reg u32 block_q = bx;
+    if (rows0 > 1) { u32_divmod(bx, rows0, block_q, first); }
+    reg u32 gtask = (block_q << 3) + wid;
+    reg u32 mcount = param_u32(multi, 884);
+    reg u32 part_ft = param_u32(multi, 864);
+    unroll (p = 1..4) {
+        if (mcount > p) {
+            reg u32 ftp = param_u32(multi, 864 + p * 4);
+            if (gtask >= ftp) {
+                part = p;
+                part_ft = ftp;
+            }
+        }
+    }
+    reg u32 task = gtask - part_ft;
+    reg u32 skip_max = param_u32(multi, 208);
+    reg u32 p_rows = rows0;
+    reg u64 skip_seq = param_u64(multi, 184);
+    reg u64 skip_ctx = param_u64(multi, 192);
+    reg u64 skip_rp = param_u64(multi, 200);
+    unroll (p = 1..4) {
+        if (part == p) {
+            p_rows = param_u32(multi, p * 216 + 144);
+            skip_max = param_u32(multi, p * 216 + 208);
+            skip_seq = param_u64(multi, p * 216 + 184);
+            skip_ctx = param_u64(multi, p * 216 + 192);
+            skip_rp = param_u64(multi, p * 216 + 200);
+        }
+    }
+    skinny_skip_guard(skip_max, p_rows, skip_seq, skip_ctx, skip_rp);
+    acqbulk();
+    preexit();
+    reg u32 out_dim = param_u32(multi, 168);
+    reg u32 in_dim = param_u32(multi, 164);
+    reg u64 weight_ptr = param_u64(multi, 0);
+    reg u64 act_ptr = param_u64(multi, 8);
+    unroll (p = 1..4) {
+        if (part == p) {
+            out_dim = param_u32(multi, p * 216 + 168);
+            in_dim = param_u32(multi, p * 216 + 164);
+            weight_ptr = param_u64(multi, p * 216 + 0);
+            act_ptr = param_u64(multi, p * 216 + 8);
+        }
+    }
+    if (task >= out_dim) { return; }
+    reg u32 chunks = in_dim >> 3;
+    reg u32 row_bytes = in_dim << 1;
+    weight_ptr = ptr_add(ptr_add(weight_ptr, task, row_bytes), sub, 16);
+    act_ptr = ptr_add(ptr_add(act_ptr, first, row_bytes), sub, 16);
+    reg f32 acc = 0.0f;
+    skinny_kloop_bf16x4(acc, weight_ptr, act_ptr, sub, chunks);
+    acc = warp_sum(acc);
+    if (sub == 0) {
+        reg u32 out_stride = param_u32(multi, 172);
+        reg u32 out_col_off = param_u32(multi, 176);
+        reg u64 out_f32 = param_u64(multi, 24);
+        reg u64 out_bf16 = param_u64(multi, 16);
+        unroll (p = 1..4) {
+            if (part == p) {
+                out_stride = param_u32(multi, p * 216 + 172);
+                out_col_off = param_u32(multi, p * 216 + 176);
+                out_f32 = param_u64(multi, p * 216 + 24);
+                out_bf16 = param_u64(multi, p * 216 + 16);
+            }
+        }
+        skinny_store_out(out_f32, out_bf16, first, out_stride, out_col_off + task, acc);
+    }
+}
+
+@concept(linear)
+@pdl
+kernel[BLOCK256, 56] skinny_bf16_split_r1_pdl(blob[216, 8] args) {
+    shared f32 partial[8];
+    reg u32 wid = warp_id();
+    reg u32 sub = lane_id();
+    reg u32 rows = param_u32(args, 144);
+    reg u32 skip_max = param_u32(args, 208);
+    reg u64 skip_seq = param_u64(args, 184);
+    reg u64 skip_ctx = param_u64(args, 192);
+    reg u64 skip_rp = param_u64(args, 200);
+    skinny_skip_guard(skip_max, rows, skip_seq, skip_ctx, skip_rp);
+    acqbulk();
+    preexit();
+    reg u32 bx = ctaid_x();
+    reg u32 neuron = bx;
+    reg u32 row = 0;
+    if (rows > 1) { u32_divmod(bx, rows, neuron, row); }
+    reg u32 in_dim = param_u32(args, 164);
+    reg u32 chunks = in_dim >> 3;
+    reg u32 row_bytes = in_dim << 1;
+    reg u32 first_c = (chunks * wid) >> 3;
+    reg u32 w_chunks = ((chunks * (wid + 1)) >> 3) - first_c;
+    reg u64 w_base = ptr_add(ptr_add(param_u64(args, 0), neuron, row_bytes), first_c + sub, 16);
+    reg u64 a_base = ptr_add(ptr_add(param_u64(args, 8), row, row_bytes), first_c + sub, 16);
+    reg f32 acc = 0.0f;
+    skinny_kloop_bf16x4(acc, w_base, a_base, sub, w_chunks);
+    acc = warp_sum(acc);
+    if (sub == 0) { sts32(partial, wid, acc); }
+    barrier();
+    if (wid == 0 && sub == 0 && row < rows) {
+        reg f32 total = 0.0f;
+        unroll (w = 0..8) { total = total + lds32(partial, w); }
+        skinny_store_out(param_u64(args, 24), param_u64(args, 16), row, param_u32(args, 172), param_u32(args, 176) + neuron, total);
+    }
+}

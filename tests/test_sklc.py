@@ -9,15 +9,16 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKLC = ROOT / "tools" / "sklc" / "sklc.py"
 SKL_DIR = ROOT / "inference" / "kernels" / "skl"
+SKL2_DIR = ROOT / "inference" / "skl2" / "kernels"
 SUITES = [
-    "skinny_decode.skl",
-    "linear_attn.skl",
-    "mx_gemm.skl",
-    "norm_act.skl",
-    "stage_ops.skl",
-    "attn_decode.skl",
-    "moe_route.skl",
-    "tp_mesh_mem.skl",
+    SKL2_DIR / "linear.skl2",
+    SKL_DIR / "linear_attn.skl",
+    SKL_DIR / "mx_gemm.skl",
+    SKL2_DIR / "norm_rope.skl2",
+    SKL_DIR / "stage_ops.skl",
+    SKL_DIR / "attn_decode.skl",
+    SKL_DIR / "moe_route.skl",
+    SKL_DIR / "tp_mesh_mem.skl",
 ]
 EXPECTED_KERNELS = [
     "skinny_nvfp4_b1",
@@ -110,7 +111,7 @@ def verify_arch(arch, expected_sm):
             str(SKLC),
             "--arch",
             arch,
-            *[str(SKL_DIR / s) for s in SUITES],
+            *[str(s) for s in SUITES],
             "-o",
             str(cubin_path),
             "--manifest",
@@ -173,9 +174,12 @@ def verify_long_name_manifest():
 
 def verify_codegen_invariants():
     sys.path.insert(0, str(ROOT / "tools" / "sklc"))
+    sys.path.append(str(ROOT / "tools" / "skl2c"))
     import isa_sm121 as isa
     from codegen import compile_program
     from frontend import parse_skl
+    from skl2_frontend import load_unit
+    from skl2_lower import lower_unit
 
     try:
         isa.encode_ldc(2, isa.C0_PARAM_BASE, width=128)
@@ -184,8 +188,12 @@ def verify_codegen_invariants():
         pass
 
     for suite in SUITES:
-        text = (SKL_DIR / suite).read_text(encoding="utf-8")
-        kernels = compile_program(parse_skl(text))
+        if suite.suffix == ".skl2":
+            unit = load_unit([str(suite)], search_roots=[str(ROOT / "inference" / "skl2")])
+            kernels = compile_program(lower_unit(unit), strict_reg_budget=True)
+        else:
+            text = suite.read_text(encoding="utf-8")
+            kernels = compile_program(parse_skl(text))
         for k in kernels:
             assert k.stack_bytes == 0, f"unexpected stack usage in {k.name}: {k.stack_bytes}"
             if k.name == "latent_attn_decode_512_64":
@@ -299,7 +307,7 @@ def verify_rename_and_only():
             "fused_residual_rmsnorm_pdl_exact_5120_bf16x8=_Z17TestRmsNormKernelILj5120ELb1EEvPtPKtPKfS0_f",
             "--rename",
             "head_rmsnorm_silu_gate_pdl_exact_128_bf16=_Z28TestHeadRmsNormGateKernelILb0EEvPKtS1_S1_Ptjjjj",
-            str(SKL_DIR / "norm_act.skl"),
+            str(SKL2_DIR / "norm_rope.skl2"),
             "-o",
             str(cubin_path),
             "--manifest",

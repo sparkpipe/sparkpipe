@@ -1,0 +1,103 @@
+const MMA_BLOCK = 128;
+
+macro mma_stage_load(sm_a, sm_b, a_ptr, b_ptr, tid, s_off, k_tile, k_vec16) {
+    if (tid < 64) {
+        reg u32 r = tid >> 1;
+        reg u32 h = tid & 1;
+        reg u32 g_idx = r * k_vec16 + k_tile * 2 + h;
+        ldgsts128(sm_a, s_off + (tid << 2), ptr_add(a_ptr, g_idx, 16));
+    } else {
+        reg u32 u = tid - 64;
+        reg u32 r = u >> 1;
+        reg u32 h = u & 1;
+        reg u32 g_idx = r * k_vec16 + k_tile * 2 + h;
+        ldgsts128(sm_b, s_off + (u << 2), ptr_add(b_ptr, g_idx, 16));
+    }
+    ldgdepbar();
+}
+
+macro mma_warp_tile(sm_a, sm_b, s_off, arow0, arow1, brow0, brow1, tg, d0, d1) {
+    reg u32 a0 = lds32(sm_a, s_off + arow0 * 8 + tg);
+    reg u32 a1 = lds32(sm_a, s_off + arow1 * 8 + tg);
+    reg u32 a2 = lds32(sm_a, s_off + arow0 * 8 + tg + 4);
+    reg u32 a3 = lds32(sm_a, s_off + arow1 * 8 + tg + 4);
+    reg u32x4 fa = pack_u32x4(a0, a1, a2, a3);
+    reg u32 b00 = lds32(sm_b, s_off + brow0 * 8 + tg);
+    reg u32 b01 = lds32(sm_b, s_off + brow0 * 8 + tg + 4);
+    d0 = hmma16816_bf16(fa, pack_u32x2(b00, b01), d0);
+    reg u32 b10 = lds32(sm_b, s_off + brow1 * 8 + tg);
+    reg u32 b11 = lds32(sm_b, s_off + brow1 * 8 + tg + 4);
+    d1 = hmma16816_bf16(fa, pack_u32x2(b10, b11), d1);
+}
+
+macro mma_store_tile(OUT_BF16, c_ptr, row0, row1, col_off, n_dim, dv) {
+    if constexpr (OUT_BF16 == 1) {
+        reg u32 p0 = pack_bf16x2(dv[0], dv[1]);
+        reg u32 p1 = pack_bf16x2(dv[2], dv[3]);
+        stg32(ptr_add(c_ptr, (row0 * n_dim + col_off) >> 1, 4), p0);
+        stg32(ptr_add(c_ptr, (row1 * n_dim + col_off) >> 1, 4), p1);
+    } else {
+        reg u32x2 q0 = pack_u32x2(f32_as_u32(dv[0]), f32_as_u32(dv[1]));
+        reg u32x2 q1 = pack_u32x2(f32_as_u32(dv[2]), f32_as_u32(dv[3]));
+        stg64(ptr_add(c_ptr, (row0 * n_dim + col_off) >> 1, 8), q0);
+        stg64(ptr_add(c_ptr, (row1 * n_dim + col_off) >> 1, 8), q1);
+    }
+}
+
+@concept(linear)
+template kernel[MMA_BLOCK, 96] mma_bf16_tile32x32<OUT_BF16>(
+    global u32* a_bf16,
+    global u32* b_bf16,
+    global u32* c_out,
+    u32 m_dim,
+    u32 n_dim,
+    u32 k_dim
+) {
+    shared u32 sm_a[512];
+    shared u32 sm_b[512];
+    reg u32 bm = ctaid_y() << 5;
+    reg u32 bn = ctaid_x() << 5;
+    if (bm >= m_dim || bn >= n_dim) { return; }
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 wy = wid >> 1;
+    reg u32 wx = wid & 1;
+    reg u32 gid = lane >> 2;
+    reg u32 tg = lane & 3;
+    reg u32 arow0 = (wy << 4) + gid;
+    reg u32 arow1 = arow0 + 8;
+    reg u32 brow0 = (wx << 4) + gid;
+    reg u32 brow1 = brow0 + 8;
+    reg u32 k_vec16 = k_dim >> 3;
+    reg u32 k_tiles = k_dim >> 4;
+    ureg u64 a_tile = ptr_add(a_bf16, bm * k_vec16, 16);
+    ureg u64 b_tile = ptr_add(b_bf16, bn * k_vec16, 16);
+    reg f32x4 d0 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    reg f32x4 d1 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    if (k_tiles > 0) {
+        mma_stage_load(sm_a, sm_b, a_tile, b_tile, tid, 0, 0, k_vec16);
+    }
+    reg u32 stage = 0;
+    for (reg u32 kt = 0; kt + 1 < k_tiles; kt += 1) {
+        reg u32 next_s = stage ^ 1;
+        mma_stage_load(sm_a, sm_b, a_tile, b_tile, tid, next_s << 8, kt + 1, k_vec16);
+        depbar_le(1);
+        barrier();
+        mma_warp_tile(sm_a, sm_b, stage << 8, arow0, arow1, brow0, brow1, tg, d0, d1);
+        barrier();
+        stage = next_s;
+    }
+    if (k_tiles > 0) {
+        depbar_le(0);
+        barrier();
+        mma_warp_tile(sm_a, sm_b, stage << 8, arow0, arow1, brow0, brow1, tg, d0, d1);
+    }
+    reg u32 c_col0 = bn + (wx << 4) + (tg << 1);
+    mma_store_tile(OUT_BF16, c_out, bm + arow0, bm + arow1, c_col0, n_dim, d0);
+    mma_store_tile(OUT_BF16, c_out, bm + arow0, bm + arow1, c_col0 + 8, n_dim, d1);
+}
+
+instantiate mma_bf16_tile32x32<1> as mma_bf16_gemm_bf16;
+instantiate mma_bf16_tile32x32<0> as mma_bf16_gemm_f32;
