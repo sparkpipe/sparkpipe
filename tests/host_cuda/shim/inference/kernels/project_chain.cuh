@@ -10,10 +10,11 @@
 
 template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
 static inline SparkGpuError LmPerHeadProjectChainLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, SparkGpuStream stream,
-	uint32_t row_exact = 0u)
+	uint32_t row_exact = 0u, uint32_t force_mma = 0u)
 {
 	(void)stream;
 	(void)row_exact;
+	(void)force_mma;
 	for (uint32_t row = 0u; row < rows; ++row)
 		for (uint32_t head = 0u; head < heads; ++head)
 		{
