@@ -515,7 +515,9 @@ template kernel[THREADS, REGS] index_block_store_tpl<THREADS, REGS>(
         reg f32 angle = u32_to_f32(start) * exp2_ftz(u32_to_f32(pair) * inv_log2_step);
         reg f32 sv = 0.0f; reg f32 cv = 0.0f;
         sincos_pos_f32(angle, sv, cv);
-        reg f32 partner = (d < half) ? (0.0f - lds32(s_normed, d + half)) : lds32(s_normed, d - half);
+        reg u32 p_idx = (d < half) ? (d + half) : (d - half);
+        reg f32 pv = lds32(s_normed, p_idx);
+        reg f32 partner = (d < half) ? (0.0f - pv) : pv;
         out_v = fma(nv, cv, partner * sv);
     }
     stg16(ptr_add(slot, d, 2), f32_to_bf16(out_v));
