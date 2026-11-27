@@ -1,0 +1,71 @@
+const BLOCK = 256;
+
+@concept(route_topk)
+template kernel[BLOCK, REGS] router_softmax_256_t<IS_BF16, REGS>(
+    if (IS_BF16 == 0) global f32* logits,
+    if (IS_BF16 == 1) global u32* logits_bf16,
+    global f32* probs,
+    u32 rows
+) {
+    reg u32 row = (ctaid_x() << 3) + warp_id();
+    if (row >= rows) { return; }
+    reg u32 lane = lane_id();
+    ureg u64 out_row = ptr_add(probs, row * 256, 4);
+    reg f32 f[8];
+    if constexpr (IS_BF16 == 0) {
+        ureg u64 in_row = ptr_add(logits, row * 256, 4);
+        reg u32x8 v = ldg256_persist(ptr_add(in_row, lane, 32));
+        unroll (i = 0..8) { f[i] = u32_as_f32(v[i]); }
+    } else {
+        ureg u64 in_row = ptr_add(logits_bf16, row * 32, 16);
+        reg u32x4 v = ldg128_persist(ptr_add(in_row, lane, 16));
+        unroll (i = 0..4) {
+            f[i * 2] = bf16_lo(v[i]);
+            f[i * 2 + 1] = bf16_hi(v[i]);
+        }
+    }
+    reg f32 m0 = maxf(maxf(f[0], f[1]), maxf(f[2], f[3]));
+    reg f32 m1 = maxf(maxf(f[4], f[5]), maxf(f[6], f[7]));
+    reg f32 rmax = warp_max(maxf(m0, m1));
+    reg f32 e[8];
+    unroll (i = 0..8) { e[i] = expf_fast(f[i] - rmax); }
+    reg f32 s = ((e[0] + e[1]) + (e[2] + e[3])) + ((e[4] + e[5]) + (e[6] + e[7]));
+    reg f32 inv_sum = rcp(warp_sum(s));
+    reg u32x8 ov;
+    unroll (i = 0..8) { ov[i] = f32_as_u32(e[i] * inv_sum); }
+    stg256(ptr_add(out_row, lane, 32), ov);
+}
+
+instantiate router_softmax_256_t<0, 32> as router_softmax_256;
+instantiate router_softmax_256_t<1, 80> as router_softmax_bf16_256;
+
+@concept(linear)
+kernel[BLOCK, 96] mx_quantize_e4m3_ue8m0(
+    global u32* src_bf16, global u32* dst_fp8, global u8* dst_scales,
+    u32 total_blocks
+) {
+    reg u32 tid = ctaid_x() * BLOCK + tid_x();
+    reg u32 blk = tid >> 2;
+    if (blk >= total_blocks) { return; }
+    reg u32 sub = tid & 3;
+    reg u32x4 v = ldg128_stream(ptr_add(src_bf16, tid, 16));
+    reg f32 f[8];
+    unroll (i = 0..4) {
+        f[i * 2] = bf16_lo(v[i]);
+        f[i * 2 + 1] = bf16_hi(v[i]);
+    }
+    reg f32 lmax = maxf(maxf(fabsf(f[0]), fabsf(f[1])), maxf(fabsf(f[2]), fabsf(f[3])));
+    lmax = maxf(lmax, maxf(maxf(fabsf(f[4]), fabsf(f[5])), maxf(fabsf(f[6]), fabsf(f[7]))));
+    reg f32 amax = quad_max(lmax);
+    reg u32 e8m0 = pow2_ceil_e8m0_bits(amax);
+    reg f32 inv_scale = (e8m0 == 0) ? 0.0f : u32_as_f32((254 - e8m0) << 23);
+    reg u32 p0 = cvt_f32x2_e4m3x2(f[0] * inv_scale, f[1] * inv_scale);
+    reg u32 p1 = cvt_f32x2_e4m3x2(f[2] * inv_scale, f[3] * inv_scale);
+    reg u32 p2 = cvt_f32x2_e4m3x2(f[4] * inv_scale, f[5] * inv_scale);
+    reg u32 p3 = cvt_f32x2_e4m3x2(f[6] * inv_scale, f[7] * inv_scale);
+    reg u32x2 out64;
+    out64[0] = pack_u16x2(p0, p1);
+    out64[1] = pack_u16x2(p2, p3);
+    stg64(ptr_add(dst_fp8, tid, 8), out64);
+    if (sub == 0) { stg8(ptr_add(dst_scales, blk, 1), e8m0); }
+}

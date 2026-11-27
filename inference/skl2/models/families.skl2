@@ -1,0 +1,61 @@
+import "models/reference.skl2";
+
+model qwen38_27b extends ReferenceHybridTransformer@latest {
+    hidden = 5120;
+    layers = 64;
+    vocab = 248320;
+    heads = 24;
+    kv_heads = 4;
+    head_dim = 256;
+    intermediate = 17408;
+    weight_codec = FP8_E4M3;
+    tp_degree = 4;
+    gdn_key_dim = 128;
+    gdn_val_dim = 128;
+}
+
+model deepseek_v41_flash extends ReferenceMlaTransformer@latest {
+    hidden = 5120;
+    layers = 40;
+    vocab = 129280;
+    heads = 64;
+    head_dim = 512;
+    q_lora_rank = 1280;
+    moe_experts = 384;
+    moe_topk = 6;
+    moe_intermediate = 2304;
+    rms_eps = 1e-20;
+    index_heads = 32;
+    index_topk = 512;
+}
+
+model kimi_k31_pro extends ReferenceHybridTransformer@latest {
+    hidden = 7168;
+    layers = 93;
+    vocab = 163840;
+    heads = 96;
+    mixer = hybrid_kda;
+    ffn = situ;
+    moe_experts = 896;
+    moe_topk = 16;
+    shared_experts = 2;
+    moe_intermediate = 3072;
+    moe_codec = MXFP4_UE8M0;
+    kv_lora_rank = 512;
+    rms_eps = 1e-5;
+}
+
+model glm53_flash extends ReferenceMlaTransformer@latest {
+    hidden = 4096;
+    layers = 45;
+    vocab = 154880;
+    heads = 64;
+    kv_lora_rank = 512;
+    qk_rope_dim = 0;
+    moe_experts = 288;
+    moe_topk = 8;
+    moe_intermediate = 2048;
+    dense_layers = 3;
+    kda_layers = 34;
+    rms_eps = 1e-5;
+}

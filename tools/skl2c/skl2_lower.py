@@ -1,0 +1,339 @@
+import copy
+import hashlib
+import json
+import os
+import sys
+
+TOOLS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SKLC_DIR = os.path.join(TOOLS_DIR, "sklc")
+if SKLC_DIR not in sys.path:
+    sys.path.append(SKLC_DIR)
+
+from codegen import compile_program
+from cubin_elf import build_cubin
+from skl2_frontend import Skl2CompileError, eval_meta_expr, try_eval_meta
+from skl2_lint import check_anti_slop
+
+COMPILER_VERSION = "skl2c-1.0"
+CORE_CONCEPTS = ("linear", "moe", "attention", "recurrent", "norm_rope", "route_topk", "head", "allreduce")
+
+
+def resolve_consts(unit):
+    env = {}
+    for sec in ("codecs", "epilogues"):
+        for k, v in unit[sec].items():
+            env[k] = {fk: fv for fk, fv in v.items() if not fk.startswith("_")}
+            env[k]["name"] = k
+    for name, (expr, file, line) in unit["consts"].items():
+        try: env[name] = eval_meta_expr(expr, env)
+        except Exception as e: raise Skl2CompileError("E_CONST", f"cannot evaluate const {name}: {e}", file, line)
+    return env
+
+
+def _sub_expr(expr, env, rename, reg_arrays=None):
+    if not isinstance(expr, tuple): return expr
+    k = expr[0]
+    if k in ("int", "float", "str"): return expr
+    if k == "ident":
+        nm = expr[1]
+        if nm in rename:
+            rep = rename[nm]
+            return rep if isinstance(rep, tuple) else ("ident", rep)
+        if nm in env and isinstance(env[nm], (int, float)):
+            return ("float" if isinstance(env[nm], float) else "int", env[nm])
+        return expr
+    if k == "field":
+        v = try_eval_meta(expr, env)
+        if isinstance(v, (int, float)): return ("float" if isinstance(v, float) else "int", v)
+        if isinstance(v, str): return ("str", v)
+        return ("field", _sub_expr(expr[1], env, rename, reg_arrays), expr[2])
+    if k == "un": out = ("un", expr[1], _sub_expr(expr[2], env, rename, reg_arrays))
+    elif k == "bin": out = ("bin", expr[1], _sub_expr(expr[2], env, rename, reg_arrays), _sub_expr(expr[3], env, rename, reg_arrays))
+    elif k == "ternary":
+        c = _sub_expr(expr[1], env, rename, reg_arrays)
+        cv = try_eval_meta(c, env)
+        if cv is not None: return _sub_expr(expr[2] if cv else expr[3], env, rename, reg_arrays)
+        return ("ternary", c, _sub_expr(expr[2], env, rename, reg_arrays), _sub_expr(expr[3], env, rename, reg_arrays))
+    elif k == "call": out = ("call", expr[1], [_sub_expr(a, env, rename, reg_arrays) for a in expr[2]])
+    elif k == "index":
+        base, idx = _sub_expr(expr[1], env, rename, reg_arrays), _sub_expr(expr[2], env, rename, reg_arrays)
+        if reg_arrays and base[0] == "ident" and base[1] in reg_arrays:
+            iv = try_eval_meta(idx, env)
+            if iv is None: raise Skl2CompileError("E_CONST", f"register array {base[1]} index must be compile-time constant")
+            return ("ident", f"{base[1]}__{int(iv)}")
+        out = ("index", base, idx)
+    else: return expr
+    v = try_eval_meta(out, env)
+    return ("float" if isinstance(v, float) else "int", v) if isinstance(v, (int, float)) else out
+
+
+class Expander:
+    def __init__(self, macros, env):
+        self.macros, self.env, self.uid, self.reg_arrays = macros, env, 0, set()
+
+    def _ren_name(self, rename, nm):
+        v = rename.get(nm, nm)
+        return v[1] if isinstance(v, tuple) else v
+
+    def expand_stmts(self, stmts, rename):
+        out, ra = [], self.reg_arrays
+        for st in stmts:
+            k = st[0]
+            if k == "expr" and st[1][0] == "call" and st[1][1] in self.macros:
+                m = self.macros[st[1][1]]
+                call_args = [_sub_expr(a, self.env, rename, ra) for a in st[1][2]]
+                if len(call_args) != len(m["params"]):
+                    raise Skl2CompileError("E_MACRO_ARITY", f"macro {m['name']} expects {len(m['params'])} args, got {len(call_args)}", m["file"], st[-1])
+                self.uid += 1
+                sub_ren = dict(rename)
+                for p, a in zip(m["params"], call_args): sub_ren[p] = a
+                m_locals = set()
+                self._collect_locals(m["body"], m_locals)
+                for loc in m_locals:
+                    if loc not in m["params"]: sub_ren[loc] = f"__m{self.uid}_{loc}"
+                out.extend(self.expand_stmts(m["body"], sub_ren))
+            elif k == "shared":
+                out.append(("shared", st[1], self._ren_name(rename, st[2]), _sub_expr(st[3], self.env, rename, ra)))
+            elif k == "reg_array":
+                nm = self._ren_name(rename, st[3])
+                n = int(eval_meta_expr(_sub_expr(st[4], self.env, rename, ra), self.env))
+                self.reg_arrays.add(nm)
+                out.extend(("decl", st[1], st[2], f"{nm}__{i}", None) for i in range(n))
+            elif k == "decl":
+                init = _sub_expr(st[4], self.env, rename, ra) if st[4] is not None else None
+                out.append(("decl", st[1], st[2], self._ren_name(rename, st[3]), init))
+            elif k == "return": out.append(("return",))
+            elif k == "assign": out.append(("assign", st[1], _sub_expr(st[2], self.env, rename, ra), _sub_expr(st[3], self.env, rename, ra)))
+            elif k == "expr": out.append(("expr", _sub_expr(st[1], self.env, rename, ra)))
+            elif k in ("if", "if_constexpr"):
+                cond = _sub_expr(st[1], self.env, rename, ra)
+                cv = try_eval_meta(cond, self.env)
+                if cv is not None: out.extend(self.expand_stmts(st[2] if cv else st[3], rename))
+                elif k == "if_constexpr": raise Skl2CompileError("E_CONST", "if constexpr condition is not compile-time constant", "<lower>", st[-1])
+                else: out.extend(self._lower_cond_if(cond, self.expand_stmts(st[2], rename), self.expand_stmts(st[3], rename)))
+            elif k == "unroll":
+                var, s_e, e_e = st[1], _sub_expr(st[2], self.env, rename, ra), _sub_expr(st[3], self.env, rename, ra)
+                s_v, e_v = try_eval_meta(s_e, self.env), try_eval_meta(e_e, self.env)
+                if s_v is not None and e_v is not None and (self._has_macro_or_constexpr(st[4]) or self.reg_arrays):
+                    had, old = var in self.env, self.env.get(var)
+                    for iv in range(int(s_v), int(e_v)):
+                        self.env[var] = iv
+                        ib = self.expand_stmts(st[4], rename)
+                        out.append(("if", ("int", 1), ib, [])) if any(x[0] == "decl" for x in ib) else out.extend(ib)
+                    if had: self.env[var] = old
+                    else: self.env.pop(var, None)
+                else:
+                    sub_ren = dict(rename); sub_ren.pop(var, None)
+                    out.append(("unroll", var, s_e, e_e, self.expand_stmts(st[4], sub_ren)))
+            elif k in ("for", "pipeline_for"):
+                var, vname = st[3], self._ren_name(rename, st[3])
+                sub_ren = dict(rename); sub_ren[var] = vname
+                step = st[6]
+                out.append((k, st[1], st[2], vname, _sub_expr(st[4], self.env, rename, ra), _sub_expr(st[5], self.env, sub_ren, ra), ("assign", step[1], _sub_expr(step[2], self.env, sub_ren, ra), _sub_expr(step[3], self.env, sub_ren, ra)), self.expand_stmts(st[7], sub_ren)))
+        return out
+
+    def _lower_cond_if(self, cond, t_b, e_b):
+        if cond[0] == "bin" and cond[1] == "&&" and not e_b:
+            return self._lower_cond_if(cond[2], self._lower_cond_if(cond[3], t_b, []), [])
+        if cond[0] == "bin" and cond[1] == "||" and not e_b and t_b and t_b[-1][0] == "return" and len(t_b) <= 3:
+            return self._lower_cond_if(cond[2], t_b, []) + self._lower_cond_if(cond[3], t_b, [])
+        return [("if", cond, t_b, e_b)]
+
+    def _collect_locals(self, stmts, out):
+        for st in stmts:
+            k = st[0]
+            if k in ("decl", "reg_array"): out.add(st[3])
+            elif k == "shared": out.add(st[2])
+            elif k in ("if", "if_constexpr"): self._collect_locals(st[2], out); self._collect_locals(st[3], out)
+            elif k in ("unroll", "for", "pipeline_for"):
+                if k != "unroll": out.add(st[3])
+                self._collect_locals(st[4 if k == "unroll" else 7], out)
+
+    def _has_macro_or_constexpr(self, stmts):
+        for st in stmts:
+            k = st[0]
+            if k == "if_constexpr" or (k == "expr" and st[1][0] == "call" and st[1][1] in self.macros): return True
+            if k in ("if", "if_constexpr") and (self._has_macro_or_constexpr(st[2]) or self._has_macro_or_constexpr(st[3])): return True
+            if k in ("unroll", "for", "pipeline_for") and self._has_macro_or_constexpr(st[4 if k == "unroll" else 7]): return True
+        return False
+
+
+def _lower_kernel(kdef, name, env, macros):
+    params = []
+    for p in kdef["params"]:
+        if p.get("cond") is not None and not eval_meta_expr(p["cond"], env): continue
+        if p["type"] == "blob":
+            params.append({"name": p["name"], "type": "blob", "is_ptr": False, "blob_bytes": int(eval_meta_expr(p["blob_bytes"], env)), "blob_align": int(eval_meta_expr(p["blob_align"], env))})
+        else:
+            params.append({"name": p["name"], "type": p["type"], "is_ptr": p["is_ptr"]})
+    return {"name": name, "block": int(eval_meta_expr(kdef["block"], env)), "regs": int(eval_meta_expr(kdef["regs"], env)), "params": params, "body": Expander(macros, env).expand_stmts(kdef["body"], {})}
+
+
+def lower_unit(unit, only_set=None, renames=None, allow_unused_lib=False):
+    check_anti_slop(unit, allow_unused_lib=allow_unused_lib)
+    base_env, lowered = resolve_consts(unit), []
+    for inst in unit["instantiations"]:
+        tname = inst["template"]
+        if tname not in unit["templates"]: raise Skl2CompileError("E_TEMPLATE", f"unknown template {tname!r}", inst["file"], inst["line"])
+        tpl = unit["templates"][tname]
+        if len(inst["args"]) != len(tpl["tparams"]):
+            raise Skl2CompileError("E_TEMPLATE", f"template {tname} expects {len(tpl['tparams'])} args, got {len(inst['args'])}", inst["file"], inst["line"])
+        kname = inst["name"]
+        if only_set and kname not in only_set: continue
+        env = dict(base_env)
+        for tp, arg_e in zip(tpl["tparams"], inst["args"]): env[tp] = eval_meta_expr(arg_e, base_env)
+        lowered.append(_lower_kernel(tpl, renames.get(kname, kname) if renames else kname, env, unit["macros"]))
+    for k in unit["kernels"]:
+        if only_set and k["name"] not in only_set: continue
+        lowered.append(_lower_kernel(k, renames.get(k["name"], k["name"]) if renames else k["name"], dict(base_env), unit["macros"]))
+    return {"consts": {k: v for k, v in base_env.items() if isinstance(v, (int, float))}, "kernels": lowered}
+
+
+def compile_unit(unit, arch="sm121", only_set=None, renames=None, allow_unused_lib=False):
+    prog = lower_unit(unit, only_set=only_set, renames=renames, allow_unused_lib=allow_unused_lib)
+    if not prog["kernels"]: raise Skl2CompileError("E_EMPTY", "no kernels selected to compile")
+    try: images = compile_program(prog, strict_reg_budget=True)
+    except RuntimeError as e:
+        if str(e).startswith("E_REG_SPILL"): raise Skl2CompileError("E_REG_SPILL", str(e).split(": ", 1)[1]) from e
+        raise
+    return images, build_cubin(images, arch=arch)
+
+
+def _ver_key(v):
+    return (1, int(v[1:]), v) if (isinstance(v, str) and v.startswith("v") and v[1:].isdigit()) else (0, 0, str(v))
+
+
+def resolve_version(table, name, version="latest", kind="primitive"):
+    if name not in table: raise Skl2CompileError("E_REF", f"unknown {kind} {name!r}")
+    vers = table[name]
+    if version == "latest":
+        chosen = max(vers.keys(), key=_ver_key)
+        return chosen, vers[chosen]
+    if version not in vers:
+        raise Skl2CompileError("E_VERSION", f"{kind} {name}@{version} not found (available: {', '.join(sorted(vers, key=_ver_key))})")
+    return version, vers[version]
+
+
+def select_primitive_variant(unit, pname, version="latest", context=None):
+    ver, obj = resolve_version(unit["primitives"], pname, version, kind="primitive")
+    spec, env, chosen = obj["spec"], dict(context or {}), None
+    pol = spec.get("policy")
+    if pol:
+        chosen = next((r["target"] for r in pol["rules"] if try_eval_meta(r["cond"], env)), pol.get("default"))
+    variants = spec.get("variants", {})
+    if chosen is None and variants: chosen = next(iter(variants))
+    return {"primitive": pname, "version": ver, "variant": chosen, "variant_spec": variants.get(chosen, {})}
+
+
+def _strip_meta(obj):
+    if isinstance(obj, dict): return {k: _strip_meta(v) for k, v in sorted(obj.items()) if not str(k).startswith("_")}
+    if isinstance(obj, (list, tuple)): return [_strip_meta(v) for v in obj]
+    return obj
+
+
+def _canon_sha256(obj):
+    return hashlib.sha256(json.dumps(_strip_meta(obj), sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def build_lockfile(unit, model_names=None):
+    plan = resolve_models(unit, model_names=model_names) if unit["models"] else None
+    prims = {p: {"version": v, "sha256": _canon_sha256(o["spec"])} for p in sorted(unit["primitives"]) for v, o in [resolve_version(unit["primitives"], p, "latest")]}
+    models_lock = {
+        m: {"version": v, "extends": f"{o['extends']}@{o['extends_version']}" if o["extends"] else None, "sha256": _canon_sha256(o["spec"])}
+        for m in sorted(unit["models"]) for v, o in [resolve_version(unit["models"], m, "latest", "model")]
+    }
+    out = {
+        "schema": "skl2.lock.v1", "compiler": COMPILER_VERSION, "primitives": prims, "models": models_lock,
+        "codecs": {k: _canon_sha256(v) for k, v in sorted(unit["codecs"].items())},
+        "epilogues": {k: _canon_sha256(v) for k, v in sorted(unit["epilogues"].items())},
+    }
+    if plan:
+        out["resolved_models"] = {m: {k: info[k] for k in ("inheritance", "resolved_primitives", "kernels")} for m, info in sorted(plan["models"].items())}
+    return out
+
+
+def verify_lockfile(unit, lock_data):
+    cur = build_lockfile(unit)
+    for sec in ("primitives", "models", "codecs", "epilogues"):
+        for k, exp_val in lock_data.get(sec, {}).items():
+            actual = cur.get(sec, {})
+            if k not in actual: raise Skl2CompileError("E_LOCK_MISMATCH", f"lockfile entry {sec}.{k} missing from source unit")
+            if actual[k] != exp_val: raise Skl2CompileError("E_LOCK_MISMATCH", f"lockfile mismatch for {sec}.{k}: expected {exp_val}, got {actual[k]}")
+
+
+def _deep_merge(base, delta):
+    res = copy.deepcopy(base)
+    for k, v in delta.items():
+        if k == "overrides": res = _deep_merge(res, v)
+        elif k == "fusions": res["fusions"] = list(res.get("fusions", [])) + list(v)
+        elif k == "uses":
+            by_ref = {u["ref"]: u["version"] for u in res.get("uses", [])}
+            by_ref.update({u["ref"]: u["version"] for u in v})
+            res["uses"] = [{"ref": r, "version": ver} for r, ver in by_ref.items()]
+        elif isinstance(v, dict) and isinstance(res.get(k), dict): res[k] = _deep_merge(res[k], v)
+        else: res[k] = copy.deepcopy(v)
+    return res
+
+
+def _count_leaf_fields(d):
+    return sum(len(v) if k in ("fusions", "uses") else (_count_leaf_fields(v) if isinstance(v, dict) else 1) for k, v in d.items())
+
+
+def resolve_models(unit, model_names=None):
+    models = unit["models"]
+    targets = list(model_names) if model_names else [n for n in models if not n.startswith("Reference")]
+    resolved, kernel_registry = {}, {}
+
+    def resolve_one(name, ver="latest", stack=()):
+        if name in stack: raise Skl2CompileError("E_CYCLE", f"cyclic model inheritance: {' -> '.join(stack + (name,))}")
+        actual_v, m = resolve_version(models, name, ver, kind="model")
+        p_spec, p_chain = resolve_one(m["extends"], m["extends_version"], stack + (name,)) if m["extends"] else ({}, [])
+        return _deep_merge(p_spec, m["spec"]), [f"{name}@{actual_v}"] + p_chain
+
+    for name in targets:
+        m_name, m_ver = name.split("@", 1) if "@" in name else (name, "latest")
+        spec, chain = resolve_one(m_name, m_ver)
+        actual_v, m = resolve_version(models, m_name, m_ver, kind="model")
+        codec, act, norm, mixer, ffn = spec.get("weight_codec", "BF16"), spec.get("act_dtype", "bf16"), spec.get("norm", "rmsnorm"), spec.get("mixer", "gqa"), spec.get("ffn", "swiglu")
+        fusions = spec.get("fusions", [])
+        fused_tags = {rhs for _, rhs in fusions}
+        resolved_prims, ar_ctx = {}, {"msg_bytes": int(spec.get("hidden", 4096)) * 2, "ranks": int(spec.get("tp_degree", 16)), "topology": spec.get("topology", "hybrid_mode0")}
+        for u in list(unit.get("uses", [])) + list(spec.get("uses", [])):
+            if u["ref"] in unit["primitives"]:
+                sel = select_primitive_variant(unit, u["ref"], u["version"], context=ar_ctx)
+                resolved_prims[u["ref"]] = f"{sel['version']}:{sel['variant']}"
+        tp = spec.get("tp_collective")
+        if not tp and "std.allreduce" in unit["primitives"]:
+            sel = select_primitive_variant(unit, "std.allreduce", "latest", context=ar_ctx)
+            tp = sel["variant"]
+            resolved_prims.setdefault("std.allreduce", f"{sel['version']}:{sel['variant']}")
+        tp = tp or "hybrid_inline_128"
+        kernels = [
+            f"linear.skinny_gemv.{codec.lower()}_{act}", f"linear.mma_gemm.{codec.lower()}_{act}",
+            f"norm_rope.fused_residual_{norm}_{act}" if "fused_residual_rmsnorm" in fused_tags else f"norm_rope.{norm}_{act}",
+        ]
+        if spec.get("rope", True): kernels.append(f"norm_rope.rope_{spec.get('rope_mode', 'neox')}_{act}")
+        if mixer in ("mla", "mla_sparse"):
+            kernels.append(f"attention.mla_{act}")
+            if mixer == "mla_sparse" or spec.get("sparse_indexer"): kernels.append("route_topk.sparse_indexer_topk")
+        elif mixer in ("hybrid_gdn", "hybrid_kda"):
+            kernels.extend([f"recurrent.{mixer.split('_')[1]}_decode_{act}", "recurrent.causal_conv1d_swish", f"attention.gqa_{act}"])
+        else: kernels.append(f"attention.{mixer}_{act}")
+        if spec.get("moe_experts", 0):
+            kernels.extend([f"route_topk.moe_router_e{spec['moe_experts']}_k{spec.get('moe_topk', 8)}", f"moe.grouped_linear_{spec.get('moe_codec', codec).lower()}_{act}"])
+        if "swiglu_linear" in fused_tags or ffn == "swiglu": kernels.append(f"epilogue.swiglu_{act}")
+        elif ffn == "situ": kernels.append(f"epilogue.situ_{act}")
+        kernels.extend([f"head.certified_{spec.get('head_codec', 'fp8').lower()}", f"allreduce.{tp}_fused_{norm}" if "ar_rmsnorm" in fused_tags else f"allreduce.{tp}"])
+        for k in kernels: kernel_registry.setdefault(k, []).append(m_name)
+        resolved[m_name] = {
+            "version": actual_v, "inheritance": chain, "resolved_fields": _count_leaf_fields(spec),
+            "diff_fields": _count_leaf_fields(m["spec"]), "resolved_primitives": resolved_prims,
+            "spec": spec, "fusions": [f"{'+'.join(lhs)}->{rhs}" for lhs, rhs in fusions], "kernels": sorted(set(kernels)),
+        }
+    total_slots = sum(len(v["kernels"]) for v in resolved.values())
+    unique_kernels = sorted(kernel_registry)
+    return {
+        "models": resolved, "unique_kernels": unique_kernels,
+        "shared_kernels": {k: v for k, v in sorted(kernel_registry.items()) if len(v) > 1},
+        "dedup_ratio": round(1.0 - (len(unique_kernels) / max(total_slots, 1)), 4),
+    }

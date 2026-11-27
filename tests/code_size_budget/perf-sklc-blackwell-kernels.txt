@@ -1,2 +1,2 @@
-+3918
-Standalone Blackwell sm_121a/sm_120a SKL compiler (tools/sklc/*) and six SKL kernel suites (inference/kernels/skl/*) plus Phase 1 Blackwell CUDA kernel optimizations merged in PR #2129.
++3659
+Standalone Blackwell sm_121a/sm_120a SKL2 compiler (tools/sklc/*, tools/skl2c/*) and SKL2 stdlib/kernel suites (inference/skl2/*), retiring 100% of legacy inference/kernels/skl/*.skl (-7,701L) and tools/sklc/frontend.py (-476L) with net-negative authored SLOC vs main.

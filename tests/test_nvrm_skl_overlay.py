@@ -7,11 +7,15 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKLC = ROOT / "tools" / "sklc" / "sklc.py"
-NORM_ACT_SKL = ROOT / "inference" / "kernels" / "skl" / "norm_act.skl"
-STAGE_OPS_SKL = ROOT / "inference" / "kernels" / "skl" / "stage_ops.skl"
-TP_MESH_MEM_SKL = ROOT / "inference" / "kernels" / "skl" / "tp_mesh_mem.skl"
-SKINNY_DECODE_SKL = ROOT / "inference" / "kernels" / "skl" / "skinny_decode.skl"
-LINEAR_ATTN_SKL = ROOT / "inference" / "kernels" / "skl" / "linear_attn.skl"
+SKL2_KDIR = ROOT / "inference" / "skl2" / "kernels"
+OVERLAY_SKL2_SUITES = (
+    SKL2_KDIR / "linear.skl2",
+    SKL2_KDIR / "recurrent.skl2",
+    SKL2_KDIR / "norm_rope.skl2",
+    SKL2_KDIR / "attention.skl2",
+    SKL2_KDIR / "head.skl2",
+    SKL2_KDIR / "stage_mem.skl2",
+)
 HOSTED_BIN = ROOT / "build" / "test_nvrm_hosted_launch"
 NVRM_LIB = ROOT / "build" / "runtime_libs" / "libsparkpipe_device_nvrm.so"
 FORBIDDEN_LIBS = ("libcuda", "libcudart", "libnvidia")
@@ -214,7 +218,7 @@ def verify_multi_kernel_overlay_bundle(directory):
     cmd = [sys.executable, str(SKLC), "--arch", "sm121a"]
     for src_name, dst_name in PROD_OVERLAY_KERNELS:
         cmd.extend(["--only", src_name, "--rename", f"{src_name}={dst_name}"])
-    cmd.extend([str(SKINNY_DECODE_SKL), str(LINEAR_ATTN_SKL), str(NORM_ACT_SKL), str(STAGE_OPS_SKL), str(TP_MESH_MEM_SKL), "-o", str(cubin_path), "--manifest", str(manifest_path)])
+    cmd.extend([*[str(p) for p in OVERLAY_SKL2_SUITES], "-o", str(cubin_path), "--manifest", str(manifest_path)])
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert res.returncode == 0, f"sklc multi-kernel overlay bundle failed: {res.stderr}"
     mtxt = manifest_path.read_text(encoding="utf-8")

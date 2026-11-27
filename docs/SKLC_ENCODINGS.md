@@ -173,8 +173,15 @@ Cache policy bits (`hi[31:15]`): `CACHE_DEFAULT = 0x0C1E0000`,
 | `encode_stg` | `0x0986 \| pred<<12` | `raddr`, `rval` in `lo[39:32]`, `lo[63:40]=offset`, `hi \|= 0x0C100000 \| width_bits \| ur_desc` | `STG.E[.<width>] desc[UR][Raddr.64+off], Rval` |
 | `encode_stg256` | `0x097F \| pred<<12` | `lo[23:16]=rval_hi`, `raddr`, `lo[39:32]=rval_lo`, `lo[63:56]=0xF8`, `hi \|= 0x0F121800 \| ur_desc` | `STG.E.ENL2.256 desc[UR][Raddr.64], Rval_lo, Rval_hi` |
 | `encode_lds` | `0x7984` | `rd`, `raddr`, `lo[39:32]=ur_base`, `lo[63:40]=offset`, `hi \|= 0x08000800` | `LDS Rd, [Raddr+URbase+off]` |
+| `encode_lds128` | `0x7984` | `rd`, `raddr`, `lo[39:32]=ur_base`, `lo[63:40]=offset`, `hi \|= 0x08000C00` | `LDS.128 Rd, [Raddr+URbase+off]` |
 | `encode_sts` | `0x0388 \| pred<<12` | `raddr`, `rval` in `lo[39:32]`, `lo[63:40]=offset`, `hi \|= 0x00000800` | `STS [Raddr+off], Rval` |
 | `encode_ublkpf_l2` | `0x73BC` | `lo[31:24]=ur_addr`, `hi \|= 0x08000000 \| ur_bytes` | `UBLKPF.L2 [URaddr], URbytes` |
+| `encode_hmma_16816_f32_bf16` | `0x723C` | `rd`, `ra`, `lo[39:32]=rb`, `hi[7:0]=rc`, `hi \|= 0x00041800` | `HMMA.16816.F32.BF16 Rd, Ra, Rb, Rc` |
+| `encode_ldgsts128` | `0x0FAE \| pred<<12` | `lo[23:16]=r_smem`, `lo[31:24]=r_gaddr`, `lo[63:32]=offset`, `hi \|= 0x0B981800 \| ur_desc` | `LDGSTS.E.BYPASS.128 [Rsm], desc[UR][Rgaddr.64+off]` |
+| `encode_ldgdepbar` | `0x79AF` | `wr=0` (`SB0`) | `LDGDEPBAR` |
+| `encode_depbar_le` | `0x791A` | `lo \|= (0x8000 << 32) \| ((count & 0x3F) << 38)` | `DEPBAR.LE SB0, count` |
+| `encode_stg` (`STG_CACHE_STRONG_SYS`) | `0x0986 \| pred<<12` | `cache=0x0C114000`, `width_bits=STG_W_128\|STG_W_32` | `STG.E[.<width>].STRONG.SYS desc[UR][Raddr.64+off], Rval` |
+| `encode_membar` | `0x7992` | `hi \|= {SC_SYS: 0x3000, ALL_SYS: 0xB000}` | `MEMBAR.{SC\|ALL}.SYS` |
 
 ## 4. CUBIN ELF64 Container Format (`tools/sklc/cubin_elf.py`)
 
@@ -215,14 +222,14 @@ synthetic encoder coverage suite covering every encoder in
 | `inference/kernels/skl/skinny_decode.skl` | 3 | 1,702 | PASS | PASS | 0 |
 | `inference/kernels/skl/tp_mesh_mem.skl` | 3 | 98 | PASS | PASS | 0 |
 | Exhaustive `isa_sm121.py` encoder suite | 1 | 84 | PASS | PASS | 0 |
-| **Total** | **14** | **3,197** | **PASS** | **PASS** | **0** |
+| `inference/skl2/` Slice 1 (`allreduce`, `linear`, `mma_gemm`, `norm_rope`) | 53 | 15,856 | PASS | PASS | 0 |
+| `inference/skl2/` Full Slice 2 (all 91 kernels, 0 spills, 100% `.skl` v1 retired) | 91 | 24,520 | PASS | PASS | 0 |
+| **Total (active `skl2` + exhaustive encoder suite)** | **92** | **24,604** | **PASS** | **PASS** | **0** |
 
 To reproduce disassembly verification on any host with CUDA 13.0 tools:
 
 ```sh
-for f in inference/kernels/skl/*.skl; do
-  python3 tools/sklc/sklc.py "$f" --arch sm121 -o "/tmp/$(basename "$f").cubin"
-  cuobjdump --dump-sass "/tmp/$(basename "$f").cubin" | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
-  nvdisasm "/tmp/$(basename "$f").cubin" | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
-done
+python3 tools/skl2c/skl2c.py --arch sm121a inference/skl2/stdlib/allreduce.skl2 inference/skl2/kernels/*.skl2 -o /tmp/skl2_all.cubin
+cuobjdump --dump-sass /tmp/skl2_all.cubin | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
+nvdisasm /tmp/skl2_all.cubin | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
 ```
