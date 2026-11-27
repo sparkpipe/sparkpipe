@@ -4241,6 +4241,21 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         const SparkWeightdMeshHybridPeer *hp0 = &ctrl->peers[0];
         SparkWeightdMeshSendQueue *q0 = &weightd_mesh.send_queues[hp0->peer];
         uint32_t bad_idx = q0->produced & q0->mask;
+        CHECK(weightd_mesh.hybrid_verify == 0u,
+            "tp16-20us phase3: hybrid_verify defaults to 0 for zero-C2C-readback critical path");
+        {
+            SparkWeightdMeshHybridTrigger *bad_trig = &ctrl->trigger[bad_seq & 1u];
+            bad_trig->meta = SparkWeightdMeshHybridMetaPack(peer_mask,3u,2u,weightd_mesh.hybrid_grant_gen);
+            bad_trig->slot = bad_slot;
+            bad_trig->bytes = 4096u;
+            __atomic_store_n(&bad_trig->seq,bad_tag,__ATOMIC_RELEASE);
+            first = spark_stub_ibv_posted_count();
+            SparkWeightdMeshDoorbellPoll();
+            CHECK(spark_stub_ibv_posted_count() == first,
+                "tp16-20us phase3: zero-readback metadata check rejects inconsistent ds/num_bb without ringing doorbells");
+            __atomic_store_n(&bad_trig->seq,0u,__ATOMIC_RELEASE);
+        }
+        weightd_mesh.hybrid_verify = 1u;
         CHECK(test_hybrid_write_wqe(ctrl,band,bad_slot,bad_seq,bad_tag,peer_mask,640u,1u,1u,0u,UINT64_C(0x7300000000000000)) == 1u,
             "tp16-20us phase3: stage hybrid WQE before corrupting SQ header");
         memset(q0->buffer + (size_t)bad_idx * 64u,0,8u);
@@ -4270,6 +4285,7 @@ static void test_tp16_20us_phase3_hybrid(uint32_t local_rank)
         CHECK(spark_stub_ibv_posted_count() == first &&
               SparkWeightdMeshCellFailed(band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local_rank) != 0u,
             "tp16-20us phase3: hybrid ring rejects corrupted DMA WQE raddr without ringing QP doorbells");
+        weightd_mesh.hybrid_verify = 0u;
         pthread_mutex_lock(&SparkWeightdMeshWireLock);
         SparkWeightdMeshHybridRevokeLocked();
         SparkWeightdMeshLaneResetLocked(0u);
