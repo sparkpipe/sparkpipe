@@ -575,7 +575,15 @@ static void LoneVerifyKeepGraphs(void)
 		if ( got[lane] != kept_b[lane] * 17u + lane + 3u )
 			ok_b = 0u;
 	Expect(ok_b != 0u && lone_keep_calls == 1u, "verify keep wave 2 replayed graph with updated kept values");
+	state->graph_max_bytes = 1024u;
+	state->graph_total_bytes = 2048u;
+	state->keep_graph_total_bytes = 512u;
+	Expect(StageRunnerGraphMemPressure(state) != 0u, "byte budget triggers graph memory pressure");
+	state->graph_max_bytes = STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT;
+	state->graph_total_bytes = 0u;
+	state->keep_graph_total_bytes = 0u;
 	StageRunnerGraphDrop(state);
+	Expect(state->keep_graph_active_count == 0u && state->keep_graph_total_bytes == 0u, "graph drop clears keep graph count and bytes");
 	model_interface.keep_rows = LoneKeepRowsNoop;
 	lone_keep_calls = 0u;
 	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "noop keep wave 1 succeeds");

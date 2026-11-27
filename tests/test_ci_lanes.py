@@ -193,7 +193,17 @@ def check_drafter_provenance(failures):
 
 
 def check_lane_memory_plan(failures):
+    import stage_lane
+
     lanes_doc = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))
+    runner_src = (ROOT / "inference" / "runner" / "stage_runner.cu").read_text(encoding="utf-8")
+    m_max = re.search(r"#define\s+STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT\s+(\d+)u", runner_src)
+    m_bytes = re.search(r"#define\s+STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT\s+\((\d+)ull\s*<<\s*(\d+)\)", runner_src)
+    if not m_max or int(m_max.group(1)) > 16:
+        failures.append(f"stage_runner.cu STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT must be <= 16 (got {m_max.group(1) if m_max else None})")
+    graph_budget = (int(m_bytes.group(1)) << int(m_bytes.group(2))) if m_bytes else 0
+    if graph_budget <= 0 or graph_budget > 2 * (1024 ** 3):
+        failures.append(f"stage_runner.cu STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT must be in (0, 2 GiB] (got {graph_budget})")
     weightd = lanes_doc.get("weightd", {})
     device_max = weightd.get("device_bytes_max", 0)
     kv_reserve = weightd.get("kv_reserve_bytes", 0)
@@ -208,13 +218,27 @@ def check_lane_memory_plan(failures):
     lanes = lanes_doc.get("lanes", {})
     for lane_name, lane_cfg in sorted(lanes.items()):
         state_budget = lane_cfg.get("state_budget_bytes")
+        state_memory = lane_cfg.get("state_memory_bytes", 0)
         mem_max = parse_memory_bytes(lane_cfg.get("memory_max"))
+        model = stage_lane.MODELS.get(lane_cfg.get("model"))
         if not isinstance(state_budget, int) or state_budget <= 0:
             failures.append(f"lane {lane_name!r}: invalid state_budget_bytes={state_budget!r}")
             continue
         if mem_max is None:
             failures.append(f"lane {lane_name!r}: invalid memory_max={lane_cfg.get('memory_max')!r}")
             continue
+        if model is None or model.get("node_memory_bytes", 0) <= 0:
+            failures.append(f"lane {lane_name!r}: unknown model {lane_cfg.get('model')!r} or missing node_memory_bytes")
+            continue
+        node_mem = model["node_memory_bytes"]
+        full_total = node_mem + kv_reserve + state_budget + state_memory + graph_budget
+        if full_total > NODE_MEMORY_ENVELOPE_BYTES:
+            failures.append(
+                f"lane {lane_name!r} full footprint exceeds 128 GiB node envelope: "
+                f"weights={node_mem / 1024**3:.2f} GiB + kv_reserve={kv_reserve / 1024**3:.1f} GiB + "
+                f"state_budget={state_budget / 1024**3:.1f} GiB + state_memory={state_memory / 1024**3:.2f} GiB + "
+                f"graph_budget={graph_budget / 1024**3:.2f} GiB = {full_total / 1024**3:.2f} GiB > 128.0 GiB"
+            )
         total = state_budget + mem_max + kv_reserve
         if total > NODE_MEMORY_ENVELOPE_BYTES:
             failures.append(
