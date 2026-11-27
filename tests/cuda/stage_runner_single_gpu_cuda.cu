@@ -566,6 +566,7 @@ static void LoneVerifyKeepGraphs(void)
 		if ( got[lane] != kept_a[lane] * 17u + lane + 3u )
 			ok_a = 0u;
 	Expect(ok_a != 0u && lone_keep_calls == 1u && state->keep_graph_active_count == 1u, "verify keep wave 1 captured graph with exact outputs");
+	Expect(state->graph_total_bytes >= 8u * 16384ull && state->keep_graph_total_bytes >= 16384ull, "main and keep graph_total_bytes honor deterministic per-node byte floor");
 	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "verify wave 2 succeeds");
 	Expect(SparkStageRunnerKeepRows(&runner, kept_b, 8u) == SPARK_STATUS_OK, "verify keep wave 2 replays graph");
 	Expect(SparkGpuStreamSynchronize(state->stream) == SPARK_GPU_SUCCESS &&
