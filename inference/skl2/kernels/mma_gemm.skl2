@@ -104,67 +104,191 @@ template kernel[MMA_BLOCK, 96] mma_bf16_tile32x32<OUT_BF16>(
 instantiate mma_bf16_tile32x32<1> as mma_bf16_gemm_bf16;
 instantiate mma_bf16_tile32x32<0> as mma_bf16_gemm_f32;
 
-macro exact_bf16_dot8(acc, wv, av) {
-    reg f32 p0 = bf16_lo(wv[0]) * bf16_lo(av[0]);
-    reg f32 p1 = bf16_hi(wv[0]) * bf16_hi(av[0]);
-    unroll (k = 1..4) {
-        p0 = fma(bf16_lo(wv[k]), bf16_lo(av[k]), p0);
-        p1 = fma(bf16_hi(wv[k]), bf16_hi(av[k]), p1);
+macro exact_bf16_unpack8(v, out_f) {
+    unroll (k = 0..4) { out_f[k * 2] = bf16_lo(v[k]); out_f[k * 2 + 1] = bf16_hi(v[k]); }
+}
+
+macro exact_bf16_dot1_packed(acc, wf, av) {
+    unroll (_z = 0..1) {
+        reg f32 p0 = wf[0] * bf16_lo(av[0]); reg f32 p1 = wf[1] * bf16_hi(av[0]);
+        unroll (k = 1..4) {
+            p0 = fma(wf[k * 2], bf16_lo(av[k]), p0); p1 = fma(wf[k * 2 + 1], bf16_hi(av[k]), p1);
+        }
+        acc = fma(1.0f, p0 + p1, acc);
     }
-    acc = fma(1.0f, p0 + p1, acc);
+}
+
+macro exact_bf16_dots2_packed(acc0, acc1, w0, w1, av, ae, ao, p00, p10, p01, p11) {
+    ae = bf16_lo(av[0]); ao = bf16_hi(av[0]);
+    p00 = w0[0] * ae; p10 = w0[1] * ao; p01 = w1[0] * ae; p11 = w1[1] * ao;
+    unroll (k = 1..4) {
+        ae = bf16_lo(av[k]); ao = bf16_hi(av[k]);
+        p00 = fma(w0[k * 2], ae, p00); p10 = fma(w0[k * 2 + 1], ao, p10);
+        p01 = fma(w1[k * 2], ae, p01); p11 = fma(w1[k * 2 + 1], ao, p11);
+    }
+    acc0 = fma(1.0f, p00 + p10, acc0); acc1 = fma(1.0f, p01 + p11, acc1);
+}
+
+macro exact_bf16_dots2_4rows(RPG, n_off, r_off, w0, w1, a0, a1, a2, a3, ae, ao, p00, p10, p01, p11, acc) {
+    exact_bf16_dots2_packed(acc[n_off * RPG + r_off], acc[(n_off + 1) * RPG + r_off], w0, w1, a0, ae, ao, p00, p10, p01, p11);
+    exact_bf16_dots2_packed(acc[n_off * RPG + r_off + 1], acc[(n_off + 1) * RPG + r_off + 1], w0, w1, a1, ae, ao, p00, p10, p01, p11);
+    exact_bf16_dots2_packed(acc[n_off * RPG + r_off + 2], acc[(n_off + 1) * RPG + r_off + 2], w0, w1, a2, ae, ao, p00, p10, p01, p11);
+    exact_bf16_dots2_packed(acc[n_off * RPG + r_off + 3], acc[(n_off + 1) * RPG + r_off + 3], w0, w1, a3, ae, ao, p00, p10, p01, p11);
+}
+
+macro exact_bf16_dot1_4rows(n_idx, wv, wf, a0, a1, a2, a3, acc) {
+    exact_bf16_unpack8(wv, wf);
+    exact_bf16_dot1_packed(acc[n_idx * 4], wf, a0);
+    exact_bf16_dot1_packed(acc[n_idx * 4 + 1], wf, a1);
+    exact_bf16_dot1_packed(acc[n_idx * 4 + 2], wf, a2);
+    exact_bf16_dot1_packed(acc[n_idx * 4 + 3], wf, a3);
+}
+
+macro exact_bf16_ldg_w(WARPS_M, ptr_expr, out_v) {
+    if constexpr (WARPS_M == 1) { reg u32x4 out_v = ldg128_stream(ptr_expr); }
+    else { reg u32x4 out_v = ldg128_persist(ptr_expr); }
+}
+
+macro exact_bf16_ldg_w_set(WARPS_M, ptr_expr, out_v) {
+    if constexpr (WARPS_M == 1) { out_v = ldg128_stream(ptr_expr); }
+    else { out_v = ldg128_persist(ptr_expr); }
+}
+
+macro exact_bf16_setup(WARPS_M, WARPS_N, RPG, NPG, bx_rel, rows, wid, gr0, gn0, row_cnt) {
+    reg u32 wm = (WARPS_N == 4) ? (wid >> 2) : (wid >> 1);
+    reg u32 wn = wid & (WARPS_N - 1);
+    gr0 = ctaid_y() * (WARPS_M * RPG) + wm * RPG;
+    gn0 = bx_rel * (WARPS_N * NPG) + wn * NPG;
+    row_cnt = (gr0 < rows) ? (((rows - gr0) > RPG) ? RPG : (rows - gr0)) : 0;
 }
 
 macro exact_multi_select_part(args, bx, out_w, out_o, out_dim, out_fb) {
     reg u32 cnt = param_u32(args, 72);
-    out_w = param_u64(args, 0);
-    out_o = param_u64(args, 8);
-    out_dim = param_u32(args, 16);
-    out_fb = param_u32(args, 20);
-    if (cnt > 1 && bx >= param_u32(args, 44)) {
-        out_w = param_u64(args, 24);
-        out_o = param_u64(args, 32);
-        out_dim = param_u32(args, 40);
-        out_fb = param_u32(args, 44);
-    }
-    if (cnt > 2 && bx >= param_u32(args, 68)) {
-        out_w = param_u64(args, 48);
-        out_o = param_u64(args, 56);
-        out_dim = param_u32(args, 64);
-        out_fb = param_u32(args, 68);
-    }
+    out_w = param_u64(args, 0); out_o = param_u64(args, 8); out_dim = param_u32(args, 16); out_fb = param_u32(args, 20);
+    if (cnt > 1 && bx >= param_u32(args, 44)) { out_w = param_u64(args, 24); out_o = param_u64(args, 32); out_dim = param_u32(args, 40); out_fb = param_u32(args, 44); }
+    if (cnt > 2 && bx >= param_u32(args, 68)) { out_w = param_u64(args, 48); out_o = param_u64(args, 56); out_dim = param_u32(args, 64); out_fb = param_u32(args, 68); }
 }
 
 macro exact_bf16_store_one(IS_SWIGLU, row_p, gn0, n, out_dim, gval, uval) {
     if (gn0 + n < out_dim) {
         if constexpr (IS_SWIGLU == 1) {
-            reg f32 gv = bf16_lo(f32_to_bf16(gval));
-            reg f32 uv = bf16_lo(f32_to_bf16(uval));
             reg f32 sv = 0.0f;
-            silu_exact_f32(gv, sv);
-            stg16(ptr_add(row_p, n, 2), f32_to_bf16(sv * uv));
+            silu_exact_f32(bf16_lo(f32_to_bf16(gval)), sv);
+            stg16(ptr_add(row_p, n, 2), f32_to_bf16(sv * bf16_lo(f32_to_bf16(uval))));
         } else {
             stg16(ptr_add(row_p, n, 2), f32_to_bf16(gval));
         }
     }
 }
 
-macro exact_bf16_reduce_store(IS_SWIGLU, RPG, NPG, acc_g, acc_u, out_ptr, gr0, gn0, row_cnt, out_dim, sub) {
+macro exact_bf16_reduce_store(IS_SWIGLU, RPG, NPG, acc_g, acc_u, out_ptr, gr_rc_sub, gn0, out_dim) {
     unroll (n = 0..NPG) {
         unroll (r = 0..RPG) {
             acc_g[n * RPG + r] = warp_sum(acc_g[n * RPG + r]);
-            if constexpr (IS_SWIGLU == 1) {
-                acc_u[n * RPG + r] = warp_sum(acc_u[n * RPG + r]);
-            }
+            if constexpr (IS_SWIGLU == 1) { acc_u[n * RPG + r] = warp_sum(acc_u[n * RPG + r]); }
         }
     }
-    if (sub == 0) {
+    if ((gr_rc_sub & 31) == 0) {
+        reg u32 gr0 = gr_rc_sub >> 9;
+        reg u32 row_cnt = (gr_rc_sub >> 5) & 15;
         unroll (r = 0..RPG) {
             if (r < row_cnt) {
                 ureg u64 row_p = ptr_add(ptr_add(out_ptr, gr0 + r, out_dim << 1), gn0, 2);
-                unroll (n = 0..NPG) {
-                    exact_bf16_store_one(IS_SWIGLU, row_p, gn0, n, out_dim, acc_g[n * RPG + r], acc_u[n * RPG + r]);
+                unroll (n = 0..NPG) { exact_bf16_store_one(IS_SWIGLU, row_p, gn0, n, out_dim, acc_g[n * RPG + r], acc_u[n * RPG + r]); }
+            }
+        }
+    }
+}
+
+macro exact_bf16_init_ptrs(RPG, NPG, a_ptr, w_ptr, gr0, gn0, row_cnt, out_dim, chunks, sub, a_row, w_row) {
+    unroll (r = 0..RPG) { a_row[r] = ptr_add(a_ptr, ((r < row_cnt) ? (gr0 + r) : gr0) * chunks + sub, 16); }
+    unroll (n = 0..NPG) { w_row[n] = ptr_add(w_ptr, ((gn0 + n < out_dim) ? (gn0 + n) : 0) * chunks + sub, 16); }
+}
+
+macro exact_bf16_load_a4(a_row, r_off, c, a0, a1, a2, a3) {
+    a0 = ldg128_persist(ptr_add(a_row[r_off], c, 16));
+    a1 = ldg128_persist(ptr_add(a_row[r_off + 1], c, 16));
+    a2 = ldg128_persist(ptr_add(a_row[r_off + 2], c, 16));
+    a3 = ldg128_persist(ptr_add(a_row[r_off + 3], c, 16));
+}
+
+macro exact_bf16_run_kloop(IS_SWIGLU, WARPS_M, RPG, NPG, c_end, ffn_ch, w_row, a_row, acc_g, acc_u) {
+    reg f32 wf0[8];
+    if constexpr (IS_SWIGLU == 0) {
+        reg f32 wf1[8]; reg f32 ae = 0.0f; reg f32 ao = 0.0f; reg f32 p00 = 0.0f; reg f32 p10 = 0.0f; reg f32 p01 = 0.0f; reg f32 p11 = 0.0f;
+        pipeline for (reg u32 c = 0; c < c_end; c += 32) {
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[0], c, 16), g0);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[1], c, 16), g1);
+            if constexpr (NPG == 4) { exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[2], c, 16), g2); exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[3], c, 16), g3); }
+            exact_bf16_unpack8(g0, wf0);
+            reg u32x4 a0 = ldg128_persist(ptr_add(a_row[0], c, 16)); reg u32x4 a1 = ldg128_persist(ptr_add(a_row[1], c, 16));
+            reg u32x4 a2 = ldg128_persist(ptr_add(a_row[2], c, 16)); reg u32x4 a3 = ldg128_persist(ptr_add(a_row[3], c, 16));
+            exact_bf16_unpack8(g1, wf1);
+            exact_bf16_dots2_4rows(RPG, 0, 0, wf0, wf1, a0, a1, a2, a3, ae, ao, p00, p10, p01, p11, acc_g);
+            if constexpr (NPG == 4) {
+                exact_bf16_unpack8(g2, wf0); exact_bf16_unpack8(g3, wf1);
+                exact_bf16_dots2_4rows(4, 2, 0, wf0, wf1, a0, a1, a2, a3, ae, ao, p00, p10, p01, p11, acc_g);
+            } else {
+                exact_bf16_load_a4(a_row, 4, c, a0, a1, a2, a3);
+                exact_bf16_dots2_4rows(8, 0, 4, wf0, wf1, a0, a1, a2, a3, ae, ao, p00, p10, p01, p11, acc_g);
+            }
+        }
+    } else if constexpr (NPG == 2) {
+        reg f32 wf1[8]; reg f32 ae = 0.0f; reg f32 ao = 0.0f; reg f32 p00 = 0.0f; reg f32 p10 = 0.0f; reg f32 p01 = 0.0f; reg f32 p11 = 0.0f;
+        pipeline for (reg u32 c = 0; c < c_end; c += 32) {
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[0], c, 16), g0);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[1], c, 16), g1);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[0], c + ffn_ch, 16), u0);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[1], c + ffn_ch, 16), u1);
+            exact_bf16_unpack8(g0, wf0);
+            reg u32x4 a0 = ldg128_persist(ptr_add(a_row[0], c, 16)); reg u32x4 a1 = ldg128_persist(ptr_add(a_row[1], c, 16));
+            exact_bf16_unpack8(g1, wf1);
+            exact_bf16_dots2_packed(acc_g[0], acc_g[8], wf0, wf1, a0, ae, ao, p00, p10, p01, p11);
+            exact_bf16_dots2_packed(acc_g[1], acc_g[9], wf0, wf1, a1, ae, ao, p00, p10, p01, p11);
+            exact_bf16_unpack8(u0, wf0); exact_bf16_unpack8(u1, wf1);
+            exact_bf16_dots2_packed(acc_u[0], acc_u[8], wf0, wf1, a0, ae, ao, p00, p10, p01, p11);
+            exact_bf16_dots2_packed(acc_u[1], acc_u[9], wf0, wf1, a1, ae, ao, p00, p10, p01, p11);
+            unroll (rb = 1..4) {
+                a0 = ldg128_persist(ptr_add(a_row[rb * 2], c, 16)); a1 = ldg128_persist(ptr_add(a_row[rb * 2 + 1], c, 16));
+                if constexpr ((rb & 1) == 1) {
+                    exact_bf16_dots2_packed(acc_u[rb * 2], acc_u[8 + rb * 2], wf0, wf1, a0, ae, ao, p00, p10, p01, p11);
+                    exact_bf16_dots2_packed(acc_u[rb * 2 + 1], acc_u[9 + rb * 2], wf0, wf1, a1, ae, ao, p00, p10, p01, p11);
+                    exact_bf16_unpack8(g0, wf0); exact_bf16_unpack8(g1, wf1);
+                    exact_bf16_dots2_packed(acc_g[rb * 2], acc_g[8 + rb * 2], wf0, wf1, a0, ae, ao, p00, p10, p01, p11);
+                    exact_bf16_dots2_packed(acc_g[rb * 2 + 1], acc_g[9 + rb * 2], wf0, wf1, a1, ae, ao, p00, p10, p01, p11);
+                } else {
+                    exact_bf16_dots2_packed(acc_g[rb * 2], acc_g[8 + rb * 2], wf0, wf1, a0, ae, ao, p00, p10, p01, p11);
+                    exact_bf16_dots2_packed(acc_g[rb * 2 + 1], acc_g[9 + rb * 2], wf0, wf1, a1, ae, ao, p00, p10, p01, p11);
+                    exact_bf16_unpack8(u0, wf0); exact_bf16_unpack8(u1, wf1);
+                    exact_bf16_dots2_packed(acc_u[rb * 2], acc_u[8 + rb * 2], wf0, wf1, a0, ae, ao, p00, p10, p01, p11);
+                    exact_bf16_dots2_packed(acc_u[rb * 2 + 1], acc_u[9 + rb * 2], wf0, wf1, a1, ae, ao, p00, p10, p01, p11);
                 }
             }
+        }
+    } else {
+        pipeline for (reg u32 c = 0; c < c_end; c += 32) {
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[0], c, 16), g0);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[1], c, 16), g1);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[2], c, 16), g2);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[3], c, 16), g3);
+            exact_bf16_unpack8(g0, wf0);
+            reg u32x4 a0 = ldg128_persist(ptr_add(a_row[0], c, 16)); reg u32x4 a1 = ldg128_persist(ptr_add(a_row[1], c, 16));
+            reg u32x4 a2 = ldg128_persist(ptr_add(a_row[2], c, 16)); reg u32x4 a3 = ldg128_persist(ptr_add(a_row[3], c, 16));
+            exact_bf16_dot1_packed(acc_g[0], wf0, a0);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[0], c + ffn_ch, 16), up0);
+            exact_bf16_dot1_packed(acc_g[1], wf0, a1);
+            exact_bf16_ldg_w(WARPS_M, ptr_add(w_row[1], c + ffn_ch, 16), up1);
+            exact_bf16_dot1_packed(acc_g[2], wf0, a2);
+            exact_bf16_dot1_packed(acc_g[3], wf0, a3);
+            exact_bf16_dot1_4rows(1, g1, wf0, a0, a1, a2, a3, acc_g);
+            exact_bf16_dot1_4rows(2, g2, wf0, a0, a1, a2, a3, acc_g);
+            exact_bf16_dot1_4rows(0, up0, wf0, a0, a1, a2, a3, acc_u);
+            exact_bf16_ldg_w_set(WARPS_M, ptr_add(w_row[2], c + ffn_ch, 16), up0);
+            exact_bf16_dot1_4rows(3, g3, wf0, a0, a1, a2, a3, acc_g);
+            exact_bf16_dot1_4rows(1, up1, wf0, a0, a1, a2, a3, acc_u);
+            exact_bf16_ldg_w_set(WARPS_M, ptr_add(w_row[3], c + ffn_ch, 16), up1);
+            exact_bf16_dot1_4rows(2, up0, wf0, a0, a1, a2, a3, acc_u);
+            exact_bf16_dot1_4rows(3, up1, wf0, a0, a1, a2, a3, acc_u);
         }
     }
 }
@@ -176,48 +300,28 @@ template kernel[WARPS_M * WARPS_N * 32, REGS] qwen_exact_bf16_multi_tpl<WARPS_M,
 ) {
     acqbulk();
     reg u32 bx = ctaid_x();
-    reg u64 w_ptr = 0; reg u64 o_ptr = 0;
-    reg u32 out_dim = 0; reg u32 fb = 0;
+    reg u64 w_ptr = 0; reg u64 o_ptr = 0; reg u32 out_dim = 0; reg u32 fb = 0;
     exact_multi_select_part(args, bx, w_ptr, o_ptr, out_dim, fb);
-    reg u32 rows = param_u32(args, 88);
-    reg u32 chunks = param_u32(args, 92) >> 3;
-    reg u32 wid = warp_id();
+    reg u32 rows = param_u32(args, 88); reg u32 chunks = param_u32(args, 92) >> 3;
     reg u32 sub = lane_id();
-    reg u32 wm = (WARPS_N == 4) ? (wid >> 2) : (wid >> 1);
-    reg u32 wn = wid & (WARPS_N - 1);
-    reg u32 gr0 = ctaid_y() * (WARPS_M * RPG) + wm * RPG;
-    reg u32 gn0 = (bx - fb) * (WARPS_N * NPG) + wn * NPG;
-    reg u32 row_cnt = 0;
-    if (gr0 < rows) {
-        row_cnt = rows - gr0;
-        if (row_cnt > RPG) { row_cnt = RPG; }
-    }
-    if (row_cnt == 0) {
-        preexit();
-        return;
-    }
+    reg u32 gr0 = 0; reg u32 gn0 = 0; reg u32 row_cnt = 0;
+    exact_bf16_setup(WARPS_M, WARPS_N, RPG, NPG, bx - fb, rows, warp_id(), gr0, gn0, row_cnt);
+    if (row_cnt == 0) { preexit(); return; }
     reg f32 acc[16];
     unroll (i = 0..NPG * RPG) { acc[i] = 0.0f; }
-    reg u64 a_ptr = param_u64(args, 80);
-    for (reg u32 c = sub; c < chunks; c += 32) {
-        unroll (r = 0..RPG) {
-            reg u32 rr = (r < row_cnt) ? (gr0 + r) : gr0;
-            reg u32x4 av = ldg128_persist(ptr_add(a_ptr, rr * chunks + c, 16));
-            unroll (n = 0..NPG) {
-                reg u32 gn = (gn0 + n < out_dim) ? (gn0 + n) : 0;
-                reg u32x4 wv = ldg128_stream(ptr_add(w_ptr, gn * chunks + c, 16));
-                exact_bf16_dot8(acc[n * RPG + r], wv, av);
-            }
-        }
-    }
-    exact_bf16_reduce_store(0, RPG, NPG, acc, acc, o_ptr, gr0, gn0, row_cnt, out_dim, sub);
+    reg u64 a_row[RPG]; reg u64 w_row[NPG];
+    exact_bf16_init_ptrs(RPG, NPG, param_u64(args, 80), w_ptr, gr0, gn0, row_cnt, out_dim, chunks, sub, a_row, w_row);
+    reg u32 c_end = (chunks > sub) ? (chunks - sub) : 0;
+    reg u32 gr_rc_sub = (gr0 << 9) | (row_cnt << 5) | sub;
+    exact_bf16_run_kloop(0, WARPS_M, RPG, NPG, c_end, 0, w_row, a_row, acc, acc);
+    exact_bf16_reduce_store(0, RPG, NPG, acc, acc, o_ptr, gr_rc_sub, gn0, out_dim);
     preexit();
 }
 
-instantiate qwen_exact_bf16_multi_tpl<1, 4, 4, 4, 96> as qwen_exact_bf16_multi_w1x4_r4_n4;
-instantiate qwen_exact_bf16_multi_tpl<2, 4, 4, 4, 96> as qwen_exact_bf16_multi_w2x4_r4_n4;
-instantiate qwen_exact_bf16_multi_tpl<4, 2, 4, 4, 96> as qwen_exact_bf16_multi_w4x2_r4_n4;
-instantiate qwen_exact_bf16_multi_tpl<4, 2, 8, 2, 96> as qwen_exact_bf16_multi_w4x2_r8_n2;
+instantiate qwen_exact_bf16_multi_tpl<1, 4, 4, 4, 128> as qwen_exact_bf16_multi_w1x4_r4_n4;
+instantiate qwen_exact_bf16_multi_tpl<2, 4, 4, 4, 128> as qwen_exact_bf16_multi_w2x4_r4_n4;
+instantiate qwen_exact_bf16_multi_tpl<4, 2, 4, 4, 128> as qwen_exact_bf16_multi_w4x2_r4_n4;
+instantiate qwen_exact_bf16_multi_tpl<4, 2, 8, 2, 112> as qwen_exact_bf16_multi_w4x2_r8_n2;
 
 @pdl
 @concept(linear)
@@ -226,46 +330,27 @@ template kernel[WARPS_M * WARPS_N * 32, REGS] qwen_exact_bf16_gate_up_swiglu_tpl
     u32 rows, u32 input_dim, u32 ffn_rows
 ) {
     acqbulk();
-    reg u32 wid = warp_id();
     reg u32 sub = lane_id();
-    reg u32 wm = (WARPS_N == 4) ? (wid >> 2) : (wid >> 1);
-    reg u32 wn = wid & (WARPS_N - 1);
-    reg u32 gr0 = ctaid_y() * (WARPS_M * RPG) + wm * RPG;
-    reg u32 gn0 = ctaid_x() * (WARPS_N * NPG) + wn * NPG;
-    reg u32 row_cnt = 0;
-    if (gr0 < rows) {
-        row_cnt = rows - gr0;
-        if (row_cnt > RPG) { row_cnt = RPG; }
-    }
-    if (row_cnt == 0) {
-        preexit();
-        return;
-    }
+    reg u32 gr0 = 0; reg u32 gn0 = 0; reg u32 row_cnt = 0;
+    exact_bf16_setup(WARPS_M, WARPS_N, RPG, NPG, ctaid_x(), rows, warp_id(), gr0, gn0, row_cnt);
+    if (row_cnt == 0) { preexit(); return; }
     reg u32 chunks = input_dim >> 3;
-    reg f32 acc_g[16];
-    reg f32 acc_u[16];
+    reg f32 acc_g[16]; reg f32 acc_u[16];
     unroll (i = 0..NPG * RPG) { acc_g[i] = 0.0f; acc_u[i] = 0.0f; }
-    for (reg u32 c = sub; c < chunks; c += 32) {
-        unroll (r = 0..RPG) {
-            reg u32 rr = (r < row_cnt) ? (gr0 + r) : gr0;
-            reg u32x4 av = ldg128_persist(ptr_add(activation, rr * chunks + c, 16));
-            unroll (n = 0..NPG) {
-                reg u32 gn = (gn0 + n < ffn_rows) ? (gn0 + n) : 0;
-                reg u32x4 wg = ldg128_stream(ptr_add(w_gate_up, gn * chunks + c, 16));
-                reg u32x4 wu = ldg128_stream(ptr_add(w_gate_up, (ffn_rows + gn) * chunks + c, 16));
-                exact_bf16_dot8(acc_g[n * RPG + r], wg, av);
-                exact_bf16_dot8(acc_u[n * RPG + r], wu, av);
-            }
-        }
-    }
-    exact_bf16_reduce_store(1, RPG, NPG, acc_g, acc_u, output, gr0, gn0, row_cnt, ffn_rows, sub);
+    reg u64 a_row[RPG]; reg u64 wg_row[NPG];
+    exact_bf16_init_ptrs(RPG, NPG, activation, w_gate_up, gr0, gn0, row_cnt, ffn_rows, chunks, sub, a_row, wg_row);
+    reg u32 c_end = (chunks > sub) ? (chunks - sub) : 0;
+    reg u32 ffn_ch = ffn_rows * chunks;
+    reg u32 gr_rc_sub = (gr0 << 9) | (row_cnt << 5) | sub;
+    exact_bf16_run_kloop(1, WARPS_M, RPG, NPG, c_end, ffn_ch, wg_row, a_row, acc_g, acc_u);
+    exact_bf16_reduce_store(1, RPG, NPG, acc_g, acc_u, output, gr_rc_sub, gn0, ffn_rows);
     preexit();
 }
 
-instantiate qwen_exact_bf16_gate_up_swiglu_tpl<1, 4, 4, 4, 112> as qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4;
-instantiate qwen_exact_bf16_gate_up_swiglu_tpl<2, 4, 4, 4, 112> as qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4;
-instantiate qwen_exact_bf16_gate_up_swiglu_tpl<4, 2, 4, 4, 112> as qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4;
-instantiate qwen_exact_bf16_gate_up_swiglu_tpl<4, 2, 8, 2, 112> as qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2;
+instantiate qwen_exact_bf16_gate_up_swiglu_tpl<1, 4, 4, 4, 128> as qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4;
+instantiate qwen_exact_bf16_gate_up_swiglu_tpl<2, 4, 4, 4, 128> as qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4;
+instantiate qwen_exact_bf16_gate_up_swiglu_tpl<4, 2, 4, 4, 128> as qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4;
+instantiate qwen_exact_bf16_gate_up_swiglu_tpl<4, 2, 8, 2, 128> as qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2;
 
 macro qmma_load_row16(DYN, sm_buf, sm_off, src_ptr, elem_idx, valid) {
     reg u32x4 v = pack_u32x4(0, 0, 0, 0);
