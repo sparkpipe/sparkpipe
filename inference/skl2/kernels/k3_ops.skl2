@@ -211,8 +211,8 @@ macro k3_attnres_finish_score(staged, sq, score_w, hidden, eps, reduction, tid, 
         if (idx < hidden) {
             reg u32x4 wv = ldg128_persist(ptr_add(score_w, idx, 2));
             unroll (k = 0..4) {
-                dot = dot + (bf16_lo(staged[ch][k]) * inv) * bf16_lo(wv[k]);
-                dot = dot + (bf16_hi(staged[ch][k]) * inv) * bf16_hi(wv[k]);
+                dot = fma(bf16_lo(staged[ch][k]) * inv, bf16_lo(wv[k]), dot);
+                dot = fma(bf16_hi(staged[ch][k]) * inv, bf16_hi(wv[k]), dot);
             }
         }
     }
@@ -286,11 +286,13 @@ macro k3_attnres_mix_chunk(USE_SROW, bank, partial, s_row, weight, sources, rows
         reg u64 sp = 0;
         k3_attnres_src_ptr(bank, partial, s, sources, rows, row, hidden, sp);
         reg u32x4 v = ldg128_stream(ptr_add(sp, idx, 2));
-        k3_bf16x8_fma_scalar(tot, v, lds32(weight, s));
+        reg f32 ws = lds32(weight, s);
+        k3_bf16x8_fma_scalar(tot, v, ws);
     }
     if constexpr (USE_SROW == 1) {
         reg u32x4 lv = lds128(s_row, idx >> 1);
-        k3_bf16x8_fma_scalar(tot, lv, lds32(weight, sources - 1));
+        reg f32 wlast = lds32(weight, sources - 1);
+        k3_bf16x8_fma_scalar(tot, lv, wlast);
     }
     unroll (k = 0..4) { out_v[k] = pack_bf16x2(tot[k * 2], tot[k * 2 + 1]); }
 }
