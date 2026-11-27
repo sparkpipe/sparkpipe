@@ -271,10 +271,11 @@ struct __align__(16) SparkTpMeshHybridGpuCache
 {
     const SparkWeightdMeshHybridCtrl *ctrl;
     uint64_t last_hyb_seq;
-    SparkWeightdMeshHybridPeer peers[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
     uint32_t gen,owner_band,owner_rank,degree,peer_count,all_peers_mask,min_max_inline,dbrec_in_shm,rem_sq,rem_wr;
+    uint32_t pad[2u];
     uint32_t pi[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
     uint32_t wrs[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
+    SparkWeightdMeshHybridPeer peers[SPARK_WEIGHTD_MESH_HYBRID_PEER_SLOTS];
 };
 
 static __device__ SparkTpMeshHybridGpuCache SparkTpMeshHybridDevCache[SPARK_WEIGHTD_MESH_BANDS];
@@ -2270,7 +2271,8 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishRs(
     uint64_t rs_seq,uint64_t rs_tag,uint64_t rs_slot,uint64_t half_elems,uint64_t in_tail_off,
     uint32_t cap,uint32_t compact,uint64_t started,uint64_t prev_rseq,
     SparkWeightdMeshHybridCtrl *hybrid_ctrl,uint8_t *hybrid_shm,uint32_t hybrid_band,
-    SparkWeightdMeshHybridPeer *s_peers,SparkTpMeshHybridGrant &s_hyb,volatile uint64_t &s_wait_start,uint64_t &s_arr_end)
+    SparkWeightdMeshHybridPeer *s_peers,SparkTpMeshHybridGrant &s_hyb,
+    volatile uint64_t &s_wait_start,uint64_t &s_arr_end,uint64_t &s_copy_delta)
 {
     const uint32_t tid = threadIdx.x,warp_id = tid >> 5u,lane = tid & 31u,warps = blockDim.x >> 5u;
     SparkWeightdMeshRoute r;
@@ -2331,7 +2333,7 @@ static __device__ __forceinline__ void SparkTpMeshFastRsagPublishRs(
         if ( s_hyb.ok == 0u )
             SparkTpStReleaseSysU64(&(cap != 0u ? (entry + SPARK_WEIGHTD_MESH_DOORBELL_CELL_WORDS(rs_seq)) : entry)[0],rs_tag);
         const uint64_t now = SparkTpFastTimerNs();
-        control->copy_ns += now - started;
+        s_copy_delta = now > started ? now - started : 0u;
         control->wait_started_ns = now;
         s_wait_start = now;
         s_arr_end = 0u;
@@ -2460,8 +2462,8 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
 {
     __shared__ uint4 staged[16u][128u];
     __shared__ uint64_t s_started,s_rs_seq,s_rs_tag,s_rs_slot,s_ag_seq,s_ag_tag,s_ag_slot,s_prev_rseq;
-    __shared__ uint64_t s_half_elems,s_in_tail_off,s_ag_tail_off,s_arr_end,s_comb_acc,s_rs_arr_base,s_rs_arr_end;
-    __shared__ uint64_t s_rs_landed[SPARK_TP_MESH_ROUND_CONTROL_PEERS];
+    __shared__ uint64_t s_half_elems,s_in_tail_off,s_ag_tail_off,s_arr_end,s_comb_acc,s_copy_delta,s_rs_arr_base,s_rs_arr_end;
+    __shared__ uint64_t s_rs_landed[SPARK_TP_MESH_ROUND_CONTROL_PEERS],s_ag_landed[SPARK_TP_MESH_ROUND_CONTROL_PEERS];
     __shared__ volatile uint64_t s_wait_start;
     __shared__ volatile uint32_t s_wait_over;
     __shared__ uint32_t s_failed,s_cap,s_compact,s_ag_compact,s_newly,s_ag_reval;
@@ -2565,22 +2567,14 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     SparkTpMeshFastRsagPublishRs(band,slot_bytes,entry,control,staging,staging_slot_elements,
         local + begin,rs_smem,degree,rank,count,slice,in_bytes,rs_route,
         rs_seq,rs_tag,rs_slot,s_half_elems,s_in_tail_off,cap,compact,s_started,s_prev_rseq,
-        hybrid_ctrl,hybrid_shm,hybrid_band,s_peers,s_hyb,s_wait_start,s_arr_end);
+        hybrid_ctrl,hybrid_shm,hybrid_band,s_peers,s_hyb,s_wait_start,s_arr_end,s_copy_delta);
     const uint32_t rs_was_hybrid = s_hyb.ok;
     const uint64_t stride = slots_per_rank * slot_bytes;
     const uint8_t *rs_base = band + rs_ring * slot_bytes;
-    const uint32_t vecs = (uint32_t)(span >> 3u);
+    const uint32_t vecs = (uint32_t)(span >> 3u),lim = vecs < 128u ? vecs : 128u;
     const uint16_t *own_local = local + begin + first;
     uint16_t *own_out = output + begin + first;
     volatile uint16_t *ag_dst = (volatile uint16_t *)(band + ag_slot * slot_bytes);
-    float sum[8] = {0.0f};
-    uint32_t next_peer = 0u,loaded_mask = 1u << rank;
-    if ( tid < 128u && tid < vecs )
-    {
-        uint4 own_val = ((const uint4 *)own_local)[tid];
-        if ( rank == 0u ) { SparkTpAccumU128Bf16(sum,own_val); next_peer = 1u; }
-        else staged[rank][tid] = own_val;
-    }
     if ( tid < 32u ) __syncwarp();
     const volatile uint64_t *cancel = tid < 32u ? (const volatile uint64_t *)(uintptr_t)control->cancel_cell : 0;
     const uint64_t expected = tid < 32u ? control->cancel_expected : 0u;
@@ -2589,7 +2583,8 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     uint32_t missing = tid < degree && tid != rank ? 1u : 0u;
     uint32_t remaining_mask = ((1u << degree) - 1u) & ~(1u << rank);
     uint64_t rs_arr_base = s_wait_start,rs_arr_landed = UINT64_MAX;
-    uint32_t pf_resume = resume;
+    uint32_t pf_resume = resume,rs_own_done = 0u;
+    const uint32_t aux_warp = rank == 0u ? 1u : rank;
     while ( remaining_mask != 0u )
     {
         if ( prefetch != 0 )
@@ -2609,49 +2604,37 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
                 *(volatile uint32_t *)&s_wait_over = 1u;
             }
         }
-        else if ( prefetch != 0 )
-            SparkTpMeshFastRunPrefetch(prefetch,pf_resume,tid,&s_wait_over);
+        else
+        {
+            if ( warp_id == aux_warp && rs_own_done == 0u )
+            {
+                const uint4 *own4 = (const uint4 *)own_local;
+                for ( uint32_t v = lane; v < lim; v += 32u ) staged[rank][v] = own4[v];
+                rs_own_done = 1u;
+            }
+            if ( prefetch != 0 )
+                SparkTpMeshFastRunPrefetch(prefetch,pf_resume,tid,&s_wait_over);
+        }
         pf_resume = 1u;
         __syncthreads();
         if ( s_failed != 0u ) break;
-        uint32_t mask = s_newly;
+        const uint32_t mask = s_newly;
         remaining_mask &= ~mask;
-        if ( tid < 128u && tid < vecs )
+        if ( (mask & (1u << warp_id)) != 0u )
         {
-            while ( mask != 0u )
+            const uint8_t *src = rs_base + (uint64_t)warp_id * stride;
+            if ( ((((uintptr_t)src | ((uint64_t)lim << 4u)) & 31u) == 0u) )
             {
-                uint32_t ps[4],n = 0u;
-                uint4 v[4];
-                while ( mask != 0u && n < 4u )
+                const uint32_t octs = lim >> 1u;
+                for ( uint32_t v = lane; v < octs; v += 32u )
                 {
-                    uint32_t p = (uint32_t)(__ffs(mask) - 1);
-                    mask &= mask - 1u;
-                    ps[n++] = p;
+                    const SparkTpU256 w = SparkTpLdCvU256(src + (uint64_t)v * 32u);
+                    staged[warp_id][v * 2u] = w.lo; staged[warp_id][v * 2u + 1u] = w.hi;
                 }
-#pragma unroll
-                for ( uint32_t j = 0u; j < 4u; ++j )
-                    if ( j < n )
-                        v[j] = SparkTpLdCvU128(rs_base + (uint64_t)ps[j] * stride + (uint64_t)tid * 16u);
-#pragma unroll
-                for ( uint32_t j = 0u; j < 4u; ++j )
-                    if ( j < n )
-                    {
-                        uint32_t p = ps[j];
-                        if ( p == next_peer )
-                        {
-                            SparkTpAccumU128Bf16(sum,v[j]);
-                            next_peer++;
-                            while ( next_peer < degree && (loaded_mask & (1u << next_peer)) != 0u )
-                            {
-                                SparkTpAccumU128Bf16(sum,staged[next_peer][tid]);
-                                next_peer++;
-                            }
-                        }
-                        else
-                            staged[p][tid] = v[j];
-                        loaded_mask |= 1u << p;
-                    }
             }
+            else
+                for ( uint32_t v = lane; v < lim; v += 32u )
+                    staged[warp_id][v] = SparkTpLdCvU128(src + (uint64_t)v * 16u);
         }
         if ( remaining_mask != 0u ) __syncthreads();
     }
@@ -2663,11 +2646,15 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     const uint64_t rs_arr_end_saved = s_arr_end;
     if ( tid < SPARK_TP_MESH_ROUND_CONTROL_PEERS ) s_rs_landed[tid] = rs_arr_landed;
     if ( tid == 0u ) { s_rs_arr_base = rs_arr_base; s_rs_arr_end = rs_arr_end_saved; }
+    __syncthreads();
     if ( vecs <= 128u )
     {
         if ( tid < vecs )
         {
-            uint4 packed = SparkTpPackU128Bf16(sum);
+            float sum[8] = {0.0f};
+            for ( uint32_t p = 0u; p < degree; ++p )
+                SparkTpAccumU128Bf16(sum,staged[p][tid]);
+            const uint4 packed = SparkTpPackU128Bf16(sum);
             ((uint4 *)own_out)[tid] = packed;
             staged[0u][tid] = packed;
         }
@@ -2688,7 +2675,10 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     {
         if ( tid < 128u )
         {
-            uint4 packed = SparkTpPackU128Bf16(sum);
+            float sum[8] = {0.0f};
+            for ( uint32_t p = 0u; p < degree; ++p )
+                SparkTpAccumU128Bf16(sum,staged[p][tid]);
+            const uint4 packed = SparkTpPackU128Bf16(sum);
             ((uint4 *)own_out)[tid] = packed;
             SparkTpStVolatileU128(ag_dst + (uint64_t)tid * 8u,packed);
         }
@@ -2709,7 +2699,7 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
                     if ( j < n )
                         SparkTpAccumU128Bf16(tsum,v[j]);
             }
-            uint4 packed = SparkTpPackU128Bf16(tsum);
+            const uint4 packed = SparkTpPackU128Bf16(tsum);
             ((uint4 *)own_out)[q] = packed;
             SparkTpStVolatileU128(ag_dst + (uint64_t)q * 8u,packed);
         }
@@ -2736,7 +2726,7 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
     }
     missing = tid < degree && tid != rank ? 1u : 0u;
     remaining_mask = ((1u << degree) - 1u) & ~(1u << rank);
-    uint64_t ag_arr_base = s_wait_start,ag_arr_landed = UINT64_MAX;
+    uint64_t ag_arr_landed = UINT64_MAX;
     uint32_t rs_rec_done = 0u;
     while ( remaining_mask != 0u )
     {
@@ -2756,6 +2746,8 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
                 else if ( (remaining_mask & ~newly) == 0u ) s_arr_end = SparkTpFastTimerNs();
                 *(volatile uint32_t *)&s_wait_over = 1u;
             }
+            if ( (remaining_mask & ~newly) == 0u && tid < SPARK_TP_MESH_ROUND_CONTROL_PEERS )
+                s_ag_landed[tid] = ag_arr_landed;
         }
         else
         {
@@ -2771,56 +2763,54 @@ static __global__ __launch_bounds__(SPARK_TP_MESH_FAST_FUSED_THREADS,1u) void Sp
         pf_resume = 1u;
         __syncthreads();
         if ( s_failed != 0u ) break;
-        uint32_t mask = s_newly;
+        const uint32_t mask = s_newly;
         remaining_mask &= ~mask;
         const uint32_t arrived_n = __popc(mask);
-        if ( arrived_n == 1u )
+        if ( arrived_n == 1u && slice > 512u )
         {
-            const uint32_t p = (uint32_t)(__ffs(mask) - 1);
-            const uint64_t p_start = (uint64_t)p * slice < count ? (uint64_t)p * slice : count;
+            if ( warp_id != rank )
+            {
+                const uint32_t p = (uint32_t)(__ffs(mask) - 1);
+                const uint64_t p_start = (uint64_t)p * slice < count ? (uint64_t)p * slice : count;
+                const uint64_t p_len = count - p_start < slice ? count - p_start : slice;
+                if ( p_len != 0u )
+                    SparkTpMeshCopyHalvesFromBand(output + begin + p_start,
+                        (const volatile uint16_t *)(band + ((uint64_t)p * slots_per_rank + ag_ring) * slot_bytes),
+                        p_len,((warp_id > rank ? warp_id - 1u : warp_id) << 5u) + lane,blockDim.x - 32u);
+            }
+        }
+        else if ( (mask & (1u << warp_id)) != 0u )
+        {
+            const uint64_t p_start = (uint64_t)warp_id * slice < count ? (uint64_t)warp_id * slice : count;
             const uint64_t p_len = count - p_start < slice ? count - p_start : slice;
             if ( p_len != 0u )
                 SparkTpMeshCopyHalvesFromBand(output + begin + p_start,
-                    (const volatile uint16_t *)(band + ((uint64_t)p * slots_per_rank + ag_ring) * slot_bytes),
-                    p_len,tid,blockDim.x);
+                    (const volatile uint16_t *)(band + ((uint64_t)warp_id * slots_per_rank + ag_ring) * slot_bytes),
+                    p_len,lane,32u);
         }
-        else
+        if ( remaining_mask == 0u && warp_id == rank )
         {
-            uint32_t idx = 0u;
-            while ( mask != 0u )
+            SparkTpMeshArrivalRecord(control,lane,s_wait_start,s_arr_end,
+                lane < SPARK_TP_MESH_ROUND_CONTROL_PEERS ? s_ag_landed[lane] : UINT64_MAX);
+            if ( lane == 0u )
             {
-                const uint32_t p = (uint32_t)(__ffs(mask) - 1);
-                mask &= mask - 1u;
-                if ( (idx & (warps - 1u)) == warp_id )
-                {
-                    const uint64_t p_start = (uint64_t)p * slice < count ? (uint64_t)p * slice : count;
-                    const uint64_t p_len = count - p_start < slice ? count - p_start : slice;
-                    if ( p_len != 0u )
-                        SparkTpMeshCopyHalvesFromBand(output + begin + p_start,
-                            (const volatile uint16_t *)(band + ((uint64_t)p * slots_per_rank + ag_ring) * slot_bytes),
-                            p_len,lane,32u);
-                }
-                idx++;
+                control->copy_ns += s_copy_delta;
+                if ( last != 0u ) control->rounds_done++;
             }
         }
         if ( remaining_mask != 0u ) __syncthreads();
     }
-    if ( s_failed == 0u )
-    {
-        if ( tid == 0u )
-        {
-            const uint64_t end_ns = SparkTpFastTimerNs();
-            const uint64_t ag_comb = s_arr_end != 0u && end_ns > s_arr_end ? end_ns - s_arr_end : 0u;
-            if ( s_comb_acc + ag_comb != 0u ) control->combine_ns += s_comb_acc + ag_comb;
-            if ( last != 0u ) control->rounds_done++;
-        }
-        if ( tid < 32u )
-            SparkTpMeshArrivalRecord(control,tid,ag_arr_base,s_arr_end,ag_arr_landed);
-    }
+    __syncthreads();
     if ( tid == 0u )
     {
+        const uint64_t end_ns = SparkTpFastTimerNs();
         __threadfence();
         LmDependentRelease();
+        if ( s_failed == 0u )
+        {
+            const uint64_t ag_comb = s_arr_end != 0u && end_ns > s_arr_end ? end_ns - s_arr_end : 0u;
+            if ( s_comb_acc + ag_comb != 0u ) control->combine_ns += s_comb_acc + ag_comb;
+        }
     }
 }
 
@@ -4760,7 +4750,7 @@ extern "C" SparkGpuError SparkTpLaunchMeshHardwareFast(SparkGpuStream stream,
     }
     if ( operation == 1u && degree == 16u && stage == SPARK_TP_MESH_STAGE_ALL &&
          (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u && staging != 0 && sm_ok != 0u &&
-         elements >= 1024u && elements <= 6528u && (elements & 127u) == 0u &&
+         elements >= 1024u && elements < SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE && (elements & 127u) == 0u &&
          SparkTpMeshDirectPhasesPerChunk(elements,degree,1u,slice_routes) == 1u )
     {
         SparkWeightdMeshHybridCtrl *hyb_ctrl = 0;
