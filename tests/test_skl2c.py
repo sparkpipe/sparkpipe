@@ -316,6 +316,11 @@ def test_full_cubin_emission_and_cli():
                 "head_certified_fp8_score_1024", "head_candidate_256_1024_pdl_bf16", "head_softmax_pdl_f32",
                 "stage_embedding_lookup_pdl_bf16x8", "stage_row_dot_pdl_bf16x8",
                 "tp_f32_to_bf16_vec16", "device_program_copy_exact", "device_program_fill_exact",
+                "ple_key_query_gate_norm_256_w2048", "ple_key_query_gate_norm_256_w4096",
+                "index_qk_exact_skip_128", "index_q_mma_skip_32x64", "index_q_mma_skip_64x64",
+                "index_q_prep_qonly_128", "index_q_prep_256", "index_block_store_128", "index_tail_128",
+                "index_pack_local_keys_256", "index_score_sharded_h4_256", "index_gathered_score_h4_256",
+                "index_local_topk_pack_256", "index_local_mask_from_scores_256", "index_gathered_select_mask_256",
             ):
                 assert f"kernel {required} " in mtxt, f"missing {required} in {arch} manifest"
             assert "spill_stores 0 spill_loads 0" in mtxt
@@ -339,7 +344,7 @@ def test_full_cubin_emission_and_cli():
             assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
             for tok in (
                 "#define SKL2_QWEN38_27B_HIDDEN 5120u",
-                "SKL2_ORD_COUNT = 209",
+                "SKL2_ORD_COUNT = 229",
                 "Skl2ModuleLoad",
                 "Skl2KernelLayout",
                 "Skl2Launch_qwen_bf16_dense_mma_16x64",
