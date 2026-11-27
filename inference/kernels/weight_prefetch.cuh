@@ -114,6 +114,40 @@ static inline void LmWeightPrefetchNote(SparkGpuStream stream, const void *addre
 	group->total += (uint32_t)bytes;
 }
 
+#define SPARK_TP_MESH_AR_EPILOGUE_NONE 0u
+#define SPARK_TP_MESH_AR_EPILOGUE_ADD_BF16 1u
+#define SPARK_TP_MESH_AR_EPILOGUE_HC_POST4 2u
+
+typedef struct SparkTpMeshArEpilogue
+{ uint32_t kind,width; uint16_t *dst; const float *hc_post,*hc_comb; } SparkTpMeshArEpilogue;
+typedef struct SparkTpMeshArEpilogueSlot
+{ SparkGpuStream stream; uint64_t elements; uint32_t consumed; SparkTpMeshArEpilogue ep; } SparkTpMeshArEpilogueSlot;
+
+inline SparkTpMeshArEpilogueSlot &SparkTpMeshArEpilogueTls(void)
+{ static thread_local SparkTpMeshArEpilogueSlot slot = {}; return(slot); }
+
+static inline void SparkTpMeshArEpilogueArmAdd(SparkGpuStream stream, uint64_t elements, uint16_t *dst)
+{ SparkTpMeshArEpilogueSlot &s = SparkTpMeshArEpilogueTls(); s = {stream,elements,0u,{dst != 0 ? SPARK_TP_MESH_AR_EPILOGUE_ADD_BF16 : 0u,0u,dst,0,0}}; }
+
+static inline void SparkTpMeshArEpilogueArmHc4(SparkGpuStream stream, uint64_t elements, uint32_t width,
+	const float *post, const float *comb, uint16_t *streams)
+{
+	SparkTpMeshArEpilogueSlot &s = SparkTpMeshArEpilogueTls();
+	s = {stream,elements,0u,{post != 0 && comb != 0 && streams != 0 && width != 0u ? SPARK_TP_MESH_AR_EPILOGUE_HC_POST4 : 0u,width,streams,post,comb}};
+}
+
+static inline SparkTpMeshArEpilogue SparkTpMeshArEpilogueTake(SparkGpuStream stream, uint64_t elements, uint64_t slice)
+{
+	SparkTpMeshArEpilogueSlot &s = SparkTpMeshArEpilogueTls();
+	SparkTpMeshArEpilogue out = {0u,0u,0,0,0};
+	if ( s.ep.kind == 0u || s.stream != stream || s.elements != elements || (elements & 7u) != 0u || (slice & 7u) != 0u || (((uintptr_t)s.ep.dst) & 15u) != 0u ) return(out);
+	if ( s.ep.kind == SPARK_TP_MESH_AR_EPILOGUE_HC_POST4 && (s.ep.width == 0u || (s.ep.width & 7u) != 0u || (elements % s.ep.width) != 0u) ) return(out);
+	out = s.ep; s.ep.kind = 0u; s.consumed = 1u; return(out);
+}
+
+static inline uint32_t SparkTpMeshArEpilogueConsumed(void)
+{ SparkTpMeshArEpilogueSlot &s = SparkTpMeshArEpilogueTls(); const uint32_t c = s.consumed; s.ep.kind = 0u; s.consumed = 0u; return(c); }
+
 #ifdef __CUDACC__
 static __device__ __forceinline__ uint64_t LmWeightPrefetchExtent(const LmWeightPrefetchGroup *group, uint32_t count)
 {

@@ -8,6 +8,8 @@
 
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "inference/runner/mesh_fast_kernels.cuh"
+#include "inference/kernels/hc.cuh"
+#include "inference/kernels/norm.cuh"
 
 static uint32_t g_checks = 0u;
 static uint32_t g_failures = 0u;
@@ -1458,6 +1460,126 @@ static void TestPhase3HybridDirectSq(MeshFixture *f)
         }
     }
 
+    SparkTpMeshFastHybridClearOverride(f->gate_dev);
+    {
+        const uint32_t widths[2] = { 5120u, 7168u };
+        const uint32_t row_sets[2] = { 1u, 4u };
+        for ( uint32_t wi = 0u; wi < 2u; ++wi )
+        {
+            const uint32_t width = widths[wi];
+            for ( uint32_t ri = 0u; ri < 2u; ++ri )
+            {
+                const uint32_t rows = row_sets[ri], elems = rows * width;
+                const uint32_t slice = (uint32_t)SparkTpMeshRsagSlice(elems, degree);
+                uint16_t *ep_local = (uint16_t *)malloc(elems * sizeof(uint16_t));
+                uint16_t *h_st0 = (uint16_t *)malloc(rows * 4u * width * sizeof(uint16_t));
+                uint16_t *h_ref_out = (uint16_t *)malloc(rows * 4u * width * sizeof(uint16_t));
+                uint16_t *h_fast_out = (uint16_t *)malloc(rows * 4u * width * sizeof(uint16_t));
+                float h_post[16u], h_comb[64u];
+                for ( uint32_t p = 0u; p < degree; ++p )
+                    for ( uint32_t i = 0u; i < slice; ++i )
+                        f->responder.peer_payloads[p][i] = PatternBf16(p, i, 1500u + wi * 31u + ri * 7u);
+                for ( uint32_t i = 0u; i < elems; ++i )
+                    ep_local[i] = PatternBf16(rank, i % slice, 1500u + wi * 31u + ri * 7u);
+                for ( uint32_t i = 0u; i < rows * 4u * width; ++i )
+                    h_st0[i] = PatternBf16(i & 15u, i, 1601u + wi);
+                for ( uint32_t r = 0u; r < rows; ++r )
+                {
+                    for ( uint32_t k = 0u; k < 4u; ++k ) h_post[r * 4u + k] = 0.25f + 0.125f * (float)((r + k) & 3u);
+                    for ( uint32_t k = 0u; k < 16u; ++k ) h_comb[r * 16u + k] = 0.0625f * (float)(1u + ((r * 3u + k) & 7u));
+                }
+                uint16_t *d_st_ref = 0, *d_st_fast = 0;
+                float *d_post = 0, *d_comb = 0;
+                CUDA_OK(cudaMalloc(&d_st_ref, rows * 4u * width * sizeof(uint16_t)));
+                CUDA_OK(cudaMalloc(&d_st_fast, rows * 4u * width * sizeof(uint16_t)));
+                CUDA_OK(cudaMalloc(&d_post, rows * 4u * sizeof(float)));
+                CUDA_OK(cudaMalloc(&d_comb, rows * 16u * sizeof(float)));
+                CUDA_OK(cudaMemcpy(f->local_dev, ep_local, elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
+                CUDA_OK(cudaMemcpy(d_post, h_post, rows * 4u * sizeof(float), cudaMemcpyHostToDevice));
+                CUDA_OK(cudaMemcpy(d_comb, h_comb, rows * 16u * sizeof(float), cudaMemcpyHostToDevice));
+                SetSkewOrder(f, rank, 1u);
+                SparkTpMeshFastHybridBindOverride(f->gate_dev, ctrl_dev, shm_dev, 0u);
+                f->gate_host->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_HYBRID_SQ;
+
+                const uint32_t is_hc = wi == 0u ? 1u : 0u;
+                const size_t cmp_bytes = is_hc != 0u ? (rows * 4u * width * sizeof(uint16_t)) : (elems * sizeof(uint16_t));
+                FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
+                CUDA_OK(cudaMemcpy(d_st_ref, h_st0, cmp_bytes, cudaMemcpyHostToDevice));
+                CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                    f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
+                    elems, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+                if ( is_hc != 0u )
+                    LmHcPostF32SourceMajorKernel<4u><<<dim3((width / 8u + 255u) / 256u, rows), 256u, 0, f->stream>>>(
+                        f->out_ref, d_post, d_comb, d_st_ref, width);
+                else
+                    LmAddRowsKernel<256u><<<dim3((width / 8u + 255u) / 256u, rows), 256u, 0, f->stream>>>(
+                        d_st_ref, f->out_ref, d_st_ref, rows, width);
+                CUDA_OK(cudaStreamSynchronize(f->stream));
+                CUDA_OK(cudaMemcpy(h_ref_out, d_st_ref, cmp_bytes, cudaMemcpyDeviceToHost));
+
+                FixtureResetEpoch(f, rank, degree, (uint64_t)slice * sizeof(uint16_t));
+                CUDA_OK(cudaMemcpy(d_st_fast, h_st0, cmp_bytes, cudaMemcpyHostToDevice));
+                cudaGraph_t graph = 0; cudaGraphExec_t exec = 0;
+                CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+                if ( is_hc != 0u )
+                    SparkTpMeshArEpilogueArmHc4(f->stream, elems, width, d_post, d_comb, d_st_fast);
+                else
+                    SparkTpMeshArEpilogueArmAdd(f->stream, elems, d_st_fast);
+                CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                    f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_fast, f->scratch,
+                    elems, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+                const uint32_t consumed = SparkTpMeshArEpilogueConsumed();
+                CUDA_OK(cudaStreamEndCapture(f->stream, &graph));
+                CHECK(consumed == 1u && CaptureNodeCount(graph) == 1u,
+                    "phase7 fused epilogue consumes TLS arm and captures as 1 CUDA Graph node");
+                CUDA_OK(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+                CUDA_OK(cudaGraphLaunch(exec, f->stream));
+                CUDA_OK(cudaStreamSynchronize(f->stream));
+                CUDA_OK(cudaMemcpy(h_fast_out, d_st_fast, cmp_bytes, cudaMemcpyDeviceToHost));
+                SparkTpMeshRoundControl ctrl;
+                CUDA_OK(cudaMemcpy(&ctrl, f->control, sizeof(ctrl), cudaMemcpyDeviceToHost));
+                CHECK(memcmp(h_ref_out, h_fast_out, cmp_bytes) == 0 && ctrl.error_word == 0u && ctrl.rounds_done == 1u &&
+                      __atomic_load_n(&f->responder.hybrid_wqe_errors, __ATOMIC_ACQUIRE) == 0u,
+                    "phase7 per-peer arrival epilogue (HC_POST4 / ADD_BF16) matches unfused 0-ULP bitwise identical");
+                if ( ri == 0u )
+                {
+                    const uint32_t iters = 200u;
+                    cudaGraph_t u_graph = 0; cudaGraphExec_t u_exec = 0;
+                    CUDA_OK(cudaStreamBeginCapture(f->stream, cudaStreamCaptureModeThreadLocal));
+                    CUDA_OK(SparkTpLaunchMeshHardwareFast(f->stream, f->band_dev, SPARK_WEIGHTD_MESH_SLOT_BYTES, SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+                        f->doorbell_dev, f->gate_dev, f->control, rank, degree, f->local_dev, f->out_ref, f->scratch,
+                        elems, 1u, 1u, 1u, SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER, f->staging_dev, 2000000000ull, SPARK_TP_MESH_STAGE_ALL));
+                    if ( is_hc != 0u )
+                        LmHcPostF32SourceMajorKernel<4u><<<dim3((width / 8u + 255u) / 256u, rows), 256u, 0, f->stream>>>(
+                            f->out_ref, d_post, d_comb, d_st_ref, width);
+                    else
+                        LmAddRowsKernel<256u><<<dim3((width / 8u + 255u) / 256u, rows), 256u, 0, f->stream>>>(
+                            d_st_ref, f->out_ref, d_st_ref, rows, width);
+                    CUDA_OK(cudaStreamEndCapture(f->stream, &u_graph));
+                    CUDA_OK(cudaGraphInstantiate(&u_exec, u_graph, 0, 0, 0));
+                    for ( uint32_t k = 0u; k < 8u; ++k ) { CUDA_OK(cudaGraphLaunch(u_exec, f->stream)); CUDA_OK(cudaGraphLaunch(exec, f->stream)); }
+                    CUDA_OK(cudaStreamSynchronize(f->stream));
+                    uint64_t t0 = NowNs();
+                    for ( uint32_t k = 0u; k < iters; ++k ) CUDA_OK(cudaGraphLaunch(u_exec, f->stream));
+                    CUDA_OK(cudaStreamSynchronize(f->stream));
+                    uint64_t t1 = NowNs();
+                    for ( uint32_t k = 0u; k < iters; ++k ) CUDA_OK(cudaGraphLaunch(exec, f->stream));
+                    CUDA_OK(cudaStreamSynchronize(f->stream));
+                    uint64_t t2 = NowNs();
+                    double u_us = (double)(t1 - t0) / 1000.0 / (double)iters;
+                    double f_us = (double)(t2 - t1) / 1000.0 / (double)iters;
+                    printf("PHASE7 EPILOGUE %-10s B1_%u: unfused(2 nodes)=%.2fus  fused(1 node)=%.2fus  delta=%+.2fus\n",
+                        is_hc != 0u ? "HC_POST4" : "ADD_BF16", width, u_us, f_us, f_us - u_us);
+                    cudaGraphExecDestroy(u_exec); cudaGraphDestroy(u_graph);
+                }
+                cudaGraphExecDestroy(exec); cudaGraphDestroy(graph);
+                cudaFree(d_comb); cudaFree(d_post); cudaFree(d_st_fast); cudaFree(d_st_ref);
+                free(h_fast_out); free(h_ref_out); free(h_st0); free(ep_local);
+            }
+        }
+        SparkTpMeshArEpilogueArmAdd(f->stream, 999999u, f->out_fast);
+        CHECK(SparkTpMeshArEpilogueConsumed() == 0u, "unconsumed epilogue returns 0 and clears slot cleanly");
+    }
     SparkTpMeshFastHybridClearOverride(f->gate_dev);
     __atomic_store_n(&f->responder.hybrid_ctrl, (SparkWeightdMeshHybridCtrl *)0, __ATOMIC_RELEASE);
     f->responder.hybrid_shm = 0;
