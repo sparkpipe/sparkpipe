@@ -192,18 +192,17 @@ macro sincos_pos_f32(angle, out_sin, out_cos) {
 }
 
 @export
-macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
+macro kv_shard_slot_addr_page(kv_view, seq, pos, page, slot_in_page, page_slots, slot_bytes, out_addr, out_ok) {
     out_ok = 0;
     out_addr = param_u64(kv_view, 0);
     reg u32 pt_stride = param_u32(kv_view, 16);
     reg u32 seq_cnt = param_u32(kv_view, 20);
     reg u32 pool_pages = param_u32(kv_view, 24);
     reg u32 degree = param_u32(kv_view, 40);
-    reg u32 page = pos >> 6;
     if (seq < seq_cnt && page < pt_stride) {
         reg u32 owns = 1;
-        reg u32 slot_in_page = pos & 63;
-        reg u32 page_slots = 64;
+        reg u32 sip = slot_in_page;
+        reg u32 sh_page_slots = page_slots;
         if (degree > 1) {
             reg u32 rank = param_u32(kv_view, 44);
             reg u32 grain = param_u32(kv_view, 48);
@@ -216,23 +215,28 @@ macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
             } else {
                 reg u32 span = grain * degree;
                 reg u32 sq = 0; reg u32 sr = 0;
-                u32_divmod(slot_in_page, span, sq, sr);
+                u32_divmod(sip, span, sq, sr);
                 reg u32 gq = 0; reg u32 gr = 0;
-                u32_divmod(slot_in_page, grain, gq, gr);
-                slot_in_page = sq * grain + gr;
+                u32_divmod(sip, grain, gq, gr);
+                sip = sq * grain + gr;
                 reg u32 psr = 0;
-                u32_divmod(64, degree, page_slots, psr);
+                u32_divmod(page_slots, degree, sh_page_slots, psr);
             }
         }
         if (owns != 0) {
             reg u64 pt_ptr = param_u64(kv_view, 8);
             reg u32 phys = ldg32_persist(ptr_add(pt_ptr, seq * pt_stride + page, 4));
             if (phys < pool_pages) {
-                out_addr = ptr_add(out_addr, phys * page_slots + slot_in_page, slot_bytes);
+                out_addr = ptr_add(out_addr, phys * sh_page_slots + sip, slot_bytes);
                 out_ok = 1;
             }
         }
     }
+}
+
+@export
+macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
+    kv_shard_slot_addr_page(kv_view, seq, pos, pos >> 6, pos & 63, 64, slot_bytes, out_addr, out_ok);
 }
 
 @export
@@ -316,4 +320,63 @@ macro hyper_mix_term_f32(u_val, n_val, out_v) {
     reg f32 sg = 0.0f;
     sigmoid_exact_f32(u_val, sg);
     out_v = bf16_lo(f32_to_bf16(bf16_lo(f32_to_bf16(sg)) * n_val));
+}
+
+@export
+macro hyper_key_gate_f32(total, width_f, out_gate) {
+    reg f32 inv_sw = rsqrt(width_f);
+    inv_sw = inv_sw * fma(-0.5f * width_f, inv_sw * inv_sw, 1.5f);
+    reg f32 sw = width_f * inv_sw;
+    reg f32 sc0 = 0.0f;
+    div_nr1_f32(bf16_lo(f32_to_bf16(total)), sw, inv_sw, sc0);
+    reg f32 score = bf16_lo(f32_to_bf16(sc0));
+    reg f32 mag_in = maxf(fabsf(score), 1.0e-6f);
+    reg f32 inv_m = rsqrt(mag_in);
+    inv_m = inv_m * fma(-0.5f * mag_in, inv_m * inv_m, 1.5f);
+    reg f32 mag = bf16_lo(f32_to_bf16(mag_in * inv_m));
+    reg f32 signed_m = (score < 0.0f) ? (0.0f - mag) : ((score > 0.0f) ? mag : 0.0f);
+    reg f32 sg = 0.0f;
+    sigmoid_exact_f32(signed_m, sg);
+    out_gate = bf16_lo(f32_to_bf16(sg));
+}
+
+@export
+macro f32_topk_key(val_f, out_key) {
+    reg u32 b = f32_as_u32(val_f);
+    out_key = b ^ (((b >> 31) != 0) ? 0xFFFFFFFF : 0x80000000);
+}
+
+@export
+macro kv_shard_local_keys(degree, rank, grain, keys, out_local) {
+    if (degree <= 1) {
+        out_local = keys;
+    } else {
+        reg u32 span = grain * degree;
+        reg u32 qk = 0; reg u32 rest = 0;
+        u32_divmod(keys, span, qk, rest);
+        reg u32 first = rank * grain;
+        reg u32 extra = 0;
+        if (rest > first) {
+            extra = (rest - first < grain) ? (rest - first) : grain;
+        }
+        out_local = qk * grain + extra;
+    }
+}
+
+@export
+macro kv_shard_local_pos(degree, rank, grain, local, out_pos) {
+    if (degree <= 1) {
+        out_pos = local;
+    } else {
+        reg u32 q = 0; reg u32 r = 0;
+        u32_divmod(local, grain, q, r);
+        out_pos = (q * degree + rank) * grain + r;
+    }
+}
+
+@export
+macro kv_shard_slot_addr_gen(kv_view, seq, pos, page_slots, slot_bytes, out_addr, out_ok) {
+    reg u32 page = 0; reg u32 slot_in_page = 0;
+    u32_divmod(pos, page_slots, page, slot_in_page);
+    kv_shard_slot_addr_page(kv_view, seq, pos, page, slot_in_page, page_slots, slot_bytes, out_addr, out_ok);
 }
