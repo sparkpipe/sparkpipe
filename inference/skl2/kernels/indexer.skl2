@@ -163,6 +163,7 @@ macro idx_radix_select(IS_GATH, src, rank_stride, row, n, blocks, k, w_hist, his
     out_thresh = lds32(s_state, 0);
     out_pos_thresh = 0xFFFFFFFF;
     reg u32 need = lds32(s_state, 2); reg u32 eq_cnt = lds32(s_state, 3);
+    barrier();
     if (out_skip == 0 && eq_cnt > need) {
         if (tid == 0) { sts32(s_state, 1, 0); sts32(s_state, 3, 0); sts32(s_state, 4, need); }
         barrier();
