@@ -3883,8 +3883,6 @@ struct D41Cuda : CudaStage<D41Cuda>
 			frame.wave_step = *frame.root;
 			frame.wave_step.rows = count;
 			frame.wave_step.sequences = 1u;
-			frame.wave_step.gather_context = 0u;
-			frame.wave_step.gather_sequence = 0u;
 			frame.wave_step.hidden_bf16 = frame.root->hidden_bf16 + (uint64_t)first * D41_HIDDEN;
 			frame.wave_step.positions = frame.root->positions + first;
 			frame.wave_step.sequence_of_row = frame.root->sequence_of_row + first;
