@@ -57,6 +57,7 @@ extern LmHostDim3 gridDim;
 
 #define LM_HOST_WARP_LANES 1u
 #define __syncthreads() ((void)0)
+#define __syncthreads_or(predicate) ((predicate) != 0)
 #define __syncwarp(...) ((void)0)
 
 #define __expf(x) expf(x)

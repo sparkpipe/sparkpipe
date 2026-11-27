@@ -6,6 +6,8 @@
 #define __shared__ static
 #undef __syncthreads
 #define __syncthreads() LmHostThreadsBlockBarrier()
+#undef __syncthreads_or
+#define __syncthreads_or(predicate) LmHostThreadsBlockOr((predicate))
 #undef LM_LAUNCH
 #define LM_HOST_THREADS_MAX 1024u
 
@@ -69,6 +71,8 @@ typedef struct LmHostThreads
 	unsigned shuffle_word[LM_HOST_THREADS_MAX];
 	unsigned ballot[LM_HOST_THREADS_MAX];
 	unsigned match[LM_HOST_THREADS_MAX];
+	unsigned block_or_in[LM_HOST_THREADS_MAX];
+	unsigned block_or_out;
 }
 LmHostThreads;
 
@@ -80,6 +84,21 @@ static thread_local LmHostDim3 lm_host_thread_index,lm_host_block_index;
 static inline void LmHostThreadsBlockBarrier(void)
 {
 	pthread_barrier_wait(&lm_host_threads.block_barrier);
+}
+
+static inline int LmHostThreadsBlockOr(int predicate)
+{
+	unsigned thread = threadIdx.x,index,any = 0u;
+	lm_host_threads.block_or_in[thread] = predicate != 0 ? 1u : 0u;
+	pthread_barrier_wait(&lm_host_threads.block_barrier);
+	if ( thread == 0u )
+	{
+		for (index = 0u; index < blockDim.x; ++index)
+			any |= lm_host_threads.block_or_in[index];
+		lm_host_threads.block_or_out = any;
+	}
+	pthread_barrier_wait(&lm_host_threads.block_barrier);
+	return(lm_host_threads.block_or_out != 0u ? 1 : 0);
 }
 
 static inline float LmHostThreadsShuffleXor(unsigned, float value, int mask, int = 32)

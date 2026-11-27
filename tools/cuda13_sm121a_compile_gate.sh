@@ -171,7 +171,7 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
 	CUDA_ARCH=sm_121a \
 	CUDA_HOME="${cuda_home}" \
 	> "${output_directory}/logs/stage_runner_binaries.txt" 2>&1; then
-	grep -E 'undefined reference|error' "${output_directory}/logs/stage_runner_binaries.txt" | head -n 20 >&2 || true
+	grep -E 'undefined reference|(fatal )?error:|nvcc fatal|ptxas error|ld returned [1-9]' "${output_directory}/logs/stage_runner_binaries.txt" | head -n 20 >&2 || true
 	echo "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt" >&2
 	exit 11
 fi
