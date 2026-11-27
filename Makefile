@@ -2344,14 +2344,25 @@ $(K31_PRO_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(K31_PRO_TP16_SERVING_ADAPTER)
 
 SKL2_BUILD_DIR := build
 SKL2_QWEN38_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_qwen38_embedded.h
-SKL2_QWEN38_SOURCES := inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/recurrent.skl2 inference/skl2/kernels/norm_rope.skl2
+SKL2_QWEN38_SOURCES := inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/recurrent.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/stage_mem.skl2
 SKL2_QWEN38_KERNELS := qwen_exact_bf16_multi_w1x4_r4_n4 qwen_exact_bf16_multi_w2x4_r4_n4 qwen_exact_bf16_multi_w4x2_r4_n4 qwen_exact_bf16_multi_w4x2_r8_n2 \
 	qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2 \
 	qwen_bf16_dense_mma_16x64 qwen_bf16_dense_mma_32x64 qwen_bf16_dense_mma_64x64 qwen_bf16_dense_mma_128x64 \
 	qwen_bf16_fused_swiglu_mma_16x64 qwen_bf16_fused_swiglu_mma_32x64 qwen_bf16_fused_swiglu_mma_64x32 qwen_bf16_fused_swiglu_mma_128x64 \
-	qwen_gdn_conv_split_serial_4_128_pdl gdn_conv_split_tiled_4_128_pdl qwen_gdn_gate_only_128_pdl qwen_gdn_split_expand_gate_256_128_pdl \
+	qwen_bf16_smalln_mma_16 qwen_bf16_smalln_mma_wide_32 qwen_shared_gate_up_swiglu_wide_16 qwen_shared_gate_up_swiglu_wide_32 \
+	qwen_hc_down_gate_mma_32x32 qwen_hc_down_gate_inject_mma_32x32 qwen_hc_down_gate_mma_64x64 qwen_hc_down_gate_inject_mma_64x64 \
+	qwen_hc_up_mix_mma_16 qwen_hc_up_mix_mma_32 qwen_hc_up_mix_mma_64 qwen_hc_up_mix_mma_128 \
+	qwen_gdn_conv_split_serial_4_128_pdl gdn_conv_split_tiled_4_128_pdl qwen_gdn_conv_prefill_2d_4_128_pdl qwen_gdn_conv_window_commit_4_pdl \
+	qwen_gdn_gate_only_128_pdl qwen_gdn_split_expand_gate_256_128_pdl \
 	head_rmsnorm_silu_gate_pdl_exact_128_bf16 head_rmsnorm_sigmoid_gate_pdl_exact_128_bf16 \
-	qwen_gdn_exact_edge_pre_128_128_pdl qwen_gdn_exact_edge_post_128_128_pdl qwen_gdn_scalar_chunk_128_128_128_pdl
+	qwen_gdn_exact_edge_pre_128_128_pdl qwen_gdn_exact_edge_post_128_128_pdl qwen_gdn_scalar_chunk_128_128_128_pdl \
+	rmsnorm_pdl_exact_5120_bf16x8 fused_residual_rmsnorm_pdl_exact_5120_bf16x8 fused_residual_rmsnorm_f32_generic_pdl_exact_bf16x8 \
+	swiglu_pdl_exact_bf16x8 stage_row_dot_pdl_bf16x8 \
+	qwen_pack_local_kv_256 qwen_pack_local_qkv_no_gate_256 qwen_hybrid_attn_prep_gen qwen_attn_prep_local_gen \
+	qwen_prior_kv_direct_gen qwen_prior_kv_pack_gen qwen_prior_kv_unpack_gen qwen_local_prefill_attn_gen_256 \
+	qwen_gqa_split_decode_gen_128 qwen_gqa_split_decode_gen_192 qwen_gqa_split_decode_gen_512 \
+	qwen_gqa_direct_decode_gate_gen_128 qwen_gqa_direct_decode_gate_gen_192 qwen_gqa_direct_decode_gate_gen_512 \
+	qwen_gqa_split_reduce_gate_gen qwen_hybrid_tp1_merge_gate_gen qwen_hybrid_multi_merge_gate_gen
 
 $(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)

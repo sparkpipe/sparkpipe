@@ -537,21 +537,28 @@ instantiate head_rmsnorm_gate_generic_pdl<2> as head_rmsnorm_sigmoid_gate_once_g
 
 @concept(norm_rope)
 @pdl
-kernel[BLOCK, 88] attn_tp1_merge_sigmoid_gate_pdl_exact_bf16(
-    global u32* received_f32, global u32* attn_local_bf16, global u32* output_bf16, u32 rows
+template kernel[BLOCK, 88] attn_tp1_merge_gate_tpl<IS_GEN>(
+    global u32* received_f32, global u32* attn_local_bf16, global u32* output_bf16, u32 rows,
+    if (IS_GEN == 1) u32 heads_in,
+    if (IS_GEN == 1) u32 qkv_width_in
 ) {
     acqbulk();
+    reg u32 heads = 24;
+    reg u32 qkv_w = 14336;
+    if constexpr (IS_GEN == 1) { heads = heads_in; qkv_w = qkv_width_in; }
     reg u32 head = ctaid_x() * 8 + warp_id();
     reg u32 row = ctaid_y();
-    if (row < rows && head < 24) {
+    if (row < rows && head < heads) {
         reg u32 lane = lane_id();
-        reg u32 row_base = row * 6194;
-        reg f32 denom = maxf(u32_as_f32(ldg32_stream(ptr_add(received_f32, row_base + 6144 + head * 2 + 1, 4))), 1.0e-20f);
+        reg u32 width = heads << 8;
+        reg u32 record = width + ((heads + 1) << 1);
+        reg u32 row_base = row * record;
+        reg f32 denom = maxf(u32_as_f32(ldg32_stream(ptr_add(received_f32, row_base + width + head * 2 + 1, 4))), 1.0e-20f);
         reg f32 inv_d = rcp(denom);
         inv_d = fma(inv_d, fma(-denom, inv_d, 1.0f), inv_d);
-        reg u32 h_base_p = (row_base + head * 256) >> 1;
-        reg u32 g_base_p = (row * 14336 + (head * 2 + 1) * 256) >> 1;
-        reg u32 o_base_p = ((row * 24 + head) * 256) >> 1;
+        reg u32 h_base_p = (row_base + (head << 8)) >> 1;
+        reg u32 g_base_p = (row * qkv_w + ((head * 2 + 1) << 8)) >> 1;
+        reg u32 o_base_p = ((row * heads + head) << 8) >> 1;
         unroll (k = 0..4) {
             reg u32 v = lane + k * 32;
             reg u32x2 a = ldg64_stream(ptr_add(received_f32, h_base_p + v, 8));
@@ -567,6 +574,9 @@ kernel[BLOCK, 88] attn_tp1_merge_sigmoid_gate_pdl_exact_bf16(
     }
     preexit();
 }
+
+instantiate attn_tp1_merge_gate_tpl<0> as attn_tp1_merge_sigmoid_gate_pdl_exact_bf16;
+instantiate attn_tp1_merge_gate_tpl<1> as qwen_hybrid_tp1_merge_gate_gen;
 
 @concept(norm_rope)
 @pdl

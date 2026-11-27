@@ -198,13 +198,39 @@ macro kv_shard_slot_addr(kv_view, seq, pos, slot_bytes, out_addr, out_ok) {
     reg u32 pt_stride = param_u32(kv_view, 16);
     reg u32 seq_cnt = param_u32(kv_view, 20);
     reg u32 pool_pages = param_u32(kv_view, 24);
+    reg u32 degree = param_u32(kv_view, 40);
     reg u32 page = pos >> 6;
     if (seq < seq_cnt && page < pt_stride) {
-        reg u64 pt_ptr = param_u64(kv_view, 8);
-        reg u32 phys = ldg32_persist(ptr_add(pt_ptr, seq * pt_stride + page, 4));
-        if (phys < pool_pages) {
-            out_addr = ptr_add(out_addr, (phys << 6) + (pos & 63), slot_bytes);
-            out_ok = 1;
+        reg u32 owns = 1;
+        reg u32 slot_in_page = pos & 63;
+        reg u32 page_slots = 64;
+        if (degree > 1) {
+            reg u32 rank = param_u32(kv_view, 44);
+            reg u32 grain = param_u32(kv_view, 48);
+            reg u32 qg = 0; reg u32 rg = 0;
+            u32_divmod(pos, grain, qg, rg);
+            reg u32 qd = 0; reg u32 owner = 0;
+            u32_divmod(qg, degree, qd, owner);
+            if (owner != rank) {
+                owns = 0;
+            } else {
+                reg u32 span = grain * degree;
+                reg u32 sq = 0; reg u32 sr = 0;
+                u32_divmod(slot_in_page, span, sq, sr);
+                reg u32 gq = 0; reg u32 gr = 0;
+                u32_divmod(slot_in_page, grain, gq, gr);
+                slot_in_page = sq * grain + gr;
+                reg u32 psr = 0;
+                u32_divmod(64, degree, page_slots, psr);
+            }
+        }
+        if (owns != 0) {
+            reg u64 pt_ptr = param_u64(kv_view, 8);
+            reg u32 phys = ldg32_persist(ptr_add(pt_ptr, seq * pt_stride + page, 4));
+            if (phys < pool_pages) {
+                out_addr = ptr_add(out_addr, phys * page_slots + slot_in_page, slot_bytes);
+                out_ok = 1;
+            }
         }
     }
 }
