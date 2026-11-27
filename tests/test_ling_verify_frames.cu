@@ -1214,7 +1214,36 @@ static void CheckMlaTp4(void)
 			Require(dist < 0.01f, model, "TP4 warm KV-gather MLA matches reference scatter MLA (pos, rel x 1e6)", p, (uint32_t)(dist * 1.0e6f), 0u);
 		}
 	}
-	printf("%s %s multi-rank MLA KV-gather prefix-exact + accuracy: 4 ranks, cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
+	{
+		std::vector<uint16_t> b1_cold, b2_cold, b1_warm, b2_warm;
+		const uint32_t cold_len = 48u;
+		std::vector<VfRow> cold_multi;
+		for ( uint32_t p = 0u; p < cold_len; ++p )
+			cold_multi.push_back({ 0u, p, 0u });
+		for ( uint32_t p = 0u; p < 24u; ++p )
+			cold_multi.push_back({ 1u, p, 7u });
+		Require(cudaMemset(rig.kv, 0, cached_kv.size()) == cudaSuccess, model, "TP4 multi-seq cold MLA reset 1", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data(), cold_len, cold_len, &b1_cold) != 0, model, "TP4 B1 cold MLA runs", cold_len, 0u, 0u);
+		Require(cudaMemset(rig.kv, 0, cached_kv.size()) == cudaSuccess, model, "TP4 multi-seq cold MLA reset 2", 0u, 0u, 0u);
+		Require(rig.Run(cold_multi.data(), (uint32_t)cold_multi.size(), 0u, &b2_cold) != 0, model, "TP4 multi-seq cold MLA runs", (uint32_t)cold_multi.size(), 0u, 0u);
+		std::vector<uint16_t> cold_lane0(b2_cold.begin(), b2_cold.begin() + (ptrdiff_t)((uint64_t)cold_len * SmallLing31Tp4::kHidden));
+		Require(FirstDifference(cold_lane0, b1_cold, SmallLing31Tp4::kHidden) == UINT32_MAX, model,
+			"TP4 multi-seq cold MLA lane0 equals B1 cold MLA bit for bit (first differing row)", FirstDifference(cold_lane0, b1_cold, SmallLing31Tp4::kHidden), 0u, 0u);
+		const uint32_t delta = 16u, total = kCached + delta;
+		std::vector<VfRow> warm_multi;
+		for ( uint32_t p = 0u; p < delta; ++p )
+			warm_multi.push_back({ 0u, kCached + p, 0u });
+		for ( uint32_t p = 0u; p < 24u; ++p )
+			warm_multi.push_back({ 1u, p, 7u });
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 multi-seq warm MLA restore 1", 0u, 0u, 0u);
+		Require(rig.Run(all_rows.data() + kCached, delta, total, &b1_warm) != 0, model, "TP4 B1 warm MLA runs", delta, 0u, 0u);
+		Require(cudaMemcpy(rig.kv, cached_kv.data(), cached_kv.size(), cudaMemcpyHostToDevice) == cudaSuccess, model, "TP4 multi-seq warm MLA restore 2", 0u, 0u, 0u);
+		Require(rig.Run(warm_multi.data(), (uint32_t)warm_multi.size(), 0u, &b2_warm) != 0, model, "TP4 multi-seq warm MLA runs", (uint32_t)warm_multi.size(), 0u, 0u);
+		std::vector<uint16_t> warm_lane0(b2_warm.begin(), b2_warm.begin() + (ptrdiff_t)((uint64_t)delta * SmallLing31Tp4::kHidden));
+		Require(FirstDifference(warm_lane0, b1_warm, SmallLing31Tp4::kHidden) == UINT32_MAX, model,
+			"TP4 multi-seq warm MLA lane0 equals B1 warm MLA bit for bit (first differing row)", FirstDifference(warm_lane0, b1_warm, SmallLing31Tp4::kHidden), 0u, 0u);
+	}
+	printf("%s %s multi-rank MLA KV-gather prefix-exact + multi-seq 5c + accuracy: 4 ranks, cached=%u vs warm deltas 1..128\n", vf_failures == 0 ? "ok" : "checked", model, kCached);
 	rig.Close();
 }
 

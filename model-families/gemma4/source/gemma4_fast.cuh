@@ -11,6 +11,16 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
 
+static __device__ __forceinline__ void GemmaStreamCopy256(uint32_t shared, const void *source, uint32_t bytes)
+{
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
+}
+
+static __device__ __forceinline__ void GemmaStreamCopy256Full(uint32_t shared, const void *source)
+{
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16;\n" :: "r"(shared), "l"(source) : "memory");
+}
+
 static __device__ __forceinline__ float GemmaFastHalfWarpSum(float value)
 {
 	#pragma unroll
@@ -783,7 +793,7 @@ static void GemmaExactGateOutKernel(const uint16_t *__restrict__ merged, const u
 	}
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t ACT_MODE, bool HAS_ROUTER, bool ROUTER_F32, uint32_t STAGES = 2u>
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t THREADS, uint32_t WARPS_M, uint32_t ACT_MODE, bool HAS_ROUTER, bool ROUTER_F32, uint32_t STAGES = 2u, bool SWAP_GRID = false, bool LDCS_B = false>
 __global__ __launch_bounds__(THREADS, (STAGES * (TILE_M + 2u * TILE_N) * 128u <= 49152u) ? 2 : 1)
 static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w, const uint16_t *__restrict__ router_w,
 	const uint16_t *__restrict__ act, uint16_t *__restrict__ out_inter, uint16_t *__restrict__ router_bf16,
@@ -793,6 +803,7 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 	constexpr uint32_t WARPS = THREADS / 32u, WARPS_N = WARPS / WARPS_M;
 	constexpr uint32_t WARP_M = TILE_M / WARPS_M, WARP_N = TILE_N / WARPS_N;
 	constexpr uint32_t MF = WARP_M / 16u, NF = WARP_N / 8u;
+	constexpr uint32_t B_BUFS = (MF * NF >= 8u) ? 1u : 2u;
 	constexpr uint32_t A_BYTES = TILE_M * ROW_BYTES, B_BYTES = TILE_N * ROW_BYTES, STAGE_BYTES = A_BYTES + 2u * B_BYTES;
 	constexpr uint32_t A_CHUNKS = TILE_M * ROW_CHUNKS, A_PER_T = (A_CHUNKS + THREADS - 1u) / THREADS;
 	constexpr uint32_t B_PER_T = (TILE_N * ROW_CHUNKS) / THREADS, ROW_STEP = THREADS / ROW_CHUNKS;
@@ -804,7 +815,8 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 	const uint32_t row0 = threadIdx.x / ROW_CHUNKS, col0 = threadIdx.x % ROW_CHUNKS;
 	const uint32_t k_tiles = K / TILE_K;
 	const uint32_t gu_n_tiles = (ffn_rows + TILE_N - 1u) / TILE_N;
-	const uint32_t nt = blockIdx.x, row_base = blockIdx.y * TILE_M;
+	const uint32_t row_base = (SWAP_GRID ? blockIdx.x : blockIdx.y) * TILE_M;
+	const uint32_t nt = SWAP_GRID ? blockIdx.y : blockIdx.x;
 	const bool is_router = HAS_ROUTER && nt >= gu_n_tiles;
 	const uint32_t col_base = (is_router ? nt - gu_n_tiles : nt) * TILE_N;
 	const uint32_t cur_n = is_router ? experts : ffn_rows;
@@ -829,6 +841,7 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 		(gate_up_w + (uint64_t)(col_base + row0) * K + col0 * 8u);
 	const uint16_t *bu_base = is_router ? bg_base : (gate_up_w + (uint64_t)(ffn_rows + col_base + row0) * K + col0 * 8u);
 	const uint16_t *w_safe = is_router ? router_w : gate_up_w;
+	uint4 bg_w[LDCS_B ? B_PER_T : 1u], bu_w[LDCS_B ? B_PER_T : 1u];
 	auto issue_k = [&](uint32_t st_off)
 	{
 		const uint32_t stage = shared_base + st_off;
@@ -840,24 +853,60 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			{
 				const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 				const uint32_t valid = (a_mask >> q) & 1u;
-				LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+				GemmaStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
 				a_src[q] += TILE_K;
 			}
 		}
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
+		if constexpr ( !LDCS_B )
 		{
-			const uint32_t r = row0 + q * ROW_STEP;
-			const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
-			const uint32_t valid = (b_mask >> q) & 1u;
-			LmStreamCopy(stage + A_BYTES + sw, valid != 0u ? bg_base + q * b_step : w_safe, valid << 4u);
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
+				const uint32_t valid = (b_mask >> q) & 1u;
+				GemmaStreamCopy256(stage + A_BYTES + sw, valid != 0u ? bg_base + q * b_step : w_safe, valid << 4u);
+				if ( !is_router )
+					GemmaStreamCopy256(stage + A_BYTES + B_BYTES + sw, valid != 0u ? bu_base + q * b_step : w_safe, valid << 4u);
+			}
+			bg_base += TILE_K;
 			if ( !is_router )
-				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, valid != 0u ? bu_base + q * b_step : w_safe, valid << 4u);
+				bu_base += TILE_K;
 		}
-		bg_base += TILE_K;
-		if ( !is_router )
-			bu_base += TILE_K;
 		LmStreamCommit();
+	};
+	auto prefetch_b = [&]()
+	{
+		if constexpr ( LDCS_B )
+		{
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t valid = (b_mask >> q) & 1u;
+				bg_w[q] = valid != 0u ? __ldcs((const uint4 *)(bg_base + q * b_step)) : make_uint4(0u, 0u, 0u, 0u);
+				if ( !is_router )
+					bu_w[q] = valid != 0u ? __ldcs((const uint4 *)(bu_base + q * b_step)) : make_uint4(0u, 0u, 0u, 0u);
+			}
+			bg_base += TILE_K;
+			if ( !is_router )
+				bu_base += TILE_K;
+		}
+	};
+	auto store_b = [&](uint32_t st_off)
+	{
+		if constexpr ( LDCS_B )
+		{
+			uint8_t *dst = gm_dgu_smem + st_off;
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t r = row0 + q * ROW_STEP;
+				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
+				*(uint4 *)(dst + A_BYTES + sw) = bg_w[q];
+				if ( !is_router )
+					*(uint4 *)(dst + A_BYTES + B_BYTES + sw) = bu_w[q];
+			}
+		}
 	};
 	auto advance = [](uint32_t &off)
 	{
@@ -870,7 +919,7 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 				off = 0u;
 		}
 	};
-	uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
+	uint32_t a_reg[2][MF][4], bg_reg[B_BUFS][NF][2], bu_reg[B_BUFS][NF][2];
 	float tg[MF][NF][4], tu[MF][NF][4];
 	#pragma unroll
 	for ( uint32_t i = 0u; i < MF; ++i )
@@ -879,7 +928,7 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			#pragma unroll
 			for ( uint32_t e = 0u; e < 4u; ++e )
 				tg[i][j][e] = tu[i][j][e] = 0.0f;
-	auto load_frag = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
+	auto load_a = [&](uint32_t buf, uint32_t ks, uint32_t stage_s)
 	{
 		#pragma unroll
 		for ( uint32_t ii = 0u; ii < MF; ++ii )
@@ -888,14 +937,17 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			const uint32_t c = ks * 2u + ((lane >> 4u) & 1u);
 			LmStreamLdMatrix4(a_reg[buf][ii], stage_s + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u);
 		}
+	};
+	auto load_b = [&](uint32_t bbuf, uint32_t ks, uint32_t stage_s)
+	{
 		if constexpr ( NF == 1u )
 		{
 			const uint32_t r = warp_n * WARP_N + (lane & 7u);
 			const uint32_t c = ks * 2u + ((lane >> 3u) & 1u);
 			const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
-			LmStreamLdMatrix2(bg_reg[buf][0], stage_s + A_BYTES + off);
+			LmStreamLdMatrix2(bg_reg[bbuf][0], stage_s + A_BYTES + off);
 			if ( !is_router )
-				LmStreamLdMatrix2(bu_reg[buf][0], stage_s + A_BYTES + B_BYTES + off);
+				LmStreamLdMatrix2(bu_reg[bbuf][0], stage_s + A_BYTES + B_BYTES + off);
 		}
 		else
 		{
@@ -907,33 +959,35 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 				const uint32_t off = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
 				uint32_t tmp[4];
 				LmStreamLdMatrix4(tmp, stage_s + A_BYTES + off);
-				bg_reg[buf][jj][0] = tmp[0]; bg_reg[buf][jj][1] = tmp[1];
-				bg_reg[buf][jj + 1u][0] = tmp[2]; bg_reg[buf][jj + 1u][1] = tmp[3];
+				bg_reg[bbuf][jj][0] = tmp[0]; bg_reg[bbuf][jj][1] = tmp[1];
+				bg_reg[bbuf][jj + 1u][0] = tmp[2]; bg_reg[bbuf][jj + 1u][1] = tmp[3];
 				if ( !is_router )
 				{
 					LmStreamLdMatrix4(tmp, stage_s + A_BYTES + B_BYTES + off);
-					bu_reg[buf][jj][0] = tmp[0]; bu_reg[buf][jj][1] = tmp[1];
-					bu_reg[buf][jj + 1u][0] = tmp[2]; bu_reg[buf][jj + 1u][1] = tmp[3];
+					bu_reg[bbuf][jj][0] = tmp[0]; bu_reg[bbuf][jj][1] = tmp[1];
+					bu_reg[bbuf][jj + 1u][0] = tmp[2]; bu_reg[bbuf][jj + 1u][1] = tmp[3];
 				}
 			}
 		}
 	};
-	uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
-	#pragma unroll
-	for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+	if constexpr ( !LDCS_B && STAGES >= 3u )
 	{
-		if ( kp < k_tiles )
-			issue_k(sp_off);
-		else
-			LmStreamCommit();
-		kp++;
-		advance(sp_off);
-	}
-	if constexpr ( STAGES >= 3u )
-	{
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( kp < k_tiles )
+				issue_k(sp_off);
+			else
+				LmStreamCommit();
+			kp++;
+			advance(sp_off);
+		}
 		LmStreamWait<STAGES - 2u>();
 		__syncthreads();
-		load_frag(0u, 0u, shared_base + sc_off);
+		load_a(0u, 0u, shared_base + sc_off);
+		if constexpr ( B_BUFS == 2u )
+			load_b(0u, 0u, shared_base + sc_off);
 		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 		{
 			const uint32_t stage_s = shared_base + sc_off;
@@ -941,6 +995,8 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
 			{
 				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if constexpr ( B_BUFS == 1u )
+					load_b(0u, ks, stage_s);
 				if ( ks == 0u )
 				{
 					if ( kp < k_tiles )
@@ -953,57 +1009,82 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 						LmStreamCommit();
 				}
 				if ( ks + 1u < KSTEPS )
-					load_frag(nxt, ks + 1u, stage_s);
+				{
+					load_a(nxt, ks + 1u, stage_s);
+					if constexpr ( B_BUFS == 2u )
+						load_b(nxt, ks + 1u, stage_s);
+				}
 				else if ( kt + 1u < k_tiles )
 				{
 					LmStreamWait<STAGES - 2u>();
 					__syncthreads();
 					advance(sc_off);
-					load_frag(nxt, 0u, shared_base + sc_off);
+					load_a(nxt, 0u, shared_base + sc_off);
+					if constexpr ( B_BUFS == 2u )
+						load_b(nxt, 0u, shared_base + sc_off);
 				}
+				const uint32_t bcur = B_BUFS == 2u ? cur : 0u;
 				#pragma unroll
 				for ( uint32_t i = 0u; i < MF; ++i )
 					#pragma unroll
 					for ( uint32_t j = 0u; j < NF; ++j )
 					{
-						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[bcur][j]);
 						if ( !is_router )
-							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[bcur][j]);
 					}
 			}
 		}
 	}
 	else
 	{
+		uint32_t sp_off = 0u, sc_off = 0u;
+		issue_k(sp_off);
+		prefetch_b();
+		store_b(sp_off);
+		sp_off ^= STAGE_BYTES;
 		for ( uint32_t kt = 0u; kt < k_tiles; ++kt )
 		{
 			LmStreamWait<0u>();
 			__syncthreads();
 			const uint32_t stage_s = shared_base + sc_off;
-			if ( kp < k_tiles )
+			if ( kt + 1u < k_tiles )
 			{
 				issue_k(sp_off);
-				kp++;
-				advance(sp_off);
+				prefetch_b();
 			}
-			load_frag(0u, 0u, stage_s);
+			load_a(0u, 0u, stage_s);
+			if constexpr ( B_BUFS == 2u )
+				load_b(0u, 0u, stage_s);
 			#pragma unroll
 			for ( uint32_t ks = 0u; ks < KSTEPS; ++ks )
 			{
 				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if constexpr ( B_BUFS == 1u )
+					load_b(0u, ks, stage_s);
 				if ( ks + 1u < KSTEPS )
-					load_frag(nxt, ks + 1u, stage_s);
+				{
+					load_a(nxt, ks + 1u, stage_s);
+					if constexpr ( B_BUFS == 2u )
+						load_b(nxt, ks + 1u, stage_s);
+				}
+				const uint32_t bcur = B_BUFS == 2u ? cur : 0u;
 				#pragma unroll
 				for ( uint32_t i = 0u; i < MF; ++i )
 					#pragma unroll
 					for ( uint32_t j = 0u; j < NF; ++j )
 					{
-						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[bcur][j]);
 						if ( !is_router )
-							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[bcur][j]);
 					}
 			}
-			advance(sc_off);
+			if ( kt + 1u < k_tiles )
+			{
+				store_b(sp_off);
+				sp_off ^= STAGE_BYTES;
+			}
+			sc_off ^= STAGE_BYTES;
 		}
 	}
 	LmStreamWait<0u>();
@@ -1033,7 +1114,7 @@ static void GemmaDenseGateUpActMmaKernel(const uint16_t *__restrict__ gate_up_w,
 }
 
 template<uint32_t TILE_M, uint32_t WARPS_M, uint32_t ACT_MODE, bool LDCS_B = true, uint32_t STAGES = 2u>
-__global__ __launch_bounds__(256u, 1)
+__global__ __launch_bounds__(256u, (STAGES * (TILE_M + 128u) * 128u <= 49152u) ? 2 : 1)
 static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, const uint16_t *__restrict__ w_up,
 	const uint16_t *__restrict__ act, const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
 	const uint32_t *__restrict__ tile_prefix, const uint32_t *__restrict__ source_row_map, uint16_t *__restrict__ out,
@@ -1088,7 +1169,7 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 				{
 					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 					const uint32_t valid = (a_mask >> q) & 1u;
-					LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+					GemmaStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
 					a_src[q] += TILE_K;
 				}
 			}
@@ -1099,8 +1180,8 @@ static void GemmaMoeMmaW1ActLdcsKernel(const uint16_t *__restrict__ w_gate, cons
 				{
 					const uint32_t r = row0 + q * ROW_STEP;
 					const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
-					LmStreamCopy(stage + A_BYTES + sw, bg_base + q * b_step, 16u);
-					LmStreamCopy(stage + A_BYTES + B_BYTES + sw, bu_base + q * b_step, 16u);
+					GemmaStreamCopy256Full(stage + A_BYTES + sw, bg_base + q * b_step);
+					GemmaStreamCopy256Full(stage + A_BYTES + B_BYTES + sw, bu_base + q * b_step);
 				}
 				bg_base += TILE_K;
 				bu_base += TILE_K;
@@ -1366,7 +1447,7 @@ static void GemmaMoeMmaW2K128Kernel(const uint16_t *__restrict__ w2, const uint1
 			{
 				const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 				const uint32_t packed = rb + r, valid = packed < rl ? 1u : 0u;
-				LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u,
+				GemmaStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u,
 					valid != 0u ? act + (uint64_t)packed * K + k_off + c * 8u : act, valid << 4u);
 			}
 		}
@@ -1376,7 +1457,7 @@ static void GemmaMoeMmaW2K128Kernel(const uint16_t *__restrict__ w2, const uint1
 		for ( uint32_t q = 0u; q < B_PER_T; ++q )
 		{
 			const uint32_t r = row0 + q * ROW_STEP;
-			LmStreamCopy(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, b_ptr + q * b_step, 16u);
+			GemmaStreamCopy256Full(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, b_ptr + q * b_step);
 		}
 		LmStreamCommit();
 	};
@@ -1470,7 +1551,7 @@ static void GemmaMoeMmaW2K128Kernel(const uint16_t *__restrict__ w2, const uint1
 	}
 }
 
-template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t THREADS = 256u, uint32_t STAGES = 2u>
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M, uint32_t THREADS = 256u, uint32_t STAGES = 2u, bool STREAM_OUT = true>
 __global__ __launch_bounds__(THREADS, (STAGES * (TILE_M + TILE_N) * 128u <= 49152u) ? 2 : 1)
 static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ act,
 	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ tile_prefix,
@@ -1521,7 +1602,7 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 				{
 					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 					const uint32_t valid = (a_mask >> q) & 1u;
-					LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+					GemmaStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
 					a_src[q] += TILE_K;
 				}
 			}
@@ -1529,7 +1610,7 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 			for ( uint32_t q = 0u; q < B_PER_T; ++q )
 			{
 				const uint32_t r = row0 + q * ROW_STEP;
-				LmStreamCopy(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, b_base + q * b_step, 16u);
+				GemmaStreamCopy256Full(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, b_base + q * b_step);
 			}
 			b_base += TILE_K;
 			LmStreamCommit();
@@ -1686,7 +1767,13 @@ static void GemmaMoeMmaW2GeneralKernel(const uint16_t *__restrict__ w2, const ui
 					const uint32_t r = row_base + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
 					const uint32_t c = col_base + warp_n * WARP_N + j * 8u + quad * 2u;
 					if ( r < row_limit )
-						__stcs((uint32_t *)(out_bf16 + (uint64_t)r * N + c), LmPackBf16Pair(acc[i][j][e], acc[i][j][e + 1u]));
+					{
+						const uint32_t packed = LmPackBf16Pair(acc[i][j][e], acc[i][j][e + 1u]);
+						if constexpr ( STREAM_OUT )
+							__stcs((uint32_t *)(out_bf16 + (uint64_t)r * N + c), packed);
+						else
+							*(uint32_t *)(out_bf16 + (uint64_t)r * N + c) = packed;
+					}
 				}
 		if ( tile + gridDim.x < total_tiles )
 			__syncthreads();

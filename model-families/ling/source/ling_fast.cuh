@@ -2,6 +2,16 @@
 
 #include <atomic>
 
+static __device__ __forceinline__ void LingStreamCopy256(uint32_t shared, const void *source, uint32_t bytes)
+{
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
+}
+
+static __device__ __forceinline__ void LingStreamCopy256Full(uint32_t shared, const void *source)
+{
+	asm volatile("cp.async.cg.shared.global.L2::256B [%0], [%1], 16;\n" :: "r"(shared), "l"(source) : "memory");
+}
+
 static __device__ __forceinline__ uint32_t LingSwizzle10(uint32_t row, uint32_t chunk)
 {
 	return chunk < 8u ? LmStreamSwizzle8(row, chunk) : (8u + ((chunk - 8u) ^ (row & 1u)));
@@ -1319,6 +1329,7 @@ typedef struct LingGqaPrefillSeqPlan
 	uint32_t prior_off[LG_PREFILL_MAX_SEQS];
 	uint32_t peer_off[LG_PREFILL_MAX_SEQS];
 	uint32_t peer_keys[LG_PREFILL_MAX_SEQS];
+	uint32_t ctx_off[LG_PREFILL_MAX_SEQS];
 }
 LingGqaPrefillSeqPlan;
 
@@ -1476,7 +1487,7 @@ static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf1
 		const uint32_t r = idx / K_CHUNKS, c = idx % K_CHUNKS;
 		const bool vr = row_first + r < row_end;
 		const uint16_t *src = vr ? query_bf16 + ((uint64_t)(row_first + r) * rank_heads + local_h) * HD + c * 8u : query_bf16;
-		LmPrefillCopy(k_base + r * K_ROW_BYTES + LmPrefillSwizzle(r, c) * 16u, src, vr ? 16u : 0u);
+		LingStreamCopy256(k_base + r * K_ROW_BYTES + LmPrefillSwizzle(r, c) * 16u, src, vr ? 16u : 0u);
 	}
 	asm volatile("cp.async.commit_group;\n" ::: "memory");
 	asm volatile("cp.async.wait_group 0;\n" ::: "memory");
@@ -1504,7 +1515,7 @@ static void LingGqaLocalPrefillAttnKernel(const uint16_t *__restrict__ query_bf1
 					kv_prior + ((uint64_t)lkvh * plan.total_prior + (s_prior_off + k_idx)) * SLOT_ELEMS + elem_off + c * 8u :
 					kv_cur + ((uint64_t)lkvh * rows + (s_row_begin + (k_idx - s_prior_keys))) * SLOT_ELEMS + elem_off + c * 8u) :
 				query_bf16;
-			LmPrefillCopy(dst_base + s * K_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
+			LingStreamCopy256(dst_base + s * K_ROW_BYTES + LmPrefillSwizzle(s, c) * 16u, src, valid ? 16u : 0u);
 		}
 		asm volatile("cp.async.commit_group;\n" ::: "memory");
 	};
@@ -2345,7 +2356,7 @@ static void LingMoeMmaW1W3SiluFp8Kernel(const uint8_t *__restrict__ w1, const fl
 			{
 				const uint32_t r = a_row0 + q * A_STEP;
 				const uint32_t valid = (a_mask >> q) & 1u;
-				LmStreamCopy(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, a_col0) * 16u, a_src[q], valid << 4u);
+				LingStreamCopy256(stage + r * A_ROW_BYTES + LmStreamSwizzle8(r, a_col0) * 16u, a_src[q], valid << 4u);
 				a_src[q] += TILE_K;
 			}
 			#pragma unroll
@@ -2353,8 +2364,8 @@ static void LingMoeMmaW1W3SiluFp8Kernel(const uint8_t *__restrict__ w1, const fl
 			{
 				const uint32_t r = b_row0 + q * B_STEP;
 				const uint32_t sw = LmStreamWeight<LmFp8>::template Offset<B_ROW_BYTES>(r, b_col0);
-				LmStreamCopy(stage + A_BYTES + sw, bg_base + q * b_ptr_step, 16u);
-				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, bu_base + q * b_ptr_step, 16u);
+				LingStreamCopy256Full(stage + A_BYTES + sw, bg_base + q * b_ptr_step);
+				LingStreamCopy256Full(stage + A_BYTES + B_BYTES + sw, bu_base + q * b_ptr_step);
 			}
 			bg_base += TILE_K;
 			bu_base += TILE_K;
@@ -2516,9 +2527,9 @@ static void LingMoeMmaW1W3SiluBf16Kernel(const uint16_t *__restrict__ w1, const 
 		const uint16_t *bg_base = w1 + (exp_base + row0) * K + col0 * 8u;
 		const uint16_t *bu_base = w3 + (exp_base + row0) * K + col0 * 8u;
 		const uint64_t b_step = (uint64_t)ROW_STEP * K;
-		auto issue_k = [&](uint32_t s_idx)
+		auto issue_k = [&](uint32_t st_off)
 		{
-			const uint32_t stage = shared_base + s_idx * STAGE_BYTES;
+			const uint32_t stage = shared_base + st_off;
 			#pragma unroll
 			for ( uint32_t q = 0u; q < A_PER_T; ++q )
 			{
@@ -2527,7 +2538,7 @@ static void LingMoeMmaW1W3SiluBf16Kernel(const uint16_t *__restrict__ w1, const 
 				{
 					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 					const uint32_t valid = (a_mask >> q) & 1u;
-					LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+					LingStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
 					a_src[q] += TILE_K;
 				}
 			}
@@ -2536,11 +2547,17 @@ static void LingMoeMmaW1W3SiluBf16Kernel(const uint16_t *__restrict__ w1, const 
 			{
 				const uint32_t r = row0 + q * ROW_STEP;
 				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u;
-				LmStreamCopy(stage + A_BYTES + sw, bg_base + q * b_step, 16u);
-				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, bu_base + q * b_step, 16u);
+				LingStreamCopy256Full(stage + A_BYTES + sw, bg_base + q * b_step);
+				LingStreamCopy256Full(stage + A_BYTES + B_BYTES + sw, bu_base + q * b_step);
 			}
 			bg_base += TILE_K;
 			bu_base += TILE_K;
+		};
+		auto advance = [](uint32_t &off)
+		{
+			off += STAGE_BYTES;
+			if ( off == STAGES * STAGE_BYTES )
+				off = 0u;
 		};
 		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
 		float tg[MF][NF][4], tu[MF][NF][4];
@@ -2586,29 +2603,45 @@ static void LingMoeMmaW1W3SiluBf16Kernel(const uint16_t *__restrict__ w1, const 
 				}
 			}
 		};
+		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
 		#pragma unroll
 		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
 		{
-			if ( s < K_TILES )
-				issue_k(s);
+			if ( kp < K_TILES )
+				issue_k(sp_off);
 			LmStreamCommit();
+			kp++;
+			advance(sp_off);
 		}
+		LmStreamWait<STAGES - 2u>();
+		__syncthreads();
+		load_frag(0u, 0u, shared_base + sc_off);
 		for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
 		{
-			LmStreamWait<STAGES - 2u>();
-			__syncthreads();
-			const uint32_t stage_s = shared_base + (kt % STAGES) * STAGE_BYTES;
-			const uint32_t ahead = kt + STAGES - 1u;
-			if ( ahead < K_TILES )
-				issue_k(ahead % STAGES);
-			LmStreamCommit();
-			load_frag(0u, 0u, stage_s);
+			const uint32_t stage_s = shared_base + sc_off;
 			#pragma unroll
 			for ( uint32_t ks = 0u; ks < 4u; ++ks )
 			{
 				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks == 0u )
+				{
+					if ( kp < K_TILES )
+					{
+						issue_k(sp_off);
+						kp++;
+						advance(sp_off);
+					}
+					LmStreamCommit();
+				}
 				if ( ks + 1u < 4u )
 					load_frag(nxt, ks + 1u, stage_s);
+				else if ( kt + 1u < K_TILES )
+				{
+					LmStreamWait<STAGES - 2u>();
+					__syncthreads();
+					advance(sc_off);
+					load_frag(nxt, 0u, shared_base + sc_off);
+				}
 				#pragma unroll
 				for ( uint32_t i = 0u; i < MF; ++i )
 					#pragma unroll
@@ -2644,8 +2677,8 @@ static void LingMoeMmaW1W3SiluBf16Kernel(const uint16_t *__restrict__ w1, const 
 	LmDependentRelease();
 }
 
-template<class G, uint32_t TILE_M, uint32_t WARPS_M, uint32_t STAGES>
-__global__ __launch_bounds__(WARPS_M * 5u * 32u, 1)
+template<class G, uint32_t TILE_M, uint32_t WARPS_M, uint32_t STAGES, bool LDCS_B = false>
+__global__ __launch_bounds__(WARPS_M * 5u * 32u, (STAGES * (TILE_M + 160u) * 128u <= 49152u) ? 2 : 1)
 static void LingMoeMmaW1W3SiluN80Kernel(const uint16_t *__restrict__ w1, const uint16_t *__restrict__ w3,
 	const uint16_t *__restrict__ act, const float *__restrict__ packed_weight, const uint32_t *__restrict__ group_row_offset,
 	const uint32_t *__restrict__ tile_prefix, const uint32_t *__restrict__ route_source_token, uint16_t *__restrict__ inter_out, float limit)
@@ -2684,9 +2717,10 @@ static void LingMoeMmaW1W3SiluN80Kernel(const uint16_t *__restrict__ w1, const u
 		const uint16_t *bg_base = w1 + exp_base * K;
 		const uint16_t *bu_base = w3 + exp_base * K;
 		uint32_t k_off = 0u;
-		auto issue_k = [&](uint32_t s_idx)
+		uint4 bg_w[LDCS_B ? B_PER_T : 1u], bu_w[LDCS_B ? B_PER_T : 1u];
+		auto issue_k = [&](uint32_t st_off)
 		{
-			const uint32_t stage = shared_base + s_idx * STAGE_BYTES;
+			const uint32_t stage = shared_base + st_off;
 			#pragma unroll
 			for ( uint32_t q = 0u; q < A_PER_T; ++q )
 			{
@@ -2695,21 +2729,68 @@ static void LingMoeMmaW1W3SiluN80Kernel(const uint16_t *__restrict__ w1, const u
 				{
 					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 					const uint32_t valid = (a_mask >> q) & 1u;
-					LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+					LingStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
 					a_src[q] += TILE_K;
 				}
 			}
-			#pragma unroll
-			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			if constexpr ( !LDCS_B )
 			{
-				const uint32_t chunk = threadIdx.x + q * THREADS;
-				const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
-				const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
-				const uint64_t boff = (uint64_t)r * K + k_off + c * 8u;
-				LmStreamCopy(stage + A_BYTES + sw, bg_base + boff, 16u);
-				LmStreamCopy(stage + A_BYTES + B_BYTES + sw, bu_base + boff, 16u);
+				#pragma unroll
+				for ( uint32_t q = 0u; q < B_PER_T; ++q )
+				{
+					const uint32_t chunk = threadIdx.x + q * THREADS;
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
+					const uint64_t boff = (uint64_t)r * K + k_off + c * 8u;
+					LingStreamCopy256Full(stage + A_BYTES + sw, bg_base + boff);
+					LingStreamCopy256Full(stage + A_BYTES + B_BYTES + sw, bu_base + boff);
+				}
+				k_off += TILE_K;
 			}
-			k_off += TILE_K;
+			LmStreamCommit();
+		};
+		auto prefetch_b = [&]()
+		{
+			if constexpr ( LDCS_B )
+			{
+				#pragma unroll
+				for ( uint32_t q = 0u; q < B_PER_T; ++q )
+				{
+					const uint32_t chunk = threadIdx.x + q * THREADS;
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					const uint64_t boff = (uint64_t)r * K + k_off + c * 8u;
+					bg_w[q] = __ldcs((const uint4 *)(bg_base + boff));
+					bu_w[q] = __ldcs((const uint4 *)(bu_base + boff));
+				}
+				k_off += TILE_K;
+			}
+		};
+		auto store_b = [&](uint32_t st_off)
+		{
+			if constexpr ( LDCS_B )
+			{
+				uint8_t *dst = smem + st_off;
+				#pragma unroll
+				for ( uint32_t q = 0u; q < B_PER_T; ++q )
+				{
+					const uint32_t chunk = threadIdx.x + q * THREADS;
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					const uint32_t sw = r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u;
+					*(uint4 *)(dst + A_BYTES + sw) = bg_w[q];
+					*(uint4 *)(dst + A_BYTES + B_BYTES + sw) = bu_w[q];
+				}
+			}
+		};
+		auto advance = [](uint32_t &off)
+		{
+			if constexpr ( STAGES == 2u )
+				off ^= STAGE_BYTES;
+			else
+			{
+				off += STAGE_BYTES;
+				if ( off == STAGES * STAGE_BYTES )
+					off = 0u;
+			}
 		};
 		uint32_t a_reg[2][MF][4], bg_reg[2][NF][2], bu_reg[2][NF][2];
 		float tg[MF][NF][4], tu[MF][NF][4];
@@ -2740,37 +2821,99 @@ static void LingMoeMmaW1W3SiluN80Kernel(const uint16_t *__restrict__ w1, const u
 			bu_reg[buf][0][0] = tmp[0]; bu_reg[buf][0][1] = tmp[1];
 			bu_reg[buf][1][0] = tmp[2]; bu_reg[buf][1][1] = tmp[3];
 		};
-		#pragma unroll
-		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		if constexpr ( !LDCS_B && STAGES >= 3u )
 		{
-			if ( s < K_TILES )
-				issue_k(s);
-			LmStreamCommit();
-		}
-		for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
-		{
+			uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
+			#pragma unroll
+			for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+			{
+				if ( kp < K_TILES )
+					issue_k(sp_off);
+				else
+					LmStreamCommit();
+				kp++;
+				advance(sp_off);
+			}
 			LmStreamWait<STAGES - 2u>();
 			__syncthreads();
-			const uint32_t stage_s = shared_base + (kt % STAGES) * STAGE_BYTES;
-			const uint32_t ahead = kt + STAGES - 1u;
-			if ( ahead < K_TILES )
-				issue_k(ahead % STAGES);
-			LmStreamCommit();
-			load_frag(0u, 0u, stage_s);
-			#pragma unroll
-			for ( uint32_t ks = 0u; ks < 4u; ++ks )
+			load_frag(0u, 0u, shared_base + sc_off);
+			for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
 			{
-				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-				if ( ks + 1u < 4u )
-					load_frag(nxt, ks + 1u, stage_s);
+				const uint32_t stage_s = shared_base + sc_off;
 				#pragma unroll
-				for ( uint32_t i = 0u; i < MF; ++i )
-					#pragma unroll
-					for ( uint32_t j = 0u; j < NF; ++j )
+				for ( uint32_t ks = 0u; ks < 4u; ++ks )
+				{
+					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if ( ks == 0u )
 					{
-						LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
-						LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+						if ( kp < K_TILES )
+						{
+							issue_k(sp_off);
+							kp++;
+							advance(sp_off);
+						}
+						else
+							LmStreamCommit();
 					}
+					if ( ks + 1u < 4u )
+						load_frag(nxt, ks + 1u, stage_s);
+					else if ( kt + 1u < K_TILES )
+					{
+						LmStreamWait<STAGES - 2u>();
+						__syncthreads();
+						advance(sc_off);
+						load_frag(nxt, 0u, shared_base + sc_off);
+					}
+					#pragma unroll
+					for ( uint32_t i = 0u; i < MF; ++i )
+						#pragma unroll
+						for ( uint32_t j = 0u; j < NF; ++j )
+						{
+							LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+						}
+				}
+			}
+		}
+		else
+		{
+			uint32_t sp_off = 0u, sc_off = 0u;
+			issue_k(sp_off);
+			prefetch_b();
+			store_b(sp_off);
+			sp_off ^= STAGE_BYTES;
+			for ( uint32_t kt = 0u; kt < K_TILES; ++kt )
+			{
+				LmStreamWait<0u>();
+				__syncthreads();
+				const uint32_t stage_s = shared_base + sc_off;
+				if ( kt + 1u < K_TILES )
+				{
+					issue_k(sp_off);
+					prefetch_b();
+				}
+				load_frag(0u, 0u, stage_s);
+				#pragma unroll
+				for ( uint32_t ks = 0u; ks < 4u; ++ks )
+				{
+					const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+					if ( ks + 1u < 4u )
+						load_frag(nxt, ks + 1u, stage_s);
+					#pragma unroll
+					for ( uint32_t i = 0u; i < MF; ++i )
+						#pragma unroll
+						for ( uint32_t j = 0u; j < NF; ++j )
+						{
+							LmMmaBf16(tg[i][j], a_reg[cur][i], bg_reg[cur][j]);
+							LmMmaBf16(tu[i][j], a_reg[cur][i], bu_reg[cur][j]);
+						}
+				}
+				if ( kt + 1u < K_TILES )
+				{
+					store_b(sp_off);
+					sp_off ^= STAGE_BYTES;
+				}
+				sc_off ^= STAGE_BYTES;
 			}
 		}
 		LmStreamWait<0u>();
@@ -2798,8 +2941,8 @@ static void LingMoeMmaW1W3SiluN80Kernel(const uint16_t *__restrict__ w1, const u
 	LmDependentRelease();
 }
 
-template<class G, uint32_t TILE_M, uint32_t WARPS_M, uint32_t STAGES>
-__global__ __launch_bounds__(256u, 1)
+template<class G, uint32_t TILE_M, uint32_t WARPS_M, uint32_t STAGES, bool LDCS_B = false>
+__global__ __launch_bounds__(256u, (STAGES * (TILE_M + 64u) * 160u <= 32768u) ? 3 : ((STAGES * (TILE_M + 64u) * 160u <= 49152u) ? 2 : 1))
 static void LingMoeMmaW2K80SliceKernel(const uint16_t *__restrict__ w2, const uint16_t *__restrict__ inter_in,
 	const uint32_t *__restrict__ group_row_offset, const uint32_t *__restrict__ tile_prefix,
 	uint16_t *__restrict__ out_bf16, uint32_t col_begin, uint32_t slice_cols)
@@ -2822,19 +2965,18 @@ static void LingMoeMmaW2K80SliceKernel(const uint16_t *__restrict__ w2, const ui
 		LmDependentRelease();
 		return;
 	}
-	uint32_t rb0 = 0u, rl0 = 0u, nt0 = 0u, rb1 = 0u, rl1 = 0u, nt1 = 0u;
+	uint32_t rb_s[STAGES], rl_s[STAGES], nt_s[STAGES];
+	#pragma unroll
+	for ( uint32_t s = 0u; s < STAGES; ++s )
+		rb_s[s] = rl_s[s] = nt_s[s] = 0u;
+	uint4 b_w[LDCS_B ? B_PER_T : 1u];
 	auto issue_tile = [&](uint32_t t_idx, uint32_t s_idx)
 	{
 		uint32_t grp_o, rb_o, rl_o, nt_o;
 		LingGroupedTileLookup(group_row_offset, tile_prefix, G::kLocalExperts, t_idx, TILE_M, n_tiles, grp_o, rb_o, rl_o, nt_o);
-		if ( s_idx == 0u )
-		{
-			rb0 = rb_o; rl0 = rl_o; nt0 = nt_o;
-		}
-		else
-		{
-			rb1 = rb_o; rl1 = rl_o; nt1 = nt_o;
-		}
+		rb_s[s_idx] = rb_o;
+		rl_s[s_idx] = rl_o;
+		nt_s[s_idx] = nt_o;
 		const uint32_t stage = shared_base + s_idx * STAGE_BYTES;
 		const uint32_t col_base = col_begin + nt_o * TILE_N;
 		#pragma unroll
@@ -2845,19 +2987,53 @@ static void LingMoeMmaW2K80SliceKernel(const uint16_t *__restrict__ w2, const ui
 			{
 				const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 				const uint32_t packed = rb_o + r, valid = packed < rl_o ? 1u : 0u;
-				LmStreamCopy(stage + r * ROW_BYTES + LingSwizzle10(r, c) * 16u,
+				LingStreamCopy256(stage + r * ROW_BYTES + LingSwizzle10(r, c) * 16u,
 					valid != 0u ? inter_in + (uint64_t)packed * K + c * 8u : inter_in, valid << 4u);
 			}
 		}
 		const uint16_t *b_base = w2 + ((uint64_t)grp_o * N + col_base) * K;
-		#pragma unroll
-		for ( uint32_t q = 0u; q < B_PER_T; ++q )
+		if constexpr ( LDCS_B )
 		{
-			const uint32_t chunk = threadIdx.x + q * 256u;
-			if ( chunk < B_CHUNKS )
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
 			{
-				const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
-				LmStreamCopy(stage + A_BYTES + r * ROW_BYTES + LingSwizzle10(r, c) * 16u, b_base + (uint64_t)r * K + c * 8u, 16u);
+				const uint32_t chunk = threadIdx.x + q * 256u;
+				if ( chunk < B_CHUNKS )
+				{
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					b_w[q] = __ldcs((const uint4 *)(b_base + (uint64_t)r * K + c * 8u));
+				}
+			}
+		}
+		else
+		{
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t chunk = threadIdx.x + q * 256u;
+				if ( chunk < B_CHUNKS )
+				{
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					LingStreamCopy256Full(stage + A_BYTES + r * ROW_BYTES + LingSwizzle10(r, c) * 16u, b_base + (uint64_t)r * K + c * 8u);
+				}
+			}
+		}
+		LmStreamCommit();
+	};
+	auto store_b = [&](uint32_t s_idx)
+	{
+		if constexpr ( LDCS_B )
+		{
+			uint8_t *dst = smem + s_idx * STAGE_BYTES;
+			#pragma unroll
+			for ( uint32_t q = 0u; q < B_PER_T; ++q )
+			{
+				const uint32_t chunk = threadIdx.x + q * 256u;
+				if ( chunk < B_CHUNKS )
+				{
+					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
+					*(uint4 *)(dst + A_BYTES + r * ROW_BYTES + LingSwizzle10(r, c) * 16u) = b_w[q];
+				}
 			}
 		}
 	};
@@ -2892,58 +3068,120 @@ static void LingMoeMmaW2K80SliceKernel(const uint16_t *__restrict__ w2, const ui
 		}
 	};
 	const uint32_t n_iters = (total_tiles - 1u - blockIdx.x) / gridDim.x + 1u;
-	#pragma unroll
-	for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+	if constexpr ( LDCS_B )
 	{
-		if ( s < n_iters )
-			issue_tile(blockIdx.x + s * gridDim.x, s);
-		LmStreamCommit();
-	}
-	for ( uint32_t iter = 0u; iter < n_iters; ++iter )
-	{
-		LmStreamWait<STAGES - 2u>();
-		__syncthreads();
-		const uint32_t cur_s = iter % STAGES;
-		const uint32_t stage_s = shared_base + cur_s * STAGE_BYTES;
-		const uint32_t ahead = iter + STAGES - 1u;
-		if ( ahead < n_iters )
-			issue_tile(blockIdx.x + ahead * gridDim.x, ahead % STAGES);
-		LmStreamCommit();
-		float acc[MF][NF][4];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
-			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
-				acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
-		load_frag(0u, 0u, stage_s);
-		#pragma unroll
-		for ( uint32_t ks = 0u; ks < 5u; ++ks )
+		issue_tile(blockIdx.x, 0u);
+		store_b(0u);
+		uint32_t cur_s = 0u, prod_s = 1u;
+		for ( uint32_t iter = 0u; iter < n_iters; ++iter )
 		{
-			const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
-			if ( ks + 1u < 5u )
-				load_frag(nxt, ks + 1u, stage_s);
+			LmStreamWait<0u>();
+			__syncthreads();
+			const uint32_t stage_s = shared_base + cur_s * STAGE_BYTES;
+			const uint32_t cur_rb = rb_s[cur_s];
+			const uint32_t cur_rl = rl_s[cur_s];
+			const uint32_t out_col_base = nt_s[cur_s] * TILE_N;
+			if ( iter + 1u < n_iters )
+				issue_tile(blockIdx.x + (iter + 1u) * gridDim.x, prod_s);
+			float acc[MF][NF][4];
 			#pragma unroll
 			for ( uint32_t i = 0u; i < MF; ++i )
 				#pragma unroll
 				for ( uint32_t j = 0u; j < NF; ++j )
-					LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[cur][j]);
-		}
-		const uint32_t cur_rb = cur_s == 0u ? rb0 : rb1;
-		const uint32_t cur_rl = cur_s == 0u ? rl0 : rl1;
-		const uint32_t out_col_base = (cur_s == 0u ? nt0 : nt1) * TILE_N;
-		#pragma unroll
-		for ( uint32_t i = 0u; i < MF; ++i )
+					acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
+			load_frag(0u, 0u, stage_s);
 			#pragma unroll
-			for ( uint32_t j = 0u; j < NF; ++j )
+			for ( uint32_t ks = 0u; ks < 5u; ++ks )
+			{
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks + 1u < 5u )
+					load_frag(nxt, ks + 1u, stage_s);
 				#pragma unroll
-				for ( uint32_t e = 0u; e < 4u; e += 2u )
-				{
-					const uint32_t r = cur_rb + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
-					const uint32_t c = out_col_base + warp_n * WARP_N + j * 8u + quad * 2u;
-					if ( r < cur_rl )
-						*(uint32_t *)(out_bf16 + (uint64_t)r * slice_cols + c) =
-							(uint32_t)LmFloatToBf16(acc[i][j][e]) | ((uint32_t)LmFloatToBf16(acc[i][j][e + 1u]) << 16u);
-				}
+				for ( uint32_t i = 0u; i < MF; ++i )
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+						LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[cur][j]);
+			}
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 4u; e += 2u )
+					{
+						const uint32_t r = cur_rb + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
+						const uint32_t c = out_col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+						if ( r < cur_rl )
+							*(uint32_t *)(out_bf16 + (uint64_t)r * slice_cols + c) =
+								(uint32_t)LmFloatToBf16(acc[i][j][e]) | ((uint32_t)LmFloatToBf16(acc[i][j][e + 1u]) << 16u);
+					}
+			if ( iter + 1u < n_iters )
+			{
+				store_b(prod_s);
+				prod_s ^= 1u;
+			}
+			cur_s ^= 1u;
+		}
+	}
+	else
+	{
+		#pragma unroll
+		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
+		{
+			if ( s < n_iters )
+				issue_tile(blockIdx.x + s * gridDim.x, s);
+			else
+				LmStreamCommit();
+		}
+		uint32_t cur_s = 0u, prod_s = (STAGES - 1u) % STAGES;
+		for ( uint32_t iter = 0u; iter < n_iters; ++iter )
+		{
+			LmStreamWait<STAGES - 2u>();
+			__syncthreads();
+			const uint32_t stage_s = shared_base + cur_s * STAGE_BYTES;
+			const uint32_t cur_rb = rb_s[cur_s];
+			const uint32_t cur_rl = rl_s[cur_s];
+			const uint32_t out_col_base = nt_s[cur_s] * TILE_N;
+			const uint32_t ahead = iter + STAGES - 1u;
+			if ( ahead < n_iters )
+				issue_tile(blockIdx.x + ahead * gridDim.x, prod_s);
+			else
+				LmStreamCommit();
+			prod_s = (prod_s + 1u == STAGES) ? 0u : (prod_s + 1u);
+			float acc[MF][NF][4];
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+					acc[i][j][0] = acc[i][j][1] = acc[i][j][2] = acc[i][j][3] = 0.0f;
+			load_frag(0u, 0u, stage_s);
+			#pragma unroll
+			for ( uint32_t ks = 0u; ks < 5u; ++ks )
+			{
+				const uint32_t cur = ks & 1u, nxt = cur ^ 1u;
+				if ( ks + 1u < 5u )
+					load_frag(nxt, ks + 1u, stage_s);
+				#pragma unroll
+				for ( uint32_t i = 0u; i < MF; ++i )
+					#pragma unroll
+					for ( uint32_t j = 0u; j < NF; ++j )
+						LmMmaBf16(acc[i][j], a_reg[cur][i], b_reg[cur][j]);
+			}
+			#pragma unroll
+			for ( uint32_t i = 0u; i < MF; ++i )
+				#pragma unroll
+				for ( uint32_t j = 0u; j < NF; ++j )
+					#pragma unroll
+					for ( uint32_t e = 0u; e < 4u; e += 2u )
+					{
+						const uint32_t r = cur_rb + warp_m * WARP_M + i * 16u + quad_row + (e >> 1u) * 8u;
+						const uint32_t c = out_col_base + warp_n * WARP_N + j * 8u + quad * 2u;
+						if ( r < cur_rl )
+							*(uint32_t *)(out_bf16 + (uint64_t)r * slice_cols + c) =
+								(uint32_t)LmFloatToBf16(acc[i][j][e]) | ((uint32_t)LmFloatToBf16(acc[i][j][e + 1u]) << 16u);
+					}
+			cur_s = (cur_s + 1u == STAGES) ? 0u : (cur_s + 1u);
+		}
 	}
 	LmStreamWait<0u>();
 	LmDependentRelease();
@@ -3061,7 +3299,7 @@ static void LingMultiDenseMmaKernel(const __grid_constant__ LingMultiDensePlan p
 				{
 					const uint32_t r = chunk / ROW_CHUNKS, c = chunk % ROW_CHUNKS;
 					const uint32_t valid = (a_mask >> q) & 1u;
-					LmStreamCopy(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
+					LingStreamCopy256(stage + r * ROW_BYTES + LmStreamSwizzle8(r, c) * 16u, a_src[q], valid << 4u);
 					a_src[q] += TILE_K;
 				}
 			}
@@ -3070,7 +3308,7 @@ static void LingMultiDenseMmaKernel(const __grid_constant__ LingMultiDensePlan p
 			{
 				const uint32_t r = row0 + q * ROW_STEP;
 				const uint32_t valid = (b_mask >> q) & 1u;
-				LmStreamCopy(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? b_base + q * b_step : w_ptr, valid << 4u);
+				LingStreamCopy256(stage + A_BYTES + r * ROW_BYTES + LmStreamSwizzle8(r, col0) * 16u, valid != 0u ? b_base + q * b_step : w_ptr, valid << 4u);
 			}
 			b_base += TILE_K;
 		};
