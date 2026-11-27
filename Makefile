@@ -2348,11 +2348,11 @@ SKL2_QWEN38_KERNELS := qwen_exact_bf16_multi_w1x4_r4_n4 qwen_exact_bf16_multi_w2
 	qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2 \
 	qwen_bf16_dense_mma_16x64 qwen_bf16_dense_mma_32x64 qwen_bf16_dense_mma_64x64 qwen_bf16_dense_mma_128x64 \
 	qwen_bf16_fused_swiglu_mma_16x64 qwen_bf16_fused_swiglu_mma_32x64 qwen_bf16_fused_swiglu_mma_64x32 qwen_bf16_fused_swiglu_mma_128x64 \
-	qwen_gdn_conv_split_serial_4_128_pdl qwen_gdn_split_expand_gate_256_128_pdl \
+	qwen_gdn_conv_split_serial_4_128_pdl gdn_conv_split_tiled_4_128_pdl qwen_gdn_gate_only_128_pdl qwen_gdn_split_expand_gate_256_128_pdl \
 	head_rmsnorm_silu_gate_pdl_exact_128_bf16 head_rmsnorm_sigmoid_gate_pdl_exact_128_bf16 \
 	qwen_gdn_exact_edge_pre_128_128_pdl qwen_gdn_exact_edge_post_128_128_pdl qwen_gdn_scalar_chunk_128_128_128_pdl
 
-$(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2) | build
+$(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
 
 QWEN38_27B_ADAPTER_DEPS := $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) $(SKL2_QWEN38_EMBEDDED) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build

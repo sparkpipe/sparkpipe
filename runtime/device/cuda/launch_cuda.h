@@ -1,8 +1,10 @@
 #pragma once
 
 #ifdef __CUDACC__
+#include <cuda.h>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...) \
 	LM_UNPAREN kernel<<<(grid), (block), (shared), (stream)>>>(__VA_ARGS__)
@@ -97,6 +99,51 @@ static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_byt
 			grants[index].device_mask |= device_bit;
 	}
 	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_ATTRIBUTE);
+}
+
+template<typename BundleTag, typename... Args>
+static inline cudaError_t LmLaunchEmbedded(const uint8_t *cubin, uint64_t cubin_bytes, const char *manifest, uint64_t manifest_bytes,
+	const char *const *names, uint32_t count, uint32_t id, dim3 grid, dim3 block, size_t shared, cudaStream_t stream, Args... args)
+{
+	(void)cubin_bytes; (void)manifest; (void)manifest_bytes;
+	static std::mutex lock;
+	static CUcontext cached_ctx = 0;
+	static CUmodule mod = 0;
+	static std::vector<CUfunction> fns;
+	static std::vector<uint32_t> max_dyn;
+	CUcontext ctx = 0;
+	if ( id >= count )
+		return cudaErrorInvalidValue;
+	if ( (cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == 0) && (cudaFree(0) != cudaSuccess || cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == 0) )
+		return cudaErrorInvalidValue;
+	CUfunction fn = 0;
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		if ( ctx != cached_ctx || mod == 0 )
+		{
+			if ( cuModuleLoadData(&mod, cubin) != CUDA_SUCCESS )
+				return cudaErrorInvalidValue;
+			fns.assign(count, 0);
+			max_dyn.assign(count, 49152u);
+			for ( uint32_t i = 0u; i < count; ++i )
+				if ( cuModuleGetFunction(&fns[i], mod, names[i]) != CUDA_SUCCESS )
+					return cudaErrorInvalidDeviceFunction;
+			cached_ctx = ctx;
+		}
+		fn = fns[id];
+		if ( shared > max_dyn[id] )
+		{
+			if ( cuFuncSetAttribute(fn, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared) != CUDA_SUCCESS )
+				return cudaErrorInvalidValue;
+			max_dyn[id] = (uint32_t)shared;
+		}
+	}
+	void *ptrs[] = { (void *)&args... };
+	CUlaunchAttribute attr = {};
+	attr.id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
+	attr.value.programmaticStreamSerializationAllowed = 1;
+	CUlaunchConfig cfg = { grid.x, grid.y, grid.z, block.x, block.y, block.z, (unsigned int)shared, (CUstream)stream, &attr, 1u };
+	return cuLaunchKernelEx(&cfg, fn, ptrs, 0) == CUDA_SUCCESS ? cudaSuccess : cudaErrorLaunchFailure;
 }
 #else
 static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)

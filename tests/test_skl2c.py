@@ -396,11 +396,31 @@ def test_full_cubin_emission_and_cli():
                 assert emb_cc.returncode == 0, f"embedded header failed cc:\n{emb_cc.stderr}"
 
 
+def test_pdl_preexit_and_mio_war_invariants():
+    unit = load_unit([str(SKL2_DIR / "kernels" / "norm_rope.skl2")], search_roots=[str(SKL2_DIR)])
+    images, _ = compile_unit(unit, arch="sm121", only_set={"head_rmsnorm_silu_gate_pdl_exact_128_bf16"}, allow_unused_lib=True)
+    insns = images[0].insns
+    last_stg = max(i for i, (lo, _) in enumerate(insns) if (lo & 0xFFF) == 0x986)
+    preexits = [i for i, (lo, _) in enumerate(insns) if (lo & 0xFFFF) == 0x782D]
+    assert preexits and all(p > last_stg for p in preexits), f"PREEXIT before last STG: preexits={preexits} last_stg={last_stg}"
+    rd_bar = {}
+    for pc, (lo, hi) in enumerate(insns):
+        op16, wr, wait = lo & 0xFFFF, (hi >> 46) & 7, (hi >> 52) & 0x3F
+        rd_r, ra_r = (lo >> 16) & 0xFF, (lo >> 24) & 0xFF
+        if wait:
+            rd_bar = {r: (m & ~wait) for r, m in rd_bar.items() if (m & ~wait)}
+        if op16 in (0x7589, 0x7F89) and wr < 6:
+            rd_bar[ra_r] = rd_bar.get(ra_r, 0) | (1 << wr)
+        elif (lo & 0xFFF) in (0x220, 0x802, 0x202) and rd_r in rd_bar:
+            raise AssertionError(f"MIO WAR hazard at pc={pc*16:#x}: writes R{rd_r} while SHFL bar mask {rd_bar[rd_r]:#x} pending")
+
+
 def main():
     test_anti_slop_hard_errors()
     test_stdlib_policy_versioning_and_lockfile()
     test_differential_models_and_dedup()
     test_full_cubin_emission_and_cli()
+    test_pdl_preexit_and_mio_war_invariants()
     print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, C99 NVRM header gen, differential models, and 123 sm_121a/sm_120a kernels (0 legacy .skl files)")
     return 0
 

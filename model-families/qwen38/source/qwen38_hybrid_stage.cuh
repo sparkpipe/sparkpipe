@@ -32,79 +32,14 @@
 #include "sparkpipe/spark_qwen38_family.h"
 #include "sparkpipe/spark_gpu.h"
 #include "skl2_qwen38_embedded.h"
-#ifndef SPARKPIPE_DEVICE_NVRM
-#include <cuda.h>
-#include <mutex>
-static inline SparkGpuError QwenSkl2LaunchCuda(uint32_t id, dim3 grid, dim3 block, size_t shared, cudaStream_t stream, void **params)
-{
-	static std::mutex lock;
-	static CUcontext cached_ctx = 0;
-	static CUmodule mod = 0;
-	static CUfunction fns[QWENSKL2_COUNT] = {};
-	static uint32_t max_dyn[QWENSKL2_COUNT] = {};
-	CUcontext ctx = 0;
-	if ( cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == 0 )
-	{
-		if ( cudaFree(0) != cudaSuccess || cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == 0 )
-			return cudaErrorInvalidValue;
-	}
-	CUfunction fn = 0;
-	{
-		std::lock_guard<std::mutex> guard(lock);
-		if ( ctx != cached_ctx || mod == 0 )
-		{
-			if ( cuModuleLoadData(&mod, kQwenSkl2Cubin) != CUDA_SUCCESS )
-				return cudaErrorInvalidValue;
-			for ( uint32_t i = 0u; i < (uint32_t)QWENSKL2_COUNT; ++i )
-			{
-				if ( cuModuleGetFunction(&fns[i], mod, kQwenSkl2Names[i]) != CUDA_SUCCESS )
-					return cudaErrorInvalidDeviceFunction;
-				max_dyn[i] = 49152u;
-			}
-			cached_ctx = ctx;
-		}
-		fn = fns[id];
-		if ( shared > max_dyn[id] )
-		{
-			if ( cuFuncSetAttribute(fn, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared) != CUDA_SUCCESS )
-				return cudaErrorInvalidValue;
-			max_dyn[id] = (uint32_t)shared;
-		}
-	}
-	CUlaunchConfig cfg = {};
-	CUlaunchAttribute attr = {};
-	attr.id = CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION;
-	attr.value.programmaticStreamSerializationAllowed = 1;
-	cfg.gridDimX = grid.x;
-	cfg.gridDimY = grid.y;
-	cfg.gridDimZ = grid.z;
-	cfg.blockDimX = block.x;
-	cfg.blockDimY = block.y;
-	cfg.blockDimZ = block.z;
-	cfg.sharedMemBytes = (unsigned int)shared;
-	cfg.hStream = (CUstream)stream;
-	cfg.attrs = &attr;
-	cfg.numAttrs = 1u;
-	return cuLaunchKernelEx(&cfg, fn, params, 0) == CUDA_SUCCESS ? cudaSuccess : cudaErrorLaunchFailure;
-}
-#endif
+
+struct QwenSkl2BundleTag {};
 
 template<typename... Args>
 static inline SparkGpuError QwenSkl2Launch(uint32_t id, dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, Args... args)
 {
-#ifdef SPARKPIPE_DEVICE_NVRM
-	static const LmParameterTable<Args...> table = LmBuildParameterTable<Args...>();
-	alignas(16) uint8_t packed[LmParameterBytes<Args...>() + 1u];
-	const uint32_t shape[6] = { grid.x, grid.y, grid.z, block.x, block.y, block.z };
-	uint32_t index = 0u;
-	(LmPackValue<Args>(packed, table.items, index, args), ...);
-	return SparkNvrmLaunchEmbedded(kQwenSkl2Cubin, kQwenSkl2Cubin, sizeof(kQwenSkl2Cubin), (const char *)kQwenSkl2Manifest,
-		sizeof(kQwenSkl2Manifest) - 1u, kQwenSkl2Names, (uint32_t)QWENSKL2_COUNT, id, shape, shape + 3, 1u, shared, stream, packed,
-		table.items, (uint32_t)sizeof...(Args), table.bytes);
-#else
-	void *ptrs[] = { (void *)&args... };
-	return QwenSkl2LaunchCuda(id, grid, block, shared, stream, ptrs);
-#endif
+	return LmLaunchEmbedded<QwenSkl2BundleTag>(kQwenSkl2Cubin, sizeof(kQwenSkl2Cubin), (const char *)kQwenSkl2Manifest,
+		sizeof(kQwenSkl2Manifest) - 1u, kQwenSkl2Names, (uint32_t)QWENSKL2_COUNT, id, grid, block, shared, stream, args...);
 }
 
 #define QH_THREADS 256u
@@ -1396,144 +1331,6 @@ static void QwenHybridMultiMergeGateKernel(const float *__restrict__ received, u
 	LmDependentRelease();
 }
 
-template<uint32_t KEY_DIM>
-static __device__ __forceinline__ void QwenGdnWriteSplitChannel(uint32_t channel, uint32_t row, uint32_t gdn_qk, uint32_t gdn_v,
-	uint32_t heads, uint32_t repeat, uint16_t val, uint16_t *__restrict__ query_heads, uint16_t *__restrict__ key_heads,
-	uint16_t *__restrict__ value)
-{
-	if ( channel < gdn_qk )
-	{
-		const uint32_t head = channel / KEY_DIM, within = channel % KEY_DIM;
-		uint16_t *dst = query_heads + ((uint64_t)row * heads + head * repeat) * KEY_DIM + within;
-		for ( uint32_t r = 0u; r < repeat; ++r )
-			dst[(uint64_t)r * KEY_DIM] = val;
-	}
-	else if ( channel < 2u * gdn_qk )
-	{
-		const uint32_t kc = channel - gdn_qk;
-		const uint32_t head = kc / KEY_DIM, within = kc % KEY_DIM;
-		uint16_t *dst = key_heads + ((uint64_t)row * heads + head * repeat) * KEY_DIM + within;
-		for ( uint32_t r = 0u; r < repeat; ++r )
-			dst[(uint64_t)r * KEY_DIM] = val;
-	}
-	else
-		value[(uint64_t)row * gdn_v + (channel - 2u * gdn_qk)] = val;
-}
-
-template<uint32_t KERNEL, uint32_t KEY_DIM>
-__global__ __launch_bounds__(LM_CAUSAL_CONV_TILE_THREADS, 1)
-static void QwenGdnConvSplitTiledKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index,
-	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count,
-	const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight, uint16_t *__restrict__ query_heads,
-	uint16_t *__restrict__ key_heads, uint16_t *__restrict__ value, uint16_t *__restrict__ replay_qkv,
-	uint32_t gdn_qk, uint32_t gdn_v, uint32_t heads, uint32_t input_stride, uint32_t sequences, uint32_t commit,
-	const uint32_t *__restrict__ sequence_row_indices)
-{
-	constexpr uint32_t HALO = KERNEL - 1u;
-	constexpr uint32_t GROUPS = LM_CAUSAL_CONV_TILE_THREADS / LM_CAUSAL_CONV_TILE_CHANNELS;
-	__shared__ uint16_t tile[HALO + LM_CAUSAL_CONV_TILE_ROWS][LM_CAUSAL_CONV_TILE_CHANNELS];
-	const uint32_t channels = 2u * gdn_qk + gdn_v;
-	const uint32_t sequence = blockIdx.x, lane = threadIdx.x % LM_CAUSAL_CONV_TILE_CHANNELS, group = threadIdx.x / LM_CAUSAL_CONV_TILE_CHANNELS;
-	const uint32_t channel = blockIdx.y * LM_CAUSAL_CONV_TILE_CHANNELS + lane;
-	const bool live = channel < channels;
-	float taps_weight[KERNEL];
-	uint16_t carried[HALO];
-	if ( sequence >= sequences )
-	{
-		LmDependentWait();
-		LmDependentRelease();
-		return;
-	}
-	if ( live )
-		LmCausalConvLoadWeights<KERNEL, uint16_t>(weight, channel, taps_weight);
-	else
-		#pragma unroll
-		for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
-			taps_weight[tap] = 0.0f;
-	LmDependentWait();
-	const uint32_t repeat = heads / (gdn_qk / KEY_DIM);
-	const uint32_t begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
-	uint32_t end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
-	if ( sequence_row_count != 0 )
-		end = begin + sequence_row_count[sequence];
-	uint16_t *slot = window + (uint64_t)state_index[sequence] * channels * KERNEL;
-	if ( group == 0u && live )
-	{
-		if constexpr ( KERNEL == 4u )
-		{
-			const uint2 w = *(const uint2 *)(slot + (uint64_t)channel * 4u);
-			tile[0][lane] = (uint16_t)(w.x >> 16u);
-			tile[1][lane] = (uint16_t)(w.y & 0xffffu);
-			tile[2][lane] = (uint16_t)(w.y >> 16u);
-		}
-		else
-		{
-			#pragma unroll
-			for ( uint32_t tap = 0u; tap < HALO; ++tap )
-				tile[tap][lane] = slot[(uint64_t)channel * KERNEL + 1u + tap];
-		}
-	}
-	for ( uint32_t base = begin; base < end; base += LM_CAUSAL_CONV_TILE_ROWS )
-	{
-		const uint32_t count = end - base < LM_CAUSAL_CONV_TILE_ROWS ? end - base : LM_CAUSAL_CONV_TILE_ROWS;
-		if ( base != begin )
-			__syncthreads();
-		for ( uint32_t offset = group; offset < count && live; offset += GROUPS )
-		{
-			const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[base + offset] : base + offset;
-			const uint16_t in_val = input_bf16[(uint64_t)row * input_stride + channel];
-			tile[HALO + offset][lane] = in_val;
-			if ( replay_qkv != 0 )
-				replay_qkv[(uint64_t)row * channels + channel] = in_val;
-		}
-		__syncthreads();
-		for ( uint32_t offset = group; offset < count && live; offset += GROUPS )
-		{
-			const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[base + offset] : base + offset;
-			float total = 0.0f;
-			#pragma unroll
-			for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
-				total += LmBf16ToFloat(tile[offset + tap][lane]) * taps_weight[tap];
-			const uint16_t out = LmFloatToBf16(SparkMathSwishFast(LmBf16ToFloat(LmFloatToBf16(total))));
-			QwenGdnWriteSplitChannel<KEY_DIM>(channel, row, gdn_qk, gdn_v, heads, repeat, out, query_heads, key_heads, value);
-		}
-		const bool last_tile = (base + count == end);
-		if ( !last_tile || commit != 0u )
-		{
-			__syncthreads();
-			if ( group == 0u && live )
-			{
-				if ( commit != 0u && last_tile )
-				{
-					if constexpr ( KERNEL == 4u )
-					{
-						uint2 w;
-						w.x = (uint32_t)tile[count - 1u][lane] | ((uint32_t)tile[count][lane] << 16u);
-						w.y = (uint32_t)tile[count + 1u][lane] | ((uint32_t)tile[count + 2u][lane] << 16u);
-						*(uint2 *)(slot + (uint64_t)channel * 4u) = w;
-					}
-					else
-					{
-						#pragma unroll
-						for ( uint32_t tap = 0u; tap < KERNEL; ++tap )
-							slot[(uint64_t)channel * KERNEL + tap] = tile[count - 1u + tap][lane];
-					}
-				}
-				if ( !last_tile )
-				{
-					#pragma unroll
-					for ( uint32_t tap = 0u; tap < HALO; ++tap )
-						carried[tap] = tile[count + tap][lane];
-					#pragma unroll
-					for ( uint32_t tap = 0u; tap < HALO; ++tap )
-						tile[tap][lane] = carried[tap];
-				}
-			}
-		}
-	}
-	LmDependentRelease();
-}
-
 template<uint32_t KERNEL, uint32_t KEY_DIM>
 __global__ __launch_bounds__(LM_CAUSAL_CONV_TILE_THREADS, 2)
 static void QwenGdnConvPrefill2DKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index,
@@ -1759,39 +1556,6 @@ static inline SparkGpuError QwenGdnScalarChunkLaunch(uint8_t *state_pool, uint32
 			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, slot_bytes, state_index, sequence_row_begin, sequence_row_count, positions, query_qk, key_qk,
 			value_bf16, ba_bf16, a_log, dt_bias, output_bf16, qk_heads, heads, sequences, commit, sequence_row_indices);
 	return err;
-}
-
-template<uint32_t KEY_DIM>
-__global__ __launch_bounds__(QH_THREADS, 4)
-static void QwenGdnGateOnlyKernel(const uint16_t *__restrict__ ba, const float *__restrict__ a_log,
-	const float *__restrict__ dt_bias, float *__restrict__ retention, float *__restrict__ write_gate,
-	uint32_t heads, uint32_t rows)
-{
-	constexpr uint32_t WARPS = QH_THREADS / LM_WARP_LANES;
-	constexpr uint32_t KEY_V = KEY_DIM >> 2u;
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	const uint32_t head = blockIdx.x * WARPS + warp, row = blockIdx.y;
-	LmDependentWait();
-	if ( row >= rows || head >= heads )
-	{
-		LmDependentRelease();
-		return;
-	}
-	const uint64_t ba_base = (uint64_t)row * 2u * heads;
-	float factor = 0.0f;
-	if ( lane == 0u )
-	{
-		const float shifted = LmBf16ToFloat(ba[ba_base + heads + head]) + dt_bias[head];
-		factor = SparkMathGatedDeltaDecay(a_log[head], shifted);
-		write_gate[(uint64_t)row * heads + head] = SparkMathSigmoidFast(LmBf16ToFloat(ba[ba_base + head]));
-	}
-	factor = __shfl_sync(0xffffffffu, factor, 0);
-	const float4 f4 = make_float4(factor, factor, factor, factor);
-	float4 *ret4 = (float4 *)(retention + ((uint64_t)row * heads + head) * KEY_DIM);
-	#pragma unroll
-	for ( uint32_t v = lane; v < KEY_V; v += LM_WARP_LANES )
-		ret4[v] = f4;
-	LmDependentRelease();
 }
 
 template<uint32_t WIDTH, bool HAS_ADD>
@@ -6075,15 +5839,16 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			}
 			else
 			{
-				(void)LM_LAUNCH_DEPENDENT((QwenGdnConvSplitTiledKernel<QH_CONV, QH_KEY_DIM>),
+				if ( QwenSkl2Launch(QWENSKL2_gdn_conv_split_tiled_4_128_pdl,
 					dim3(sequences, (state->gdn_channels + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS),
 					LM_CAUSAL_CONV_TILE_THREADS, 0, stream,
 					window, step->recurrent_index, step->sequence_row_begin, kept, qkv, layer->gdn_conv,
 					state->query_heads, state->key_heads, state->value, replay_qkv_out,
-					state->gdn_qk, state->gdn_v, heads, input_stride, sequences, commit, step->sequence_row_indices);
-				(void)LM_LAUNCH_DEPENDENT((QwenGdnGateOnlyKernel<QH_KEY_DIM>),
+					state->gdn_qk, state->gdn_v, heads, input_stride, sequences, commit, step->sequence_row_indices) != SPARK_GPU_SUCCESS ||
+					QwenSkl2Launch(QWENSKL2_qwen_gdn_gate_only_128_pdl,
 					dim3(gate_blocks, rows), QH_THREADS, 0, stream,
-					ba, layer->gdn_a_log, layer->gdn_dt_bias, state->retention, state->write_gate, heads, rows);
+					ba, layer->gdn_a_log, layer->gdn_dt_bias, state->retention, state->write_gate, heads, rows) != SPARK_GPU_SUCCESS )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

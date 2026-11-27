@@ -117,6 +117,7 @@ class KernelCompiler:
         self.kdef, self.consts, self.strict_reg_budget = kdef, dict(consts), strict_reg_budget
         self.alloc, self.ops, self.scopes, self.smem, self.smem_bytes = RegAlloc(), [], [{}], {}, 0
         self.barriers = self.bssy_depth = self.label_counter = self.batch_counter = self._zpred = 0
+        self.has_preexit = False
         self.ur_desc = 4
         self.cached_sr, self.param_offsets, self.param_meta, self.param_loaded = {}, {}, [], {}
         self.temp_stack, self.recent_mem_addr, self.assigned_vars = [], set(), set()
@@ -279,6 +280,8 @@ class KernelCompiler:
                 if last_sr.get(sr, -1) == idx: self.free_if_unreferenced(self.cached_sr.pop(sr).regs)
             for vname in list(self.scopes[0]):
                 if last_var.get(vname, -1) <= idx: self.free_if_unreferenced(self.scopes[0].pop(vname).regs)
+        if self.has_preexit:
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_preexit(stall=max(stall, 8), wait=wait), is_bar=True))
         self.emit(Op(lambda wr, rd, wait, stall: isa.encode_exit(stall=stall, wait=wait), is_exit=True))
         insns = self.schedule_and_encode()
         max_r = max((r for op in self.ops for r in (op.reads | op.writes) if r != isa.RZ), default=-1)
@@ -313,6 +316,8 @@ class KernelCompiler:
             self.smem[name] = (off, vtype, elem_bytes, count)
             self.smem_bytes = off + count * elem_bytes
         elif kind == "return":
+            if self.has_preexit:
+                self.emit(Op(lambda wr, rd, wait, stall: isa.encode_preexit(stall=max(stall, 8), wait=wait), is_bar=True))
             self.emit(Op(lambda wr, rd, wait, stall: isa.encode_exit(stall=stall, wait=wait), is_exit=True))
         elif kind == "unroll":
             _, var, start_e, end_e, body = st
@@ -783,7 +788,7 @@ class KernelCompiler:
             self.emit(Op(lambda wr, rd, wait, stall: isa.encode_acqbulk(stall=stall, wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
         if name in ("pdl_release", "preexit"):
-            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_preexit(stall=max(stall, 8), wait=wait), is_bar=True))
+            self.has_preexit = True
             return Val("u32", (isa.RZ,))
         if name in ("membar_sys", "membar_all_sys"):
             mb = isa.MEMBAR_SC_SYS if name == "membar_sys" else isa.MEMBAR_ALL_SYS
@@ -1134,14 +1139,14 @@ class KernelCompiler:
             nonlocal reg_bar, ureg_bar, rd_bar
             reg_bar = {k: v for k, v in reg_bar.items() if not (mask & (1 << v))}
             ureg_bar = {k: v for k, v in ureg_bar.items() if not (mask & (1 << v))}
-            rd_bar = {k: v for k, v in rd_bar.items() if not (mask & (1 << v))}
+            rd_bar = {k: (v & ~mask) for k, v in rd_bar.items() if (v & ~mask)}
             for b in range(6):
                 if mask & (1 << b):
                     bar_batch.pop(b, None)
                     bar_count[b] = 0
 
         for op in self.ops:
-            all_b = set(reg_bar.values()) | set(ureg_bar.values()) | set(rd_bar.values())
+            all_b = set(reg_bar.values()) | set(ureg_bar.values()) | {b for m in rd_bar.values() for b in range(6) if m & (1 << b)}
             if op.label is not None:
                 pending_dyn = sum(1 << b for b in all_b if not has_forced or b < 4)
                 if pending_dyn:
@@ -1159,7 +1164,7 @@ class KernelCompiler:
             for r in op.reads | op.writes:
                 if r in reg_bar: wait_mask |= 1 << reg_bar[r]
             for r in op.writes:
-                if r in rd_bar: wait_mask |= 1 << rd_bar[r]
+                if r in rd_bar: wait_mask |= rd_bar[r]
             for u in op.ureads | op.uwrites:
                 if u in ureg_bar: wait_mask |= 1 << ureg_bar[u]
             if (op.is_bar and op.forced_wr != 0) or (op.is_exit and not op.preads):
@@ -1210,10 +1215,12 @@ class KernelCompiler:
             if op.var_lat:
                 for r in op.writes: reg_bar[r] = op.wr
                 for u in op.uwrites: ureg_bar[u] = op.wr
+                if not op.mem_addr_reads:
+                    for r in op.reads: rd_bar[r] = rd_bar.get(r, 0) | (1 << op.wr)
                 bar_batch[op.wr] = op.batch_id
                 bar_count[op.wr] += 1
             if op.mem_addr_reads:
-                for r in op.mem_addr_reads: rd_bar[r] = op.rd
+                for r in op.mem_addr_reads: rd_bar[r] = rd_bar.get(r, 0) | (1 << op.rd)
                 bar_count[op.rd] += 1
             real_ops.append(op)
 
