@@ -385,8 +385,8 @@ int main(void)
 			lat_copy, 0, w_norm, 0, lat_copy, K3_ROUTED_EXPERT_HIDDEN, K3_ROUTED_EXPERT_HIDDEN, K3_RMS_EPSILON);
 		LM_LAUNCH((LmSliceColumnsKernel<K3_LAYER_THREADS>), dim3(LmVecBlocks<K3_LAYER_THREADS>(ODD_SLICE), rows), K3_LAYER_THREADS, 0, stream,
 			lat_copy, out_ref, K3_ROUTED_EXPERT_HIDDEN, rank * ODD_SLICE, ODD_SLICE);
-		LM_LAUNCH((K3RmsNormSliceKernel<K3_LAYER_THREADS,K3_ROUTED_EXPERT_HIDDEN>), rows, K3_LAYER_THREADS, 0, stream,
-			lat_in, w_norm, out_opt, rank * ODD_SLICE, ODD_SLICE, K3_RMS_EPSILON);
+		ODD_CUDA(K3Skl2Launch(K3SKL2_k3_rms_norm_slice_256, rows, K3_LAYER_THREADS, 0u, stream,
+			lat_in, w_norm, out_opt, (uint32_t)K3_ROUTED_EXPERT_HIDDEN, rank * ODD_SLICE, ODD_SLICE, (float)K3_RMS_EPSILON));
 		ODD_CUDA(cudaStreamSynchronize(stream));
 		std::vector<uint16_t> href((size_t)rows * ODD_SLICE), hopt((size_t)rows * ODD_SLICE);
 		ODD_CUDA(cudaMemcpy(href.data(), out_ref, href.size() * 2u, cudaMemcpyDeviceToHost));

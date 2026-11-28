@@ -1,0 +1,449 @@
+import "stdlib/math.skl2";
+
+const K3_STG_BLK256 = 256;
+const K3_STG_BLK128 = 128;
+
+macro k3_bf16x8_add_pack(pv, sv, out_v) {
+    reg u32 p0 = pack_bf16x2(bf16_lo(pv[0]) + bf16_lo(sv[0]), bf16_hi(pv[0]) + bf16_hi(sv[0]));
+    reg u32 p1 = pack_bf16x2(bf16_lo(pv[1]) + bf16_lo(sv[1]), bf16_hi(pv[1]) + bf16_hi(sv[1]));
+    reg u32 p2 = pack_bf16x2(bf16_lo(pv[2]) + bf16_lo(sv[2]), bf16_hi(pv[2]) + bf16_hi(sv[2]));
+    reg u32 p3 = pack_bf16x2(bf16_lo(pv[3]) + bf16_lo(sv[3]), bf16_hi(pv[3]) + bf16_hi(sv[3]));
+    out_v = pack_u32x4(p0, p1, p2, p3);
+}
+
+@pdl
+@concept(stage_mem)
+kernel[K3_STG_BLK256, 48] k3_runner_fused_pack_256(
+    global u16* attention, global u16* hidden, global u16* shared_buf,
+    global u16* gate_up, global u16* fused,
+    u32 rows, u32 phase, u32 segments, u32 gate_up_elements, u32 k3_hidden
+) {
+    acqbulk();
+    reg u32 idx = ctaid_x() * K3_STG_BLK256 + tid_x();
+    reg u32 count = (phase == 2) ? gate_up_elements : (rows * k3_hidden);
+    reg u64 primary = (phase == 2) ? gate_up : ((phase == 0) ? attention : hidden);
+    reg u32 add_shared = 0;
+    if (phase != 2) {
+        if (phase != 0) {
+            if (segments == 2) { add_shared = 1; }
+        }
+    }
+    reg u32 aligned = 0;
+    if ((count & 7) == 0) {
+        if (((primary[0] | fused[0]) & 15) == 0) {
+            if (add_shared == 0) { aligned = 1; }
+            else if ((shared_buf[0] & 15) == 0) { aligned = 1; }
+        }
+    }
+    if (aligned != 0) {
+        if (idx < (count >> 3)) {
+            reg u32x4 pv = ldg128_stream(ptr_add(primary, idx, 16));
+            if (add_shared == 0) {
+                stg128(ptr_add(fused, idx, 16), pv);
+            } else {
+                reg u32x4 sv = ldg128_stream(ptr_add(shared_buf, idx, 16));
+                reg u32x4 ov = pv;
+                k3_bf16x8_add_pack(pv, sv, ov);
+                stg128(ptr_add(fused, idx, 16), ov);
+            }
+        }
+    } else if (idx < count) {
+        reg u32 pv = ldg16_stream(ptr_add(primary, idx, 2));
+        if (add_shared != 0) {
+            reg u32 sv = ldg16_stream(ptr_add(shared_buf, idx, 2));
+            pv = f32_to_bf16(bf16_lo(pv) + bf16_lo(sv));
+        }
+        stg16(ptr_add(fused, idx, 2), pv);
+    }
+    preexit();
+}
+
+@pdl
+@concept(stage_mem)
+kernel[K3_STG_BLK256, 48] k3_runner_mla_down_rows_256(
+    global u16* gathered, global u16* query, global u16* key,
+    u32 rows, u32 query_slice, u32 key_slice, u32 q_lora_rank, u32 kv_a_dim
+) {
+    acqbulk();
+    reg u32 row = ctaid_y();
+    reg u32 col = ctaid_x() * K3_STG_BLK256 + tid_x();
+    reg u32 stride = query_slice + key_slice;
+    reg u32 vec_ok = 0;
+    if (((query_slice & 7) | (key_slice & 3) | (stride & 3)) == 0) {
+        if ((query[0] & 15) == 0) {
+            if (((gathered[0] | key[0]) & 7) == 0) { vec_ok = 1; }
+        }
+    }
+    if (vec_ok != 0) {
+        reg u32 qv = q_lora_rank >> 3;
+        reg u32 kv = kv_a_dim >> 2;
+        if (col < qv) {
+            reg u32 qs = query_slice >> 3;
+            reg u32 rank = 0; reg u32 rem = 0;
+            u32_divmod(col, qs, rank, rem);
+            reg u64 src = ptr_add(ptr_add(gathered, rank * rows + row, stride << 1), rem << 3, 2);
+            reg u32x2 lo = ldg64_stream(src);
+            reg u32x2 hi = ldg64_stream(ptr_add(src, 1, 8));
+            stg128(ptr_add(ptr_add(query, row, q_lora_rank << 1), col, 16), pack_u32x4(lo[0], lo[1], hi[0], hi[1]));
+        } else if (col < qv + kv) {
+            reg u32 c = col - qv;
+            reg u32 ks = key_slice >> 2;
+            reg u32 rank = 0; reg u32 rem = 0;
+            u32_divmod(c, ks, rank, rem);
+            reg u64 src = ptr_add(ptr_add(gathered, rank * rows + row, stride << 1), query_slice + (rem << 2), 2);
+            stg64(ptr_add(ptr_add(key, row, kv_a_dim << 1), c, 8), ldg64_stream(src));
+        }
+    } else if (col < q_lora_rank) {
+        reg u32 rank = 0; reg u32 rem = 0;
+        u32_divmod(col, query_slice, rank, rem);
+        reg u32 val = ldg16_stream(ptr_add(ptr_add(gathered, rank * rows + row, stride << 1), rem, 2));
+        stg16(ptr_add(ptr_add(query, row, q_lora_rank << 1), col, 2), val);
+    } else if (col < q_lora_rank + kv_a_dim) {
+        reg u32 c = col - q_lora_rank;
+        reg u32 rank = 0; reg u32 rem = 0;
+        u32_divmod(c, key_slice, rank, rem);
+        reg u32 val = ldg16_stream(ptr_add(ptr_add(gathered, rank * rows + row, stride << 1), query_slice + rem, 2));
+        stg16(ptr_add(ptr_add(key, row, kv_a_dim << 1), c, 2), val);
+    }
+    preexit();
+}
+
+@pdl
+@concept(stage_mem)
+kernel[K3_STG_BLK256, 48] k3_runner_latent_logits_256(
+    global u16* gathered, global u16* latent, global f32* logits,
+    u32 rows, u32 slice, u32 experts, u32 ranks
+) {
+    acqbulk();
+    reg u32 row = ctaid_y();
+    reg u32 col = ctaid_x() * K3_STG_BLK256 + tid_x();
+    reg u32 row_stride_b = (slice + (experts << 1)) << 1;
+    reg u32 vec_ok = 0;
+    if (((slice & 7) | (experts & 3)) == 0) {
+        if (((gathered[0] | latent[0] | logits[0]) & 15) == 0) { vec_ok = 1; }
+    }
+    if (vec_ok != 0) {
+        reg u32 vslice = slice >> 3;
+        reg u32 vexp = experts >> 2;
+        reg u32 lat_vecs = vslice * ranks;
+        if (col < lat_vecs) {
+            reg u32 r = 0; reg u32 c = 0;
+            u32_divmod(col, vslice, r, c);
+            reg u64 src_r = ptr_add(gathered, r * rows, row_stride_b);
+            stg128(ptr_add(ptr_add(latent, row, (slice * ranks) << 1), col, 16), ldg128_stream(ptr_add(ptr_add(src_r, row, slice << 1), c, 16)));
+        } else {
+            reg u32 ve = col - lat_vecs;
+            if (ve < vexp * ranks) {
+                reg u32 r = 0; reg u32 c = 0;
+                u32_divmod(ve, vexp, r, c);
+                reg u64 src_log = ptr_add(ptr_add(gathered, r * rows, row_stride_b), rows, slice << 1);
+                stg128(ptr_add(ptr_add(logits, row, (experts * ranks) << 2), ve, 16), ldg128_stream(ptr_add(ptr_add(src_log, row, experts << 2), c, 16)));
+            }
+        }
+    } else if (col < slice * ranks) {
+        reg u32 r = 0; reg u32 c = 0;
+        u32_divmod(col, slice, r, c);
+        reg u64 src_r = ptr_add(gathered, r * rows, row_stride_b);
+        stg16(ptr_add(ptr_add(latent, row, (slice * ranks) << 1), col, 2), ldg16_stream(ptr_add(ptr_add(src_r, row, slice << 1), c, 2)));
+    } else {
+        reg u32 ex = col - slice * ranks;
+        if (ex < experts * ranks) {
+            reg u32 r = 0; reg u32 c = 0;
+            u32_divmod(ex, experts, r, c);
+            reg u64 src_log = ptr_add(ptr_add(gathered, r * rows, row_stride_b), rows, slice << 1);
+            stg32(ptr_add(ptr_add(logits, row, (experts * ranks) << 2), ex, 4), ldg32_stream(ptr_add(ptr_add(src_log, row, experts << 2), c, 4)));
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(stage_mem)
+kernel[K3_STG_BLK256, 32] k3_identity_pages_256(global u32* pages, u32 count) {
+    acqbulk();
+    reg u32 idx = ctaid_x() * K3_STG_BLK256 + tid_x();
+    if (idx < count) {
+        stg32(ptr_add(pages, idx, 4), idx);
+    }
+    preexit();
+}
+
+@pdl
+@concept(norm_rope)
+kernel[K3_STG_BLK128, 32] k3_fold_l2_norm_128(
+    global u16* query_bf16, global u16* key_bf16, u32 heads, u32 rows, f32 epsilon
+) {
+    shared f32 red[8];
+    acqbulk();
+    reg u32 row = ctaid_x();
+    reg u32 head = ctaid_y();
+    if (row >= rows) { preexit(); return; }
+    if (head >= heads) { preexit(); return; }
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 slot = row * heads + head;
+    reg u64 q_ptr = ptr_add(query_bf16, slot, 256);
+    reg u64 k_ptr = ptr_add(key_bf16, slot, 256);
+    reg f32 q0 = bf16_lo(ldg16_stream(ptr_add(q_ptr, tid, 2)));
+    reg f32 k0 = bf16_lo(ldg16_stream(ptr_add(k_ptr, tid, 2)));
+    reg f32 qs = q0 * q0;
+    reg f32 ks = k0 * k0;
+    warp_sum_down(qs);
+    warp_sum_down(ks);
+    if (lane == 0) {
+        sts32(red, wid, qs);
+        sts32(red, 4 + wid, ks);
+    }
+    barrier();
+    reg f32 q_sum = ((lds32(red, 0) + lds32(red, 1)) + lds32(red, 2)) + lds32(red, 3);
+    reg f32 k_sum = ((lds32(red, 4) + lds32(red, 5)) + lds32(red, 6)) + lds32(red, 7);
+    reg f32 q_inv = rsqrt(q_sum + epsilon);
+    reg f32 k_inv = rsqrt(k_sum + epsilon);
+    stg16(ptr_add(q_ptr, tid, 2), f32_to_bf16(q0 * q_inv));
+    stg16(ptr_add(k_ptr, tid, 2), f32_to_bf16(k0 * k_inv));
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_STG_BLK256, 32] k3_streamed_state_identity_256(global f32* state, u32 matrices) {
+    acqbulk();
+    reg u32 idx = ctaid_x() * K3_STG_BLK256 + tid_x();
+    if (idx < (matrices << 14)) {
+        reg u32 within = idx & 16383;
+        reg f32 val = ((within >> 7) == (within & 127)) ? 1.0f : 0.0f;
+        stg32(ptr_add(state, idx, 4), f32_as_u32(val));
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_STG_BLK256, 64] k3_streamed_state_compose_256(
+    global f32* transform, global f32* incoming, global f32* start, global f32* outgoing
+) {
+    shared f32 tile_m[1088];
+    shared f32 tile_s[1040];
+    acqbulk();
+    reg u32 tid = tid_x();
+    reg u32 tx = tid & 15;
+    reg u32 ty = tid >> 4;
+    reg u32 head = ctaid_x();
+    reg u32 row_base = ctaid_y() << 6;
+    reg u32 col_base = ctaid_z() << 6;
+    reg u64 m_ptr = ptr_add(transform, head, 65536);
+    reg u64 s_ptr = ptr_add(incoming, head, 65536);
+    reg u64 o_ptr = ptr_add(outgoing, head, 65536);
+    reg u32 has_start = ((start[0] | start[1]) != 0) ? 1 : 0;
+    reg u64 st_ptr = ptr_add(start, head, 65536);
+    reg f32 acc[16];
+    unroll (i = 0..4) {
+        reg u32 r = row_base + ty + (i << 4);
+        unroll (j = 0..4) {
+            reg f32 init = 0.0f;
+            if (has_start != 0) {
+                init = u32_as_f32(ldg32_stream(ptr_add(st_ptr, (r << 7) + col_base + tx + (j << 4), 4)));
+            }
+            acc[(i << 2) + j] = init;
+        }
+    }
+    for (reg u32 k0 = 0; k0 < 128; k0 += 16) {
+        unroll (i = 0..4) {
+            reg u32 r = row_base + ty + (i << 4);
+            sts32(tile_m, (ty + (i << 4)) * 17 + tx, u32_as_f32(ldg32_stream(ptr_add(m_ptr, (r << 7) + k0 + tx, 4))));
+        }
+        unroll (j = 0..4) {
+            reg u32 c = col_base + tx + (j << 4);
+            sts32(tile_s, ty * 65 + tx + (j << 4), u32_as_f32(ldg32_stream(ptr_add(s_ptr, ((k0 + ty) << 7) + c, 4))));
+        }
+        barrier();
+        for (reg u32 kk = 0; kk < 16; kk += 1) {
+            reg f32 mv[4];
+            reg f32 sv[4];
+            unroll (i = 0..4) { mv[i] = lds32(tile_m, (ty + (i << 4)) * 17 + kk); }
+            unroll (j = 0..4) { sv[j] = lds32(tile_s, kk * 65 + tx + (j << 4)); }
+            unroll (i = 0..4) {
+                unroll (j = 0..4) {
+                    acc[(i << 2) + j] = fma(mv[i], sv[j], acc[(i << 2) + j]);
+                }
+            }
+        }
+        barrier();
+    }
+    unroll (i = 0..4) {
+        reg u32 r = row_base + ty + (i << 4);
+        unroll (j = 0..4) {
+            stg32(ptr_add(o_ptr, (r << 7) + col_base + tx + (j << 4), 4), f32_as_u32(acc[(i << 2) + j]));
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_STG_BLK256, 32] k3_streamed_conv_seed_256(
+    global u16* window, global u16* input, global u32* chunk_row_begin, u32 channels, u32 chunks
+) {
+    acqbulk();
+    reg u32 idx = ctaid_x() * K3_STG_BLK256 + tid_x();
+    reg u32 q_ch = 0; reg u32 ch = 0;
+    u32_divmod(idx, channels, q_ch, ch);
+    reg u32 chunk = 1 + q_ch;
+    if (chunk < chunks) {
+        reg u32 rb = ldg32_persist(ptr_add(chunk_row_begin, chunk, 4));
+        reg u64 w_ptr = ptr_add(window, chunk * channels + ch, 8);
+        unroll (tap = 0..4) {
+            reg u32 val = ldg16_stream(ptr_add(ptr_add(input, rb - 4 + tap, channels << 1), ch, 2));
+            stg16(ptr_add(w_ptr, tap, 2), val);
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_STG_BLK256, 32] k3_streamed_conv_tail_256(
+    global u16* window, global u16* input, u32 rows, u32 channels
+) {
+    acqbulk();
+    reg u32 ch = ctaid_x() * K3_STG_BLK256 + tid_x();
+    if (ch < channels) {
+        reg u64 w_ptr = ptr_add(window, ch, 8);
+        unroll (tap = 0..4) {
+            reg u32 val = 0;
+            if (rows + tap >= 4) {
+                val = ldg16_stream(ptr_add(ptr_add(input, rows + tap - 4, channels << 1), ch, 2));
+            }
+            stg16(ptr_add(w_ptr, tap, 2), val);
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_STG_BLK256, 32] k3_streamed_conv_end_256(
+    global u16* window, global u16* end_tail, global u16* before, u32 end_rows, u32 channels
+) {
+    acqbulk();
+    reg u32 ch = ctaid_x() * K3_STG_BLK256 + tid_x();
+    if (ch < channels) {
+        reg u64 bef_ptr = ptr_add(before, ch, 8);
+        reg u64 end_ptr = ptr_add(end_tail, ch, 8);
+        reg u32 taps[4];
+        unroll (tap = 0..4) {
+            if (tap + end_rows < 4) {
+                taps[tap] = ldg16_stream(ptr_add(bef_ptr, tap + end_rows, 2));
+            } else {
+                taps[tap] = ldg16_stream(ptr_add(end_ptr, tap, 2));
+            }
+        }
+        reg u64 w_ptr = ptr_add(window, ch, 8);
+        unroll (tap = 0..4) {
+            stg16(ptr_add(w_ptr, tap, 2), taps[tap]);
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_STG_BLK128, 32] k3_streamed_pad_rows_128(
+    global f32* retention, global f32* write_gate, u32 first_pad, u32 rows, u32 heads
+) {
+    acqbulk();
+    reg u32 row = first_pad + ctaid_x();
+    reg u32 head = ctaid_y();
+    if (row < rows) {
+        if (head < heads) {
+            reg u32 tid = tid_x();
+            reg u32 slot = row * heads + head;
+            stg32(ptr_add(ptr_add(retention, slot, 512), tid, 4), f32_as_u32(1.0f));
+            if (tid == 0) {
+                stg32(ptr_add(write_gate, slot, 4), 0);
+            }
+        }
+    }
+    preexit();
+}
+
+macro k3_fold_update_stats(r_ptr, b_ptr, keep_s, take_s, width, h0, hcount, first, tid) {
+    if (tid < hcount) {
+        reg u32 m_off = width + ((h0 + tid) << 1);
+        reg f32 old_max = u32_as_f32(0xFF800000);
+        if (first == 0) { old_max = u32_as_f32(ldg32_stream(ptr_add(r_ptr, m_off, 4))); }
+        reg f32 new_max = u32_as_f32(ldg32_stream(ptr_add(b_ptr, m_off, 4)));
+        reg f32 top = maxf(old_max, new_max);
+        reg f32 keep = (f32_as_u32(old_max) == 0xFF800000) ? 0.0f : exp2_ftz((old_max - top) * 1.4426950408889634f);
+        reg f32 take = (f32_as_u32(new_max) == 0xFF800000) ? 0.0f : exp2_ftz((new_max - top) * 1.4426950408889634f);
+        sts32(keep_s, tid, keep);
+        sts32(take_s, tid, take);
+        reg f32 old_l = 0.0f;
+        if (first == 0) { old_l = u32_as_f32(ldg32_stream(ptr_add(r_ptr, m_off + 1, 4))) * keep; }
+        reg f32 new_l = u32_as_f32(ldg32_stream(ptr_add(b_ptr, m_off + 1, 4))) * take;
+        stg32(ptr_add(r_ptr, m_off + 1, 4), f32_as_u32(old_l + new_l));
+        stg32(ptr_add(r_ptr, m_off, 4), f32_as_u32(top));
+    }
+}
+
+@pdl
+@concept(attention)
+kernel[K3_STG_BLK256, 48] k3_streamed_fold_records_256(
+    global f32* running, global f32* block_in,
+    u32 heads, u32 rows, u32 first, u32 value_dim, u32 record_floats
+) {
+    shared f32 keep_s[256];
+    shared f32 take_s[256];
+    acqbulk();
+    reg u32 row = ctaid_x();
+    if (row >= rows) { preexit(); return; }
+    reg u32 tid = tid_x();
+    reg u32 width = heads * value_dim;
+    reg u64 r_ptr = ptr_add(running, row, record_floats << 2);
+    reg u64 b_ptr = ptr_add(block_in, row, record_floats << 2);
+    reg u32 aligned4 = ((((r_ptr[0] | b_ptr[0]) & 15) | (value_dim & 3)) == 0) ? 1 : 0;
+    for (reg u32 h0 = 0; h0 < heads; h0 += 256) {
+        reg u32 hcount = (heads - h0 < 256) ? (heads - h0) : 256;
+        k3_fold_update_stats(r_ptr, b_ptr, keep_s, take_s, width, h0, hcount, first, tid);
+        barrier();
+        reg u64 rh = ptr_add(r_ptr, h0 * value_dim, 4);
+        reg u64 bh = ptr_add(b_ptr, h0 * value_dim, 4);
+        if (aligned4 != 0) {
+            reg u32 vdim = value_dim >> 2;
+            reg u32 total = hcount * vdim;
+            for (reg u32 idx = tid; idx < total; idx += 256) {
+                reg u32 h = 0; reg u32 rem = 0;
+                u32_divmod(idx, vdim, h, rem);
+                reg f32 kp = lds32(keep_s, h);
+                reg f32 tk = lds32(take_s, h);
+                reg u32x4 bv = ldg128_stream(ptr_add(bh, idx, 16));
+                reg f32 o0 = u32_as_f32(bv[0]) * tk;
+                reg f32 o1 = u32_as_f32(bv[1]) * tk;
+                reg f32 o2 = u32_as_f32(bv[2]) * tk;
+                reg f32 o3 = u32_as_f32(bv[3]) * tk;
+                if (first == 0) {
+                    reg u32x4 rv = ldg128_stream(ptr_add(rh, idx, 16));
+                    o0 = fma(u32_as_f32(rv[0]), kp, o0);
+                    o1 = fma(u32_as_f32(rv[1]), kp, o1);
+                    o2 = fma(u32_as_f32(rv[2]), kp, o2);
+                    o3 = fma(u32_as_f32(rv[3]), kp, o3);
+                }
+                stg128(ptr_add(rh, idx, 16), pack_u32x4(f32_as_u32(o0), f32_as_u32(o1), f32_as_u32(o2), f32_as_u32(o3)));
+            }
+        } else {
+            reg u32 total = hcount * value_dim;
+            for (reg u32 idx = tid; idx < total; idx += 256) {
+                reg u32 h = 0; reg u32 rem = 0;
+                u32_divmod(idx, value_dim, h, rem);
+                reg f32 ov = u32_as_f32(ldg32_stream(ptr_add(bh, idx, 4))) * lds32(take_s, h);
+                if (first == 0) {
+                    ov = fma(u32_as_f32(ldg32_stream(ptr_add(rh, idx, 4))), lds32(keep_s, h), ov);
+                }
+                stg32(ptr_add(rh, idx, 4), f32_as_u32(ov));
+            }
+        }
+        barrier();
+    }
+    preexit();
+}

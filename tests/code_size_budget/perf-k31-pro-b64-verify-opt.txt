@@ -1,2 +1,2 @@
-+436
-kimi-k3.1-pro B64 concurrency and B8 verify optimization: add K3ExactSplitKernel<8,4> for row-invariant split-K BF16 projections (MoeP0, MlaDownSlice, MlaIndex), K3SparseScoreSlotsKernel with K3_INDEX_TOPK dense_limit and block_bound early exit in K3LayerMlaIndexSelect, K3_MLA_DOWN_SLICED extension for row-invariant waves, splits=1 indexed dense MLA attention when index_active=0, fused KDA verify replay writes in K3SplitFusedProjectionsKernel, fused K3FoldL2NormKernel + LmCausalConvStreamsLaunch in K3FoldAccepted, and vectorized K3RunnerMlaDownRowsKernel.
++10
+Remaining K3SparseScoreSlotsKernel from kimi-k3.1-pro B64/B8 verify optimization after retiring K3ExactSplitKernel, K3SplitFusedProjectionsKernel, K3FoldL2NormKernel, and K3RunnerMlaDownRowsKernel to skl2.

@@ -348,6 +348,13 @@ def test_full_cubin_emission_and_cli():
                 "d41_index_score_direct_256", "d41_shared_partials_r8_256", "d41_cell_fp4_gemv_c8_m1",
                 "d41_topk_exact_fast_256", "d41_topk_exact_chunk_reg_256", "d41_topk_exact_gather_reg_256",
                 "d41_kv_fp4_qdq_vec_256", "d41_engram_gate_256", "d41_fp8_qdq_256", "d41_sink_attention_256",
+                "k3_cell_mma_w1_situ_c2", "k3_cell_mma_w2_slice_c4_stream",
+                "k3_cell_skinny_w1_situ_b1", "k3_cell_skinny_w2_finalize_row1", "k3_cell_skinny_w2_b4",
+                "k3_runner_fused_pack_256", "k3_runner_mla_down_rows_256", "k3_runner_latent_logits_256",
+                "k3_fold_l2_norm_128", "k3_streamed_state_compose_256", "k3_streamed_fold_records_256",
+                "k3_exact_split_8x4_256", "k3_split_fused_proj_256",
+                "k3_kda_prep_finish_128", "k3_kda_norm_gate_128",
+                "k3_rms_norm_slice_256", "k3_unpack_prior_kv_128", "k3_fill_dense_selected_256",
             ):
                 assert f"kernel {required} " in mtxt, f"missing {required} in {arch} manifest"
             assert "spill_stores 0 spill_loads 0" in mtxt
@@ -371,7 +378,7 @@ def test_full_cubin_emission_and_cli():
             assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
             for tok in (
                 "#define SKL2_QWEN38_27B_HIDDEN 5120u",
-                "SKL2_ORD_COUNT = 387",
+                "SKL2_ORD_COUNT = 415",
                 "Skl2ModuleLoad",
                 "Skl2KernelLayout",
                 "Skl2Launch_qwen_bf16_dense_mma_16x64",

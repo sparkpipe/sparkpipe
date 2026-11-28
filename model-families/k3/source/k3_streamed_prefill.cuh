@@ -359,13 +359,6 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	return SPARK_STATUS_OK;
 }
 
-__global__ static void K3StreamedIdentityPagesKernel(uint32_t *pages, uint32_t count)
-{
-	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( index < count )
-		pages[index] = index;
-}
-
 static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 {
 	const uint64_t older = (uint64_t)SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, (uint32_t)keys) * K3GlobalKv::kSlotBytes;
@@ -428,8 +421,8 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 		s->mla.index_full = s->index_keys;
 		s->mla.index_scores = s->index_scores;
 		s->mla.index_score_floats = score_floats;
-		LM_LAUNCH((K3StreamedIdentityPagesKernel), (uint32_t)((pages + 255u) / 256u), 256u, 0, 0, s->key_pages, (uint32_t)pages);
-		if ( SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
+		if ( K3Skl2Launch(K3SKL2_k3_identity_pages_256, (uint32_t)((pages + 255u) / 256u), 256u, 0u, (SparkGpuStream)0,
+			s->key_pages, (uint32_t)pages) != SPARK_GPU_SUCCESS || SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		s->mla.key_pages = s->key_pages;
 	}

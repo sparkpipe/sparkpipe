@@ -1,0 +1,376 @@
+import "stdlib/math.skl2";
+
+const K3_LYR_BLK256 = 256;
+const K3_LYR_BLK128 = 128;
+
+macro k3_exact_dot8_add(acc, wv, av) {
+    reg f32 d0 = bf16_lo(wv[0]) * bf16_lo(av[0]);
+    reg f32 d1 = bf16_hi(wv[0]) * bf16_hi(av[0]);
+    unroll (k = 1..4) {
+        d0 = fma(bf16_lo(wv[k]), bf16_lo(av[k]), d0);
+        d1 = fma(bf16_hi(wv[k]), bf16_hi(av[k]), d1);
+    }
+    acc = acc + (d0 + d1);
+}
+
+macro k3_exact_select_part(args, task, out_w, out_ob, out_of, out_has_f32, out_dim, out_str, out_coff, out_ft) {
+    reg u32 cnt = param_u32(args, 96);
+    reg u32 ft1 = param_u32(args, 76);
+    reg u32 use1 = 0;
+    if (cnt > 1) {
+        if (task >= ft1) { use1 = 1; }
+    }
+    if (use1 != 0) {
+        out_w = param_u64(args, 40);
+        out_ob = param_u64(args, 48);
+        out_of = param_u64(args, 56);
+        out_has_f32 = ((param_u32(args, 56) | param_u32(args, 60)) != 0) ? 1 : 0;
+        out_dim = param_u32(args, 64);
+        out_str = param_u32(args, 68);
+        out_coff = param_u32(args, 72);
+        out_ft = ft1;
+    } else {
+        out_w = param_u64(args, 0);
+        out_ob = param_u64(args, 8);
+        out_of = param_u64(args, 16);
+        out_has_f32 = ((param_u32(args, 16) | param_u32(args, 20)) != 0) ? 1 : 0;
+        out_dim = param_u32(args, 24);
+        out_str = param_u32(args, 28);
+        out_coff = param_u32(args, 32);
+        out_ft = param_u32(args, 36);
+    }
+}
+
+@pdl
+@concept(linear)
+kernel[K3_LYR_BLK256, 112] k3_exact_split_8x4_256(blob[128, 8] args) {
+    shared f32 partial[256];
+    acqbulk();
+    reg u32 rows = param_u32(args, 88);
+    reg u32 base_row = ctaid_y() << 3;
+    if (base_row >= rows) { preexit(); return; }
+    reg u32 count = (rows - base_row < 8) ? (rows - base_row) : 8;
+    reg u32 in_dim = param_u32(args, 92);
+    reg u32 chunks = in_dim >> 3;
+    reg u64 act_ptr = param_u64(args, 80);
+    reg u32 task = ctaid_x();
+    reg u64 w_base = act_ptr; reg u64 ob_ptr = act_ptr; reg u64 of_ptr = act_ptr;
+    reg u32 has_f32 = 0; reg u32 out_dim = 0; reg u32 out_str = 0; reg u32 col_off = 0; reg u32 first_task = 0;
+    k3_exact_select_part(args, task, w_base, ob_ptr, of_ptr, has_f32, out_dim, out_str, col_off, first_task);
+    reg u32 neuron = (task - first_task) << 2;
+    reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 first_c = (chunks * wid) >> 3;
+    reg u32 last_c = (chunks * (wid + 1)) >> 3;
+    reg u64 wp[4];
+    unroll (n = 0..4) {
+        reg u32 rn = (neuron + n < out_dim) ? (neuron + n) : neuron;
+        wp[n] = ptr_add(w_base, rn * chunks, 16);
+    }
+    reg f32 acc[32];
+    unroll (i = 0..32) { acc[i] = 0.0f; }
+    reg u64 act_base0 = ptr_add(act_ptr, base_row, in_dim << 1);
+    for (reg u32 c = first_c + lane; c < last_c; c += 32) {
+        reg u32x4 wv[4];
+        unroll (n = 0..4) { wv[n] = ldg128_stream(ptr_add(wp[n], c, 16)); }
+        reg u64 ab = ptr_add(act_base0, c, 16);
+        unroll (r = 0..8) {
+            reg u32 rr = (r < count) ? r : 0;
+            reg u32x4 av = ldg128_persist(ptr_add(ab, rr, in_dim << 1));
+            unroll (n = 0..4) { k3_exact_dot8_add(acc[(n << 3) + r], wv[n], av); }
+        }
+    }
+    unroll (i = 0..32) {
+        acc[i] = warp_sum(acc[i]);
+        if (lane == 0) { sts32(partial, (wid << 5) + i, acc[i]); }
+    }
+    barrier();
+    reg u32 tid = tid_x();
+    if (tid < 32) {
+        reg u32 n = tid >> 3;
+        reg u32 r = tid & 7;
+        if (r < count && neuron + n < out_dim) {
+            reg f32 tot = 0.0f;
+            unroll (w = 0..8) { tot = tot + lds32(partial, (w << 5) + tid); }
+            reg u32 col = col_off + neuron + n;
+            if (has_f32 != 0) {
+                stg32(ptr_add(ptr_add(of_ptr, base_row + r, out_str << 2), col, 4), f32_as_u32(tot));
+            } else {
+                stg16(ptr_add(ptr_add(ob_ptr, base_row + r, out_str << 1), col, 2), f32_to_bf16(tot));
+            }
+        }
+    }
+    preexit();
+}
+
+macro k3_copy_dual_aligned4(src, dst, dst2, has_d2, elems, tid) {
+    reg u32 vecs = elems >> 3;
+    for (reg u32 i = tid; i < vecs; i += K3_LYR_BLK256) {
+        reg u32 b = i << 2;
+        reg u32 v0 = ldg32_stream(ptr_add(src, b, 4));
+        reg u32 v1 = ldg32_stream(ptr_add(src, b + 1, 4));
+        reg u32 v2 = ldg32_stream(ptr_add(src, b + 2, 4));
+        reg u32 v3 = ldg32_stream(ptr_add(src, b + 3, 4));
+        reg u32x4 pk = pack_u32x4(v0, v1, v2, v3);
+        stg128(ptr_add(dst, i, 16), pk);
+        if (has_d2 != 0) { stg128(ptr_add(dst2, i, 16), pk); }
+    }
+}
+
+macro k3_copy_dual_scalar(src, dst, dst2, has_d2, elems, tid) {
+    for (reg u32 i = tid; i < elems; i += K3_LYR_BLK256) {
+        reg u32 v = ldg16_stream(ptr_add(src, i, 2));
+        stg16(ptr_add(dst, i, 2), v);
+        if (has_d2 != 0) { stg16(ptr_add(dst2, i, 2), v); }
+    }
+}
+
+@pdl
+@concept(stage_mem)
+kernel[K3_LYR_BLK256, 48] k3_split_fused_proj_256(
+    global u16* qkvb_bf16, global u16* query_bf16, global u16* key_bf16,
+    global u16* value_bf16, global u16* beta_bf16,
+    global u16* replay_q, global u16* replay_k, global u16* replay_v,
+    u32 rows, u32 qk_dim, u32 v_dim, u32 heads, u32 fused_rows
+) {
+    acqbulk();
+    reg u32 row = ctaid_x();
+    if (row >= rows) { preexit(); return; }
+    reg u32 tid = tid_x();
+    reg u64 src = ptr_add(qkvb_bf16, row, fused_rows << 1);
+    reg u64 q_dst = ptr_add(query_bf16, row, qk_dim << 1);
+    reg u64 k_dst = ptr_add(key_bf16, row, qk_dim << 1);
+    reg u64 v_dst = ptr_add(value_bf16, row, v_dim << 1);
+    reg u32 has_rq = ((replay_q[0] | replay_q[1]) != 0) ? 1 : 0;
+    reg u32 has_rk = ((replay_k[0] | replay_k[1]) != 0) ? 1 : 0;
+    reg u32 has_rv = ((replay_v[0] | replay_v[1]) != 0) ? 1 : 0;
+    reg u64 rq_dst = ptr_add(replay_q, row, qk_dim << 1);
+    reg u64 rk_dst = ptr_add(replay_k, row, qk_dim << 1);
+    reg u64 rv_dst = ptr_add(replay_v, row, v_dim << 1);
+    reg u32 bad_rep = 0;
+    if (has_rq != 0 && (rq_dst[0] & 15) != 0) { bad_rep = 1; }
+    if (has_rk != 0 && (rk_dst[0] & 15) != 0) { bad_rep = 1; }
+    if (has_rv != 0 && (rv_dst[0] & 15) != 0) { bad_rep = 1; }
+    reg u32 vec_ok = 0;
+    if (((qk_dim & 7) | (v_dim & 7) | (fused_rows & 1) | (src[0] & 3) | bad_rep) == 0) {
+        if (((q_dst[0] | k_dst[0] | v_dst[0]) & 15) == 0) { vec_ok = 1; }
+    }
+    if (vec_ok != 0) {
+        k3_copy_dual_aligned4(src, q_dst, rq_dst, has_rq, qk_dim, tid);
+        k3_copy_dual_aligned4(ptr_add(src, qk_dim, 2), k_dst, rk_dst, has_rk, qk_dim, tid);
+        k3_copy_dual_aligned4(ptr_add(src, qk_dim << 1, 2), v_dst, rv_dst, has_rv, v_dim, tid);
+    } else {
+        k3_copy_dual_scalar(src, q_dst, rq_dst, has_rq, qk_dim, tid);
+        k3_copy_dual_scalar(ptr_add(src, qk_dim, 2), k_dst, rk_dst, has_rk, qk_dim, tid);
+        k3_copy_dual_scalar(ptr_add(src, qk_dim << 1, 2), v_dst, rv_dst, has_rv, v_dim, tid);
+    }
+    reg u64 b_src = ptr_add(src, (qk_dim << 1) + v_dim, 2);
+    reg u64 b_dst = ptr_add(beta_bf16, row, heads << 1);
+    for (reg u32 i = tid; i < heads; i += K3_LYR_BLK256) {
+        stg16(ptr_add(b_dst, i, 2), ldg16_stream(ptr_add(b_src, i, 2)));
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_LYR_BLK128, 64] k3_kda_prep_finish_128(
+    global u16* query_bf16, global u16* key_bf16, global u16* decay_logit_bf16,
+    global f32* channel_bias, global f32* head_log_scale, global u16* beta_logit_bf16,
+    global f32* retention, global f32* write_gate,
+    u32 heads, f32 min_log_decay, f32 epsilon, u32 rows
+) {
+    acqbulk();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 task = (ctaid_x() << 2) + wid;
+    if (task >= rows * heads) { preexit(); return; }
+    reg u32 q_row = 0; reg u32 head = 0;
+    u32_divmod(task, heads, q_row, head);
+    reg u64 q_ptr = ptr_add(query_bf16, task, 256);
+    reg u64 k_ptr = ptr_add(key_bf16, task, 256);
+    reg u64 d_ptr = ptr_add(decay_logit_bf16, task, 256);
+    reg u64 cb_ptr = ptr_add(channel_bias, head, 512);
+    reg u64 ret_ptr = ptr_add(retention, task, 512);
+    reg f32 qv[4]; reg f32 kv[4];
+    reg f32 qs[4]; reg f32 ks[4];
+    unroll (i = 0..4) {
+        reg u32 off = (i << 5) + lane;
+        qv[i] = bf16_lo(ldg16_stream(ptr_add(q_ptr, off, 2)));
+        kv[i] = bf16_lo(ldg16_stream(ptr_add(k_ptr, off, 2)));
+        qs[i] = qv[i] * qv[i];
+        ks[i] = kv[i] * kv[i];
+        warp_sum_down(qs[i]);
+        warp_sum_down(ks[i]);
+    }
+    reg f32 q_inv = rsqrt(shfl_idx((qs[0] + qs[2]) + (qs[1] + qs[3]), 0) + epsilon);
+    reg f32 k_inv = rsqrt(shfl_idx((ks[0] + ks[2]) + (ks[1] + ks[3]), 0) + epsilon);
+    reg f32 hls = u32_as_f32(ldg32_persist(ptr_add(head_log_scale, head, 4)));
+    unroll (i = 0..4) {
+        reg u32 off = (i << 5) + lane;
+        stg16(ptr_add(q_ptr, off, 2), f32_to_bf16(qv[i] * q_inv));
+        stg16(ptr_add(k_ptr, off, 2), f32_to_bf16(kv[i] * k_inv));
+        reg f32 dl = bf16_lo(ldg16_persist(ptr_add(d_ptr, off, 2)));
+        reg f32 cb = u32_as_f32(ldg32_persist(ptr_add(cb_ptr, off, 4)));
+        reg f32 dec = 0.0f;
+        bounded_decay_f32(dl, cb, hls, min_log_decay, dec);
+        stg32(ptr_add(ret_ptr, off, 4), f32_as_u32(dec));
+    }
+    if (lane == 0) {
+        reg f32 wg = 0.0f;
+        sigmoid_exact_f32(bf16_lo(ldg16_persist(ptr_add(beta_logit_bf16, task, 2))), wg);
+        stg32(ptr_add(write_gate, task, 4), f32_as_u32(wg));
+    }
+    preexit();
+}
+
+@pdl
+@concept(recurrent)
+kernel[K3_LYR_BLK128, 48] k3_kda_norm_gate_128(
+    global u16* output_bf16, global u16* gate_bf16, global f32* norm_weight,
+    u32 heads, f32 epsilon, u32 rows
+) {
+    acqbulk();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u32 task = (ctaid_x() << 2) + wid;
+    if (task >= rows * heads) { preexit(); return; }
+    reg u64 o_ptr = ptr_add(output_bf16, task, 256);
+    reg u64 g_ptr = ptr_add(gate_bf16, task, 256);
+    reg f32 vv[4]; reg f32 ss[4];
+    unroll (i = 0..4) {
+        reg u32 off = (i << 5) + lane;
+        vv[i] = bf16_lo(ldg16_stream(ptr_add(o_ptr, off, 2)));
+        ss[i] = vv[i] * vv[i];
+        warp_sum_down(ss[i]);
+    }
+    reg f32 total = shfl_idx((ss[0] + ss[2]) + (ss[1] + ss[3]), 0);
+    reg f32 scale = 0.0f;
+    rsqrt_exact_div(total, 128.0f, epsilon, scale);
+    unroll (i = 0..4) {
+        reg u32 off = (i << 5) + lane;
+        reg f32 w = u32_as_f32(ldg32_persist(ptr_add(norm_weight, off, 4)));
+        reg f32 normed = bf16_lo(f32_to_bf16((vv[i] * scale) * w));
+        reg f32 sg = 0.0f;
+        sigmoid_exact_f32(bf16_lo(ldg16_persist(ptr_add(g_ptr, off, 2))), sg);
+        stg16(ptr_add(o_ptr, off, 2), f32_to_bf16(normed * sg));
+    }
+    preexit();
+}
+
+@pdl
+@concept(norm_rope)
+kernel[K3_LYR_BLK256, 48] k3_rms_norm_slice_256(
+    global u16* input_bf16, global u16* weight_bf16, global u16* output_bf16,
+    u32 dim, u32 col_offset, u32 slice_width, f32 epsilon
+) {
+    shared f32 s_sq[3584];
+    shared f32 red[8];
+    acqbulk();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    reg u64 in_row = ptr_add(input_bf16, row, dim << 1);
+    reg f32 total = 0.0f;
+    reg u32 staged_ok = 0;
+    if (dim <= 3584) {
+        if (((dim & 7) | (in_row[0] & 15)) == 0) { staged_ok = 1; }
+    }
+    if (staged_ok != 0) {
+        for (reg u32 off = tid << 3; off < dim; off += 2048) {
+            reg u32x4 iv = ldg128_persist(ptr_add(in_row, off, 2));
+            unroll (k = 0..4) {
+                reg f32 lo = bf16_lo(iv[k]);
+                reg f32 hi = bf16_hi(iv[k]);
+                sts32(s_sq, off + (k << 1), lo * lo);
+                sts32(s_sq, off + (k << 1) + 1, hi * hi);
+            }
+        }
+        barrier();
+        for (reg u32 i = tid; i < dim; i += K3_LYR_BLK256) {
+            total = total + lds32(s_sq, i);
+        }
+    } else {
+        for (reg u32 i = tid; i < dim; i += K3_LYR_BLK256) {
+            reg f32 v = bf16_lo(ldg16_persist(ptr_add(in_row, i, 2)));
+            total = total + v * v;
+        }
+    }
+    reg f32 sum_sq = 0.0f;
+    block_reduce_sum_exact(total, red, wid, lane, sum_sq);
+    reg f32 scale = 0.0f;
+    rsqrt_exact_div(sum_sq, u32_to_f32(dim), epsilon, scale);
+    reg u64 out_row = ptr_add(output_bf16, row, slice_width << 1);
+    reg u32 vec_out = 0;
+    if (((col_offset & 7) | (slice_width & 7)) == 0) {
+        if (((in_row[0] | weight_bf16[0] | out_row[0]) & 15) == 0) { vec_out = 1; }
+    }
+    if (vec_out != 0) {
+        for (reg u32 off = tid << 3; off < slice_width; off += 2048) {
+            reg u32 col = col_offset + off;
+            reg u32x4 iv = ldg128_persist(ptr_add(in_row, col, 2));
+            reg u32x4 wv = ldg128_persist(ptr_add(weight_bf16, col, 2));
+            reg u32 pk[4];
+            unroll (k = 0..4) {
+                reg f32 o0 = bf16_lo(f32_to_bf16(bf16_lo(iv[k]) * scale)) * bf16_lo(wv[k]);
+                reg f32 o1 = bf16_lo(f32_to_bf16(bf16_hi(iv[k]) * scale)) * bf16_hi(wv[k]);
+                pk[k] = pack_bf16x2(o0, o1);
+            }
+            stg128(ptr_add(out_row, off, 2), pack_u32x4(pk[0], pk[1], pk[2], pk[3]));
+        }
+    } else {
+        for (reg u32 i = tid; i < slice_width; i += K3_LYR_BLK256) {
+            reg u32 col = col_offset + i;
+            reg f32 v = bf16_lo(ldg16_persist(ptr_add(in_row, col, 2)));
+            reg f32 w = bf16_lo(ldg16_persist(ptr_add(weight_bf16, col, 2)));
+            stg16(ptr_add(out_row, i, 2), f32_to_bf16(bf16_lo(f32_to_bf16(v * scale)) * w));
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(attention)
+kernel[K3_LYR_BLK128, 32] k3_unpack_prior_kv_128(
+    u32 degree, u32 grain, global u8* gathered_bytes, u32 rank_stride,
+    u32 prior_local_keys, u32 old_ctx, global u16* kv_all
+) {
+    acqbulk();
+    reg u32 local = ctaid_x();
+    reg u32 src_rank = ctaid_y();
+    reg u32 tid = tid_x();
+    if (local < prior_local_keys && src_rank < degree) {
+        if (tid < 72) {
+            reg u32 pos = 0;
+            kv_shard_local_pos(degree, src_rank, grain, local, pos);
+            if (pos < old_ctx) {
+                reg u64 s_row = ptr_add(ptr_add(gathered_bytes, src_rank, rank_stride), local, 1152);
+                reg u64 d_row = ptr_add(kv_all, pos, 1152);
+                stg128(ptr_add(d_row, tid, 16), ldg128_persist(ptr_add(s_row, tid, 16)));
+            }
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(indexer)
+kernel[K3_LYR_BLK256, 32] k3_fill_dense_selected_256(
+    global u32* sequence_of_row, global u32* context_length,
+    global u32* positions, global u32* selected, u32 topk
+) {
+    acqbulk();
+    reg u32 row = ctaid_x();
+    reg u32 tid = tid_x();
+    reg u32 pos = ldg32_persist(ptr_add(positions, row, 4));
+    reg u32 seq = ldg32_persist(ptr_add(sequence_of_row, row, 4));
+    reg u32 bound = ldg32_persist(ptr_add(context_length, seq, 4));
+    if (pos + 1 < bound) { bound = pos + 1; }
+    if (bound <= topk) {
+        reg u64 dst = ptr_add(selected, row, topk << 2);
+        for (reg u32 i = tid; i < topk; i += K3_LYR_BLK256) {
+            stg32(ptr_add(dst, i, 4), (i < bound) ? i : 0xFFFFFFFF);
+        }
+    }
+    preexit();
+}

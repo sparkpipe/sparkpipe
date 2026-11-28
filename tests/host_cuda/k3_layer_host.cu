@@ -39,6 +39,7 @@ struct LmHostRecorderFormat
 	}
 };
 #include "tests/host_cuda/lm_host_skinny_recorder.cuh"
+#include "tests/host_cuda/k3_host_skl2_emu.cuh"
 #include "model-families/k3/source/layer.cuh"
 
 #define ROWS 2u
