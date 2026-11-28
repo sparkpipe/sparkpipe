@@ -380,20 +380,20 @@ static SparkStatus ReplayAttention(D41ModelState *state, const D41Layer *layer, 
 	D41WindowFoldWholeLaunch(dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
 		state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 		step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
-	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	D41WindowRingStoreLaunch(rows, D41_THREADS, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
-	LM_LAUNCH((D41MergeSinkKernel), dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream, state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
+	D41MergeSinkLaunch(dim3(rows, D41_LOCAL_HEADS), D41_THREADS, stream, state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
 		state->attn_merged);
 	D41Rope(state->attn_merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
 	for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
 	{
-		LM_LAUNCH((D41ColumnsKernel), dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream, state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH,
+		D41ColumnsLaunch(dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, stream, state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH,
 			local_width, state->group_input, D41_GROUP_WIDTH, D41_GROUP_WIDTH);
 		if ( D41QdqLinear(&layer->o_a[group], state->group_input, state->wo_a_group, rows, D41_GROUP_WIDTH, D41_GROUP_ROWS, sms, state->row_invariant,
 			&state->mx, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((D41ColumnsKernel), dim3(D41Blocks(D41_GROUP_ROWS), rows), D41_THREADS, 0, stream, state->wo_a_group, D41_GROUP_ROWS,
+		D41ColumnsLaunch(dim3(D41Blocks(D41_GROUP_ROWS), rows), D41_THREADS, stream, state->wo_a_group, D41_GROUP_ROWS,
 			state->wo_a_out + (uint64_t)group * D41_GROUP_ROWS, D41_WO_A_ROWS, D41_GROUP_ROWS);
 	}
 	if ( D41QdqLinear(&layer->o_b, state->wo_a_out, state->partial, rows, D41_WO_A_ROWS, D41_HIDDEN, sms, state->row_invariant, &state->mx, stream) !=

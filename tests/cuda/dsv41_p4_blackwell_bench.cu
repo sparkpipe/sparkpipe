@@ -186,7 +186,7 @@ static void BenchAttend(void)
 	float2 *drsc_f = 0, *drsc_c = 0;
 	BENCH_CHECK(cudaMalloc(&drsc_f, max_rows * D41K_ROPE_PAIRS * sizeof(float2)));
 	BENCH_CHECK(cudaMalloc(&drsc_c, max_rows * D41K_ROPE_PAIRS * sizeof(float2)));
-	D41RopeTableKernel<<<max_rows, D41K_ROPE_PAIRS>>>(dpos, dfreq, drsc_f, drsc_c, max_rows);
+	D41RopeTableLaunch(max_rows, D41K_ROPE_PAIRS, (SparkGpuStream)0, dpos, dfreq, drsc_f, drsc_c, max_rows);
 	BENCH_CHECK(cudaDeviceSynchronize());
 
 	const uint64_t max_part_codes = (uint64_t)max_rows * part_heads * dim;

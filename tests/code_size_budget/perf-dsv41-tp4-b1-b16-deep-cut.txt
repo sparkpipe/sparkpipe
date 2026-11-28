@@ -1,2 +1,2 @@
-+382
-dsv41_flash tp4 B4/B8/B16 and prefill optimizations (trimmed by -333L after skl2 dsv41_flash Slice 2 CUDA retirement): remaining D41HcMixNormK32Kernel, D41MxGemmBatch16Kernel, D41CellMxW2DirectKernel, and D41MxGemmSmallKernel.
++274
+dsv41_flash tp4 B4/B8/B16 and prefill optimizations (trimmed by -333L in Slice 2 and -108L in Slice 3A after retiring D41HcMixNormK32Kernel): remaining D41MxGemmBatch16Kernel, D41CellMxW2DirectKernel, and D41MxGemmSmallKernel.

@@ -348,6 +348,11 @@ def test_full_cubin_emission_and_cli():
                 "d41_index_score_direct_256", "d41_shared_partials_r8_256", "d41_cell_fp4_gemv_c8_m1",
                 "d41_topk_exact_fast_256", "d41_topk_exact_chunk_reg_256", "d41_topk_exact_gather_reg_256",
                 "d41_kv_fp4_qdq_vec_256", "d41_engram_gate_256", "d41_fp8_qdq_256", "d41_sink_attention_256",
+                "d41_compress_finish_store_256", "d41_index_query_prep_64", "d41_rope_table_32", "d41_rope_rows_32",
+                "d41_window_ring_store_256", "d41_merge_sink_256", "d41_spread_output_256", "d41_spread_output_ring_256",
+                "d41_columns_256", "d41_route_local_256", "d41_balance_route_256", "d41_topk_balance_route_256",
+                "d41_topk_route_packed_256", "d41_fused_router_balance_r8_256", "d41_fused_router_packed_r8_256",
+                "d41_hc_mix_norm_r8_128", "d41_hc_mix_norm_staged_r8_256", "d41_hc_mix_norm_ksplit_r8_256",
                 "k3_cell_mma_w1_situ_c2", "k3_cell_mma_w2_slice_c4_stream",
                 "k3_cell_skinny_w1_situ_b1", "k3_cell_skinny_w2_finalize_row1", "k3_cell_skinny_w2_b4",
                 "k3_runner_fused_pack_256", "k3_runner_mla_down_rows_256", "k3_runner_latent_logits_256",
@@ -380,7 +385,7 @@ def test_full_cubin_emission_and_cli():
             assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
             for tok in (
                 "#define SKL2_QWEN38_27B_HIDDEN 5120u",
-                "SKL2_ORD_COUNT = 420",
+                "SKL2_ORD_COUNT = 449",
                 "Skl2ModuleLoad",
                 "Skl2KernelLayout",
                 "Skl2Launch_qwen_bf16_dense_mma_16x64",

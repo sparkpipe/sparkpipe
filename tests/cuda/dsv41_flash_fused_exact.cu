@@ -612,12 +612,12 @@ static void D41FusedOutputKernelReference(const D41FusedOutputArguments *set, ui
 	(void)ring_slot_stride;
 	(void)commit;
 	(void)merged;
-	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, window_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_index, ring_slot_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, commit, (const uint32_t *)0);
-	LM_LAUNCH((D41MergeSinkKernel), dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream, records, source_stride, 1u, D41_LOCAL_HEADS, sink, merged);
+	D41WindowRingStoreLaunch(rows, D41_THREADS, stream, window_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_index, ring_slot_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, commit, (const uint32_t *)0);
+	D41MergeSinkLaunch(dim3(rows, D41_LOCAL_HEADS), D41_THREADS, stream, records, source_stride, 1u, D41_LOCAL_HEADS, sink, merged);
 	D41Rope(merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, positions, 0, frequency, 1u, 0, stream);
 	for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
 	{
-		LM_LAUNCH((D41ColumnsKernel), dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream, merged + (uint64_t)group * D41_GROUP_WIDTH, D41_LOCAL_HEADS * D41_HEAD_DIM, group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, D41_GROUP_WIDTH, D41_GROUP_WIDTH);
+		D41ColumnsLaunch(dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, stream, merged + (uint64_t)group * D41_GROUP_WIDTH, D41_LOCAL_HEADS * D41_HEAD_DIM, group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, D41_GROUP_WIDTH, D41_GROUP_WIDTH);
 		D41Fp8Qdq(group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, (uint64_t)rows * D41_GROUP_WIDTH, stream);
 	}
 	FUSED_CUDA(cudaGetLastError());
@@ -956,7 +956,7 @@ static void D41FusedRouteKernelReference(const D41FusedRouteArguments *set, uint
 	(void)neuron_tiles_up;
 	(void)neuron_tiles_down;
 	FUSED_REQUIRE((LmTopkRouteLaunch<D41_THREADS, D41_TOPK, true, LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, scores, D41_EXPERTS, route_expert, route_weight, bias, 0, D41_ROUTE_SCALE, fault, stream)) == SPARK_GPU_SUCCESS);
-	LM_LAUNCH((D41RouteLocalKernel), (rows * D41_TOPK + 255u) / 256u, 256u, 0, stream, route_expert, route_weight, route_global, rows * D41_TOPK, group, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);
+	D41RouteLocalLaunch((rows * D41_TOPK + 255u) / 256u, 256u, stream, route_expert, route_weight, route_global, rows * D41_TOPK, group, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);
 	FUSED_REQUIRE((LmRouteBuild<D41_THREADS, D41_LOCAL_EXPERTS + 1u>(route_expert, rows, rows * D41_TOPK, D41_TOPK, group_row_offset, route_packed_row, route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, tile_prefix_up, tile_prefix_down, stream)) == LM_LAUNCH_OK);
 	LM_LAUNCH((LmPackedRouteWeightKernel), (rows * D41_TOPK + 255u) / 256u, 256u, 0, stream, route_packed_row, route_weight, packed_weight, rows * D41_TOPK);
 	FUSED_CUDA(cudaGetLastError());

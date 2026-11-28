@@ -360,7 +360,7 @@ int main(void)
 		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
 		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
 		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
-		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
+		D41RopeTableLaunch(nr, D41K_ROPE_PAIRS, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
 	};
 
 	auto prep_batch_decode = [&](SparkStageRunnerStep &step, uint32_t nr, const std::vector<uint32_t> &pos, uint32_t *rfault)
@@ -398,7 +398,7 @@ int main(void)
 		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, step.positions, st->bound_ratio1, nr, 1u);
 		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio2, 8u, 2u);
 		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, step.context_length, st->length_ratio1, 8u, 1u);
-		LM_LAUNCH((D41RopeTableKernel), nr, D41K_ROPE_PAIRS, 0, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
+		D41RopeTableLaunch(nr, D41K_ROPE_PAIRS, (SparkGpuStream)0, step.positions, st->full_frequency, st->rope_sc_full, st->rope_sc_compress, nr);
 	};
 
 	auto free_step = [&](SparkStageRunnerStep &step)

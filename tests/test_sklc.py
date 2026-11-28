@@ -295,6 +295,28 @@ def verify_new_builtins():
         blob = cubin_path.read_bytes()
         assert struct.pack("<IHHI", 0, 0, 0, (216 << 18) | (0x1F << 12)) in blob, "expected exact 216-byte EIATTR_KPARAM_INFO blob encoding"
 
+    src3 = """kernel[32, 32] atomg_smoke(global u32* counter, global u32* out) {
+    acqbulk();
+    membar_gpu();
+    reg u32 tid = tid_x();
+    if (tid == 0) {
+        reg u32 prev = atomg_add_u32(counter, 1);
+        reg u32 old = atomg_exch_u32(counter, 0);
+        stg32(out, prev + old);
+    }
+    preexit();
+}
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        skl_path = pathlib.Path(tmp) / "atomg.skl"
+        cubin_path = pathlib.Path(tmp) / "atomg.cubin"
+        skl_path.write_text(src3, encoding="utf-8")
+        res = subprocess.run(
+            [sys.executable, str(SKLC), "--arch", "sm121", str(skl_path), "-o", str(cubin_path)],
+            capture_output=True, text=True, check=False,
+        )
+        assert res.returncode == 0, f"atomg_smoke failed: {res.stderr}"
+
 
 def verify_rename_and_only():
     with tempfile.TemporaryDirectory() as tmp:

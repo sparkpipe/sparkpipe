@@ -239,7 +239,7 @@ static uint32_t RunWave(const Wave &w, uint32_t perturb)
 	memset(&none, 0, sizeof(none));
 	ReferenceWindowFoldKernel<<<dim3(rows, heads), D41K_THREADS>>>(sequential_d, stride, heads, query_d, (uint64_t)packed * LATENT, wave_d, ring_d,
 		positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, WINDOW * LATENT, WINDOW, WINDOW, 1u, 0u, scale, heads, 1u);
-	D41MergeSinkKernel<<<dim3(rows, heads), D41K_THREADS>>>(sequential_d, stride, 1u, heads, sink_d, expected_d);
+	D41MergeSinkLaunch(dim3(rows, heads), D41K_THREADS, (SparkGpuStream)0, sequential_d, stride, 1u, heads, sink_d, expected_d);
 	CUDA(cudaGetLastError());
 	if ( perturb != 0u )
 	{
@@ -261,7 +261,7 @@ static uint32_t RunWave(const Wave &w, uint32_t perturb)
 		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, (uint16_t *)0,
 		frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, rows, 0u, 0)));
 	CUDA(cudaMemcpy(roped_d, merged_d, (size_t)packed * LATENT * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
-	D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(roped_d, heads, LATENT, LATENT - 2u * D41K_ROPE_PAIRS, positions_d, 0, frequency_d, 1u,
+	D41RopeRowsLaunch(dim3(rows, heads), D41K_ROPE_PAIRS, (SparkGpuStream)0, roped_d, heads, LATENT, LATENT - 2u * D41K_ROPE_PAIRS, positions_d, 0, frequency_d, 1u,
 		(const uint32_t *)0);
 	for ( uint32_t group = 0u; group < 2u; ++group )
 		REQUIRE(LmMxQuantizeRows(roped_d + (size_t)group * width, (uint64_t)heads * LATENT, reference_d + (size_t)group * rows * width,
@@ -619,7 +619,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 	for ( uint32_t r = 0u; r < degree; ++r )
 	{
 		D41StoreCompressedLaunch<Kv>(anchor, D41K_THREADS, (SparkGpuStream)0, base_views[r], pooled_d, all_idx_key_d, emit_d, pre_lane_d, INDEX_DIM);
-		D41WindowRingStoreKernel<<<anchor, D41K_THREADS>>>(all_wave_d, base_rings_d + (size_t)r * ring_rows * LATENT, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, seq0_d,
+		D41WindowRingStoreLaunch(anchor, D41K_THREADS, (SparkGpuStream)0, all_wave_d, base_rings_d + (size_t)r * ring_rows * LATENT, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, seq0_d,
 			(uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, anchor, 1u, (const uint32_t *)0);
 	}
 	CUDA(cudaDeviceSynchronize());
@@ -686,7 +686,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 		for ( uint32_t src = 0u; src < degree; ++src )
 			CUDA(cudaMemcpy(t_recv_d + ((size_t)dst * degree + src) * t_rec_stride, t_recs_d + ((size_t)src * degree + dst) * t_rec_stride, t_rec_stride * sizeof(float), cudaMemcpyDeviceToDevice));
 	for ( uint32_t dst = 0u; dst < degree; ++dst )
-		D41MergeSinkKernel<<<dim3(tree.rows, local_heads), D41K_THREADS>>>(t_recv_d + (size_t)dst * degree * t_rec_stride, t_rec_stride, degree, local_heads,
+		D41MergeSinkLaunch(dim3(tree.rows, local_heads), D41K_THREADS, (SparkGpuStream)0, t_recv_d + (size_t)dst * degree * t_rec_stride, t_rec_stride, degree, local_heads,
 			sink_d + dst * local_heads, t_out_d + (size_t)dst * tree.rows * local_heads * LATENT);
 	uint16_t *t_attend_d = 0;
 	if ( degree == 1u )
@@ -746,7 +746,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 				for ( uint32_t src = 0u; src < degree; ++src )
 					CUDA(cudaMemcpy(s_recv_d + ((size_t)dst * degree + src) * s_rec_stride, s_recs_d + ((size_t)src * degree + dst) * s_rec_stride, s_rec_stride * sizeof(float), cudaMemcpyDeviceToDevice));
 			for ( uint32_t dst = 0u; dst < degree; ++dst )
-				D41MergeSinkKernel<<<dim3(1u, local_heads), D41K_THREADS>>>(s_recv_d + (size_t)dst * degree * s_rec_stride, s_rec_stride, degree, local_heads,
+				D41MergeSinkLaunch(dim3(1u, local_heads), D41K_THREADS, (SparkGpuStream)0, s_recv_d + (size_t)dst * degree * s_rec_stride, s_rec_stride, degree, local_heads,
 					sink_d + dst * local_heads, s_out_d + (size_t)dst * local_heads * LATENT);
 			if ( degree == 1u )
 				REQUIRE((D41AttendLaunch<Kv, LATENT, 1u>(work_views[0], 1u, s_q_d, s_lane_d, s_len_d, s_bound_d, s_sel_d, TOPK, all_wave_d + (size_t)tok_offset * LATENT,
@@ -754,7 +754,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 					(const float *)0, 0u, 0u, (uint8_t *)0, 1u, 1u, 0u, 0)) == SPARK_GPU_SUCCESS);
 		}
 		for ( uint32_t r = 0u; r < degree; ++r )
-			D41WindowRingStoreKernel<<<1, D41K_THREADS>>>(all_wave_d + (size_t)tok_offset * LATENT, work_rings_d + (size_t)r * ring_rows * LATENT, s_pos_d, s_lane_d, s_ord_d,
+			D41WindowRingStoreLaunch(1, D41K_THREADS, (SparkGpuStream)0, all_wave_d + (size_t)tok_offset * LATENT, work_rings_d + (size_t)r * ring_rows * LATENT, s_pos_d, s_lane_d, s_ord_d,
 				s_beg_d, seq0_d, (uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, 1u, 1u, (const uint32_t *)0);
 	};
 	for ( uint32_t row = 0u; row < tree.rows; ++row )
@@ -792,7 +792,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 		uint32_t *pr_d = Device(acc), *kv_d = Device(std::vector<uint32_t>{ kept });
 		for ( uint32_t r = 0u; r < degree; ++r )
 		{
-			D41WindowRingStoreKernel<<<tree.rows, D41K_THREADS>>>(t_wave, work_rings_d + (size_t)r * ring_rows * LATENT, t_pos_d, t_lane_d, t_ord_d, t_beg_d, seq0_d,
+			D41WindowRingStoreLaunch(tree.rows, D41K_THREADS, (SparkGpuStream)0, t_wave, work_rings_d + (size_t)r * ring_rows * LATENT, t_pos_d, t_lane_d, t_ord_d, t_beg_d, seq0_d,
 				(uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, tree.rows, 1u, kv_d, pr_d);
 			D41CompressedPathMoveLaunch<Kv>(tree.rows, D41K_THREADS, (SparkGpuStream)0, work_views[r], t_lane_d, t_pos_d, pr_d, kv_d, t_slots_d, RATIO, 1280u / 2u);
 		}
@@ -926,7 +926,7 @@ static uint32_t RunTreeGraphCase(void)
 			is_tree ? cfork_d : (const uint32_t *)0, is_tree ? coff_d : (const uint32_t *)0)) == SPARK_GPU_SUCCESS);
 		D41WindowFoldLaunch(dim3(ROWS, HEADS), D41K_THREADS, stream, recs_d, rec_stride, HEADS, query_d, (uint64_t)ROWS * HEADS * LATENT, wave_d, ring_d,
 			pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, (uint64_t)WINDOW * LATENT, WINDOW, WINDOW, 1u, 0u, qk_scale, HEADS, 1u, is_tree ? par_d : (const uint32_t *)0);
-		D41MergeSinkKernel<<<dim3(ROWS, HEADS), D41K_THREADS, 0, stream>>>(recs_d, rec_stride, 1u, HEADS, sink_d, out_d);
+		D41MergeSinkLaunch(dim3(ROWS, HEADS), D41K_THREADS, stream, recs_d, rec_stride, 1u, HEADS, sink_d, out_d);
 	};
 	auto loadSpec = [&](const TreeSpec &s)
 	{

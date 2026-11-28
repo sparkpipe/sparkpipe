@@ -424,7 +424,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		const std::vector<uint32_t> route = Host(route_d, (size_t)received_rows * TOPK);
 		const std::vector<float> weight = Host(weight_d, (size_t)received_rows * TOPK);
 		if ( received_rows != 0u )
-			D41RouteLocalKernel<<<(received_rows * TOPK + 255u) / 256u, 256u>>>(route_d, weight_d, global_d, received_rows * TOPK, group_d, LOCAL, HELD,
+			D41RouteLocalLaunch((received_rows * TOPK + 255u) / 256u, 256u, (SparkGpuStream)0, route_d, weight_d, global_d, received_rows * TOPK, group_d, LOCAL, HELD,
 				EXPERTS);
 		CUDA(cudaGetLastError());
 		const std::vector<uint32_t> local = Host(route_d, (size_t)received_rows * TOPK), global = Host(global_d, (size_t)received_rows * TOPK);
@@ -1159,7 +1159,7 @@ static uint32_t BalanceRouteCase(uint32_t rows, uint32_t copies_active, uint32_t
 		CUDA(cudaMalloc(&rp_d, routes * 4u)); CUDA(cudaMalloc(&rs_d, routes * 4u));
 		CUDA(cudaMalloc(&tu_d, (HELD + 2u) * 4u)); CUDA(cudaMalloc(&td_d, (HELD + 2u) * 4u));
 		CUDA(cudaMalloc(&pw_d, routes * 4u));
-		D41BalanceRouteKernel<RANKS, EXPERTS, LOCAL, 256u, HELD + 1u><<<1u, 256u>>>(re_d, rw_d, rg_d, rows, TOPK, rank, copies_active, row_invariant,
+		D41BalanceRouteLaunch<RANKS, EXPERTS, LOCAL, 256u, HELD + 1u>(1u, 256u, (SparkGpuStream)0, re_d, rw_d, rg_d, rows, TOPK, rank, copies_active, row_invariant,
 			owner_d, backup_d, g_d, go_d, rp_d, rs_d, 16u, 36u, tu_d, 40u, td_d, pw_d);
 		CUDA(cudaGetLastError());
 		std::vector<uint32_t> re = Host(re_d, routes), rg = Host(rg_d, routes), go = Host(go_d, HELD + 2u);
@@ -1196,7 +1196,7 @@ static uint32_t BalanceRouteCase(uint32_t rows, uint32_t copies_active, uint32_t
 				CUDA(cudaMalloc(&rp_d, TOPK * 4u)); CUDA(cudaMalloc(&rs_d, TOPK * 4u));
 				CUDA(cudaMalloc(&tu_d, (HELD + 2u) * 4u)); CUDA(cudaMalloc(&td_d, (HELD + 2u) * 4u));
 				CUDA(cudaMalloc(&pw_d, TOPK * 4u));
-				D41BalanceRouteKernel<RANKS, EXPERTS, LOCAL, 256u, HELD + 1u><<<1u, 256u>>>(re_d, rw_d, rg_d, 1u, TOPK, rank, copies_active, 0u,
+				D41BalanceRouteLaunch<RANKS, EXPERTS, LOCAL, 256u, HELD + 1u>(1u, 256u, (SparkGpuStream)0, re_d, rw_d, rg_d, 1u, TOPK, rank, copies_active, 0u,
 					owner_d, backup_d, g_d, go_d, rp_d, rs_d, 16u, 36u, tu_d, 40u, td_d, pw_d);
 				CUDA(cudaGetLastError());
 				std::vector<uint32_t> re = Host(re_d, TOPK);

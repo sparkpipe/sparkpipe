@@ -180,9 +180,9 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 				slot_d, 0u, RING, WINDOW, DEGREE, source, scale, LOCAL, 1u);
 			CUDA(cudaGetLastError());
 		}
-		D41MergeSinkKernel<<<dim3(rows, LOCAL), 256>>>(received_scatter + (uint64_t)rank * DEGREE * stride, stride, DEGREE, LOCAL, sinks_d + rank * LOCAL,
+		D41MergeSinkLaunch(dim3(rows, LOCAL), 256, (SparkGpuStream)0, received_scatter + (uint64_t)rank * DEGREE * stride, stride, DEGREE, LOCAL, sinks_d + rank * LOCAL,
 			outputs_scatter + (uint64_t)rank * rows * LOCAL * LATENT);
-		D41MergeSinkKernel<<<dim3(rows, LOCAL), 256>>>(received, stride, DEGREE, LOCAL, sinks_d + rank * LOCAL,
+		D41MergeSinkLaunch(dim3(rows, LOCAL), 256, (SparkGpuStream)0, received, stride, DEGREE, LOCAL, sinks_d + rank * LOCAL,
 			outputs_local + (uint64_t)rank * rows * LOCAL * LATENT);
 		CUDA(cudaGetLastError());
 	}

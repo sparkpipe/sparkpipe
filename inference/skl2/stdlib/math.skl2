@@ -563,3 +563,93 @@ macro bounded_decay_f32(logit, bias, log_scale, min_log_decay, out_decay) {
     sigmoid_exact_f32(scaled, sg);
     out_decay = exp2_ftz((min_log_decay * sg) * 1.4426950408889634f);
 }
+
+@export
+macro sincos_exact_f32(angle, out_sin, out_cos) {
+    reg f32 tmp = fma(angle, 0.6366197723675814f, 12582912.0f);
+    reg u32 q = f32_as_u32(tmp) & 3;
+    reg f32 kf = tmp - 12582912.0f;
+    reg f32 r = fma(-kf, 1.5707962512969971f, angle);
+    r = fma(-kf, 7.549789415861596e-8f, r);
+    r = fma(-kf, -5.3903025299577647e-15f, r);
+    reg f32 r2 = r * r;
+    reg f32 s = fma(r2, -1.9515295891e-4f, 8.3321608736e-3f);
+    s = fma(r2, s, -1.6666654611e-1f);
+    s = fma(r2 * r, s, r);
+    reg f32 c = fma(r2, 2.443315711809948e-5f, -1.388731625493765e-3f);
+    c = fma(r2, c, 4.166664568298827e-2f);
+    c = fma(r2 * r2, c, fma(-0.5f, r2, 1.0f));
+    if (q == 0) {
+        out_sin = s;
+        out_cos = c;
+    } else if (q == 1) {
+        out_sin = c;
+        out_cos = -s;
+    } else if (q == 2) {
+        out_sin = -s;
+        out_cos = -c;
+    } else {
+        out_sin = -c;
+        out_cos = s;
+    }
+}
+
+@export
+macro exp_exact_f32(x, out_e) {
+    reg f32 xc = minf(maxf(x, -88.0f), 88.0f);
+    reg f32 xl = xc * 1.4426950216293334961f;
+    reg f32 kf = fma(xc, 1.4426950216293334961f, 12582912.0f) - 12582912.0f;
+    if (kf > xl) { kf = kf - 1.0f; }
+    reg f32 frac = fma(xc, 1.925963033500011079e-8f, fma(xc, 1.4426950216293334961f, -kf));
+    reg f32 e = exp2_ftz(frac) * exp2_ftz(kf);
+    out_e = (x < -88.0f) ? 0.0f : e;
+}
+
+@export
+macro sqrt_softplus_f32(val_f, out_v) {
+    reg f32 sp = val_f;
+    if (val_f <= 20.0f) {
+        reg f32 ex = 0.0f;
+        exp_exact_f32(val_f, ex);
+        reg u32 eb = (f32_as_u32(ex + 1.0f) - 0x3F400000) & 0xFF800000;
+        reg f32 ef = u32_to_f32(eb >> 23);
+        reg f32 m = u32_as_f32(f32_as_u32(ex) - eb) + (u32_as_f32(0x3F800000 - eb) - 1.0f);
+        reg f32 p = fma(m, -0.04534861445426941f, 0.10546888411045074463f);
+        p = fma(m, p, -0.13229703903198242188f);
+        p = fma(m, p, 0.14491446316242218018f);
+        p = fma(m, p, -0.16641564667224884033f);
+        p = fma(m, p, 0.19988867640495300293f);
+        p = fma(m, p, -0.25000196695327758789f);
+        p = fma(m, p, 0.33333510160446166992f);
+        p = fma(m, p, -0.5f);
+        p = fma(m, m * p, m);
+        sp = fma(ef, 0.69314718246459960938f, p);
+    }
+    if (sp > 0.0f) {
+        reg f32 r = rsqrt(sp);
+        reg f32 s = sp * r;
+        out_v = fma(fma(-s, s, sp), r * 0.5f, s);
+    } else {
+        out_v = 0.0f;
+    }
+}
+
+@export
+macro fused_last_arrival(counter_ptr, arrivals, tid, s_last, out_last) {
+    membar_gpu();
+    barrier();
+    if (tid == 0) {
+        reg u32 prev = atomg_add_u32(counter_ptr, 1);
+        reg u32 is_last = (prev + 1 == arrivals) ? 1 : 0;
+        if (is_last != 0) {
+            reg u32 dummy = atomg_exch_u32(counter_ptr, 0);
+            is_last = (dummy == dummy) ? 1 : 1;
+        }
+        sts32(s_last, 0, is_last);
+    }
+    barrier();
+    out_last = lds32(s_last, 0);
+    if (out_last != 0) {
+        membar_gpu();
+    }
+}

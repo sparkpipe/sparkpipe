@@ -374,12 +374,18 @@ class KernelCompiler:
         self.emit(Op(lambda wr, rd, wait, stall, b=bar: isa.encode_bsync(bar=b, stall=stall, wait=wait), is_bar=True))
         self.emit_label(lbl_reconv); self.bssy_depth -= 1
 
+    def _expr_has_load(self, e):
+        if isinstance(e, list): return any(self._expr_has_load(x) for x in e)
+        if not isinstance(e, tuple): return False
+        if e[0] == "call" and (e[1] in LOAD_CALLS or e[1] in ("lds32", "lds128", "dyn_lds32", "dyn_lds128", "atomg_add_u32", "atomg_exch_u32")): return True
+        return any(self._expr_has_load(x) for x in e[1:])
+
     def compile_runtime_if(self, cond, then_body, else_body):
         if len(then_body) == 1 and then_body[0][0] == "return" and not else_body:
             self.push_temps(); pred = self.eval_cond(cond, pred=0)
             self.emit(Op(lambda wr, rd, wait, stall, p=pred: isa.encode_exit(pred=p, neg=False, stall=stall, wait=wait), preads=(pred,), is_exit=True))
             self.pop_temps(); return
-        if not else_body and len(then_body) <= 8 and all(st[0] == "expr" and st[1][0] == "call" and st[1][1] in STORE_CALLS for st in then_body):
+        if not else_body and len(then_body) <= 8 and all(st[0] == "expr" and st[1][0] == "call" and st[1][1] in STORE_CALLS and not self._expr_has_load(st[1]) for st in then_body):
             self.push_temps(); pred = self.eval_cond(cond, pred=0); self.pop_temps()
             for st in then_body:
                 self.push_temps(); self.emit_store(st[1][1], st[1][2], pred=pred); self.pop_temps()
@@ -633,6 +639,8 @@ class KernelCompiler:
         if val.regs != dst.regs:
             for d_r, s_r in zip(dst.regs, val.regs):
                 self.emit(Op(lambda wr, rd, wait, stall, d=d_r, s=s_r: isa.encode_mov_r(d, s, stall=stall, wait=wait), reads=(s_r,), writes=(d_r,)))
+            if len(dst.regs) == 2 and len(val.regs) == 1:
+                self.emit(Op(lambda wr, rd, wait, stall, d=dst.regs[1]: isa.encode_mov_i(d, 0, stall=stall, wait=wait), writes=(dst.regs[1],)))
         return dst
 
     def eval_addr_offset(self, expr):
@@ -668,8 +676,10 @@ class KernelCompiler:
                 d = self.dst_for("f32", hint_dst)
                 self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, im=isa.f32_bits(cval): isa.encode_mov_i(r, im, stall=stall, wait=wait), writes=(d.r0,)))
                 return d
-            d = self.dst_for("u32", hint_dst, non_f32=True)
+            d = hint_dst if (hint_dst is not None and hint_dst.vtype == "u64") else self.dst_for("u32", hint_dst, non_f32=True)
             self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, im=int(cval) & 0xFFFFFFFF: isa.encode_mov_i(r, im, stall=stall, wait=wait), writes=(d.r0,)))
+            if len(d.regs) == 2:
+                self.emit(Op(lambda wr, rd, wait, stall, r=d.regs[1], im=(int(cval) >> 32) & 0xFFFFFFFF: isa.encode_mov_i(r, im, stall=stall, wait=wait), writes=(d.regs[1],)))
             return d
         kind = expr[0]
         if kind == "ident":
@@ -789,6 +799,18 @@ class KernelCompiler:
             mb = isa.MEMBAR_SC_SYS if name == "membar_sys" else isa.MEMBAR_ALL_SYS
             self.emit(Op(lambda wr, rd, wait, stall, m=mb: isa.encode_membar(m, stall=max(stall, 6), wait=wait), is_bar=True))
             return Val("u32", (isa.RZ,))
+        if name == "membar_gpu":
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_membar(isa.MEMBAR_SC_GPU, stall=max(stall, 6), wait=wait), is_bar=True))
+            self.emit(Op(lambda wr, rd, wait, stall: isa.encode_cctl_ivall(stall=max(stall, 6), wait=wait), is_bar=True))
+            return Val("u32", (isa.RZ,))
+        if name in ("atomg_add_u32", "atomg_exch_u32"):
+            ptr, val = self.eval_expr(args[0]), self.eval_expr(args[1])
+            ur, d = self.ur_desc, self.dst_for("u32", hint_dst)
+            ob = isa.ATOMG_ADD_GPU if name == "atomg_add_u32" else isa.ATOMG_EXCH_GPU
+            addr_reads = (ptr.regs[0], ptr.regs[1], val.r0)
+            self.recent_mem_addr = set(addr_reads)
+            self.emit(Op(lambda wr, rd, wait, stall, r=d.r0, pa=ptr.regs[0], rv=val.r0, u=ur, o=ob: isa.encode_atomg_u32(r, pa, rv, u, op_bits=o, wr=wr, rd_bar=rd, stall=stall, wait=wait), reads=addr_reads, writes=(d.r0,), mem_addr_reads=addr_reads, ureads=(ur, ur + 1), var_lat=True, is_store=True))
+            return d
         if name == "ldgsts128":
             base_off, _, elem_bytes, _ = self.smem[args[0][1]]
             idx_c = try_eval_const(args[1], self.consts)

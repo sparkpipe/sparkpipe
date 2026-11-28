@@ -584,6 +584,7 @@ def encode_depbar_le(count=0, stall=7, wait=0):
     return (lo, hi)
 
 
+MEMBAR_SC_GPU = 0x00002000
 MEMBAR_SC_SYS = 0x00003000
 MEMBAR_ALL_SYS = 0x0000B000
 
@@ -591,4 +592,27 @@ MEMBAR_ALL_SYS = 0x0000B000
 def encode_membar(mode=MEMBAR_SC_SYS, stall=6, wait=0):
     lo = 0x7992
     hi = mode | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    return (lo, hi)
+
+
+def encode_cctl_ivall(stall=6, wait=0):
+    lo = 0x00000000FF00798F
+    hi = 0x02000000 | ctrl_bits(stall=stall, yield_=False, wr=7, rd=7, wait=wait)
+    return (lo, hi)
+
+
+ATOMG_ADD_GPU = 0x081EF100
+ATOMG_EXCH_GPU = 0x0C1EF100
+
+
+def encode_atomg_u32(rd, raddr, rval, ur_desc, op_bits=ATOMG_ADD_GPU, pred=PT, neg=False, wr=0, rd_bar=7, stall=1, wait=0):
+    lo = (
+        0x9A8
+        | (pred_bits(pred, neg) << 12)
+        | ((rd & 0xFF) << 16)
+        | ((raddr & 0xFF) << 24)
+        | ((rval & 0xFF) << 32)
+        | (1 << 63)
+    )
+    hi = op_bits | (ur_desc & 0xFF) | ctrl_bits(stall=stall, yield_=False, wr=wr, rd=rd_bar, wait=wait)
     return (lo, hi)

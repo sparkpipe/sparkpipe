@@ -67,7 +67,7 @@ int main(int argc, char **argv)
 		for ( uint32_t inverse = 0u; inverse < 2u; ++inverse )
 		{
 			CUDA(cudaMemcpy(data, input, sizeof(input), cudaMemcpyHostToDevice));
-			D41RopeRowsKernel<<<dim3(ROWS, HEADS), D41K_ROPE_PAIRS>>>(data, HEADS, WIDTH, 0u, positions, 0, frequency, inverse, 0);
+			D41RopeRowsLaunch(dim3(ROWS, HEADS), D41K_ROPE_PAIRS, (SparkGpuStream)0, data, HEADS, WIDTH, 0u, positions, 0, frequency, inverse, 0);
 			CUDA(cudaGetLastError());
 			Write(file, data, values * sizeof(uint16_t));
 		}

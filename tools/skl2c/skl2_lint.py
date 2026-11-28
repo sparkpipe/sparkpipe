@@ -5,6 +5,7 @@ MAX_CCN, MAX_NESTING, MAX_KERNEL_STMTS, DUP_WINDOW = 16, 4, 80, 10
 STORE_CALLS = {
     "stg256", "stg128", "stg128_stream", "stg128_sys",
     "stg64", "stg32", "stg32_stream", "stg32_sys", "stg16", "stg8",
+    "atomg_add_u32", "atomg_exch_u32",
 }
 PDL_WAIT_CALLS, PDL_RELEASE_CALLS = {"pdl_wait", "acqbulk"}, {"pdl_release", "preexit"}
 
