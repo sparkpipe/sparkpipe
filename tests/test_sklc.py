@@ -359,6 +359,36 @@ def verify_rename_and_only():
         assert "rmsnorm_bf16_vec16" not in mtxt, f"unselected kernel leaked into manifest:\n{mtxt}"
 
 
+def verify_guarded_store_load_branches():
+    sys.path.insert(0, str(ROOT / "tools" / "sklc"))
+    sys.path.insert(0, str(ROOT / "tools" / "skl2c"))
+    import isa_sm121 as isa
+    from codegen import compile_program
+    from skl2_frontend import load_unit
+    from skl2_lower import lower_unit
+    src = """kernel[256, 32] guarded_load_store(global u32* src, global u32* dst, u32 n) {
+    shared u32 s[1024];
+    reg u32 tid = tid_x();
+    if (tid < n) {
+        sts128(s, tid << 2, ldg128_persist(ptr_add(src, tid, 16)));
+    }
+    barrier();
+    if (tid == 0) {
+        stg128(dst, lds128(s, 0));
+    }
+}
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "guarded.skl2"
+        p.write_text(src, encoding="utf-8")
+        k = compile_program(lower_unit(load_unit([str(p)], search_roots=[str(ROOT / "inference" / "skl2")])), strict_reg_budget=True)[0]
+        bra_op = isa.encode_bra(0)[0] & 0xFFF
+        ldg_op = isa.encode_ldg(0, 0, 0)[0] & 0xFFF
+        bra_idx = [i for i, (lo, _) in enumerate(k.insns) if (lo & 0xFFF) == bra_op]
+        ldg_idx = [i for i, (lo, _) in enumerate(k.insns) if (lo & 0xFFF) == ldg_op]
+        assert bra_idx and ldg_idx and bra_idx[0] < ldg_idx[0], f"guarded store with nested ldg must branch before LDG (bra={bra_idx}, ldg={ldg_idx})"
+
+
 def main():
     verify_arch("sm121", 121)
     verify_arch("sm120", 120)
@@ -366,6 +396,7 @@ def main():
     verify_rename_and_only()
     verify_codegen_invariants()
     verify_new_builtins()
+    verify_guarded_store_load_branches()
     print(f"PASS sklc compiled {len(EXPECTED_KERNELS)} kernels cleanly for sm121 and sm120")
 
 
