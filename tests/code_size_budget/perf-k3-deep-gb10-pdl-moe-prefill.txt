@@ -1,2 +1,0 @@
-+1053
-Kimi-K3 / K3.1-Pro GB10 sm_121a deep optimization: Programmatic Dependent Launch (PDL) and 24 MB L2 weight prefetch across K3 stage/layer/slice kernels, fused AttnRes+PartialAdd+RmsNorm with L2-resident persistent blocks, single-pass TopK+RouteBuild and warp-match route compaction with active-expert lists, fused MXFP4 cell-MMA W1+SiTU, and active-expert L2-sliced W2+Finalize kernels in model-families/k3/source/k3_fast.cuh.
