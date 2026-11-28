@@ -1,2 +1,0 @@
-+38
-GLM-5.3 (glm52) and GLM-5.3-Flash (glm5_next) BF16 and FP8 stage kernel optimizations: BF16-enabled fused B1 MoE W1+activation and 16-lane W2+finalize kernels, vectorized packed-128 activation and shared-cached MoE finalize-add kernels, fused B2-B8 RoPE+kv_b_key chain kernel in glm52, 24-warp cp.async single-pass HC post-norm dot kernel, short-context DSA index skip, wider KDA up/decay/beta fusion (rows <= 64), and tuned W1/W2 grouped expert stream GEMM thresholds.

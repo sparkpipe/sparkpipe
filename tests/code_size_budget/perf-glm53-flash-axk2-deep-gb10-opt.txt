@@ -1,2 +1,2 @@
-+1439
++213
 Deep GB10 (sm_121a) fused MoE, exact-linear, indexer, HC, and low-rank gate kernels for glm52 (glm-5.3 FP8/BF16, a.x-k2 FP8) and glm5_next (glm-5.3-flash FP8/BF16, sage-s2.1-flash): cp.async SMEM-shared exact linear kernels for row-exact verify waves, fused W1+activation and K=128 inter-tile pipelined MMA/exact MoE kernels (0 spills, 2 blocks/SM via device tile-prefix), single-sequence cached pool-key scoring, L2-chunked HC post-norm, direct indexer candidate packing, vectorized rank-16 low-rank gate kernels, and combined query+index ALL_GATHER (-11 collective rounds/step and -256 MB arena shrink on glm5_next).

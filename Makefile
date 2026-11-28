@@ -2337,7 +2337,7 @@ build/stage_runner_single_gpu_cuda: tests/cuda/stage_runner_single_gpu_cuda.cu i
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_single_gpu_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK) -o $@
 
 SKL2_K3_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_k3_embedded.h
-SKL2_K3_SOURCES := inference/skl2/kernels/k3_mma.skl2 inference/skl2/kernels/k3_ops.skl2 inference/skl2/kernels/moe_mma.skl2 inference/skl2/kernels/k3_prefill_attn.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
+SKL2_K3_SOURCES := inference/skl2/kernels/moe_mma.skl2 inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/linear.skl2 inference/skl2/kernels/indexer.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
 SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 k3_splitk_reduce_situ_256 \
 	k3_wide_mma_32x32 k3_wide_mma_64x32 k3_kda_proj_mma_32x32 k3_kda_proj_mma_64x32 \
 	k3_index_head_mma_skip_32x32 k3_index_q_mma_wide_skip_64x128 k3_index_q_mma_wide_skip_128x128 \
@@ -2424,9 +2424,9 @@ $(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tool
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
 
 SKL2_DSV41_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_dsv41_embedded.h
-SKL2_DSV41_SOURCES := inference/skl2/kernels/dsv41_exchange.skl2 inference/skl2/kernels/moe_route.skl2 \
-	inference/skl2/kernels/dsv41_window.skl2 inference/skl2/kernels/dsv41_gemv.skl2 inference/skl2/kernels/dsv41_ops.skl2 \
-	inference/skl2/kernels/hyperconn.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
+SKL2_DSV41_SOURCES := inference/skl2/kernels/moe_route.skl2 \
+	inference/skl2/kernels/dsv41_gemv.skl2 inference/skl2/kernels/dsv41_ops.skl2 \
+	inference/skl2/kernels/hyperconn.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
 SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_unpack_r16 \
 	d41_record_place_r4 d41_record_place_r16 d41_exchange_finalize_r4 d41_exchange_finalize_r16 \
 	d41_finalize_map_r4 d41_finalize_map_r16 d41_shuffle_pack_256 d41_shuffle_unpack_r4 d41_shuffle_unpack_r16 \

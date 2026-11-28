@@ -1008,12 +1008,12 @@ kernel[BLOCK, 40] lm_concat_rows_pdl_bf16x8(
     if (((left_width & 7) | (right_width & 7) | (left_row[0] & 15) | (right_row[0] & 15) | (out_row[0] & 15)) == 0) {
         reg u32 left_v = left_width >> 3; reg u32 total_v = total >> 3;
         for (reg u32 v = tid; v < total_v; v += stride) {
-            stg128(ptr_add(out_row, v, 16), (v < left_v) ? ldg128_stream(ptr_add(left_row, v, 16)) : ldg128_stream(ptr_add(right_row, v - left_v, 16)));
+            if (v < left_v) { stg128(ptr_add(out_row, v, 16), ldg128_stream(ptr_add(left_row, v, 16))); } else { stg128(ptr_add(out_row, v, 16), ldg128_stream(ptr_add(right_row, v - left_v, 16))); }
         }
         return;
     }
     for (reg u32 idx = tid; idx < total; idx += stride) {
-        stg16(ptr_add(out_row, idx, 2), (idx < left_width) ? ldg16_stream(ptr_add(left_row, idx, 2)) : ldg16_stream(ptr_add(right_row, idx - left_width, 2)));
+        if (idx < left_width) { stg16(ptr_add(out_row, idx, 2), ldg16_stream(ptr_add(left_row, idx, 2))); } else { stg16(ptr_add(out_row, idx, 2), ldg16_stream(ptr_add(right_row, idx - left_width, 2))); }
     }
 }
 
@@ -1043,4 +1043,133 @@ kernel[BLOCK, 48] lm_rank_major_rows_pdl_bf16x8(
             stg16(ptr_add(dst_row, idx, 2), ldg16_stream(ptr_add(ptr_add(gathered_bf16, (first_rank + q) * rows + row, width << 1), rem, 2)));
         }
     }
+}
+
+macro dyn_rms_load_bf16x8(src_ptr, off) {
+    reg u32x4 b = ldg128_stream(ptr_add(src_ptr, off, 2));
+    dyn_sts128(off, pack_u32x4(f32_as_u32(bf16_lo(b[0])), f32_as_u32(bf16_hi(b[0])), f32_as_u32(bf16_lo(b[1])), f32_as_u32(bf16_hi(b[1]))));
+    dyn_sts128(off + 4, pack_u32x4(f32_as_u32(bf16_lo(b[2])), f32_as_u32(bf16_hi(b[2])), f32_as_u32(bf16_lo(b[3])), f32_as_u32(bf16_hi(b[3]))));
+}
+
+macro dyn_rms_scale(dim, eps, s_red, tid, wid, lane, out_sc) {
+    barrier();
+    reg f32 total = 0.0f;
+    for (reg u32 i = tid; i < dim; i += BLOCK) { reg f32 v = dyn_lds32_f32(i); total = fma(v, v, total); }
+    reg f32 sum = 0.0f;
+    block_reduce_sum_exact(total, s_red, wid, lane, sum);
+    rsqrt_exact_div(sum, u32_to_f32(dim), eps, out_sc);
+}
+
+macro dyn_rms_scale_load8(off, scale, weight, out_nm, out_r) {
+    reg u32x4 lv0 = dyn_lds128(off); reg u32x4 lv1 = dyn_lds128(off + 4);
+    reg u32x4 wb = ldg128_persist(ptr_add(weight, off, 2));
+    unroll (k = 0..2) {
+        out_nm[k] = pack_bf16x2(u32_as_f32(lv0[k * 2]) * scale * bf16_lo(wb[k]), u32_as_f32(lv0[k * 2 + 1]) * scale * bf16_hi(wb[k]));
+        out_nm[k + 2] = pack_bf16x2(u32_as_f32(lv1[k * 2]) * scale * bf16_lo(wb[k + 2]), u32_as_f32(lv1[k * 2 + 1]) * scale * bf16_hi(wb[k + 2]));
+    }
+    unroll (k = 0..4) { out_r[k * 2] = bf16_lo(out_nm[k]); out_r[k * 2 + 1] = bf16_hi(out_nm[k]); }
+}
+
+macro dyn_rms_norm_qdq8(off, base_off, scale, weight, output, quantized, mx_codes, mx_scales, has_out, has_mx, tid) {
+    reg u32x4 nm; reg f32 rv[8];
+    dyn_rms_scale_load8(off, scale, weight, nm, rv);
+    if (has_out != 0) { stg128(ptr_add(output, base_off + off, 2), nm); }
+    reg u32 c0 = 0; reg u32 c1 = 0; reg u32 sbits = 0;
+    fp8_e4m3_quant8_pow2(rv, c0, c1, sbits);
+    if (has_mx != 0) {
+        stg64(ptr_add(mx_codes, base_off + off, 1), pack_u32x2(c0, c1));
+        if ((tid & 3) == 0) { stg8(ptr_add(mx_scales, (base_off + off) >> 5, 1), (sbits >> 23) & 0xFF); }
+    } else {
+        reg u32x4 qv = pack_u32x4(0, 0, 0, 0);
+        fp8_e4m3_dequant8_bf16(c0, c1, sbits, qv);
+        stg128(ptr_add(quantized, base_off + off, 2), qv);
+    }
+}
+
+@pdl
+@concept(norm)
+kernel[BLOCK, 64] d41_rms_norm_qdq_256(
+    global u32* input, global u32* streams, global f32* pre, global u32* weight,
+    global u32* output, global u32* quantized, u32 dimension, f32 epsilon, global u8* mx_codes, global u8* mx_scales
+) {
+    shared f32 s_red[8];
+    acqbulk();
+    reg u32 row = ctaid_x(); reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 span = 0; reg u32 srem = 0; u32_divmod(dimension, grid_y(), span, srem);
+    reg u32 begin = ctaid_y() * span;
+    reg u32 has_str = ((streams[0] | streams[1]) != 0) ? 1 : 0;
+    reg u32 has_out = ((output[0] | output[1]) != 0) ? 1 : 0;
+    reg u32 has_mx = ((mx_codes[0] | mx_codes[1]) != 0) ? 1 : 0;
+    reg u32 base_off = row * dimension; reg u64 in_row = ptr_add(input, row, dimension << 1);
+    for (reg u32 off = tid << 3; off < dimension; off += 2048) {
+        if (has_str != 0) {
+            reg f32 a[8]; unroll (k = 0..8) { a[k] = 0.0f; }
+            unroll (copy = 0..4) {
+                reg f32 pw = u32_as_f32(ldg32_persist(ptr_add(pre, row * 4 + copy, 4)));
+                bf16x8_fma_scalar(a, ldg128_stream(ptr_add(ptr_add(streams, row * 4 + copy, dimension << 1), off, 2)), pw);
+            }
+            reg u32x4 pk; bf16x8_pack_f32(a, pk);
+            dyn_sts128(off, pack_u32x4(f32_as_u32(bf16_lo(pk[0])), f32_as_u32(bf16_hi(pk[0])), f32_as_u32(bf16_lo(pk[1])), f32_as_u32(bf16_hi(pk[1]))));
+            dyn_sts128(off + 4, pack_u32x4(f32_as_u32(bf16_lo(pk[2])), f32_as_u32(bf16_hi(pk[2])), f32_as_u32(bf16_lo(pk[3])), f32_as_u32(bf16_hi(pk[3]))));
+        } else {
+            dyn_rms_load_bf16x8(in_row, off);
+        }
+    }
+    reg f32 sc = 0.0f; dyn_rms_scale(dimension, epsilon, s_red, tid, wid, lane, sc);
+    for (reg u32 off = begin + (tid << 3); off < begin + span; off += 2048) {
+        dyn_rms_norm_qdq8(off, base_off, sc, weight, output, quantized, mx_codes, mx_scales, has_out, has_mx, tid);
+    }
+    preexit();
+}
+
+@pdl
+@concept(norm)
+kernel[BLOCK, 80] d41_qkv_norm_rope_qdq_256(
+    global u32* q_in, global u32* q_w, global u32* q_qdq, global u8* mx_codes, global u8* mx_scales, u32 q_dim, u32 q_parts,
+    global u32* kv_in, global u32* kv_w, global u32* positions, global f32* inv_freq, global u32* kv_out,
+    u32 kv_dim, u32 rope_offset, f32 epsilon, global f32* rope_sc
+) {
+    shared f32 s_red[8];
+    acqbulk();
+    reg u32 row = ctaid_x(); reg u32 by = ctaid_y(); reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    if (by < q_parts) {
+        reg u32 span = 0; reg u32 srem = 0; u32_divmod(q_dim, q_parts, span, srem);
+        reg u32 begin = by * span; reg u32 base_off = row * q_dim; reg u64 q_row = ptr_add(q_in, row, q_dim << 1);
+        for (reg u32 off = tid << 3; off < q_dim; off += 2048) { dyn_rms_load_bf16x8(q_row, off); }
+        reg f32 sc = 0.0f; dyn_rms_scale(q_dim, epsilon, s_red, tid, wid, lane, sc);
+        reg u32 has_mx = ((mx_codes[0] | mx_codes[1]) != 0) ? 1 : 0;
+        for (reg u32 off = begin + (tid << 3); off < begin + span; off += 2048) {
+            dyn_rms_norm_qdq8(off, base_off, sc, q_w, q_qdq, q_qdq, mx_codes, mx_scales, 0, has_mx, tid);
+        }
+        preexit(); return;
+    }
+    reg u64 kv_row = ptr_add(kv_in, row, kv_dim << 1);
+    for (reg u32 off = tid << 3; off < kv_dim; off += 2048) { dyn_rms_load_bf16x8(kv_row, off); }
+    reg f32 sc = 0.0f; dyn_rms_scale(kv_dim, epsilon, s_red, tid, wid, lane, sc);
+    reg u32 has_rsc = rope_sc[0] | rope_sc[1];
+    reg u32 pos = 0; if (has_rsc == 0) { pos = ldg32_persist(ptr_add(positions, row, 4)); }
+    reg u64 kvo_row = ptr_add(kv_out, row, kv_dim << 1);
+    for (reg u32 off = tid << 3; off < kv_dim; off += 2048) {
+        reg u32x4 nm; reg f32 v[8];
+        dyn_rms_scale_load8(off, sc, kv_w, nm, v);
+        if (off >= rope_offset) {
+            reg u32 pbase = (off - rope_offset) >> 1;
+            unroll (p = 0..4) {
+                reg f32 sn = 0.0f; reg f32 cs = 0.0f;
+                if (has_rsc != 0) {
+                    reg u64 rp = ptr_add(rope_sc, (row << 5) + pbase + p, 8);
+                    sn = u32_as_f32(ldg32_persist(rp)); cs = u32_as_f32(ldg32_persist(ptr_add(rp, 1, 4)));
+                } else {
+                    sincos_pos_f32(u32_to_f32(pos) * u32_as_f32(ldg32_persist(ptr_add(inv_freq, pbase + p, 4))), sn, cs);
+                }
+                reg u32 rot = 0; rope_pair_bf16_u32(nm[p], sn, cs, rot);
+                v[p * 2] = bf16_lo(rot); v[p * 2 + 1] = bf16_hi(rot);
+            }
+        }
+        reg u32 c0 = 0; reg u32 c1 = 0; reg u32 sbits = 0; reg u32x4 qv = pack_u32x4(0, 0, 0, 0);
+        fp8_e4m3_quant8_pow2(v, c0, c1, sbits);
+        fp8_e4m3_dequant8_bf16(c0, c1, sbits, qv);
+        stg128(ptr_add(kvo_row, off, 2), qv);
+    }
+    preexit();
 }
