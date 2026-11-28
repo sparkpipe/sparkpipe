@@ -2,11 +2,18 @@ import "stdlib/math.skl2";
 
 const BLOCK = 256;
 
-macro head_batched_row_guard(BATCHED, rows, out_row) {
-    if constexpr (BATCHED == 1) {
-        out_row = ctaid_y();
-        if (out_row >= rows) { return; }
-    }
+macro head_cert_prologue(BATCHED, rows, out_row, out_tid, out_wid, out_lane) {
+    out_row = 0;
+    if constexpr (BATCHED == 1) { out_row = ctaid_y(); if (out_row >= rows) { return; } }
+    out_tid = tid_x(); out_wid = warp_id(); out_lane = lane_id();
+}
+
+macro head_fp8_dot4(sv_w, h0, h1, scale, acc) {
+    reg f32x4 ev_ = cvt_e4m3x4_f32x4(sv_w);
+    acc = fma(bf16_lo(h0), ev_[0] * scale, acc);
+    acc = fma(bf16_hi(h0), ev_[1] * scale, acc);
+    acc = fma(bf16_lo(h1), ev_[2] * scale, acc);
+    acc = fma(bf16_hi(h1), ev_[3] * scale, acc);
 }
 
 @concept(head)
@@ -20,11 +27,8 @@ template kernel[BLOCK, 32] head_certified_reduce_t<BATCHED>(
 ) {
     shared f32 best_score[8];
     shared u32 best_cand[8];
-    reg u32 row = 0;
-    if constexpr (BATCHED == 1) { head_batched_row_guard(1, rows, row); }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
+    reg u32 row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    head_cert_prologue(BATCHED, rows, row, tid, wid, lane);
     reg f32 running_best = -3.0e38f;
     reg u32 running_cand = 0xFFFFFFFF;
     if constexpr (BATCHED == 1) {
@@ -99,11 +103,8 @@ template kernel[BLOCK, REGS] head_certified_rescore_t<BATCHED, REGS>(
 ) {
     shared f32 best_score[8];
     shared u32 best_cand[8];
-    reg u32 row = 0;
-    if constexpr (BATCHED == 1) { head_batched_row_guard(1, rows, row); }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
+    reg u32 row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    head_cert_prologue(BATCHED, rows, row, tid, wid, lane);
     reg u32 bx = ctaid_x();
     reg u32 row_bytes = hidden_dimension << 1;
     reg u32 count = 0;
@@ -188,15 +189,7 @@ kernel[1024, 64] head_certified_fp8_score_1024(
         scale = shfl_idx(scale, lane_even);
         reg u32x4 sv = ldg128_persist(shadow_ptr);
         reg u32x8 hv = ldg256_persist(hidden_ptr);
-        unroll (w = 0..4) {
-            reg f32x4 ev = cvt_e4m3x4_f32x4(sv[w]);
-            reg u32 h0 = hv[w * 2];
-            reg u32 h1 = hv[w * 2 + 1];
-            acc = fma(bf16_lo(h0), ev[0] * scale, acc);
-            acc = fma(bf16_hi(h0), ev[1] * scale, acc);
-            acc = fma(bf16_lo(h1), ev[2] * scale, acc);
-            acc = fma(bf16_hi(h1), ev[3] * scale, acc);
-        }
+        unroll (w = 0..4) { head_fp8_dot4(sv[w], hv[w * 2], hv[w * 2 + 1], scale, acc); }
         scale_ptr = ptr_add(scale_ptr, 16, 4);
         cert_ptr = ptr_add(cert_ptr, 16, 4);
         hnorm_ptr = ptr_add(hnorm_ptr, 16, 4);
@@ -209,15 +202,7 @@ kernel[1024, 64] head_certified_fp8_score_1024(
         reg u32 half_idx = (tiles << 6) + lane;
         reg u32x2 sh = ldg64_persist(ptr_add(ptr_add(shadow_payload, neuron, hidden_dimension), half_idx, 8));
         reg u32x4 hv = ldg128_persist(ptr_add(hidden_bf16, half_idx, 16));
-        unroll (w = 0..2) {
-            reg f32x4 ev = cvt_e4m3x4_f32x4(sh[w]);
-            reg u32 h0 = hv[w * 2];
-            reg u32 h1 = hv[w * 2 + 1];
-            acc = fma(bf16_lo(h0), ev[0] * scale, acc);
-            acc = fma(bf16_hi(h0), ev[1] * scale, acc);
-            acc = fma(bf16_lo(h1), ev[2] * scale, acc);
-            acc = fma(bf16_hi(h1), ev[3] * scale, acc);
-        }
+        unroll (w = 0..2) { head_fp8_dot4(sh[w], hv[w * 2], hv[w * 2 + 1], scale, acc); }
         if ((lane & 3) == 0) {
             reg f32 hn = u32_as_f32(ldg32_persist(ptr_add(hidden_norm_f32, grp, 4)));
             reg f32 cn = u32_as_f32(ldg32_persist(ptr_add(ptr_add(cert_norm_f32, neuron, groups_bytes), grp, 4)));
@@ -409,15 +394,8 @@ kernel[BLOCK, 32] head_commit_argmax_pdl_f32(
 ) {
     shared f32 shared_score[8];
     shared u32 shared_token[8];
-    acqbulk();
-    reg u32 row = ctaid_x();
-    if (row >= rows) {
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
+    reg u32 row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    pdl_row_prologue(rows, row, tid, wid, lane);
     reg f32 best = u32_as_f32(0xFF800000);
     reg u32 best_tok = 0xFFFFFFFF;
     reg u32 row_base = row * tiles;
@@ -505,15 +483,8 @@ kernel[BLOCK, 48] head_softmax_pdl_f32(
     global u32* logits, u32 rows, u32 vocabulary, f32 temperature
 ) {
     shared f32 reduction[8];
-    acqbulk();
-    reg u32 row = ctaid_x();
-    if (row >= rows) {
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
+    reg u32 row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    pdl_row_prologue(rows, row, tid, wid, lane);
     reg f32 clamped_t = maxf(temperature, 1.0e-4f);
     reg f32 rt = 0.0f;
     rcp_nr2_f32(clamped_t, rt);

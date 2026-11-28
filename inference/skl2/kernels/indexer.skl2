@@ -690,6 +690,22 @@ macro idx_sel_pred(key, thresh, pos, pos_thresh, out_sel) {
     else if (key == thresh) { if (pos <= pos_thresh) { out_sel = 1; } }
 }
 
+macro idx_row_setup(seq_of_row, ctx_len, positions, index_ratio, out_row, out_blocks) {
+    acqbulk();
+    out_row = ctaid_x(); out_blocks = 0;
+    idx_row_blocks(seq_of_row, ctx_len, positions, out_row, index_ratio, out_blocks);
+}
+
+macro idx_dense_mask_or_continue(mask, row, mask_words, blocks, index_blocks, tid, out_row_mask) {
+    out_row_mask = ptr_add(mask, row * mask_words, 4);
+    if (blocks <= index_blocks) { idx_write_dense_mask(out_row_mask, mask_words, blocks, tid); preexit(); return; }
+}
+
+macro idx_radix_select_init(MODE, src, rank_stride, row, total, blocks, index_blocks, w_hist, hist, s_state, tid, wid, lane, rs) {
+    rs[0] = 0; rs[1] = 0; rs[2] = 0; rs[3] = 0xFFFFFFFF;
+    idx_radix_select(MODE, src, rank_stride, row, total, blocks, index_blocks, w_hist, hist, s_state, tid, wid, lane, rs[0], rs[1], rs[2], rs[3]);
+}
+
 @pdl
 @concept(route_topk)
 kernel[IDX_BLK256, 80] index_local_topk_pack_256(
@@ -703,17 +719,15 @@ kernel[IDX_BLK256, 80] index_local_topk_pack_256(
     shared u32 hist[256];
     shared u32 s_state[8];
     shared u32 s_wcnt[8];
-    acqbulk();
-    reg u32 row = ctaid_x(); reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
-    reg u32 blocks = 0;
-    idx_row_blocks(seq_of_row, ctx_len, positions, row, index_ratio, blocks);
+    reg u32 row = 0; reg u32 blocks = 0;
+    idx_row_setup(seq_of_row, ctx_len, positions, index_ratio, row, blocks);
     reg u32 local_cnt = 0;
     kv_shard_local_keys(degree, rank, grain, blocks, local_cnt);
     if (blocks <= index_blocks || local_cnt <= index_blocks) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
     reg u64 row_scores = ptr_add(scores, row * stride, 4);
-    reg u32 skip_unused = 0; reg u32 valid_unused = 0;
-    reg u32 thresh = 0; reg u32 pos_thresh = 0xFFFFFFFF;
-    idx_radix_select(0, row_scores, 0, 0, local_cnt, local_cnt, index_blocks, w_hist, hist, s_state, tid, wid, lane, skip_unused, valid_unused, thresh, pos_thresh);
+    reg u32 rs[4];
+    idx_radix_select_init(0, row_scores, 0, 0, local_cnt, local_cnt, index_blocks, w_hist, hist, s_state, tid, wid, lane, rs);
     reg u32 slice = (local_cnt + 7) >> 3;
     reg u32 w_beg = wid * slice;
     reg u32 w_end = (w_beg + slice < local_cnt) ? (w_beg + slice) : local_cnt;
@@ -722,7 +736,7 @@ kernel[IDX_BLK256, 80] index_local_topk_pack_256(
         for (reg u32 b = w_beg; b < w_end; b += 1) {
             reg u32 key = 0; reg u32 sel = 0;
             f32_topk_key(u32_as_f32(ldg32_persist(ptr_add(row_scores, b, 4))), key);
-            idx_sel_pred(key, thresh, b, pos_thresh, sel);
+            idx_sel_pred(key, rs[2], b, rs[3], sel);
             if (sel != 0) { wc = wc + 1; }
         }
         sts32(s_wcnt, wid, wc);
@@ -735,7 +749,7 @@ kernel[IDX_BLK256, 80] index_local_topk_pack_256(
             reg f32 sv = u32_as_f32(ldg32_persist(ptr_add(row_scores, b, 4)));
             reg u32 key = 0; reg u32 sel = 0;
             f32_topk_key(sv, key);
-            idx_sel_pred(key, thresh, b, pos_thresh, sel);
+            idx_sel_pred(key, rs[2], b, rs[3], sel);
             if (sel != 0) {
                 reg u32 gpos = 0xFFFFFFFF;
                 if (sv > u32_as_f32(0xFF800000)) { kv_shard_local_pos(degree, rank, grain, b, gpos); }
@@ -758,24 +772,17 @@ kernel[IDX_BLK256, 80] index_local_mask_from_scores_256(
     shared u32 w_hist[2048];
     shared u32 hist[256];
     shared u32 s_state[8];
-    acqbulk();
-    reg u32 local_row = ctaid_x();
-    if (local_row >= chunk_rows) { preexit(); return; }
-    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 local_row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    pdl_row_prologue(chunk_rows, local_row, tid, wid, lane);
     reg u32 row = first_row + local_row;
     reg u32 pos1 = ldg32_persist(ptr_add(positions, row, 4)) + 1;
     reg u32 blocks = 0; reg u32 rem = 0;
     u32_divmod(pos1, index_ratio, blocks, rem);
-    reg u64 row_mask = ptr_add(mask, row * mask_words, 4);
-    if (blocks <= index_blocks) {
-        idx_write_dense_mask(row_mask, mask_words, blocks, tid);
-        preexit();
-        return;
-    }
+    reg u64 row_mask = 0;
+    idx_dense_mask_or_continue(mask, row, mask_words, blocks, index_blocks, tid, row_mask);
     reg u64 row_scores = ptr_add(scores, local_row * total_blocks, 4);
-    reg u32 skip_unused = 0; reg u32 valid_unused = 0;
-    reg u32 thresh = 0; reg u32 pos_thresh = 0xFFFFFFFF;
-    idx_radix_select(0, row_scores, 0, 0, blocks, blocks, index_blocks, w_hist, hist, s_state, tid, wid, lane, skip_unused, valid_unused, thresh, pos_thresh);
+    reg u32 rs[4];
+    idx_radix_select_init(0, row_scores, 0, 0, blocks, blocks, index_blocks, w_hist, hist, s_state, tid, wid, lane, rs);
     for (reg u32 w = tid; w < mask_words; w += IDX_BLK256) {
         reg u32 bits = 0;
         reg u32 b0 = w << 5;
@@ -785,7 +792,7 @@ kernel[IDX_BLK256, 80] index_local_mask_from_scores_256(
                 reg u32 b = b0 + bit;
                 reg u32 key = 0; reg u32 sel = 0;
                 f32_topk_key(u32_as_f32(ldg32_persist(ptr_add(row_scores, b, 4))), key);
-                idx_sel_pred(key, thresh, b, pos_thresh, sel);
+                idx_sel_pred(key, rs[2], b, rs[3], sel);
                 if (sel != 0) {
                     bits = bits | (1 << bit);
                 }
@@ -848,25 +855,20 @@ kernel[IDX_BLK256, 80] index_gathered_select_mask_256(
     shared u32 w_hist[2048];
     shared u32 hist[256];
     shared u32 s_state[8];
-    acqbulk();
-    reg u32 row = ctaid_x(); reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
-    reg u32 blocks = 0;
-    idx_row_blocks(seq_of_row, ctx_len, positions, row, index_ratio, blocks);
-    reg u64 row_mask = ptr_add(mask, row * mask_words, 4);
-    if (blocks <= index_blocks) {
-        idx_write_dense_mask(row_mask, mask_words, blocks, tid);
-        preexit();
-        return;
-    }
+    reg u32 row = 0; reg u32 blocks = 0;
+    idx_row_setup(seq_of_row, ctx_len, positions, index_ratio, row, blocks);
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u64 row_mask = 0;
+    idx_dense_mask_or_continue(mask, row, mask_words, blocks, index_blocks, tid, row_mask);
     reg u32 total = degree * index_blocks;
-    reg u32 skip = 0; reg u32 have = 0; reg u32 thresh = 0; reg u32 pos_thresh = 0xFFFFFFFF;
-    idx_radix_select(1, gathered, rank_stride, row, total, blocks, index_blocks, w_hist, hist, s_state, tid, wid, lane, skip, have, thresh, pos_thresh);
+    reg u32 rs[4];
+    idx_radix_select_init(1, gathered, rank_stride, row, total, blocks, index_blocks, w_hist, hist, s_state, tid, wid, lane, rs);
     for (reg u32 w_base = 0; w_base < mask_words; w_base += 2048) {
         reg u32 chunk = (mask_words - w_base < 2048) ? (mask_words - w_base) : 2048;
         for (reg u32 i = tid; i < chunk; i += IDX_BLK256) { sts32(w_hist, i, 0); }
         barrier();
         if (tid == 0) {
-            idx_gath_chunk_fill(gathered, rank_stride, row, total, blocks, index_blocks, skip, thresh, pos_thresh, w_base, w_base + chunk, w_hist, have);
+            idx_gath_chunk_fill(gathered, rank_stride, row, total, blocks, index_blocks, rs[0], rs[2], rs[3], w_base, w_base + chunk, w_hist, rs[1]);
         }
         barrier();
         for (reg u32 i = tid; i < chunk; i += IDX_BLK256) {
@@ -931,5 +933,112 @@ kernel[128, 96] k3_index_q_exact_skip_128(
         }
         if (r_base + 8 < rows) { barrier(); }
     }
+    preexit();
+}
+
+macro idx_d41_store_pair(scores, row, score_stride, written, s0, s1) {
+    if (written + 1 < score_stride) { stg64(ptr_add(ptr_add(scores, row, score_stride << 2), written, 4), pack_u32x2(s0, s1)); }
+    else if (written < score_stride) { stg32(ptr_add(ptr_add(scores, row, score_stride << 2), written, 4), s0); }
+}
+
+macro idx_d41_score_tile(index_view, seq, deg, rk, gr, first, bound, fork_p, slot_off, page_slots, slot_bytes, wid, grp, pr, half, lane16, s_k, s_q, w0, w1, w2, w3, qk_scale, scores, row, score_stride, written) {
+    unroll (p = 0..4) {
+        reg u32 ki = p * 2 + half; reg u32 gk = first + ki; reg u32x4 kv = pack_u32x4(0, 0, 0, 0);
+        if (gk < bound) {
+            reg u32 sem = 0; kv_shard_local_pos(deg, rk, gr, gk, sem);
+            reg u32 phys_p = (sem >= fork_p) ? (sem + slot_off) : sem;
+            reg u64 sl = 0; reg u32 ok = 0; kv_shard_slot_addr_gen(index_view, seq, phys_p, page_slots, slot_bytes, sl, ok);
+            if (ok != 0) { kv = ldg128_persist(ptr_add(sl, lane16, 16)); }
+        }
+        sts128(s_k, ((wid * 8 + ki) * 17 + lane16) * 4, kv);
+    }
+    reg f32x4 c0 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); reg f32x4 c1 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    reg u32 kbase = (wid * 8 + grp) * 68; reg u32 qrow = grp * 64 + pr;
+    unroll (st = 0..8) {
+        reg u32 qo = qrow + st * 8;
+        reg u32x4 a0v = pack_u32x4(lds32(s_q, qo), lds32(s_q, qo + 512), lds32(s_q, qo + 4), lds32(s_q, qo + 516));
+        reg u32x4 a1v = pack_u32x4(lds32(s_q, qo + 1024), lds32(s_q, qo + 1536), lds32(s_q, qo + 1028), lds32(s_q, qo + 1540));
+        reg u32x2 bv = pack_u32x2(lds32(s_k, kbase + st * 8 + pr), lds32(s_k, kbase + st * 8 + 4 + pr));
+        c0 = hmma16816_bf16(a0v, bv, c0); c1 = hmma16816_bf16(a1v, bv, c1);
+    }
+    reg f32 lo = 0.0f; reg f32 hi = 0.0f;
+    relu4_weighted_reduce(c0, c1, w0, w1, w2, w3, lo, hi);
+    if (grp == 0) {
+        reg u32 s0 = (written < bound) ? f32_as_u32(lo * qk_scale) : 0xFF800000;
+        reg u32 s1 = (written + 1 < bound) ? f32_as_u32(hi * qk_scale) : 0xFF800000;
+        idx_d41_store_pair(scores, row, score_stride, written, s0, s1);
+    }
+}
+
+macro idx_d41_dispatch_tile(index_view, seq, deg, rk, gr, first, bound, fork_p, slot_off, page_slots, slot_bytes, wid, grp, pr, half, lane16, s_k, s_q, w0, w1, w2, w3, qk_scale, scores, row, score_stride, block_mask, block_stride, has_mask, dense_limit) {
+    reg u32 blk = first >> 3; reg u32 written = first + pr * 2;
+    reg u32 skip_t = (first >= bound) ? 1 : 0;
+    if (skip_t == 0 && has_mask != 0) {
+        if (blk >= block_stride) { skip_t = 2; }
+        else if (ldg8_persist(ptr_add(ptr_add(block_mask, row, block_stride), blk, 1)) == 0) { skip_t = 2; }
+    }
+    if (skip_t == 1) { if (dense_limit == 0 && grp == 0) { idx_d41_store_pair(scores, row, score_stride, written, 0xFF800000, 0xFF800000); } }
+    else if (skip_t == 2) { if (grp == 0) { idx_d41_store_pair(scores, row, score_stride, written, 0xFF800000, 0xFF800000); } }
+    else { idx_d41_score_tile(index_view, seq, deg, rk, gr, first, bound, fork_p, slot_off, page_slots, slot_bytes, wid, grp, pr, half, lane16, s_k, s_q, w0, w1, w2, w3, qk_scale, scores, row, score_stride, written); }
+}
+
+@pdl
+@concept(attention)
+kernel[IDX_BLK256, 96] d41_index_score_direct_256(
+    global u32* index_query, global u32* head_weight, blob[56, 8] index_view,
+    global u32* seq_of_row, global u32* ctx_len, global u32* row_pos,
+    global u8* block_mask, u32 block_stride, u32 rows, u32 score_stride,
+    f32 qk_scale, global f32* scores, global u32* fork_positions,
+    global u32* slot_offsets, u32 dense_limit, u32 page_slots, u32 slot_bytes
+) {
+    shared u32 s_k[4352]; shared u32 s_q[2048];
+    acqbulk();
+    reg u32 row = ctaid_y(); reg u32 block_first = ctaid_x() * 256;
+    if ((scores[0] | scores[1]) == 0 || row >= rows) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 lane = lane_id(); reg u32 wid = warp_id(); reg u32 grp = lane >> 2; reg u32 pr = lane & 3;
+    reg u32 deg = param_u32(index_view, 40); reg u32 rk = param_u32(index_view, 44); reg u32 gr = param_u32(index_view, 48);
+    reg u32 seq = ldg32_persist(ptr_add(seq_of_row, row, 4));
+    reg u32 bound = 0; row_active_keys(row, seq_of_row, ctx_len, row_pos, bound);
+    if (dense_limit != 0 && bound <= dense_limit) { preexit(); return; }
+    kv_shard_local_keys(deg, rk, gr, bound, bound);
+    if (dense_limit != 0 && block_first >= bound) { preexit(); return; }
+    reg f32 w0 = 0.0f; reg f32 w1 = 0.0f; reg f32 w2 = 0.0f; reg f32 w3 = 0.0f;
+    if (block_first < bound) {
+        reg u64 qbase = ptr_add(index_query, row * 32, 256);
+        sts128(s_q, tid * 4, ldg128_persist(ptr_add(qbase, tid, 16))); sts128(s_q, (tid + 256) * 4, ldg128_persist(ptr_add(qbase, tid + 256, 16)));
+        reg u64 hw = ptr_add(head_weight, row * 32, 2);
+        w0 = bf16_lo(ldg16_persist(ptr_add(hw, grp, 2))); w1 = bf16_lo(ldg16_persist(ptr_add(hw, grp + 8, 2)));
+        w2 = bf16_lo(ldg16_persist(ptr_add(hw, 16 + grp, 2))); w3 = bf16_lo(ldg16_persist(ptr_add(hw, 24 + grp, 2)));
+        barrier();
+    }
+    reg u32 fork_p = 0xFFFFFFFF; if ((fork_positions[0] | fork_positions[1]) != 0) { fork_p = ldg32_persist(ptr_add(fork_positions, row, 4)); }
+    reg u32 slot_off = 0; if ((slot_offsets[0] | slot_offsets[1]) != 0) { slot_off = ldg32_persist(ptr_add(slot_offsets, row, 4)); }
+    reg u32 has_mask = block_mask[0] | block_mask[1]; reg u32 half = lane >> 4; reg u32 lane16 = lane & 15;
+    for (reg u32 tile = wid; tile < 32; tile += 8) {
+        reg u32 first = block_first + tile * 8;
+        if (first < score_stride) {
+            idx_d41_dispatch_tile(index_view, seq, deg, rk, gr, first, bound, fork_p, slot_off, page_slots, slot_bytes, wid, grp, pr, half, lane16, s_k, s_q, w0, w1, w2, w3, qk_scale, scores, row, score_stride, block_mask, block_stride, has_mask, dense_limit);
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(attention)
+kernel[IDX_BLK256, 40] d41_index_score_ref_256(
+    global u32* query_bf16, global u32* keys_bf16, global u32* head_weights_bf16,
+    global f32* scores_f32, u32 key_count, u32 head_count, u32 head_dimension
+) {
+    acqbulk();
+    reg u32 lane = lane_id(); reg u32 key = ctaid_x() * 8 + warp_id();
+    if (key >= key_count) { preexit(); return; }
+    reg u64 kp = ptr_add(keys_bf16, key, head_dimension << 1); reg f32 total = 0.0f;
+    for (reg u32 h = 0; h < head_count; h += 1) {
+        reg u64 qp = ptr_add(query_bf16, h, head_dimension << 1); reg f32 dot = 0.0f;
+        for (reg u32 e = lane; e < head_dimension; e += 32) { dot = fma(bf16_lo(ldg16_persist(ptr_add(qp, e, 2))), bf16_lo(ldg16_stream(ptr_add(kp, e, 2))), dot); }
+        reg f32 dr = maxf(bf16_lo(f32_to_bf16(warp_sum(dot))), 0.0f);
+        total = total + bf16_lo(f32_to_bf16(dr * bf16_lo(ldg16_persist(ptr_add(head_weights_bf16, h, 2)))));
+    }
+    if (lane == 0) { stg32(ptr_add(scores_f32, key, 4), f32_as_u32(bf16_lo(f32_to_bf16(total)))); }
     preexit();
 }

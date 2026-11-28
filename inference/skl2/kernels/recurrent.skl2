@@ -308,6 +308,17 @@ macro conv_tiled_repeat_factor(IS_SPLIT, gdn_qk, heads, out_repeat) {
     }
 }
 
+macro conv_tiled_prologue(sequences, channels, weight, cv, tw) {
+    cv[0] = ctaid_x();
+    if (cv[0] >= sequences) { acqbulk(); preexit(); return; }
+    reg u32 tid_ = tid_x(); cv[1] = tid_ & 31; cv[2] = tid_ >> 5;
+    cv[3] = (ctaid_y() << 5) + cv[1];
+    cv[4] = (cv[3] < channels) ? 1 : 0;
+    tw[0] = 0.0f; tw[1] = 0.0f; tw[2] = 0.0f; tw[3] = 0.0f;
+    conv_load_4weights(cv[4], weight, cv[3], tw[0], tw[1], tw[2], tw[3]);
+    acqbulk();
+}
+
 @pdl
 @concept(recurrent)
 template kernel[BLOCK_CONV, REGS] causal_conv_tiled_pdl<IS_SPLIT, REGS>(
@@ -326,56 +337,42 @@ template kernel[BLOCK_CONV, REGS] causal_conv_tiled_pdl<IS_SPLIT, REGS>(
     u32 sequences, u32 commit, global u32* sequence_row_indices
 ) {
     shared u32 tile[2144];
-    reg u32 sequence = ctaid_x();
-    if (sequence >= sequences) {
-        acqbulk();
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 lane = tid & 31;
-    reg u32 group = tid >> 5;
     reg u32 channels = 0;
     if constexpr (IS_SPLIT == 1) { channels = (gdn_qk << 1) + gdn_v; } else { channels = channels_in; }
-    reg u32 channel = (ctaid_y() << 5) + lane;
-    reg u32 live = 0;
-    if (channel < channels) { live = 1; }
-    reg f32 tw0 = 0.0f; reg f32 tw1 = 0.0f; reg f32 tw2 = 0.0f; reg f32 tw3 = 0.0f;
-    conv_load_4weights(live, weight, channel, tw0, tw1, tw2, tw3);
-    acqbulk();
+    reg u32 cv[5]; reg f32 tw[4];
+    conv_tiled_prologue(sequences, channels, weight, cv, tw);
     reg u32 repeat = 1;
     if constexpr (IS_SPLIT == 1) { conv_tiled_repeat_factor(1, gdn_qk, heads, repeat); }
-    reg u32 begin = 0;
-    reg u32 end = 0;
-    conv_seq_bounds(sequence, sequence_row_begin, sequence_row_count, begin, end);
+    reg u32 begin = 0; reg u32 end = 0;
+    conv_seq_bounds(cv[0], sequence_row_begin, sequence_row_count, begin, end);
     reg u32 has_sri = sequence_row_indices[0] | sequence_row_indices[1];
-    reg u32 sidx = ldg32_persist(ptr_add(state_index, sequence, 4));
+    reg u32 sidx = ldg32_persist(ptr_add(state_index, cv[0], 4));
     ureg u64 slot = ptr_add(window, sidx, channels << 3);
     reg u32 ch_bytes = channels << 1;
-    conv_tiled_init_window(group, live, slot, channel, lane, tile);
+    conv_tiled_init_window(cv[2], cv[4], slot, cv[3], cv[1], tile);
     for (reg u32 base = begin; base < end; base += 64) {
         reg u32 rem_rows = end - base;
         reg u32 count = 64;
         if (rem_rows < 64) { count = rem_rows; }
         if (base != begin) { barrier(); }
-        if (live != 0) {
+        if (cv[4] != 0) {
             if constexpr (IS_SPLIT == 1) {
-                conv_tiled_load_stage(1, group, count, base, has_sri, sequence_row_indices, input_bf16, replay_qkv, input_stride, ch_bytes, channel, lane, tile);
+                conv_tiled_load_stage(1, cv[2], count, base, has_sri, sequence_row_indices, input_bf16, replay_qkv, input_stride, ch_bytes, cv[3], cv[1], tile);
             } else {
-                conv_tiled_load_stage(0, group, count, base, has_sri, sequence_row_indices, input_bf16, input_bf16, 0, ch_bytes, channel, lane, tile);
+                conv_tiled_load_stage(0, cv[2], count, base, has_sri, sequence_row_indices, input_bf16, input_bf16, 0, ch_bytes, cv[3], cv[1], tile);
             }
         }
         barrier();
-        if (live != 0) {
+        if (cv[4] != 0) {
             if constexpr (IS_SPLIT == 1) {
-                conv_tiled_compute_stage(1, group, count, base, has_sri, sequence_row_indices, tile, lane, tw0, tw1, tw2, tw3, channel, gdn_qk, gdn_v, heads, repeat, ch_bytes, query_heads, key_heads, value, input_bf16);
+                conv_tiled_compute_stage(1, cv[2], count, base, has_sri, sequence_row_indices, tile, cv[1], tw[0], tw[1], tw[2], tw[3], cv[3], gdn_qk, gdn_v, heads, repeat, ch_bytes, query_heads, key_heads, value, input_bf16);
             } else {
-                conv_tiled_compute_stage(0, group, count, base, has_sri, sequence_row_indices, tile, lane, tw0, tw1, tw2, tw3, channel, 0, 0, 0, repeat, ch_bytes, output_bf16, output_bf16, output_bf16, output_bf16);
+                conv_tiled_compute_stage(0, cv[2], count, base, has_sri, sequence_row_indices, tile, cv[1], tw[0], tw[1], tw[2], tw[3], cv[3], 0, 0, 0, repeat, ch_bytes, output_bf16, output_bf16, output_bf16, output_bf16);
             }
         }
         reg u32 last_tile = 0;
         if (base + count == end) { last_tile = 1; }
-        conv_tiled_tail_sync(tile, slot, channel, lane, group, live, count, commit, last_tile);
+        conv_tiled_tail_sync(tile, slot, cv[3], cv[1], cv[2], cv[4], count, commit, last_tile);
     }
     preexit();
 }
@@ -393,6 +390,17 @@ macro conv_load_parent_tap(anc, miss, miss_val, slot_off, input_bf16, parent_row
     }
 }
 
+macro conv_serial_load_state(weight, channel, sequence, sequence_row_begin, sequence_row_count, state_index, window, channels, tw, bnd, out_slot, tap) {
+    reg u32x2 w2_ = ldg64_persist(ptr_add(weight, channel, 8));
+    tw[0] = bf16_lo(w2_[0]); tw[1] = bf16_hi(w2_[0]); tw[2] = bf16_lo(w2_[1]); tw[3] = bf16_hi(w2_[1]);
+    acqbulk();
+    conv_seq_bounds(sequence, sequence_row_begin, sequence_row_count, bnd[0], bnd[1]);
+    reg u32 sidx_ = ldg32_persist(ptr_add(state_index, sequence, 4));
+    out_slot = ptr_add(window, sidx_, channels << 3);
+    reg u32x2 sw_ = ldg64_stream(ptr_add(out_slot, channel, 8));
+    tap[0] = sw_[0] & 0xFFFF; tap[1] = sw_[0] >> 16; tap[2] = sw_[1] & 0xFFFF; tap[3] = sw_[1] >> 16;
+}
+
 @pdl
 @concept(recurrent)
 kernel[BLOCK_CONV, 48] causal_conv_serial_256_4_swish_bf16_pdl(
@@ -403,45 +411,32 @@ kernel[BLOCK_CONV, 48] causal_conv_serial_256_4_swish_bf16_pdl(
 ) {
     reg u32 sequence = ctaid_x();
     reg u32 channel = ctaid_y() * BLOCK_CONV + tid_x();
-    if (sequence >= sequences || channel >= channels) {
-        preexit();
-        return;
-    }
-    reg u32x2 w2 = ldg64_persist(ptr_add(weight, channel, 8));
-    reg f32 tw0 = bf16_lo(w2[0]); reg f32 tw1 = bf16_hi(w2[0]);
-    reg f32 tw2 = bf16_lo(w2[1]); reg f32 tw3 = bf16_hi(w2[1]);
-    acqbulk();
-    reg u32 begin = 0;
-    reg u32 end = 0;
-    conv_seq_bounds(sequence, sequence_row_begin, sequence_row_count, begin, end);
+    if (sequence >= sequences || channel >= channels) { preexit(); return; }
+    reg f32 tw[4]; reg u32 tap[4]; reg u32 bnd[2]; reg u64 slot = 0;
+    conv_serial_load_state(weight, channel, sequence, sequence_row_begin, sequence_row_count, state_index, window, channels, tw, bnd, slot, tap);
     reg u32 has_sri = sequence_row_indices[0] | sequence_row_indices[1];
     reg u32 has_par = parent_rows[0] | parent_rows[1];
-    reg u32 sidx = ldg32_persist(ptr_add(state_index, sequence, 4));
-    ureg u64 slot = ptr_add(window, sidx, channels << 3);
-    reg u32x2 sw = ldg64_stream(ptr_add(slot, channel, 8));
-    reg u32 tap0 = sw[0] & 0xFFFF; reg u32 tap1 = sw[0] >> 16;
-    reg u32 tap2 = sw[1] & 0xFFFF; reg u32 tap3 = sw[1] >> 16;
     reg u32 ch_bytes = channels << 1;
-    for (reg u32 ordinal = begin; ordinal < end; ordinal += 1) {
+    for (reg u32 ordinal = bnd[0]; ordinal < bnd[1]; ordinal += 1) {
         reg u32 row = ordinal;
         if (has_sri != 0) { row = ldg32_persist(ptr_add(sequence_row_indices, ordinal, 4)); }
         if (has_par != 0) {
             reg u32 anc = row;
             reg u32 miss = 4;
-            conv_load_parent_tap(anc, miss, 0, 3, input_bf16, parent_rows, slot, ch_bytes, channel, 1, tap3);
-            conv_load_parent_tap(anc, miss, 1, 2, input_bf16, parent_rows, slot, ch_bytes, channel, 1, tap2);
-            conv_load_parent_tap(anc, miss, 2, 1, input_bf16, parent_rows, slot, ch_bytes, channel, 1, tap1);
-            conv_load_parent_tap(anc, miss, 3, 0, input_bf16, parent_rows, slot, ch_bytes, channel, 0, tap0);
+            conv_load_parent_tap(anc, miss, 0, 3, input_bf16, parent_rows, slot, ch_bytes, channel, 1, tap[3]);
+            conv_load_parent_tap(anc, miss, 1, 2, input_bf16, parent_rows, slot, ch_bytes, channel, 1, tap[2]);
+            conv_load_parent_tap(anc, miss, 2, 1, input_bf16, parent_rows, slot, ch_bytes, channel, 1, tap[1]);
+            conv_load_parent_tap(anc, miss, 3, 0, input_bf16, parent_rows, slot, ch_bytes, channel, 0, tap[0]);
         } else {
-            tap0 = tap1; tap1 = tap2; tap2 = tap3;
-            tap3 = ldg16_stream(ptr_add(ptr_add(input_bf16, row, ch_bytes), channel, 2));
+            tap[0] = tap[1]; tap[1] = tap[2]; tap[2] = tap[3];
+            tap[3] = ldg16_stream(ptr_add(ptr_add(input_bf16, row, ch_bytes), channel, 2));
         }
         reg u32 out_b = 0;
-        conv_tap4_swish_bf16(bf16_lo(tap0), bf16_lo(tap1), bf16_lo(tap2), bf16_lo(tap3), tw0, tw1, tw2, tw3, out_b);
+        conv_tap4_swish_bf16(bf16_lo(tap[0]), bf16_lo(tap[1]), bf16_lo(tap[2]), bf16_lo(tap[3]), tw[0], tw[1], tw[2], tw[3], out_b);
         stg16(ptr_add(ptr_add(output_bf16, row, ch_bytes), channel, 2), out_b);
     }
     if (commit != 0 && has_par == 0) {
-        stg64(ptr_add(slot, channel, 8), pack_u32x2(pack_u16x2(tap0, tap1), pack_u16x2(tap2, tap3)));
+        stg64(ptr_add(slot, channel, 8), pack_u32x2(pack_u16x2(tap[0], tap[1]), pack_u16x2(tap[2], tap[3])));
     }
     preexit();
 }
@@ -500,36 +495,23 @@ kernel[BLOCK_CONV, 64] qwen_gdn_conv_split_serial_4_128_pdl(
     }
     reg u32 channels = (gdn_qk << 1) + gdn_v;
     reg u32 channel = by * BLOCK_CONV + tid_x();
-    if (channel >= channels) {
-        acqbulk();
-        preexit();
-        return;
-    }
-    reg u32x2 w2 = ldg64_persist(ptr_add(weight, channel, 8));
-    reg f32 tw0 = bf16_lo(w2[0]); reg f32 tw1 = bf16_hi(w2[0]);
-    reg f32 tw2 = bf16_lo(w2[1]); reg f32 tw3 = bf16_hi(w2[1]);
-    acqbulk();
+    if (channel >= channels) { acqbulk(); preexit(); return; }
+    reg f32 tw[4]; reg u32 tap[4]; reg u32 bnd[2]; reg u64 slot = 0;
+    conv_serial_load_state(weight, channel, sequence, sequence_row_begin, sequence_row_count, state_index, window, channels, tw, bnd, slot, tap);
     reg u32 repeat = 1;
     conv_tiled_repeat_factor(1, gdn_qk, heads, repeat);
-    reg u32 begin = 0; reg u32 end = 0;
-    conv_seq_bounds(sequence, sequence_row_begin, sequence_row_count, begin, end);
-    reg u32 sidx = ldg32_persist(ptr_add(state_index, sequence, 4));
-    ureg u64 slot = ptr_add(window, sidx, channels << 3);
-    reg u32x2 sw = ldg64_stream(ptr_add(slot, channel, 8));
-    reg u32 tap0 = sw[0] & 0xFFFF; reg u32 tap1 = sw[0] >> 16;
-    reg u32 tap2 = sw[1] & 0xFFFF; reg u32 tap3 = sw[1] >> 16;
     reg u32 has_replay = replay_qkv[0] | replay_qkv[1];
-    for (reg u32 ord = begin; ord < end; ord += 1) {
+    for (reg u32 ord = bnd[0]; ord < bnd[1]; ord += 1) {
         reg u32 row = ord; if (has_sri != 0) { row = ldg32_persist(ptr_add(sequence_row_indices, ord, 4)); }
-        tap0 = tap1; tap1 = tap2; tap2 = tap3;
-        tap3 = ldg16_stream(ptr_add(ptr_add(input_bf16, row, input_stride << 1), channel, 2));
-        if (has_replay != 0) { stg16(ptr_add(ptr_add(replay_qkv, row, channels << 1), channel, 2), tap3); }
+        tap[0] = tap[1]; tap[1] = tap[2]; tap[2] = tap[3];
+        tap[3] = ldg16_stream(ptr_add(ptr_add(input_bf16, row, input_stride << 1), channel, 2));
+        if (has_replay != 0) { stg16(ptr_add(ptr_add(replay_qkv, row, channels << 1), channel, 2), tap[3]); }
         reg u32 out_b = 0;
-        conv_tap4_swish_bf16(bf16_lo(tap0), bf16_lo(tap1), bf16_lo(tap2), bf16_lo(tap3), tw0, tw1, tw2, tw3, out_b);
+        conv_tap4_swish_bf16(bf16_lo(tap[0]), bf16_lo(tap[1]), bf16_lo(tap[2]), bf16_lo(tap[3]), tw[0], tw[1], tw[2], tw[3], out_b);
         conv_split_store_out(channel, gdn_qk, gdn_v, row, heads, repeat, query_heads, key_heads, value, out_b);
     }
     if (commit != 0) {
-        stg64(ptr_add(slot, channel, 8), pack_u32x2(pack_u16x2(tap0, tap1), pack_u16x2(tap2, tap3)));
+        stg64(ptr_add(slot, channel, 8), pack_u32x2(pack_u16x2(tap[0], tap[1]), pack_u16x2(tap[2], tap[3])));
     }
     preexit();
 }
@@ -582,36 +564,28 @@ kernel[BLOCK_CONV, 56] qwen_gdn_conv_prefill_2d_4_128_pdl(
     u32 commit_inline, global u32* sequence_row_indices
 ) {
     shared u32 tile[2144];
-    reg u32 sequence = ctaid_x();
-    if (sequence >= sequences) { acqbulk(); preexit(); return; }
-    reg u32 tid = tid_x();
-    reg u32 lane = tid & 31;
-    reg u32 group = tid >> 5;
     reg u32 channels = (gdn_qk << 1) + gdn_v;
-    reg u32 channel = (ctaid_y() << 5) + lane;
-    reg u32 live = (channel < channels) ? 1 : 0;
-    reg f32 tw0 = 0.0f; reg f32 tw1 = 0.0f; reg f32 tw2 = 0.0f; reg f32 tw3 = 0.0f;
-    conv_load_4weights(live, weight, channel, tw0, tw1, tw2, tw3);
-    acqbulk();
+    reg u32 cv[5]; reg f32 tw[4];
+    conv_tiled_prologue(sequences, channels, weight, cv, tw);
     reg u32 begin = 0; reg u32 end = 0;
-    conv_seq_bounds(sequence, sequence_row_begin, sequence_row_count, begin, end);
+    conv_seq_bounds(cv[0], sequence_row_begin, sequence_row_count, begin, end);
     reg u32 tile_idx = ctaid_z();
     reg u32 base = begin + (tile_idx << 6);
     if (base >= end) { preexit(); return; }
     reg u32 count = (end - base < 64) ? (end - base) : 64;
     reg u32 has_sri = sequence_row_indices[0] | sequence_row_indices[1];
-    reg u32 sidx = ldg32_persist(ptr_add(state_index, sequence, 4));
+    reg u32 sidx = ldg32_persist(ptr_add(state_index, cv[0], 4));
     ureg u64 slot = ptr_add(window, sidx, channels << 3);
-    conv_prefill_load_stage(group, live, tile_idx, count, base, has_sri, sequence_row_indices, slot, input_bf16, input_stride, channel, lane, tile);
-    conv_prefill_compute_stage(group, live, count, base, has_sri, sequence_row_indices, tile, lane, tw0, tw1, tw2, tw3, channel, gdn_qk, gdn_v, query_qk, key_qk, value);
+    conv_prefill_load_stage(cv[2], cv[4], tile_idx, count, base, has_sri, sequence_row_indices, slot, input_bf16, input_stride, cv[3], cv[1], tile);
+    conv_prefill_compute_stage(cv[2], cv[4], count, base, has_sri, sequence_row_indices, tile, cv[1], tw[0], tw[1], tw[2], tw[3], cv[3], gdn_qk, gdn_v, query_qk, key_qk, value);
     if (commit_inline != 0 && base + count == end) {
         barrier();
-        if (group == 0 && live != 0) {
-            reg u32 c0 = lds32(tile, ((count - 1) << 5) + lane);
-            reg u32 c1 = lds32(tile, (count << 5) + lane);
-            reg u32 c2 = lds32(tile, ((count + 1) << 5) + lane);
-            reg u32 c3 = lds32(tile, ((count + 2) << 5) + lane);
-            stg64(ptr_add(slot, channel, 8), pack_u32x2(pack_u16x2(c0, c1), pack_u16x2(c2, c3)));
+        if (cv[2] == 0 && cv[4] != 0) {
+            reg u32 c0 = lds32(tile, ((count - 1) << 5) + cv[1]);
+            reg u32 c1 = lds32(tile, (count << 5) + cv[1]);
+            reg u32 c2 = lds32(tile, ((count + 1) << 5) + cv[1]);
+            reg u32 c3 = lds32(tile, ((count + 2) << 5) + cv[1]);
+            stg64(ptr_add(slot, cv[3], 8), pack_u32x2(pack_u16x2(c0, c1), pack_u16x2(c2, c3)));
         }
     }
     preexit();
@@ -691,15 +665,8 @@ kernel[BLOCK_CONV, 56] qwen_gdn_split_expand_gate_256_128_pdl(
     global u32* retention, global u32* write_gate,
     u32 gdn_qk, u32 gdn_v, u32 heads, u32 rows
 ) {
-    acqbulk();
-    reg u32 row = ctaid_x();
-    if (row >= rows) {
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
+    reg u32 row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    pdl_row_prologue(rows, row, tid, wid, lane);
     reg u32 repeat = 1;
     conv_tiled_repeat_factor(1, gdn_qk, heads, repeat);
     reg u32 total_ch = (gdn_qk << 1) + gdn_v;
@@ -808,6 +775,12 @@ macro gdn_edge_step(wid, lane, row, qk_rh, head, heads, col_base, a_val, dt_val,
     }
 }
 
+macro gdn_seq_head_guard_prologue(a_log, dt_bias, sequence, head, sequences, heads, z_bad, sequence_row_begin, sequence_row_count, sequence_row_indices, out_a, out_dt, out_begin, out_end, out_sri) {
+    if (sequence >= sequences || head >= heads || z_bad != 0) { acqbulk(); preexit(); return; }
+    out_a = 0.0f; out_dt = 0.0f; out_begin = 0; out_end = 0; out_sri = 0;
+    gdn_seq_prologue(a_log, dt_bias, head, sequence, sequence_row_begin, sequence_row_count, sequence_row_indices, out_a, out_dt, out_begin, out_end, out_sri);
+}
+
 @pdl
 @concept(recurrent)
 template kernel[BLOCK_DELTA, 96] qwen_gdn_exact_edge_tpl<PRE_EDGE>(
@@ -824,10 +797,8 @@ template kernel[BLOCK_DELTA, 96] qwen_gdn_exact_edge_tpl<PRE_EDGE>(
     shared f32 value_s[32];
     shared f32 meta_s[4];
     reg u32 sequence = ctaid_x(); reg u32 head = ctaid_y(); reg u32 col_base = ctaid_z() << 5;
-    if (sequence >= sequences || head >= heads || col_base >= 128) { acqbulk(); preexit(); return; }
-    reg f32 a_val = 0.0f; reg f32 dt_val = 0.0f;
-    reg u32 begin = 0; reg u32 end = 0; reg u32 has_sri = 0;
-    gdn_seq_prologue(a_log, dt_bias, head, sequence, sequence_row_begin, sequence_row_count, sequence_row_indices, a_val, dt_val, begin, end, has_sri);
+    reg f32 a_val = 0.0f; reg f32 dt_val = 0.0f; reg u32 begin = 0; reg u32 end = 0; reg u32 has_sri = 0;
+    gdn_seq_head_guard_prologue(a_log, dt_bias, sequence, head, sequences, heads, col_base >= 128 ? 1 : 0, sequence_row_begin, sequence_row_count, sequence_row_indices, a_val, dt_val, begin, end, has_sri);
     reg u32 eb = 0; reg u32 ec = 0;
     gdn_edge_bounds(PRE_EDGE, begin, end, positions, sequence_row_indices, has_sri, eb, ec);
     if (ec == 0) { preexit(); return; }
@@ -1013,6 +984,19 @@ macro gdn_chunk_gram_solve(wid, lane, gid, tg, rows) {
     barrier();
 }
 
+macro gdn_tri_mma(src_mat, dst_mat, base_off, tbl_off, step_off, bh, bl) {
+    unroll (ci_ = 0..4) {
+        reg u32x4 ah_; reg u32x4 al_;
+        gdn_split_a4(src_mat[ci_][0], src_mat[ci_][2], src_mat[ci_][1], src_mat[ci_][3], ah_, al_);
+        unroll (co_ = ci_..4) {
+            gdn_split_b2(dyn_lds32_bf32(base_off + (tbl_off + co_ * 1024 + ci_ * 32)), dyn_lds32_bf32(base_off + (tbl_off + co_ * 1024 + ci_ * 32 + step_off)), bh[co_], bl[co_]);
+            dst_mat[co_] = hmma1688_tf32(ah_, bh[co_], dst_mat[co_]);
+        }
+        unroll (co_ = ci_..4) { dst_mat[co_] = hmma1688_tf32(ah_, bl[co_], dst_mat[co_]); }
+        unroll (co_ = ci_..4) { dst_mat[co_] = hmma1688_tf32(al_, bh[co_], dst_mat[co_]); }
+    }
+}
+
 macro gdn_chunk_apply_update(rows, gid, tg, k_perm, v0, v1, head, heads, output_bf16, s, do_update) {
     reg f32x4 p[4]; reg f32x4 o[4]; reg f32x4 u[4];
     unroll (ct = 0..4) { p[ct] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); o[ct] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); u[ct] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
@@ -1039,27 +1023,9 @@ macro gdn_chunk_apply_update(rows, gid, tg, k_perm, v0, v1, head, heads, output_
         o[ct][0] *= eev; o[ct][1] *= eod; o[ct][2] *= eev; o[ct][3] *= eod;
     }
     reg u32 base_x = (k_perm << 7) + (tg << 3);
-    unroll (ci = 0..4) {
-        reg u32x4 awh; reg u32x4 awl;
-        gdn_split_a4(p[ci][0], p[ci][2], p[ci][1], p[ci][3], awh, awl);
-        unroll (co = ci..4) {
-            gdn_split_b2(dyn_lds32_bf32(base_x + (57344 + co * 1024 + ci * 32)), dyn_lds32_bf32(base_x + (57344 + co * 1024 + ci * 32 + 4)), bkh[co], bkl[co]);
-            u[co] = hmma1688_tf32(awh, bkh[co], u[co]);
-        }
-        unroll (co = ci..4) { u[co] = hmma1688_tf32(awh, bkl[co], u[co]); }
-        unroll (co = ci..4) { u[co] = hmma1688_tf32(awl, bkh[co], u[co]); }
-    }
+    gdn_tri_mma(p, u, base_x, 57344, 4, bkh, bkl);
     reg u32 base_m = (gid << 7) + (tg << 2);
-    unroll (ci = 0..4) {
-        reg u32x4 auh; reg u32x4 aul;
-        gdn_split_a4(u[ci][0], u[ci][2], u[ci][1], u[ci][3], auh, aul);
-        unroll (ct = ci..4) {
-            gdn_split_b2(dyn_lds32_bf32(base_m + (53248 + ct * 1024 + ci * 32)), dyn_lds32_bf32(base_m + (53248 + ct * 1024 + ci * 32 + 16)), bqh[ct], bql[ct]);
-            o[ct] = hmma1688_tf32(auh, bqh[ct], o[ct]);
-        }
-        unroll (ct = ci..4) { o[ct] = hmma1688_tf32(auh, bql[ct], o[ct]); }
-        unroll (ct = ci..4) { o[ct] = hmma1688_tf32(aul, bqh[ct], o[ct]); }
-    }
+    gdn_tri_mma(u, o, base_m, 53248, 16, bqh, bql);
     unroll (ct = 0..4) {
         reg u32 cev = (ct << 3) + (tg << 1); reg u32 cod = cev + 1;
         if (cev < rows) {
@@ -1114,10 +1080,8 @@ kernel[BLOCK_CONV, 224] qwen_gdn_scalar_chunk_128_128_128_pdl(
     u32 commit, global u32* sequence_row_indices
 ) {
     reg u32 sequence = ctaid_x(); reg u32 head = ctaid_y();
-    if (sequence >= sequences || head >= heads || ctaid_z() != 0) { acqbulk(); preexit(); return; }
-    reg f32 a_val = 0.0f; reg f32 dt_val = 0.0f;
-    reg u32 begin = 0; reg u32 end = 0; reg u32 has_sri = 0;
-    gdn_seq_prologue(a_log, dt_bias, head, sequence, sequence_row_begin, sequence_row_count, sequence_row_indices, a_val, dt_val, begin, end, has_sri);
+    reg f32 a_val = 0.0f; reg f32 dt_val = 0.0f; reg u32 begin = 0; reg u32 end = 0; reg u32 has_sri = 0;
+    gdn_seq_head_guard_prologue(a_log, dt_bias, sequence, head, sequences, heads, ctaid_z(), sequence_row_begin, sequence_row_count, sequence_row_indices, a_val, dt_val, begin, end, has_sri);
     reg f32 a_exp = exp2_ftz(a_val * 1.4426950408889634f);
     reg u32 count = 0;
     gdn_chunk_align(begin, end, positions, sequence_row_indices, has_sri, count);

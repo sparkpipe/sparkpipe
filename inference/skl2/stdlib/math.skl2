@@ -789,3 +789,48 @@ macro fp8_e4m3_dequant8_bf16(c0, c1, sbits, out_u4) {
     reg f32x4 d0 = cvt_e4m3x4_f32x4(c0); reg f32x4 d1 = cvt_e4m3x4_f32x4(c1);
     out_u4 = pack_u32x4(pack_bf16x2(d0[0] * sc, d0[1] * sc), pack_bf16x2(d0[2] * sc, d0[3] * sc), pack_bf16x2(d1[0] * sc, d1[1] * sc), pack_bf16x2(d1[2] * sc, d1[3] * sc));
 }
+
+@export
+macro sqrt_nr1_f32(x, out_s) {
+    if (x <= 0.0f) { out_s = 0.0f; }
+    else { reg f32 r_ = rsqrt(x); r_ = r_ * fma(-0.5f * x, r_ * r_, 1.5f); out_s = x * r_; }
+}
+
+@export
+macro engram_source_rank(id_val, part_val, table_rows, out_src) {
+    out_src = 0xFFFFFFFF;
+    if ((id_val[1] >> 31) == 0) {
+        reg u32 lt_ = 0;
+        if (id_val[1] < table_rows[1]) { lt_ = 1; }
+        else { if (id_val[1] == table_rows[1] && id_val[0] < table_rows[0]) { lt_ = 1; } }
+        if (lt_ != 0) { reg u32 q_ = 0; reg u32 r_ = 0; u32_divmod(id_val[0], part_val[0], q_, r_); out_src = q_; }
+    }
+}
+
+@export
+macro block_reduce_max_f32(val, s_red, wid, lane, out_max) {
+    reg f32 wm_ = warp_max(val);
+    if (lane == 0) { sts32(s_red, wid, wm_); }
+    barrier();
+    reg f32 bm_ = u32_as_f32(0xFF800000); if (lane < 8) { bm_ = lds32(s_red, lane); }
+    out_max = shfl_idx(warp_max(bm_), 0);
+}
+
+@export
+macro pdl_row_prologue(rows, out_row, out_tid, out_wid, out_lane) {
+    acqbulk();
+    out_row = ctaid_x();
+    if (out_row >= rows) { preexit(); return; }
+    out_tid = tid_x(); out_wid = warp_id(); out_lane = lane_id();
+}
+
+@export
+macro kv_emit_slot_addr(view, emit_row, seq_of_row, page_slots, slot_bytes, out_row, out_slot) {
+    acqbulk();
+    out_row = ctaid_x();
+    reg u32 pos_ = ldg32_persist(ptr_add(emit_row, out_row, 4));
+    if (pos_ == 0xFFFFFFFF) { preexit(); return; }
+    reg u32 ok_ = 0;
+    kv_shard_slot_addr_gen(view, ldg32_persist(ptr_add(seq_of_row, out_row, 4)), pos_, page_slots, slot_bytes, out_slot, ok_);
+    if (ok_ == 0) { preexit(); return; }
+}

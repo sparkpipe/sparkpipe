@@ -48,6 +48,26 @@ kernel[128, 32] k_b(global u32* dst) {{
     )
     assert "neg_test.skl2:" in str(err_dup), str(err_dup)
 
+    cb_a = "\n".join(f"    reg u32 a{i} = (tid + {i + 1}) ^ {(i + 3) * 7};" for i in range(8))
+    cb_b = "\n".join(f"    reg u32 b{i} = (tid + {i + 101}) ^ {(i + 19) * 11};" for i in range(8))
+    cb_sa = " + ".join(f"a{i}" for i in range(8))
+    cb_sb = " + ".join(f"b{i}" for i in range(8))
+    expect_error(
+        f"""
+kernel[128, 32] k_cb_a(global u32* dst) {{
+    reg u32 tid = tid_x();
+{cb_a}
+    stg32(ptr_add(dst, tid, 4), {cb_sa});
+}}
+kernel[128, 32] k_cb_b(global u32* dst) {{
+    reg u32 tid = tid_x();
+{cb_b}
+    stg32(ptr_add(dst, tid, 4), {cb_sb});
+}}
+""",
+        "E_DUP_SUBTREE",
+    )
+
     ifs = "\n".join(f"    if (tid == {i}) {{ acc = acc + {i + 1}; }}" for i in range(17))
     expect_error(
         f"""
@@ -484,14 +504,10 @@ def test_repo_wide_dry_policy_and_model_cubin():
     res_aud = subprocess.run([sys.executable, str(SKL2C), "--audit-repo", str(SKL2_DIR)], capture_output=True, text=True, check=False)
     assert res_aud.returncode == 0, res_aud.stderr
     audit = json.loads(res_aud.stdout)
-    legacy_model_files = {
-        "kernels/dsv41_gemv.skl2",
-        "kernels/dsv41_ops.skl2",
-    }
-    new_model_files = set(audit["model_files"]) - legacy_model_files
-    assert not new_model_files, f"FORBIDDEN new model-prefixed .skl2 files (use parameterized stdlib instead): {sorted(new_model_files)}"
-    assert audit["total_lines"] <= 17250, f".skl2 line budget exceeded: {audit['total_lines']} > 17250"
-    assert audit["dup_cross"] <= 5, f"cross-file 8-stmt structural duplicates grew: {audit['dup_cross']} > 5 ({audit['top_dup_pairs'][:5]})"
+    assert not audit["model_files"], f"FORBIDDEN model-prefixed .skl2 files (use parameterized stdlib instead): {audit['model_files']}"
+    assert audit["total_lines"] <= 16250, f".skl2 line budget exceeded: {audit['total_lines']} > 16250"
+    assert audit["dup_cross"] == 0, f"cross-file 8-stmt structural duplicates must be 0, got {audit['dup_cross']} ({audit['top_dup_pairs'][:5]})"
+    assert audit["dup_total"] == 0, f"repo-wide 8-stmt structural duplicates must be 0, got {audit['dup_total']} ({audit['top_dup_pairs'][:5]})"
     with tempfile.TemporaryDirectory() as tmp:
         pol_h = pathlib.Path(tmp) / "skl2_allreduce_policy.h"
         res_p = subprocess.run([sys.executable, str(SKL2C), "--emit-policy-h", str(pol_h), str(SKL2_DIR / "stdlib" / "allreduce.skl2")], capture_output=True, text=True, check=False)
