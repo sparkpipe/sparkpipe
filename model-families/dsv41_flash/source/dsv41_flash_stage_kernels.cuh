@@ -25,16 +25,6 @@
 #include "dsv41_flash_kernels.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
-#include "skl2_dsv41_embedded.h"
-
-struct D41Skl2BundleTag {};
-
-template<typename... Args>
-static inline SparkGpuError D41Skl2Launch(uint32_t id, dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, Args... args)
-{
-	return LmLaunchEmbedded<D41Skl2BundleTag>(kD41Skl2Cubin, sizeof(kD41Skl2Cubin), (const char *)kD41Skl2Manifest,
-		sizeof(kD41Skl2Manifest) - 1u, kD41Skl2Names, (uint32_t)D41SKL2_COUNT, id, grid, block, shared, stream, args...);
-}
 
 #define D41K_THREADS 256u
 #define D41K_HC 4u
@@ -150,73 +140,14 @@ static inline SparkGpuError D41Fp8SliceLaunch(dim3 grid, dim3 block, SparkGpuStr
 	uint8_t *weight, uint8_t *row_scale, uint16_t *wide, uint32_t columns, uint32_t row_first, uint32_t column_first, uint32_t output_columns)
 { return D41Skl2Launch(D41SKL2_d41_fp8_slice_256, grid, block, 0, stream, payload, block_scale, weight, row_scale, wide, columns, row_first, column_first, output_columns); }
 
-static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
-	uint32_t *__restrict__ emit_row, float *__restrict__ state, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
-	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
-	const uint32_t *__restrict__ recurrent_slot, uint32_t ratio, uint32_t state_stride_floats, uint32_t width,
-	const uint32_t *__restrict__ slots = 0, const uint32_t *__restrict__ parent_rows = 0, const uint16_t *__restrict__ norm = 0,
-	float norm_eps = 0.0f, uint32_t save_inline = 0u)
+static inline SparkGpuError D41CompressorRowsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const float *kv, const float *score, uint16_t *pooled,
+	uint32_t *emit_row, float *state, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *row_ordinal,
+	const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, uint32_t ratio,
+	uint32_t state_stride_floats, uint32_t width, const uint32_t *slots = 0, const uint32_t *parent_rows = 0,
+	const uint16_t *norm = 0, float norm_eps = 0.0f, uint32_t save_inline = 0u)
 {
-	__shared__ float s_val[D41K_LATENT];
-	__shared__ float s_red[D41K_THREADS / 32u];
-	const uint32_t row = blockIdx.x;
-	LmDependentWait();
-	const uint32_t position = positions[row], target_slot = slots != 0 ? slots[row] : position;
-	if ( ratio == 1u )
-	{
-		float ss = 0.0f;
-		for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
-		{
-			const uint16_t bf = LmFloatToBf16(kv[(uint64_t)row * width + c]);
-			if ( norm != 0 ) { const float v = LmBf16ToFloat(bf); s_val[c] = v; ss += v * v; }
-			else pooled[(uint64_t)row * width + c] = bf;
-		}
-		if ( norm != 0 )
-		{
-			const float sc = SparkMathRmsScale(LmBlockSum<D41K_THREADS>(ss, s_red), (float)width, norm_eps);
-			for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
-				pooled[(uint64_t)row * width + c] = LmFloatToBf16(s_val[c] * sc * LmScalarToFloat(norm[c]));
-		}
-		if ( threadIdx.x == 0u ) emit_row[row] = target_slot;
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t lane = row_lane[row];
-	float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
-	if ( (position + 1u) % ratio != 0u )
-	{
-		if ( save_inline != 0u )
-			for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
-			{
-				slot_state[c] = kv[(uint64_t)row * width + c];
-				slot_state[width + c] = score[(uint64_t)row * width + c];
-			}
-		if ( threadIdx.x == 0u ) emit_row[row] = D41K_NO_ROW;
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t ordinal = row_ordinal[row];
-	const uint32_t previous = parent_rows != 0 ? parent_rows[row] :
-		(ordinal > 0u ? sequence_row_indices[sequence_row_begin[lane] + ordinal - 1u] : D41K_NO_ROW);
-	const uint32_t in_wave = previous != D41K_NO_ROW ? 1u : 0u;
-	float ss = 0.0f;
-	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
-	{
-		const float kv0 = in_wave != 0u ? kv[(uint64_t)previous * width + c] : slot_state[c];
-		const float score0 = in_wave != 0u ? score[(uint64_t)previous * width + c] : slot_state[width + c];
-		const float kv1 = kv[(uint64_t)row * width + c], score1 = score[(uint64_t)row * width + c];
-		const uint16_t bf = LmFloatToBf16(SparkMathSoftmaxPool2(kv0, score0, kv1, score1));
-		if ( norm != 0 ) { const float v = LmBf16ToFloat(bf); s_val[c] = v; ss += v * v; }
-		else pooled[(uint64_t)row * width + c] = bf;
-	}
-	if ( norm != 0 )
-	{
-		const float sc = SparkMathRmsScale(LmBlockSum<D41K_THREADS>(ss, s_red), (float)width, norm_eps);
-		for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
-			pooled[(uint64_t)row * width + c] = LmFloatToBf16(s_val[c] * sc * LmScalarToFloat(norm[c]));
-	}
-	if ( threadIdx.x == 0u ) emit_row[row] = target_slot / ratio;
-	LmDependentRelease();
+	return D41Skl2Launch(D41SKL2_d41_compressor_rows_256, grid, block, 0, stream, kv, score, pooled, emit_row, state, positions, row_lane, row_ordinal,
+		sequence_row_begin, sequence_row_indices, recurrent_slot, ratio, state_stride_floats, width, slots, parent_rows, norm, norm_eps, save_inline);
 }
 
 static inline SparkGpuError D41CompressorSaveLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const float *kv, const float *score, float *state,
@@ -228,27 +159,13 @@ static inline SparkGpuError D41CompressedTreeMapLaunch(dim3 grid, dim3 block, Sp
 	const uint32_t *slot_offsets, uint32_t *compressed_fork, uint32_t *compressed_offset, uint32_t rows, uint32_t ratio)
 { return D41Skl2Launch(D41SKL2_d41_compressed_tree_map_256, grid, block, 0, stream, fork_positions, slot_offsets, compressed_fork, compressed_offset, rows, ratio); }
 
-template<class Geometry, uint32_t THREADS>
-static __global__ __launch_bounds__(THREADS, 1)
-void D41CompressedPathMoveKernel(LmKvShardView view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ positions,
-	const uint32_t *__restrict__ path_rows, const uint32_t *__restrict__ path_count, const uint32_t *__restrict__ slots, uint32_t ratio,
-	uint32_t elements)
+template<class Geometry>
+static inline SparkGpuError D41CompressedPathMoveLaunch(dim3 grid, dim3 block, SparkGpuStream stream, LmKvShardView view,
+	const uint32_t *sequence_of_row, const uint32_t *positions, const uint32_t *path_rows, const uint32_t *path_count,
+	const uint32_t *slots, uint32_t ratio, uint32_t elements)
 {
-	const uint32_t index = blockIdx.x;
-	if ( index >= path_count[0] )
-		return;
-	const uint32_t row = path_rows[index], position = positions[row];
-	if ( (position + 1u) % ratio != 0u )
-		return;
-	const uint32_t source = slots[row] / ratio, destination = position / ratio;
-	if ( source == destination || SparkKvShardOwns(view.shard, destination) == 0u )
-		return;
-	const uint8_t *from = LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], source, row, LM_KV_ACCESS_READ);
-	uint8_t *to = (uint8_t *)LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], destination, row, LM_KV_ACCESS_WRITE);
-	if ( from == 0 || to == 0 )
-		return;
-	for ( uint32_t element = threadIdx.x; element < elements; element += THREADS )
-		((uint16_t *)to)[element] = ((const uint16_t *)from)[element];
+	return D41Skl2Launch(D41SKL2_d41_compressed_path_move_256, grid, block, 0, stream, view, sequence_of_row, positions, path_rows, path_count,
+		slots, ratio, elements, (uint32_t)Geometry::kPageSlots, (uint32_t)Geometry::kSlotBytes);
 }
 
 static __global__ void D41TreeNgramHashKernel(const uint32_t *__restrict__ token_ids, const int32_t *__restrict__ token_map,
@@ -303,22 +220,11 @@ static inline SparkGpuError D41CompressedLengthLaunch(dim3 grid, dim3 block, Spa
 { return D41Skl2Launch(D41SKL2_d41_compressed_length_256, grid, block, 0, stream, context_length, compressed_length, sequences, ratio); }
 
 template<class Geometry>
-static __global__ void D41StoreCompressedKernel(LmKvShardView view, const uint16_t *__restrict__ latent, const uint16_t *__restrict__ index_key,
-	const uint32_t *__restrict__ emit_row, const uint32_t *__restrict__ sequence_of_row, uint32_t index_width)
+static inline SparkGpuError D41StoreCompressedLaunch(dim3 grid, dim3 block, SparkGpuStream stream, LmKvShardView view,
+	const uint16_t *latent, const uint16_t *index_key, const uint32_t *emit_row, const uint32_t *sequence_of_row, uint32_t index_width)
 {
-	const uint32_t row = blockIdx.x;
-	const uint32_t position = emit_row[row];
-	if ( position == D41K_NO_ROW || SparkKvShardOwns(view.shard, position) == 0u )
-		return;
-	uint8_t *slot = (uint8_t *)LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], position, row, LM_KV_ACCESS_WRITE);
-	if ( slot == 0 )
-		return;
-	uint16_t *target = (uint16_t *)slot;
-	for ( uint32_t c = threadIdx.x; c < D41K_LATENT; c += blockDim.x )
-		target[c] = latent[(uint64_t)row * D41K_LATENT + c];
-	if ( index_key != 0 )
-		for ( uint32_t c = threadIdx.x; c < index_width; c += blockDim.x )
-			target[D41K_LATENT + c] = index_key[(uint64_t)row * index_width + c];
+	return D41Skl2Launch(D41SKL2_d41_store_compressed_256, grid, block, 0, stream, view, latent, index_key, emit_row, sequence_of_row,
+		index_width, (uint32_t)Geometry::kPageSlots, (uint32_t)Geometry::kSlotBytes);
 }
 
 template<class Geometry>
@@ -466,112 +372,15 @@ static inline void D41InitRecords(float *records, uint64_t destination_stride, u
 #define D41K_WINDOW_KEYS 128u
 #define D41K_WINDOW_BATCH 16u
 
-static __device__ __forceinline__ void D41WindowTreeRows(const uint32_t *__restrict__ parent_rows, uint32_t row, uint32_t *tree_rows)
+static inline SparkGpuError D41WindowFoldLaunch(dim3 grid, dim3 block, SparkGpuStream stream, float *records, uint64_t destination_stride,
+	uint32_t heads_per_destination, const uint16_t *query, uint64_t query_rank_stride, const uint16_t *wave_kv, const uint16_t *ring,
+	const uint32_t *positions, const uint32_t *row_lane, const uint32_t *row_ordinal, const uint32_t *sequence_row_begin,
+	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window,
+	uint32_t degree, uint32_t rank, float qk_scale, uint32_t record_heads, uint32_t record_copies, const uint32_t *parent_rows = 0)
 {
-	if ( parent_rows == 0 )
-		return;
-	if ( threadIdx.x == 0u )
-	{
-		uint32_t current = row;
-		for ( uint32_t back = 0u; back < D41K_WINDOW_KEYS && current != D41K_NO_ROW; ++back )
-		{
-			tree_rows[back] = current;
-			current = parent_rows[current];
-		}
-	}
-	__syncthreads();
-}
-
-static __device__ __forceinline__ uint32_t D41WindowWaveRow(const uint32_t *__restrict__ lane_rows, const uint32_t *__restrict__ tree_rows,
-	const uint32_t *__restrict__ parent_rows, uint32_t position, uint32_t wave_first, uint32_t at)
-{
-	return parent_rows != 0 ? tree_rows[position - at] : lane_rows[at - wave_first];
-}
-
-static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t heads_per_destination,
-	const uint16_t *__restrict__ query, uint64_t query_rank_stride, const uint16_t *__restrict__ wave_kv,
-	const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
-	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
-	const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank,
-	float qk_scale, uint32_t record_heads, uint32_t record_copies, const uint32_t *__restrict__ parent_rows = 0)
-{
-	__shared__ float warp_sums[D41K_FOLD_KEYS][D41K_THREADS / 32u];
-	__shared__ float key_sums[D41K_FOLD_KEYS];
-	__shared__ uint32_t tree_rows[D41K_WINDOW_KEYS];
-	const uint32_t row = blockIdx.x, head = blockIdx.y, lane_index = threadIdx.x % 32u, warp = threadIdx.x / 32u;
-	LmDependentWait();
-	LmDependentRelease();
-	const uint32_t position = positions[row], lane = row_lane[row];
-	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
-	const uint32_t wave_first = parent_rows != 0 ? positions[lane_rows[0]] : position - row_ordinal[row];
-	const uint32_t first = position + 1u > window ? position + 1u - window : 0u;
-	const uint32_t destination = head / heads_per_destination, local = head % heads_per_destination;
-	const uint16_t *q = query + (uint64_t)destination * query_rank_stride + ((uint64_t)row * heads_per_destination + local) * D41K_LATENT;
-	const uint64_t record_offset = ((uint64_t)row * record_heads + head % record_heads) * D41K_RECORD;
-	float *record = records + (uint64_t)(head / record_heads) * record_copies * destination_stride + record_offset;
-	float running_max = record[0], running_sum = record[1];
-	float accumulator[D41K_LATENT / D41K_THREADS], query_value[D41K_LATENT / D41K_THREADS];
-	D41WindowTreeRows(parent_rows, row, tree_rows);
-	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-	{
-		accumulator[e] = record[2u + threadIdx.x + e * D41K_THREADS];
-		query_value[e] = LmBf16ToFloat(q[threadIdx.x + e * D41K_THREADS]);
-	}
-	uint32_t key = first + (rank + degree - first % degree) % degree;
-	while ( key <= position )
-	{
-		float value[D41K_FOLD_KEYS][D41K_LATENT / D41K_THREADS];
-		uint32_t count = 0u;
-		for ( ; count < D41K_FOLD_KEYS && key + count * degree <= position; ++count )
-		{
-			const uint32_t at = key + count * degree;
-			const uint16_t *k = at >= wave_first ? wave_kv + (uint64_t)D41WindowWaveRow(lane_rows, tree_rows, parent_rows, position, wave_first, at) * D41K_LATENT :
-				ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride + (uint64_t)((at / degree) % ring_rows) * D41K_LATENT;
-			float partial = 0.0f;
-			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-			{
-				value[count][e] = LmBf16ToFloat(k[threadIdx.x + e * D41K_THREADS]);
-				partial += query_value[e] * value[count][e];
-			}
-			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-				partial += __shfl_down_sync(0xffffffffu, partial, offset);
-			if ( lane_index == 0u )
-				warp_sums[count][warp] = partial;
-		}
-		__syncthreads();
-		if ( threadIdx.x < count )
-		{
-			float total = 0.0f;
-			for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
-				total += warp_sums[threadIdx.x][w];
-			key_sums[threadIdx.x] = total;
-		}
-		__syncthreads();
-		for ( uint32_t j = 0u; j < count; ++j )
-		{
-			const float score = key_sums[j] * qk_scale;
-			const float top = fmaxf(running_max, score);
-			const float keep = running_max == -INFINITY ? 0.0f : __expf(running_max - top), add = __expf(score - top);
-			running_sum = running_sum * keep + add;
-			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-				accumulator[e] = accumulator[e] * keep + SparkMathAttentionValueWeight(add) * value[j][e];
-			running_max = top;
-		}
-		__syncthreads();
-		key += count * degree;
-	}
-	__syncthreads();
-	for ( uint32_t copy = 0u; copy < record_copies; ++copy )
-	{
-		float *target = record + (uint64_t)copy * destination_stride;
-		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-			target[2u + threadIdx.x + e * D41K_THREADS] = accumulator[e];
-		if ( threadIdx.x == 0u )
-		{
-			target[0] = running_max;
-			target[1] = running_sum;
-		}
-	}
+	return D41Skl2Launch(D41SKL2_d41_window_fold_256, grid, block, 0, stream, records, destination_stride, heads_per_destination, query,
+		query_rank_stride, wave_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, sequence_row_indices, recurrent_slot,
+		ring_slot_stride, ring_rows, window, degree, rank, qk_scale, record_heads, record_copies, parent_rows);
 }
 
 static __device__ __forceinline__ const uint16_t *D41WindowKey(const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ slot_ring,
@@ -615,240 +424,24 @@ static __device__ __forceinline__ void D41WindowPrefixWeights(float score, float
 		folded[0] = top;
 }
 
-static __global__ __launch_bounds__(D41K_THREADS) void D41WindowFoldWholeKernel(float *__restrict__ records, uint32_t heads, const uint16_t *__restrict__ query,
-	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions,
-	const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin,
-	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t window,
-	float qk_scale)
+static inline SparkGpuError D41WindowFoldWholeLaunch(dim3 grid, dim3 block, SparkGpuStream stream, float *records, uint32_t heads,
+	const uint16_t *query, const uint16_t *wave_kv, const uint16_t *ring, const uint32_t *positions, const uint32_t *row_lane,
+	const uint32_t *row_ordinal, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot,
+	uint64_t ring_slot_stride, uint32_t window, float qk_scale)
 {
-	static_assert(D41K_WINDOW_KEYS % 32u == 0u && D41K_WINDOW_KEYS <= D41K_THREADS && D41K_LATENT == 2u * D41K_THREADS, "window keys fill whole warps");
-	__shared__ const uint16_t *kptr[D41K_WINDOW_KEYS];
-	__shared__ float warp_sums[D41K_WINDOW_KEYS][D41K_THREADS / 32u];
-	__shared__ float warp_max[D41K_WINDOW_KEYS / 32u];
-	__shared__ float keep[D41K_WINDOW_KEYS];
-	__shared__ float added[D41K_WINDOW_KEYS];
-	__shared__ float folded[2];
-	const uint32_t row = blockIdx.x, head = blockIdx.y, lane_index = threadIdx.x % 32u, warp = threadIdx.x / 32u;
-	LmDependentWait();
-	const uint32_t position = positions[row], lane = row_lane[row];
-	const uint32_t wave_first = position - row_ordinal[row];
-	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
-	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
-	const uint16_t *q = query + ((uint64_t)row * heads + head) * D41K_LATENT;
-	const uint16_t *slot_ring = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride;
-	float *record = records + ((uint64_t)row * heads + head) * D41K_RECORD;
-	const float carried_max = record[0], carried_sum = record[1];
-	float acc0 = record[2u + threadIdx.x], acc1 = record[2u + threadIdx.x + D41K_THREADS];
-	const float q0 = LmBf16ToFloat(__ldg(q + threadIdx.x)), q1 = LmBf16ToFloat(__ldg(q + threadIdx.x + D41K_THREADS));
-	if ( threadIdx.x < count )
-		kptr[threadIdx.x] = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + threadIdx.x);
-	__syncthreads();
-	uint32_t j = 0u;
-	for ( ; j + 3u < count; j += 4u )
-	{
-		const uint16_t *k0 = kptr[j], *k1 = kptr[j + 1u], *k2 = kptr[j + 2u], *k3 = kptr[j + 3u];
-		const uint16_t a0 = __ldg(k0 + threadIdx.x), b0 = __ldg(k0 + threadIdx.x + D41K_THREADS);
-		const uint16_t a1 = __ldg(k1 + threadIdx.x), b1 = __ldg(k1 + threadIdx.x + D41K_THREADS);
-		const uint16_t a2 = __ldg(k2 + threadIdx.x), b2 = __ldg(k2 + threadIdx.x + D41K_THREADS);
-		const uint16_t a3 = __ldg(k3 + threadIdx.x), b3 = __ldg(k3 + threadIdx.x + D41K_THREADS);
-		float p0 = 0.0f, p1 = 0.0f, p2 = 0.0f, p3 = 0.0f;
-		p0 += q0 * LmBf16ToFloat(a0); p0 += q1 * LmBf16ToFloat(b0);
-		p1 += q0 * LmBf16ToFloat(a1); p1 += q1 * LmBf16ToFloat(b1);
-		p2 += q0 * LmBf16ToFloat(a2); p2 += q1 * LmBf16ToFloat(b2);
-		p3 += q0 * LmBf16ToFloat(a3); p3 += q1 * LmBf16ToFloat(b3);
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-		{
-			p0 += __shfl_down_sync(0xffffffffu, p0, offset);
-			p1 += __shfl_down_sync(0xffffffffu, p1, offset);
-			p2 += __shfl_down_sync(0xffffffffu, p2, offset);
-			p3 += __shfl_down_sync(0xffffffffu, p3, offset);
-		}
-		if ( lane_index == 0u )
-		{
-			warp_sums[j][warp] = p0;
-			warp_sums[j + 1u][warp] = p1;
-			warp_sums[j + 2u][warp] = p2;
-			warp_sums[j + 3u][warp] = p3;
-		}
-	}
-	for ( ; j < count; ++j )
-	{
-		const uint16_t *k = kptr[j];
-		float partial = 0.0f;
-		partial += q0 * LmBf16ToFloat(__ldg(k + threadIdx.x));
-		partial += q1 * LmBf16ToFloat(__ldg(k + threadIdx.x + D41K_THREADS));
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-			partial += __shfl_down_sync(0xffffffffu, partial, offset);
-		if ( lane_index == 0u )
-			warp_sums[j][warp] = partial;
-	}
-	__syncthreads();
-	float score = -INFINITY, prev_in_warp = -INFINITY;
-	if ( threadIdx.x < D41K_WINDOW_KEYS )
-	{
-		if ( threadIdx.x < count )
-		{
-			float total = 0.0f;
-			#pragma unroll
-			for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
-				total += warp_sums[threadIdx.x][w];
-			score = total * qk_scale;
-		}
-		prev_in_warp = D41WarpPrefixMax(score, lane_index, &warp_max[warp]);
-	}
-	__syncthreads();
-	D41WindowPrefixWeights(score, carried_max, prev_in_warp, warp_max, warp, lane_index, count, keep, added, folded);
-	__syncthreads();
-	if ( threadIdx.x == 0u )
-	{
-		float running_sum = carried_sum;
-		for ( uint32_t i = 0u; i < count; ++i )
-			running_sum = running_sum * keep[i] + added[i];
-		folded[1] = running_sum;
-		if ( count == 0u )
-			folded[0] = carried_max;
-	}
-	j = 0u;
-	for ( ; j + 3u < count; j += 4u )
-	{
-		const uint16_t *k0 = kptr[j], *k1 = kptr[j + 1u], *k2 = kptr[j + 2u], *k3 = kptr[j + 3u];
-		const uint16_t a0 = __ldg(k0 + threadIdx.x), b0 = __ldg(k0 + threadIdx.x + D41K_THREADS);
-		const uint16_t a1 = __ldg(k1 + threadIdx.x), b1 = __ldg(k1 + threadIdx.x + D41K_THREADS);
-		const uint16_t a2 = __ldg(k2 + threadIdx.x), b2 = __ldg(k2 + threadIdx.x + D41K_THREADS);
-		const uint16_t a3 = __ldg(k3 + threadIdx.x), b3 = __ldg(k3 + threadIdx.x + D41K_THREADS);
-		const float kp0 = keep[j], wt0 = SparkMathAttentionValueWeight(added[j]);
-		const float kp1 = keep[j + 1u], wt1 = SparkMathAttentionValueWeight(added[j + 1u]);
-		const float kp2 = keep[j + 2u], wt2 = SparkMathAttentionValueWeight(added[j + 2u]);
-		const float kp3 = keep[j + 3u], wt3 = SparkMathAttentionValueWeight(added[j + 3u]);
-		acc0 = acc0 * kp0 + wt0 * LmBf16ToFloat(a0);
-		acc1 = acc1 * kp0 + wt0 * LmBf16ToFloat(b0);
-		acc0 = acc0 * kp1 + wt1 * LmBf16ToFloat(a1);
-		acc1 = acc1 * kp1 + wt1 * LmBf16ToFloat(b1);
-		acc0 = acc0 * kp2 + wt2 * LmBf16ToFloat(a2);
-		acc1 = acc1 * kp2 + wt2 * LmBf16ToFloat(b2);
-		acc0 = acc0 * kp3 + wt3 * LmBf16ToFloat(a3);
-		acc1 = acc1 * kp3 + wt3 * LmBf16ToFloat(b3);
-	}
-	for ( ; j < count; ++j )
-	{
-		const uint16_t *k = kptr[j];
-		const float kept = keep[j], weight = SparkMathAttentionValueWeight(added[j]);
-		acc0 = acc0 * kept + weight * LmBf16ToFloat(__ldg(k + threadIdx.x));
-		acc1 = acc1 * kept + weight * LmBf16ToFloat(__ldg(k + threadIdx.x + D41K_THREADS));
-	}
-	__syncthreads();
-	record[2u + threadIdx.x] = acc0;
-	record[2u + threadIdx.x + D41K_THREADS] = acc1;
-	if ( threadIdx.x == 0u )
-	{
-		record[0] = folded[0];
-		record[1] = folded[1];
-	}
-	LmDependentRelease();
+	return D41Skl2Launch(D41SKL2_d41_window_fold_whole_256, grid, block, 0, stream, records, heads, query, wave_kv, ring, positions, row_lane,
+		row_ordinal, sequence_row_begin, sequence_row_indices, recurrent_slot, ring_slot_stride, window, qk_scale);
 }
 
 template<uint32_t BLOCK_HEADS = 4u>
-static __global__ __launch_bounds__(D41K_THREADS) void D41WindowFoldWholeTiledKernel(float *__restrict__ records, uint32_t heads,
-	const uint16_t *__restrict__ query, const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions,
-	const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin,
-	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t window,
-	float qk_scale)
+static inline SparkGpuError D41WindowFoldWholeTiledLaunch(dim3 grid, dim3 block, SparkGpuStream stream, float *records, uint32_t heads,
+	const uint16_t *query, const uint16_t *wave_kv, const uint16_t *ring, const uint32_t *positions, const uint32_t *row_lane,
+	const uint32_t *row_ordinal, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot,
+	uint64_t ring_slot_stride, uint32_t window, float qk_scale)
 {
-	static_assert((BLOCK_HEADS == 2u || BLOCK_HEADS == 4u) && D41K_LATENT == 2u * D41K_THREADS && D41K_WINDOW_KEYS <= D41K_THREADS, "tiled window fold processes two or four heads per block");
-	constexpr uint32_t TILE = 16u;
-	__shared__ const uint16_t *kptr[D41K_WINDOW_KEYS];
-	__shared__ __align__(16) uint16_t s_k[TILE][D41K_LATENT];
-	__shared__ float warp_sums[BLOCK_HEADS][TILE][D41K_THREADS / 32u];
-	__shared__ float s_keep[BLOCK_HEADS][TILE];
-	__shared__ float s_wt[BLOCK_HEADS][TILE];
-	__shared__ float s_max[BLOCK_HEADS];
-	__shared__ float s_sum[BLOCK_HEADS];
-	const uint32_t row = blockIdx.x, hbase = blockIdx.y * BLOCK_HEADS, lane_index = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
-	LmDependentWait();
-	const uint32_t position = positions[row], lane = row_lane[row];
-	const uint32_t wave_first = position - row_ordinal[row];
-	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
-	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
-	const uint16_t *slot_ring = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride;
-	float q0[BLOCK_HEADS], q1[BLOCK_HEADS], acc0[BLOCK_HEADS], acc1[BLOCK_HEADS];
-	#pragma unroll
-	for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
-	{
-		const uint16_t *qp = query + ((uint64_t)row * heads + hbase + h) * D41K_LATENT;
-		q0[h] = LmBf16ToFloat(__ldg(qp + threadIdx.x));
-		q1[h] = LmBf16ToFloat(__ldg(qp + threadIdx.x + D41K_THREADS));
-		const float *rec = records + ((uint64_t)row * heads + hbase + h) * D41K_RECORD;
-		acc0[h] = __ldg(rec + 2u + threadIdx.x);
-		acc1[h] = __ldg(rec + 2u + threadIdx.x + D41K_THREADS);
-		if ( threadIdx.x == h ) { s_max[h] = __ldg(rec); s_sum[h] = __ldg(rec + 1u); }
-	}
-	if ( threadIdx.x < count )
-		kptr[threadIdx.x] = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + threadIdx.x);
-	__syncthreads();
-	for ( uint32_t j = 0u; j < count; j += TILE )
-	{
-		const uint32_t n = count - j < TILE ? count - j : TILE;
-		for ( uint32_t idx = threadIdx.x; idx < n * (D41K_LATENT / 8u); idx += D41K_THREADS )
-		{
-			const uint32_t t = idx >> 6u, qv = idx & 63u;
-			((uint4 *)s_k[t])[qv] = __ldg((const uint4 *)kptr[j + t] + qv);
-		}
-		__syncthreads();
-		for ( uint32_t t = 0u; t < n; ++t )
-		{
-			const float a = LmBf16ToFloat(s_k[t][threadIdx.x]), b = LmBf16ToFloat(s_k[t][threadIdx.x + D41K_THREADS]);
-			#pragma unroll
-			for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
-			{
-				float p = q0[h] * a + q1[h] * b;
-				#pragma unroll
-				for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-					p += __shfl_down_sync(0xffffffffu, p, offset);
-				if ( lane_index == 0u ) warp_sums[h][t][warp] = p;
-			}
-		}
-		__syncthreads();
-		if ( threadIdx.x < BLOCK_HEADS )
-		{
-			const uint32_t h = threadIdx.x;
-			float rmax = s_max[h], rsum = s_sum[h];
-			for ( uint32_t t = 0u; t < n; ++t )
-			{
-				float tot = 0.0f;
-				#pragma unroll
-				for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w ) tot += warp_sums[h][t][w];
-				const float sc = tot * qk_scale, top = fmaxf(rmax, sc);
-				const float kp = rmax == -INFINITY ? 0.0f : __expf(rmax - top), ad = __expf(sc - top);
-				rsum = rsum * kp + ad; rmax = top;
-				s_keep[h][t] = kp; s_wt[h][t] = SparkMathAttentionValueWeight(ad);
-			}
-			s_max[h] = rmax; s_sum[h] = rsum;
-		}
-		__syncthreads();
-		for ( uint32_t t = 0u; t < n; ++t )
-		{
-			const float va = LmBf16ToFloat(s_k[t][threadIdx.x]), vb = LmBf16ToFloat(s_k[t][threadIdx.x + D41K_THREADS]);
-			#pragma unroll
-			for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
-			{
-				const float kp = s_keep[h][t], wt = s_wt[h][t];
-				acc0[h] = acc0[h] * kp + wt * va;
-				acc1[h] = acc1[h] * kp + wt * vb;
-			}
-		}
-		if ( j + TILE < count ) __syncthreads();
-	}
-	#pragma unroll
-	for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
-	{
-		float *rec = records + ((uint64_t)row * heads + hbase + h) * D41K_RECORD;
-		rec[2u + threadIdx.x] = acc0[h];
-		rec[2u + threadIdx.x + D41K_THREADS] = acc1[h];
-		if ( threadIdx.x == h ) { rec[0] = s_max[h]; rec[1] = s_sum[h]; }
-	}
-	LmDependentRelease();
+	static_assert(BLOCK_HEADS == 4u, "tiled window fold skl2 supports 4 heads per block");
+	return D41Skl2Launch(D41SKL2_d41_window_fold_whole_tiled4_256, grid, block, 0, stream, records, heads, query, wave_kv, ring, positions,
+		row_lane, row_ordinal, sequence_row_begin, sequence_row_indices, recurrent_slot, ring_slot_stride, window, qk_scale);
 }
 
 static __global__ void __cluster_dims__(D41K_WINDOW_PARTS, 1, 1) __launch_bounds__(D41K_THREADS) D41WindowFoldClusterKernel(float *__restrict__ records,
@@ -1236,145 +829,16 @@ static __global__ __launch_bounds__(THREADS) void D41SpreadOutputRingKernel(cons
 }
 
 template<uint32_t HEADS, uint32_t BLOCK_HEADS = 2u>
-static __global__ __launch_bounds__(D41K_THREADS) void D41WindowFoldSpreadKernel(const float *__restrict__ records, uint32_t has_carried,
-	const uint16_t *__restrict__ query, const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions,
-	const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin,
-	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
-	uint32_t window, float qk_scale, const float *__restrict__ sink, const float2 *__restrict__ rope_sc, uint16_t *__restrict__ output,
-	uint32_t qdq, uint32_t rows, uint32_t commit)
+static inline SparkGpuError D41WindowFoldSpreadLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const float *records, uint32_t has_carried,
+	const uint16_t *query, const uint16_t *wave_kv, uint16_t *ring, const uint32_t *positions, const uint32_t *row_lane,
+	const uint32_t *row_ordinal, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot,
+	uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, float qk_scale, const float *sink, const float2 *rope_sc,
+	uint16_t *output, uint32_t qdq, uint32_t rows, uint32_t commit)
 {
-	static_assert(HEADS % BLOCK_HEADS == 0u && BLOCK_HEADS == 2u && D41K_LATENT == 2u * D41K_THREADS && D41K_WINDOW_KEYS <= D41K_THREADS,
-		"window fold spread processes two heads per block");
-	constexpr uint32_t TILE = 16u;
-	__shared__ const uint16_t *kptr[D41K_WINDOW_KEYS];
-	__shared__ __align__(16) uint16_t s_k[TILE][D41K_LATENT];
-	__shared__ float warp_sums[BLOCK_HEADS][TILE][D41K_THREADS / 32u];
-	__shared__ float s_keep[BLOCK_HEADS][TILE];
-	__shared__ float s_wt[BLOCK_HEADS][TILE];
-	__shared__ float s_max[BLOCK_HEADS];
-	__shared__ float s_sum[BLOCK_HEADS];
-	const uint32_t row = blockIdx.x, hbase = blockIdx.y * BLOCK_HEADS, lane_index = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
-	LmDependentWait();
-	const uint32_t position = positions[row], lane = row_lane[row];
-	const uint32_t wave_first = position - row_ordinal[row];
-	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
-	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
-	const uint16_t *slot_ring = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride;
-	const uint16_t *qp0 = query + ((uint64_t)row * HEADS + hbase) * D41K_LATENT;
-	const uint16_t *qp1 = qp0 + D41K_LATENT;
-	const float q00 = LmBf16ToFloat(__ldg(qp0 + threadIdx.x)), q10 = LmBf16ToFloat(__ldg(qp0 + threadIdx.x + D41K_THREADS));
-	const float q01 = LmBf16ToFloat(__ldg(qp1 + threadIdx.x)), q11 = LmBf16ToFloat(__ldg(qp1 + threadIdx.x + D41K_THREADS));
-	float acc00 = 0.0f, acc10 = 0.0f, acc01 = 0.0f, acc11 = 0.0f;
-	if ( has_carried != 0u )
-	{
-		const float *r0 = records + ((uint64_t)row * HEADS + hbase) * D41K_RECORD;
-		const float *r1 = r0 + D41K_RECORD;
-		acc00 = __ldg(r0 + 2u + threadIdx.x); acc10 = __ldg(r0 + 2u + threadIdx.x + D41K_THREADS);
-		acc01 = __ldg(r1 + 2u + threadIdx.x); acc11 = __ldg(r1 + 2u + threadIdx.x + D41K_THREADS);
-		if ( threadIdx.x == 0u ) { s_max[0] = __ldg(r0); s_sum[0] = __ldg(r0 + 1u); }
-		else if ( threadIdx.x == 1u ) { s_max[1] = __ldg(r1); s_sum[1] = __ldg(r1 + 1u); }
-	}
-	else if ( threadIdx.x < BLOCK_HEADS ) { s_max[threadIdx.x] = -INFINITY; s_sum[threadIdx.x] = 0.0f; }
-	if ( threadIdx.x < count )
-		kptr[threadIdx.x] = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + threadIdx.x);
-	__syncthreads();
-	for ( uint32_t j = 0u; j < count; j += TILE )
-	{
-		const uint32_t n = count - j < TILE ? count - j : TILE;
-		for ( uint32_t idx = threadIdx.x; idx < n * (D41K_LATENT / 8u); idx += D41K_THREADS )
-		{
-			const uint32_t t = idx >> 6u, qv = idx & 63u;
-			((uint4 *)s_k[t])[qv] = __ldg((const uint4 *)kptr[j + t] + qv);
-		}
-		__syncthreads();
-		for ( uint32_t t = 0u; t < n; t += 2u )
-		{
-			const uint32_t rem = n - t > 1u ? 2u : 1u;
-			const float a0 = LmBf16ToFloat(s_k[t][threadIdx.x]), b0 = LmBf16ToFloat(s_k[t][threadIdx.x + D41K_THREADS]);
-			const float a1 = rem > 1u ? LmBf16ToFloat(s_k[t + 1u][threadIdx.x]) : 0.0f;
-			const float b1 = rem > 1u ? LmBf16ToFloat(s_k[t + 1u][threadIdx.x + D41K_THREADS]) : 0.0f;
-			float p00 = q00 * a0 + q10 * b0, p01 = q00 * a1 + q10 * b1;
-			float p10 = q01 * a0 + q11 * b0, p11 = q01 * a1 + q11 * b1;
-			#pragma unroll
-			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-			{
-				p00 += __shfl_down_sync(0xffffffffu, p00, offset);
-				p01 += __shfl_down_sync(0xffffffffu, p01, offset);
-				p10 += __shfl_down_sync(0xffffffffu, p10, offset);
-				p11 += __shfl_down_sync(0xffffffffu, p11, offset);
-			}
-			if ( lane_index == 0u )
-			{
-				warp_sums[0][t][warp] = p00; warp_sums[1][t][warp] = p10;
-				if ( rem > 1u ) { warp_sums[0][t + 1u][warp] = p01; warp_sums[1][t + 1u][warp] = p11; }
-			}
-		}
-		__syncthreads();
-		if ( threadIdx.x < BLOCK_HEADS )
-		{
-			const uint32_t h = threadIdx.x;
-			float rmax = s_max[h], rsum = s_sum[h];
-			for ( uint32_t t = 0u; t < n; ++t )
-			{
-				float tot = 0.0f;
-				#pragma unroll
-				for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w ) tot += warp_sums[h][t][w];
-				const float sc = tot * qk_scale, top = fmaxf(rmax, sc);
-				const float kp = rmax == -INFINITY ? 0.0f : __expf(rmax - top), ad = __expf(sc - top);
-				rsum = rsum * kp + ad; rmax = top;
-				s_keep[h][t] = kp; s_wt[h][t] = SparkMathAttentionValueWeight(ad);
-			}
-			s_max[h] = rmax; s_sum[h] = rsum;
-		}
-		__syncthreads();
-		for ( uint32_t t = 0u; t < n; ++t )
-		{
-			const float va = LmBf16ToFloat(s_k[t][threadIdx.x]), vb = LmBf16ToFloat(s_k[t][threadIdx.x + D41K_THREADS]);
-			const float kp0 = s_keep[0][t], wt0 = s_wt[0][t], kp1 = s_keep[1][t], wt1 = s_wt[1][t];
-			acc00 = acc00 * kp0 + wt0 * va; acc10 = acc10 * kp0 + wt0 * vb;
-			acc01 = acc01 * kp1 + wt1 * va; acc11 = acc11 * kp1 + wt1 * vb;
-		}
-		if ( j + TILE < count ) __syncthreads();
-	}
-	const float top0 = fmaxf(-1.0e30f, s_max[0]), sc0 = s_max[0] == -INFINITY ? 0.0f : __expf(s_max[0] - top0);
-	const float den0 = fmaf(s_sum[0], sc0, 0.0f) + __expf(sink[hbase] - top0);
-	const float top1 = fmaxf(-1.0e30f, s_max[1]), sc1 = s_max[1] == -INFINITY ? 0.0f : __expf(s_max[1] - top1);
-	const float den1 = fmaf(s_sum[1], sc1, 0.0f) + __expf(sink[hbase + 1u] - top1);
-	s_k[0][threadIdx.x] = LmFloatToBf16(fmaf(acc00, sc0, 0.0f) / den0);
-	s_k[0][threadIdx.x + D41K_THREADS] = LmFloatToBf16(fmaf(acc10, sc0, 0.0f) / den0);
-	s_k[1][threadIdx.x] = LmFloatToBf16(fmaf(acc01, sc1, 0.0f) / den1);
-	s_k[1][threadIdx.x + D41K_THREADS] = LmFloatToBf16(fmaf(acc11, sc1, 0.0f) / den1);
-	__syncthreads();
-	if ( threadIdx.x < D41K_ROPE_PAIRS )
-	{
-		const float2 sc = rope_sc[(uint64_t)row * D41K_ROPE_PAIRS + threadIdx.x];
-		const float sine = -sc.x, cosine = sc.y;
-		const uint32_t off = D41K_LATENT - 2u * D41K_ROPE_PAIRS + 2u * threadIdx.x;
-		#pragma unroll
-		for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
-		{
-			const float r = LmBf16ToFloat(s_k[h][off]), im = LmBf16ToFloat(s_k[h][off + 1u]);
-			s_k[h][off] = D41RopeReal(r, im, sine, cosine);
-			s_k[h][off + 1u] = D41RopeImaginary(r, im, sine, cosine);
-		}
-	}
-	__syncthreads();
-	#pragma unroll
-	for ( uint32_t h = 0u; h < BLOCK_HEADS; ++h )
-	{
-		uint16_t *target = output + ((uint64_t)row * HEADS + hbase + h) * D41K_LATENT;
-		if ( qdq != 0u )
-		{
-			target[threadIdx.x] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(s_k[h][threadIdx.x]));
-			target[threadIdx.x + D41K_THREADS] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(s_k[h][threadIdx.x + D41K_THREADS]));
-		}
-		else if ( threadIdx.x < D41K_LATENT / 8u )
-			((uint4 *)target)[threadIdx.x] = ((const uint4 *)s_k[h])[threadIdx.x];
-	}
-	if ( blockIdx.y == 0u )
-		D41WindowRingStoreRow(wave_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_slot, ring_slot_stride, ring_rows, window,
-			1u, 0u, rows, commit, (const uint32_t *)0, row);
-	LmDependentRelease();
+	static_assert(HEADS % BLOCK_HEADS == 0u && BLOCK_HEADS == 2u, "window fold spread skl2 processes two heads per block");
+	return D41Skl2Launch(D41SKL2_d41_window_fold_spread_256, grid, block, 0, stream, records, has_carried, HEADS, query, wave_kv, ring, positions,
+		row_lane, row_ordinal, sequence_row_begin, sequence_row_indices, recurrent_slot, ring_slot_stride, ring_rows, window, qk_scale,
+		sink, rope_sc, output, qdq, rows, commit);
 }
 
 template<uint32_t HEADS>
@@ -1652,17 +1116,27 @@ static inline SparkGpuError D41SharedSendLaunch(dim3 grid, dim3 block, SparkGpuS
 static inline SparkGpuError D41SharedDequantAllLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *received, uint16_t *act, uint32_t rows, uint64_t stride, uint32_t degree, uint32_t total_granules, uint32_t granule)
 { return D41Skl2Launch(D41SKL2_d41_shared_dequant_all_256, grid, block, 0, stream, received, act, rows, stride, degree, total_granules, granule); }
 
-static __global__ void D41L2PrefetchKernel(const uint8_t *__restrict__ ptr0, uint64_t bytes0, const uint8_t *__restrict__ ptr1, uint64_t bytes1)
+static inline SparkGpuError D41L2PrefetchLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *ptr0, uint64_t bytes0, const uint8_t *ptr1, uint64_t bytes1)
+{ return D41Skl2Launch(D41SKL2_d41_l2_prefetch_64, grid, block, 0, stream, ptr0, bytes0, ptr1, bytes1); }
+
+static inline SparkGpuError D41WaveRowIndicesLaunch(dim3 grid, dim3 block, SparkGpuStream stream, uint32_t *indices, uint32_t count)
+{ return D41Skl2Launch(D41SKL2_d41_wave_row_indices_256, grid, block, 0, stream, indices, count); }
+
+static inline SparkGpuError D41RmsNormQdqLaunch(dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, const uint16_t *input,
+	const uint16_t *streams, const float *pre, const uint16_t *weight, uint16_t *output, uint16_t *quantized, uint32_t dimension,
+	float epsilon, uint8_t *mx_codes = 0, uint8_t *mx_scales = 0)
 {
-	constexpr uint32_t PIECE = 16384u;
-	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x * PIECE;
-	const uint64_t start = (uint64_t)(blockIdx.x * blockDim.x + threadIdx.x) * PIECE;
-	if ( ptr0 != 0 )
-		for ( uint64_t off = start; off < bytes0; off += stride )
-			LmPrefetchL2(ptr0 + off, (uint32_t)(bytes0 - off < PIECE ? bytes0 - off : PIECE));
-	if ( ptr1 != 0 )
-		for ( uint64_t off = start; off < bytes1; off += stride )
-			LmPrefetchL2(ptr1 + off, (uint32_t)(bytes1 - off < PIECE ? bytes1 - off : PIECE));
+	return D41Skl2Launch(D41SKL2_d41_rms_norm_qdq_256, grid, block, shared, stream, input, streams, pre, weight, output, quantized,
+		dimension, epsilon, mx_codes, mx_scales);
+}
+
+static inline SparkGpuError D41QKvNormRopeQdqLaunch(dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, const uint16_t *q_in,
+	const uint16_t *q_w, uint16_t *q_qdq, uint8_t *mx_codes, uint8_t *mx_scales, uint32_t q_dim, uint32_t q_parts, const uint16_t *kv_in,
+	const uint16_t *kv_w, const uint32_t *positions, const float *inv_freq, uint16_t *kv_out, uint32_t kv_dim, uint32_t rope_offset,
+	float epsilon, const float2 *rope_sc = 0)
+{
+	return D41Skl2Launch(D41SKL2_d41_qkv_norm_rope_qdq_256, grid, block, shared, stream, q_in, q_w, q_qdq, mx_codes, mx_scales, q_dim, q_parts,
+		kv_in, kv_w, positions, inv_freq, kv_out, kv_dim, rope_offset, epsilon, rope_sc);
 }
 
 static inline SparkGpuError D41SharedDequantLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *bytes, uint16_t *act, uint32_t rows, uint32_t width)
@@ -1701,51 +1175,12 @@ struct D41ExchangeTotals
 };
 
 template <uint32_t RANKS, uint32_t EXPERTS>
-static __global__ void D41ExchangeCountsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t first, uint32_t top_k,
-	const uint8_t *__restrict__ owner, uint32_t backups, D41ExchangeCounts<RANKS, EXPERTS> *__restrict__ counts)
+static inline SparkGpuError D41ExchangeCountsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *route_expert, uint32_t rows,
+	uint32_t first, uint32_t top_k, const uint8_t *owner, uint32_t backups, D41ExchangeCounts<RANKS, EXPERTS> *counts)
 {
-	__shared__ uint32_t pair[RANKS * RANKS], direct_pair[RANKS], routes[EXPERTS], direct_sole[EXPERTS], sole[RANKS * EXPERTS];
-	for ( uint32_t i = threadIdx.x; i < RANKS * EXPERTS; i += blockDim.x ) sole[i] = 0u;
-	for ( uint32_t i = threadIdx.x; i < EXPERTS; i += blockDim.x ) routes[i] = direct_sole[i] = 0u;
-	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x ) pair[i] = 0u;
-	if ( threadIdx.x < RANKS ) direct_pair[threadIdx.x] = 0u;
-	__syncthreads();
-	for ( uint32_t row = threadIdx.x; row < rows; row += blockDim.x )
-	{
-		const uint32_t target = (first + row) % RANKS;
-		uint32_t mask = 0u, twice = 0u;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-		{
-			const uint32_t home = 1u << owner[route_expert[(uint64_t)row * top_k + k]];
-			twice |= mask & home;
-			mask |= home;
-		}
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-			if ( ((mask >> rank) & 1u) != 0u )
-			{
-				atomicAdd(&pair[target * RANKS + rank], 1u);
-				atomicAdd(&direct_pair[rank], 1u);
-			}
-		for ( uint32_t k = 0u; k < top_k && backups != 0u; ++k )
-		{
-			const uint32_t expert = route_expert[(uint64_t)row * top_k + k];
-			atomicAdd(&routes[expert], 1u);
-			if ( ((twice >> owner[expert]) & 1u) == 0u )
-			{
-				atomicAdd(&sole[target * EXPERTS + expert], 1u);
-				atomicAdd(&direct_sole[expert], 1u);
-			}
-		}
-	}
-	__syncthreads();
-	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x ) counts->pair[i] = pair[i];
-	if ( threadIdx.x < RANKS ) counts->direct_pair[threadIdx.x] = direct_pair[threadIdx.x];
-	for ( uint32_t i = threadIdx.x; i < EXPERTS && backups != 0u; i += blockDim.x )
-	{
-		counts->routes[i] = (uint16_t)routes[i];
-		counts->direct_sole[i] = (uint16_t)direct_sole[i];
-	}
-	for ( uint32_t i = threadIdx.x; i < RANKS * EXPERTS && backups != 0u; i += blockDim.x ) counts->sole[i] = (uint8_t)sole[i];
+	static_assert((RANKS == 4u || RANKS == 16u) && EXPERTS == 384u, "exchange counts skl2 supports 4 or 16 ranks and 384 experts");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_exchange_counts_r4_e384 : D41SKL2_d41_exchange_counts_r16_e384, grid, block, 0, stream,
+		route_expert, rows, first, top_k, owner, backups, (uint8_t *)counts);
 }
 
 template <uint32_t RANKS, uint32_t EXPERTS>
@@ -1906,140 +1341,12 @@ static inline uint32_t D41BackupPlan(const D41ExchangeTotals<RANKS, EXPERTS> *to
 }
 
 template <uint32_t RANKS, uint32_t EXPERTS, uint32_t TOPK, uint32_t COPIES>
-static __global__ __launch_bounds__(D41K_SLOT_WARPS * 32u) void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows,
-	const uint8_t *__restrict__ owner, const uint8_t *__restrict__ backup, const uint16_t *__restrict__ quota, uint32_t capacity,
-	uint32_t *__restrict__ slot, uint32_t *__restrict__ count)
+static inline SparkGpuError D41ExchangeSlotsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint32_t *route_expert, uint32_t rows,
+	const uint8_t *owner, const uint8_t *backup, const uint16_t *quota, uint32_t capacity, uint32_t *slot, uint32_t *count)
 {
-	constexpr uint32_t WORDS = (RANKS + 3u) / 4u;
-	static_assert(RANKS <= 16u && TOPK * 32u < 256u, "a row names its rank in four bits and a warp's records to a rank fit eight");
-	__shared__ uint16_t sole_rank[D41K_SLOT_WARPS][EXPERTS];
-	__shared__ uint16_t sole_base[EXPERTS];
-	__shared__ uint32_t target_rank[D41K_SLOT_WARPS][RANKS];
-	__shared__ uint32_t target_base[RANKS];
-	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
-	for ( uint32_t i = threadIdx.x; i < EXPERTS; i += blockDim.x )
-		sole_base[i] = 0u;
-	if ( threadIdx.x < RANKS )
-		target_base[threadIdx.x] = 0u;
-	for ( uint32_t chunk = 0u; chunk < rows; chunk += blockDim.x )
-	{
-		const uint32_t row = chunk + threadIdx.x;
-		uint32_t expert[TOPK], candidate[TOPK], before[TOPK], peers[TOPK], counter[WORDS], inclusive[WORDS], mask = 0u, twice = 0u;
-		uint64_t target = 0u;
-		for ( uint32_t i = threadIdx.x; i < D41K_SLOT_WARPS * EXPERTS; i += blockDim.x )
-			sole_rank[i / EXPERTS][i % EXPERTS] = 0u;
-		for ( uint32_t k = 0u; k < TOPK; ++k )
-		{
-			expert[k] = row < rows ? route_expert[(uint64_t)row * TOPK + k] : EXPERTS;
-			const uint32_t home = expert[k] < EXPERTS ? 1u << owner[expert[k]] : 0u;
-			twice |= mask & home;
-			mask |= home;
-		}
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-			target |= (uint64_t)rank << (4u * rank);
-		for ( uint32_t k = 0u; k < TOPK; ++k )
-		{
-			uint32_t planned = 0u;
-			for ( uint32_t copy = 0u; copy < COPIES && quota != 0 && expert[k] < EXPERTS; ++copy )
-				planned += quota[copy * EXPERTS + expert[k]];
-			candidate[k] = planned != 0u && ((twice >> owner[expert[k]]) & 1u) == 0u ? expert[k] : EXPERTS;
-			before[k] = peers[k] = 0u;
-		}
-		for ( uint32_t source = 0u; source < 32u && quota != 0; ++source )
-			for ( uint32_t j = 0u; j < TOPK; ++j )
-			{
-				const uint32_t other = __shfl_sync(0xffffffffu, candidate[j], source);
-				for ( uint32_t k = 0u; k < TOPK; ++k )
-					if ( candidate[k] != EXPERTS && other == candidate[k] )
-					{
-						before[k] += source < lane ? 1u : 0u;
-						peers[k] += 1u;
-					}
-			}
-		__syncthreads();
-		for ( uint32_t k = 0u; k < TOPK; ++k )
-			if ( candidate[k] != EXPERTS && before[k] == 0u )
-				sole_rank[warp][candidate[k]] = (uint16_t)peers[k];
-		__syncthreads();
-		for ( uint32_t e = threadIdx.x; e < EXPERTS && quota != 0; e += blockDim.x )
-		{
-			uint32_t running = sole_base[e];
-			for ( uint32_t w = 0u; w < D41K_SLOT_WARPS; ++w )
-			{
-				const uint32_t here = sole_rank[w][e];
-				sole_rank[w][e] = (uint16_t)running;
-				running += here;
-			}
-			sole_base[e] = (uint16_t)running;
-		}
-		__syncthreads();
-		for ( uint32_t k = 0u; k < TOPK; ++k )
-			if ( candidate[k] != EXPERTS )
-			{
-				const uint32_t place = (uint32_t)sole_rank[warp][candidate[k]] + before[k], home = owner[candidate[k]];
-				uint32_t bound = 0u;
-				for ( uint32_t copy = 0u; copy < COPIES; ++copy )
-				{
-					const uint32_t start = bound;
-					bound += quota[copy * EXPERTS + candidate[k]];
-					if ( place >= start && place < bound )
-						target = (target & ~(0xfull << (4u * home))) | ((uint64_t)backup[copy * EXPERTS + candidate[k]] << (4u * home));
-				}
-			}
-		for ( uint32_t w = 0u; w < WORDS; ++w )
-			counter[w] = 0u;
-		for ( uint32_t home = 0u; home < RANKS; ++home )
-			if ( ((mask >> home) & 1u) != 0u )
-			{
-				const uint32_t to = (uint32_t)(target >> (4u * home)) & 0xfu;
-				counter[to / 4u] += 1u << (8u * (to % 4u));
-			}
-		for ( uint32_t w = 0u; w < WORDS; ++w )
-		{
-			inclusive[w] = counter[w];
-			for ( uint32_t step = 1u; step < 32u; step <<= 1u )
-			{
-				const uint32_t add = __shfl_up_sync(0xffffffffu, inclusive[w], step);
-				inclusive[w] += lane >= step ? add : 0u;
-			}
-		}
-		if ( lane == 31u )
-			for ( uint32_t to = 0u; to < RANKS; ++to )
-				target_rank[warp][to] = (inclusive[to / 4u] >> (8u * (to % 4u))) & 0xffu;
-		__syncthreads();
-		if ( threadIdx.x < RANKS )
-		{
-			uint32_t running = target_base[threadIdx.x];
-			for ( uint32_t w = 0u; w < D41K_SLOT_WARPS; ++w )
-			{
-				const uint32_t here = target_rank[w][threadIdx.x];
-				target_rank[w][threadIdx.x] = running;
-				running += here;
-			}
-			target_base[threadIdx.x] = running;
-		}
-		__syncthreads();
-		if ( row < rows )
-		{
-			uint32_t used[WORDS];
-			for ( uint32_t w = 0u; w < WORDS; ++w )
-				used[w] = inclusive[w] - counter[w];
-			for ( uint32_t home = 0u; home < RANKS; ++home )
-			{
-				uint32_t at = UINT32_MAX;
-				if ( ((mask >> home) & 1u) != 0u )
-				{
-					const uint32_t to = (uint32_t)(target >> (4u * home)) & 0xfu;
-					at = to * capacity + target_rank[warp][to] + ((used[to / 4u] >> (8u * (to % 4u))) & 0xffu);
-					used[to / 4u] += 1u << (8u * (to % 4u));
-				}
-				slot[(uint64_t)row * RANKS + home] = at;
-			}
-		}
-		__syncthreads();
-	}
-	if ( threadIdx.x < RANKS )
-		count[threadIdx.x] = target_base[threadIdx.x];
+	static_assert((RANKS == 4u || RANKS == 16u) && EXPERTS == 384u && TOPK == 6u && (COPIES == 1u || COPIES == 2u), "exchange slots skl2 supports r4/r16 e384 k6 c1/c2");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_exchange_slots_r4_e384 : D41SKL2_d41_exchange_slots_r16_e384, grid, block, 0, stream,
+		route_expert, rows, owner, backup, quota, capacity, slot, count, COPIES);
 }
 
 static __device__ __forceinline__ void D41RouteLocal(uint32_t *route_expert, float *route_weight, uint32_t *route_global, uint32_t routes,
@@ -3299,86 +2606,26 @@ static inline SparkGpuError D41TailRowsUnpackLaunch(dim3 grid, dim3 block, Spark
 #define D41K_ENGRAM_SCALES (D41K_ENGRAM_DIM / 32u)
 #define D41K_ENGRAM_RECORD_BYTES (D41K_ENGRAM_DIM + 16u)
 
-static __device__ __forceinline__ uint32_t D41EngramSource(int64_t id, uint64_t part, uint64_t table_rows)
-{
-	return id >= 0 && (uint64_t)id < table_rows ? (uint32_t)((uint64_t)id / part) : UINT32_MAX;
-}
-
 template<uint32_t RANKS>
-static __global__ void D41EngramSlotsKernel(const int64_t *__restrict__ ids, uint32_t rows, uint32_t own, uint32_t columns, uint64_t part,
-	uint64_t table_rows, uint32_t *__restrict__ slot, uint32_t *__restrict__ counts)
+static inline SparkGpuError D41EngramSlotsLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const int64_t *ids, uint32_t rows,
+	uint32_t own, uint32_t columns, uint64_t part, uint64_t table_rows, uint32_t *slot, uint32_t *counts)
 {
-	__shared__ uint32_t totals[32][RANKS];
-	__shared__ uint32_t base[RANKS];
-	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, warps = blockDim.x >> 5u, owner = blockIdx.x;
-	const uint32_t first = owner * own < rows ? owner * own : rows, last = first + own < rows ? first + own : rows;
-	const uint64_t begin = (uint64_t)first * columns, end = (uint64_t)last * columns;
-	if ( threadIdx.x < RANKS )
-		base[threadIdx.x] = 0u;
-	__syncthreads();
-	for ( uint64_t chunk = begin; chunk < end; chunk += blockDim.x )
-	{
-		const uint64_t entry = chunk + threadIdx.x;
-		const uint32_t source = entry < end ? D41EngramSource(ids[entry], part, table_rows) : UINT32_MAX;
-		uint32_t before = 0u;
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-		{
-			const uint32_t vote = __ballot_sync(0xffffffffu, source == rank);
-			before = source == rank ? __popc(vote & ((1u << lane) - 1u)) : before;
-			if ( lane == 0u )
-				totals[warp][rank] = __popc(vote);
-		}
-		__syncthreads();
-		if ( threadIdx.x < RANKS )
-		{
-			uint32_t running = base[threadIdx.x];
-			for ( uint32_t w = 0u; w < warps; ++w )
-			{
-				const uint32_t here = totals[w][threadIdx.x];
-				totals[w][threadIdx.x] = running;
-				running += here;
-			}
-			base[threadIdx.x] = running;
-		}
-		__syncthreads();
-		if ( entry < end )
-			slot[entry] = source < RANKS ? totals[warp][source] + before : UINT32_MAX;
-		__syncthreads();
-	}
-	if ( threadIdx.x < RANKS )
-		counts[threadIdx.x * RANKS + owner] = base[threadIdx.x];
+	static_assert(RANKS == 4u || RANKS == 16u, "engram slots skl2 supports 4 or 16 ranks");
+	return D41Skl2Launch(RANKS == 4u ? D41SKL2_d41_engram_slots_r4 : D41SKL2_d41_engram_slots_r16, grid, block, 0, stream,
+		ids, rows, own, columns, part, table_rows, slot, counts);
 }
 
-static __global__ void D41EngramPackKernel(const int64_t *__restrict__ ids, const uint32_t *__restrict__ slot, const uint8_t *__restrict__ payload,
-	const uint8_t *__restrict__ scale, uint32_t own, uint32_t columns, uint64_t first_row, uint64_t local_rows, uint32_t capacity,
-	uint8_t *__restrict__ send)
+static inline SparkGpuError D41EngramPackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const int64_t *ids, const uint32_t *slot,
+	const uint8_t *payload, const uint8_t *scale, uint32_t own, uint32_t columns, uint64_t first_row, uint64_t local_rows,
+	uint32_t capacity, uint8_t *send)
 {
-	const uint32_t row = blockIdx.x, lane = threadIdx.x & 31u;
-	for ( uint32_t column = threadIdx.x >> 5u; column < columns; column += blockDim.x >> 5u )
-	{
-		const uint64_t entry = (uint64_t)row * columns + column;
-		const int64_t id = ids[entry];
-		if ( id < (int64_t)first_row || id >= (int64_t)(first_row + local_rows) )
-			continue;
-		const uint64_t local = (uint64_t)(id - (int64_t)first_row);
-		uint8_t *record = send + ((uint64_t)(row / own) * capacity + slot[entry]) * D41K_ENGRAM_RECORD_BYTES;
-		if ( lane < D41K_ENGRAM_DIM / 16u )
-			((uint4 *)record)[lane] = ((const uint4 *)(payload + local * D41K_ENGRAM_DIM))[lane];
-		else if ( lane == D41K_ENGRAM_DIM / 16u )
-			((uint2 *)(record + D41K_ENGRAM_DIM))[0] = ((const uint2 *)(scale + local * D41K_ENGRAM_SCALES))[0];
-	}
+	return D41Skl2Launch(D41SKL2_d41_engram_pack_256, grid, block, 0, stream, ids, slot, payload, scale, own, columns, first_row, local_rows, capacity, send);
 }
 
-static __global__ void D41EngramUnpackKernel(const int64_t *__restrict__ ids, const uint32_t *__restrict__ slot, const uint8_t *__restrict__ received,
-	uint32_t rows, uint32_t first, uint32_t columns, uint64_t part, uint64_t table_rows, uint32_t capacity, uint16_t *__restrict__ embed)
+static inline SparkGpuError D41EngramUnpackLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const int64_t *ids, const uint32_t *slot,
+	const uint8_t *received, uint32_t rows, uint32_t first, uint32_t columns, uint64_t part, uint64_t table_rows, uint32_t capacity, uint16_t *embed)
 {
-	const uint32_t row = first + blockIdx.x, column = blockIdx.y;
-	const uint64_t entry = (uint64_t)row * columns + column;
-	const uint32_t source = row < rows ? D41EngramSource(ids[entry], part, table_rows) : UINT32_MAX;
-	const uint8_t *record = source != UINT32_MAX ? received + ((uint64_t)source * capacity + slot[entry]) * D41K_ENGRAM_RECORD_BYTES : 0;
-	uint16_t *target = embed + ((uint64_t)blockIdx.x * columns + column) * D41K_ENGRAM_DIM;
-	for ( uint32_t c = threadIdx.x; c < D41K_ENGRAM_DIM; c += blockDim.x )
-		target[c] = record != 0 ? LmFloatToBf16(LmE4m3ToFloat(record[c]) * LmE8m0ToFloat(record[D41K_ENGRAM_DIM + c / 32u])) : (uint16_t)0u;
+	return D41Skl2Launch(D41SKL2_d41_engram_unpack_256, grid, block, 0, stream, ids, slot, received, rows, first, columns, part, table_rows, capacity, embed);
 }
 
 static inline SparkGpuError D41FinalizeSliceLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *slice_out, const uint16_t *received, const uint32_t *route_expert, const uint32_t *route_packed_row, uint16_t *output, uint32_t top_k, uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset, const uint16_t *shared_partial)
@@ -3409,53 +2656,15 @@ static inline SparkGpuError D41SumSourcesF32Launch(dim3 grid, dim3 block, SparkG
 static inline SparkGpuError D41SumGatheredLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *gathered, uint16_t *output, uint64_t elements, uint32_t degree)
 { return D41Skl2Launch(D41SKL2_d41_sum_gathered_256, grid, block, 0, stream, gathered, output, elements, degree); }
 
-static __device__ __forceinline__ void D41PackFp4Block8(const float v[8], uint32_t *out_nibbles, uint8_t *out_scale)
-{
-	float amax = 0.0f;
-	const unsigned mask = __activemask();
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k ) amax = fmaxf(amax, fabsf(v[k]));
-	amax = fmaxf(amax, __shfl_xor_sync(mask, amax, 1u)); amax = fmaxf(amax, __shfl_xor_sync(mask, amax, 2u));
-	const uint32_t sbits = __float_as_uint(SparkMathFp4Pow2QdqScale(amax));
-	const float inv = __uint_as_float(0x7f000000u - sbits);
-	uint32_t packed = 0u;
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 4u; ++k )
-		packed |= (uint32_t)LmFloatPairToE2m1(fminf(fmaxf(v[2u * k] * inv, -6.0f), 6.0f), fminf(fmaxf(v[2u * k + 1u] * inv, -6.0f), 6.0f)) << (8u * k);
-	*out_nibbles = packed; *out_scale = (uint8_t)(sbits >> 23u);
-}
-
-static __global__ void D41PackIndexQueriesMxfp4Kernel(const uint16_t *__restrict__ src, uint32_t *__restrict__ codes, uint8_t *__restrict__ scales, uint64_t octets)
-{
-	const uint64_t q = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( q >= octets ) return;
-	float v[8]; uint32_t packed; uint8_t sc;
-	LmLoadBf16x8AsFloat(((const uint4 *)src)[q], v);
-	D41PackFp4Block8(v, &packed, &sc);
-	codes[q] = packed;
-	if ( (q & 3u) == 0u ) scales[q >> 2u] = sc;
-}
+static inline SparkGpuError D41PackIndexQueriesMxfp4Launch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *src, uint32_t *codes, uint8_t *scales, uint64_t octets)
+{ return D41Skl2Launch(D41SKL2_d41_pack_index_queries_mxfp4_256, grid, block, 0, stream, src, codes, scales, octets); }
 
 template<class Geometry>
-static __global__ void D41PackIndexKeysMxfp4Kernel(LmKvShardView view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ length,
-	uint32_t stride, uint32_t *__restrict__ out_codes, uint32_t *__restrict__ out_scales)
+static inline SparkGpuError D41PackIndexKeysMxfp4Launch(dim3 grid, dim3 block, SparkGpuStream stream, LmKvShardView view,
+	const uint32_t *sequence_of_row, const uint32_t *length, uint32_t stride, uint32_t *out_codes, uint32_t *out_scales)
 {
-	const uint32_t key = (blockIdx.x * blockDim.x + threadIdx.x) >> 4u, lane16 = threadIdx.x & 15u;
-	LmDependentWait();
-	LmDependentRelease();
-	if ( key >= stride ) return;
-	const uint32_t seq = sequence_of_row[0], limit = SparkKvShardLocalKeys(view.shard, length[seq]);
-	if ( key >= limit ) return;
-	const uint8_t *slot = LmKvShardSlotRequired<Geometry>(view, seq, SparkKvShardLocalPosition(view.shard, key), 0u, LM_KV_ACCESS_READ);
-	float v[8] = {}; uint32_t packed; uint8_t sc;
-	if ( slot != 0 ) LmLoadBf16x8AsFloat(((const uint4 *)slot)[lane16], v);
-	D41PackFp4Block8(v, &packed, &sc);
-	out_codes[(uint64_t)key * 16u + lane16] = packed;
-	const unsigned mask = __activemask();
-	uint32_t sw = (uint32_t)sc | (__shfl_down_sync(mask, (uint32_t)sc, 4u) << 8u) | (__shfl_down_sync(mask, (uint32_t)sc, 8u) << 16u) | (__shfl_down_sync(mask, (uint32_t)sc, 12u) << 24u);
-	if ( lane16 == 0u ) out_scales[key] = sw;
+	return D41Skl2Launch(D41SKL2_d41_pack_index_keys_mxfp4_256, grid, block, 0, stream, view, sequence_of_row, length, stride,
+		out_codes, out_scales, (uint32_t)Geometry::kPageSlots, (uint32_t)Geometry::kSlotBytes);
 }
 
 template<bool ROUND_BF16>
@@ -3553,420 +2762,15 @@ static inline SparkGpuError D41WholeBlockMaskLaunch(dim3 grid, dim3 block, Spark
 { return D41Skl2Launch(D41SKL2_d41_whole_block_mask_256, grid, block, 0, stream, block_scores, chosen, keep, mask, block_stride, seq, len, bound, grain, dense_rows); }
 
 template<class Geometry, bool ROUND_BF16 = false>
-static __global__ __launch_bounds__(256)
-void D41IndexScoreDirectKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight,
-	LmKvShardView index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length,
-	const uint32_t *__restrict__ row_position, const uint8_t *__restrict__ block_mask, uint32_t block_stride,
-	uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores,
-	const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, uint32_t dense_limit = 0u)
+static inline SparkGpuError D41IndexScoreDirectLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint16_t *index_query_bf16,
+	const uint16_t *head_weight, LmKvShardView index_view, const uint32_t *sequence_of_row, const uint32_t *context_length,
+	const uint32_t *row_position, const uint8_t *block_mask, uint32_t block_stride, uint32_t rows, uint32_t score_stride,
+	float qk_scale, float *scores, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, uint32_t dense_limit = 0u)
 {
-	constexpr uint32_t WARPS = 8u, BLOCK_TILES = 32u, BLOCK_KEYS = BLOCK_TILES * 8u, PITCH_U4 = 17u;
-	__shared__ __align__(16) uint4 s_k[WARPS][8][PITCH_U4];
-	const uint32_t row = blockIdx.y, block_first = blockIdx.x * BLOCK_KEYS;
-	if ( scores == 0 || row >= rows ) return;
-	LmDependentWait();
-	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, group = lane >> 2u, pair = lane & 3u;
-	const uint32_t valid_view = sequence_of_row != 0 && context_length != 0 && index_query_bf16 != 0 && head_weight != 0 &&
-		LmKvViewIsConfigured(index_view.pages) ? 1u : 0u;
-	const uint32_t seq = valid_view != 0u ? sequence_of_row[row] : 0xffffffffu;
-	uint32_t valid = valid_view != 0u && seq < index_view.pages.sequence_count ? 1u : 0u;
-	uint32_t bound = 0u;
-	if ( valid == 0u )
-	{
-		if ( lane == 0u && blockIdx.x == 0u && warp == 0u )
-			LmKvReportRequiredAccessFailure(index_view.pages, valid_view == 0u ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-				LM_KV_ACCESS_READ, row, seq, block_first, 0xffffffffu);
-	}
-	else
-	{
-		bound = context_length[seq];
-		if ( row_position != 0 )
-		{
-			const uint32_t rp = row_position[row];
-			bound = rp == D41K_NO_ROW ? 0u : (rp + 1u < bound ? rp + 1u : bound);
-		}
-		if ( dense_limit != 0u && bound <= dense_limit ) { LmDependentRelease(); return; }
-		bound = SparkKvShardLocalKeys(index_view.shard, bound);
-		if ( dense_limit != 0u && block_first >= bound ) { LmDependentRelease(); return; }
-	}
-	uint32_t a[2][8][4];
-	float weight[4];
-	if ( valid != 0u && block_first < bound )
-	{
-		const uint16_t *query = index_query_bf16 + (uint64_t)row * 32u * 128u;
-		#pragma unroll
-		for ( uint32_t ht = 0u; ht < 2u; ++ht )
-		{
-			#pragma unroll
-			for ( uint32_t step = 0u; step < 8u; ++step )
-			{
-				const uint16_t *top = query + (uint64_t)(ht * 16u + group) * 128u + step * 16u + pair * 2u;
-				const uint16_t *bottom = top + 8u * 128u;
-				a[ht][step][0] = *(const uint32_t *)top;
-				a[ht][step][1] = *(const uint32_t *)bottom;
-				a[ht][step][2] = *(const uint32_t *)(top + 8u);
-				a[ht][step][3] = *(const uint32_t *)(bottom + 8u);
-			}
-			weight[2u * ht] = LmBf16ToFloat(head_weight[(uint64_t)row * 32u + ht * 16u + group]);
-			weight[2u * ht + 1u] = LmBf16ToFloat(head_weight[(uint64_t)row * 32u + ht * 16u + group + 8u]);
-		}
-	}
-	const uint32_t fork = valid != 0u && fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
-	const uint32_t offset = valid != 0u && slot_offsets != 0 ? slot_offsets[row] : 0u;
-	const uint32_t half = lane >> 4u, lane16 = lane & 15u;
-	for ( uint32_t tile = warp; tile < BLOCK_TILES; tile += WARPS )
-	{
-		const uint32_t first = block_first + tile * 8u, blk = first >> 3u, written = first + pair * 2u;
-		if ( first >= score_stride ) break;
-		if ( valid == 0u || first >= bound )
-		{
-			if ( dense_limit == 0u && group == 0u && written < score_stride )
-			{
-				if ( written + 1u < score_stride )
-					*(float2 *)(scores + (uint64_t)row * score_stride + written) = make_float2(-INFINITY, -INFINITY);
-				else
-					scores[(uint64_t)row * score_stride + written] = -INFINITY;
-			}
-			continue;
-		}
-		if ( block_mask != 0 && (blk >= block_stride || block_mask[(uint64_t)row * block_stride + blk] == 0u) )
-		{
-			if ( group == 0u && written < score_stride )
-			{
-				if ( written + 1u < score_stride )
-					*(float2 *)(scores + (uint64_t)row * score_stride + written) = make_float2(-INFINITY, -INFINITY);
-				else
-					scores[(uint64_t)row * score_stride + written] = -INFINITY;
-			}
-			continue;
-		}
-		#pragma unroll
-		for ( uint32_t p = 0u; p < 4u; ++p )
-		{
-			const uint32_t ki = p * 2u + half, gk = first + ki;
-			const uint8_t *slot = gk < bound ? LmIndexScoreSlot<Geometry>(index_view, seq, gk, row, fork, offset) : 0;
-			s_k[warp][ki][lane16] = slot != 0 ? __ldg((const uint4 *)slot + lane16) : make_uint4(0u, 0u, 0u, 0u);
-		}
-		__syncwarp();
-		float acc[2][4] = {};
-		const uint32_t *krow = (const uint32_t *)s_k[warp][group];
-		#pragma unroll
-		for ( uint32_t step = 0u; step < 8u; ++step )
-		{
-			uint32_t b[2] = { krow[step * 8u + pair], krow[step * 8u + 4u + pair] };
-			LmMmaBf16(acc[0], a[0][step], b);
-			LmMmaBf16(acc[1], a[1][step], b);
-		}
-		LmIndexScoreStore<2u, ROUND_BF16>(acc, weight, 1u, bound, written, group, row, score_stride, qk_scale, scores);
-	}
-	LmDependentRelease();
-}
-
-static __device__ __forceinline__ void D41TopkHistKey(uint32_t key, uint32_t mask, uint32_t prefix, uint32_t shift, uint32_t field, uint32_t valid,
-	uint32_t lane, uint32_t *hist)
-{
-	const uint32_t b = valid != 0u && (key & mask) == prefix ? ((key >> shift) & field) : 0xffffffffu;
-	const uint32_t peers = __match_any_sync(0xffffffffu, b);
-	if ( b != 0xffffffffu && lane == (uint32_t)__ffs((int)peers) - 1u )
-		atomicAdd(&hist[b], (uint32_t)__popc(peers));
-}
-
-static __device__ __forceinline__ void D41TopkDescendSelect(const uint32_t local[8], uint32_t need, uint32_t warp, uint32_t lane,
-	uint32_t *s_warp, uint32_t *s_choice)
-{
-	uint32_t run = 0u;
-	#pragma unroll
-	for ( uint32_t p = 0u; p < 8u; ++p ) run += local[p];
-	uint32_t inc = run;
-	#pragma unroll
-	for ( uint32_t off = 1u; off < 32u; off <<= 1u )
-	{
-		const uint32_t add = __shfl_up_sync(0xffffffffu, inc, off);
-		if ( lane >= off ) inc += add;
-	}
-	if ( lane == 31u ) s_warp[warp] = inc;
-	__syncthreads();
-	uint32_t before = inc - run;
-	#pragma unroll
-	for ( uint32_t w = 0u; w < 8u; ++w )
-		if ( w < warp ) before += s_warp[w];
-	#pragma unroll
-	for ( uint32_t p = 0u; p < 8u; ++p )
-	{
-		if ( before < need && before + local[p] >= need )
-		{
-			s_choice[0] = 2047u - (threadIdx.x * 8u + p);
-			s_choice[1] = before;
-			s_choice[2] = local[p];
-		}
-		before += local[p];
-	}
-	__syncthreads();
-}
-
-static __device__ __forceinline__ void D41TopkEmit4(const uint32_t ks[4], uint32_t base_idx, uint32_t eff_n, uint32_t mask, uint32_t prefix,
-	uint32_t need, uint32_t warp, uint32_t lane, uint32_t *s_scan, uint32_t *out, uint32_t *emitted, uint32_t *seen_eq)
-{
-	const uint32_t g0 = (base_idx + 0u < eff_n && (ks[0] & mask) > prefix) ? 1u : 0u;
-	const uint32_t e0 = (base_idx + 0u < eff_n && (ks[0] & mask) == prefix) ? 1u : 0u;
-	const uint32_t g1 = (base_idx + 1u < eff_n && (ks[1] & mask) > prefix) ? 1u : 0u;
-	const uint32_t e1 = (base_idx + 1u < eff_n && (ks[1] & mask) == prefix) ? 1u : 0u;
-	const uint32_t g2 = (base_idx + 2u < eff_n && (ks[2] & mask) > prefix) ? 1u : 0u;
-	const uint32_t e2 = (base_idx + 2u < eff_n && (ks[2] & mask) == prefix) ? 1u : 0u;
-	const uint32_t g3 = (base_idx + 3u < eff_n && (ks[3] & mask) > prefix) ? 1u : 0u;
-	const uint32_t e3 = (base_idx + 3u < eff_n && (ks[3] & mask) == prefix) ? 1u : 0u;
-	const uint32_t gc = g0 + g1 + g2 + g3, ec = e0 + e1 + e2 + e3;
-	uint32_t gi = gc, ei = ec;
-	#pragma unroll
-	for ( uint32_t off = 1u; off < 32u; off <<= 1u )
-	{
-		const uint32_t ga = __shfl_up_sync(0xffffffffu, gi, off), ea = __shfl_up_sync(0xffffffffu, ei, off);
-		if ( lane >= off ) { gi += ga; ei += ea; }
-	}
-	if ( lane == 31u ) { s_scan[warp] = gi; s_scan[8u + warp] = ei; }
-	__syncthreads();
-	uint32_t gb = gi - gc, eb = ei - ec, gtot = 0u, etot = 0u;
-	#pragma unroll
-	for ( uint32_t w = 0u; w < 8u; ++w )
-	{
-		const uint32_t gw = s_scan[w], ew = s_scan[8u + w];
-		if ( w < warp ) { gb += gw; eb += ew; }
-		gtot += gw; etot += ew;
-	}
-	const uint32_t rem = need > *seen_eq ? need - *seen_eq : 0u, em = *emitted;
-	if ( g0 || (e0 && eb < rem) ) out[em + gb + (eb < rem ? eb : rem)] = base_idx + 0u;
-	gb += g0; eb += e0;
-	if ( g1 || (e1 && eb < rem) ) out[em + gb + (eb < rem ? eb : rem)] = base_idx + 1u;
-	gb += g1; eb += e1;
-	if ( g2 || (e2 && eb < rem) ) out[em + gb + (eb < rem ? eb : rem)] = base_idx + 2u;
-	gb += g2; eb += e2;
-	if ( g3 || (e3 && eb < rem) ) out[em + gb + (eb < rem ? eb : rem)] = base_idx + 3u;
-	*emitted = em + gtot + (etot < rem ? etot : rem);
-	*seen_eq += etot;
-	__syncthreads();
-}
-
-static __device__ __forceinline__ void D41LoadKeys4(const float *__restrict__ row, uint32_t idx, uint32_t eff_n, bool aligned16, uint32_t ks[4])
-{
-	if ( aligned16 && idx + 3u < eff_n )
-	{
-		const float4 v = __ldg((const float4 *)(row + idx));
-		ks[0] = LmTopkKey(v.x); ks[1] = LmTopkKey(v.y); ks[2] = LmTopkKey(v.z); ks[3] = LmTopkKey(v.w);
-	}
-	else
-	{
-		ks[0] = idx + 0u < eff_n ? LmTopkKey(__ldg(row + idx + 0u)) : 0u;
-		ks[1] = idx + 1u < eff_n ? LmTopkKey(__ldg(row + idx + 1u)) : 0u;
-		ks[2] = idx + 2u < eff_n ? LmTopkKey(__ldg(row + idx + 2u)) : 0u;
-		ks[3] = idx + 3u < eff_n ? LmTopkKey(__ldg(row + idx + 3u)) : 0u;
-	}
-}
-
-static __device__ __forceinline__ void D41TopkHistKeyPass(uint32_t key, uint32_t mask, uint32_t prefix, uint32_t shift, uint32_t field, uint32_t valid,
-	uint32_t *hist)
-{
-	if ( valid != 0u && (key & mask) == prefix )
-		atomicAdd(&hist[(key >> shift) & field], 1u);
-}
-
-static __device__ __forceinline__ void D41TopkSelectReg4096(const float *__restrict__ row, uint32_t eff_n, uint32_t k, uint32_t *__restrict__ out,
-	uint32_t *s_hist, uint32_t *s_warp, uint32_t *s_choice, uint32_t *s_scan)
-{
-	const bool aligned16 = LmIsAligned16(row);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	uint32_t rk[4][4];
-	#pragma unroll
-	for ( uint32_t c = 0u; c < 4u; ++c )
-		D41LoadKeys4(row, c * 1024u + threadIdx.x * 4u, eff_n, aligned16, rk[c]);
-	uint32_t prefix = 0u, mask = 0u, need = k, count = eff_n;
-	for ( uint32_t pass = 0u; pass < 3u; ++pass )
-	{
-		const uint32_t shift = pass == 0u ? 21u : (pass == 1u ? 10u : 0u), field = pass < 2u ? 0x7ffu : 0x3ffu;
-		#pragma unroll
-		for ( uint32_t p = 0u; p < 8u; ++p ) s_hist[p * 256u + threadIdx.x] = 0u;
-		__syncthreads();
-		#pragma unroll
-		for ( uint32_t c = 0u; c < 4u; ++c )
-		{
-			const uint32_t bidx = c * 1024u + threadIdx.x * 4u;
-			#pragma unroll
-			for ( uint32_t e = 0u; e < 4u; ++e )
-			{
-				if ( pass == 0u ) D41TopkHistKey(rk[c][e], mask, prefix, shift, field, bidx + e < eff_n ? 1u : 0u, lane, s_hist);
-				else D41TopkHistKeyPass(rk[c][e], mask, prefix, shift, field, bidx + e < eff_n ? 1u : 0u, s_hist);
-			}
-		}
-		__syncthreads();
-		uint32_t local[8];
-		#pragma unroll
-		for ( uint32_t p = 0u; p < 8u; ++p ) local[p] = s_hist[2047u - (threadIdx.x * 8u + p)];
-		D41TopkDescendSelect(local, need, warp, lane, s_warp, s_choice);
-		prefix |= s_choice[0] << shift;
-		mask |= field << shift;
-		need -= s_choice[1];
-		count = s_choice[2];
-		if ( count == need ) break;
-	}
-	uint32_t emitted = 0u, seen_eq = 0u;
-	#pragma unroll
-	for ( uint32_t c = 0u; c < 4u; ++c )
-		if ( c * 1024u < eff_n )
-			D41TopkEmit4(rk[c], c * 1024u + threadIdx.x * 4u, eff_n, mask, prefix, need, warp, lane, s_scan, out, &emitted, &seen_eq);
-}
-
-static __device__ __forceinline__ void D41TopkSelectStream(const float *__restrict__ row, uint32_t eff_n, uint32_t k, uint32_t *__restrict__ out,
-	uint32_t *s_hist, uint32_t *s_warp, uint32_t *s_choice, uint32_t *s_scan)
-{
-	const bool aligned16 = LmIsAligned16(row);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	uint32_t prefix = 0u, mask = 0u, need = k, count = eff_n;
-	for ( uint32_t pass = 0u; pass < 3u; ++pass )
-	{
-		const uint32_t shift = pass == 0u ? 21u : (pass == 1u ? 10u : 0u), field = pass < 2u ? 0x7ffu : 0x3ffu;
-		#pragma unroll
-		for ( uint32_t p = 0u; p < 8u; ++p ) s_hist[p * 256u + threadIdx.x] = 0u;
-		__syncthreads();
-		for ( uint32_t base = 0u; base < eff_n; base += 1024u )
-		{
-			uint32_t ks[4];
-			const uint32_t bidx = base + threadIdx.x * 4u;
-			D41LoadKeys4(row, bidx, eff_n, aligned16, ks);
-			#pragma unroll
-			for ( uint32_t e = 0u; e < 4u; ++e )
-			{
-				if ( pass == 0u ) D41TopkHistKey(ks[e], mask, prefix, shift, field, bidx + e < eff_n ? 1u : 0u, lane, s_hist);
-				else D41TopkHistKeyPass(ks[e], mask, prefix, shift, field, bidx + e < eff_n ? 1u : 0u, s_hist);
-			}
-		}
-		__syncthreads();
-		uint32_t local[8];
-		#pragma unroll
-		for ( uint32_t p = 0u; p < 8u; ++p ) local[p] = s_hist[2047u - (threadIdx.x * 8u + p)];
-		D41TopkDescendSelect(local, need, warp, lane, s_warp, s_choice);
-		prefix |= s_choice[0] << shift;
-		mask |= field << shift;
-		need -= s_choice[1];
-		count = s_choice[2];
-		if ( count == need ) break;
-	}
-	uint32_t emitted = 0u, seen_eq = 0u;
-	for ( uint32_t base = 0u; base < eff_n; base += 1024u )
-	{
-		uint32_t ks[4];
-		const uint32_t bidx = base + threadIdx.x * 4u;
-		D41LoadKeys4(row, bidx, eff_n, aligned16, ks);
-		D41TopkEmit4(ks, bidx, eff_n, mask, prefix, need, warp, lane, s_scan, out, &emitted, &seen_eq);
-	}
-}
-
-static __global__ __launch_bounds__(256)
-void D41TopkExactFastKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices,
-	const uint32_t *__restrict__ seq = 0, const uint32_t *__restrict__ len = 0, const uint32_t *__restrict__ bound = 0,
-	uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
-{
-	__shared__ uint32_t s_hist[2048];
-	__shared__ uint32_t s_warp[8];
-	__shared__ uint32_t s_choice[3];
-	__shared__ uint32_t s_scan[16];
-	LmDependentWait();
-	uint32_t skip = 0u;
-	const uint32_t eff_n = LmTopkExactRowActive(blockIdx.x, n, seq, len, bound, dense_limit, pool_stride, &skip);
-	if ( skip != 0u ) { LmDependentRelease(); return; }
-	uint32_t *out = out_indices + (uint64_t)blockIdx.x * k;
-	if ( eff_n <= k )
-	{
-		for ( uint32_t i = threadIdx.x; i < k; i += 256u ) out[i] = i < eff_n ? i : 0xffffffffu;
-		LmDependentRelease();
-		return;
-	}
-	const float *row = scores + (uint64_t)blockIdx.x * n;
-	if ( eff_n <= 4096u ) D41TopkSelectReg4096(row, eff_n, k, out, s_hist, s_warp, s_choice, s_scan);
-	else D41TopkSelectStream(row, eff_n, k, out, s_hist, s_warp, s_choice, s_scan);
-	LmDependentRelease();
-}
-
-static __global__ __launch_bounds__(256)
-void D41TopkExactChunkRegKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t chunk,
-	float *__restrict__ out_values, uint32_t *__restrict__ out_positions,
-	const uint32_t *__restrict__ seq = 0, const uint32_t *__restrict__ len = 0, const uint32_t *__restrict__ bound = 0,
-	uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
-{
-	__shared__ uint32_t s_hist[2048];
-	__shared__ uint32_t s_warp[8];
-	__shared__ uint32_t s_choice[3];
-	__shared__ uint32_t s_scan[16];
-	LmDependentWait();
-	const uint32_t row_idx = blockIdx.y, cid = blockIdx.x, first = cid * chunk;
-	uint32_t skip = 0u;
-	const uint32_t eff_n = LmTopkExactRowActive(row_idx, n, seq, len, bound, dense_limit, pool_stride, &skip);
-	if ( skip != 0u || eff_n <= k || first >= eff_n ) { LmDependentRelease(); return; }
-	const uint32_t length = eff_n - first < chunk ? eff_n - first : chunk;
-	const float *row = scores + (uint64_t)row_idx * n + first;
-	const uint64_t base = ((uint64_t)row_idx * gridDim.x + cid) * k;
-	uint32_t *pos_out = out_positions + base;
-	float *val_out = out_values + base;
-	if ( length <= k )
-	{
-		for ( uint32_t i = threadIdx.x; i < k; i += 256u )
-		{
-			val_out[i] = i < length ? row[i] : -INFINITY;
-			pos_out[i] = i < length ? first + i : 0xffffffffu;
-		}
-		LmDependentRelease();
-		return;
-	}
-	if ( length <= 4096u ) D41TopkSelectReg4096(row, length, k, pos_out, s_hist, s_warp, s_choice, s_scan);
-	else D41TopkSelectStream(row, length, k, pos_out, s_hist, s_warp, s_choice, s_scan);
-	__syncthreads();
-	for ( uint32_t i = threadIdx.x; i < k; i += 256u )
-	{
-		const uint32_t loc = pos_out[i];
-		val_out[i] = loc != 0xffffffffu ? row[loc] : -INFINITY;
-		pos_out[i] = loc != 0xffffffffu ? first + loc : 0xffffffffu;
-	}
-	LmDependentRelease();
-}
-
-static __global__ __launch_bounds__(256)
-void D41TopkExactGatherRegKernel(const float *__restrict__ scores, const float *__restrict__ values, const uint32_t *__restrict__ positions,
-	uint32_t n, uint32_t k, uint32_t chunk, uint32_t max_chunks, uint32_t *__restrict__ out_indices,
-	const uint32_t *__restrict__ seq = 0, const uint32_t *__restrict__ len = 0, const uint32_t *__restrict__ bound = 0,
-	uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
-{
-	__shared__ uint32_t s_hist[2048];
-	__shared__ uint32_t s_warp[8];
-	__shared__ uint32_t s_choice[3];
-	__shared__ uint32_t s_scan[16];
-	LmDependentWait();
-	const uint32_t row_idx = blockIdx.x;
-	uint32_t skip = 0u;
-	const uint32_t eff_n = LmTopkExactRowActive(row_idx, n, seq, len, bound, dense_limit, pool_stride, &skip);
-	if ( skip != 0u ) { LmDependentRelease(); return; }
-	uint32_t *out = out_indices + (uint64_t)row_idx * k;
-	if ( eff_n <= k )
-	{
-		for ( uint32_t i = threadIdx.x; i < k; i += 256u ) out[i] = i < eff_n ? i : 0xffffffffu;
-		LmDependentRelease();
-		return;
-	}
-	const uint32_t active_chunks = (eff_n + chunk - 1u) / chunk;
-	const uint32_t cand_n = active_chunks * k;
-	const uint64_t base = (uint64_t)row_idx * max_chunks * k;
-	const float *row_vals = values + base;
-	const uint32_t *row_pos = positions + base;
-	if ( active_chunks == 1u )
-	{
-		for ( uint32_t i = threadIdx.x; i < k; i += 256u ) out[i] = row_pos[i];
-		LmDependentRelease();
-		return;
-	}
-	if ( cand_n <= 4096u ) D41TopkSelectReg4096(row_vals, cand_n, k, out, s_hist, s_warp, s_choice, s_scan);
-	else D41TopkSelectStream(row_vals, cand_n, k, out, s_hist, s_warp, s_choice, s_scan);
-	__syncthreads();
-	for ( uint32_t i = threadIdx.x; i < k; i += 256u )
-		out[i] = out[i] != 0xffffffffu ? row_pos[out[i]] : 0xffffffffu;
-	(void)scores;
-	LmDependentRelease();
+	static_assert(!ROUND_BF16, "index score direct skl2 uses unrounded f32 scoring");
+	return D41Skl2Launch(D41SKL2_d41_index_score_direct_256, grid, block, 0, stream, index_query_bf16, head_weight, index_view,
+		sequence_of_row, context_length, row_position, block_mask, block_stride, rows, score_stride, qk_scale, scores,
+		fork_positions, slot_offsets, dense_limit, (uint32_t)Geometry::kPageSlots, (uint32_t)Geometry::kSlotBytes);
 }
 
 static inline SparkGpuError D41TopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t *out_indices,
@@ -3981,15 +2785,14 @@ static inline SparkGpuError D41TopkExactLaunch(const float *scores, uint32_t row
 		if ( chunk != 0u )
 		{
 			const uint32_t chunks = (n + chunk - 1u) / chunk;
-			LM_LAUNCH_DEPENDENT((D41TopkExactChunkRegKernel), dim3(chunks, rows), 256u, 0, stream, scores, n, k, chunk, topk_values, topk_positions,
+			SparkGpuError status = D41Skl2Launch(D41SKL2_d41_topk_exact_chunk_reg_256, dim3(chunks, rows), 256u, 0, stream, scores, topk_values, topk_positions, n, k, chunk, chunks, (uint32_t *)0,
 				seq, len, bound, dense_limit, pool_stride);
-			LM_LAUNCH_DEPENDENT((D41TopkExactGatherRegKernel), rows, 256u, 0, stream, scores, topk_values, topk_positions, n, k, chunk, chunks, out_indices,
+			if ( status != SPARK_GPU_SUCCESS ) return status;
+			return D41Skl2Launch(D41SKL2_d41_topk_exact_gather_reg_256, rows, 256u, 0, stream, scores, topk_values, topk_positions, n, k, chunk, chunks, out_indices,
 				seq, len, bound, dense_limit, pool_stride);
-			return SparkGpuPeekAtLastError();
 		}
 	}
-	LM_LAUNCH_DEPENDENT((D41TopkExactFastKernel), rows, 256u, 0, stream, scores, n, k, out_indices, seq, len, bound, dense_limit, pool_stride);
-	return SparkGpuPeekAtLastError();
+	return D41Skl2Launch(D41SKL2_d41_topk_exact_fast_256, rows, 256u, 0, stream, scores, (const float *)0, (const uint32_t *)0, n, k, 0u, 0u, out_indices, seq, len, bound, dense_limit, pool_stride);
 }
 
 template<uint32_t EXPERTS, uint32_t TOP_K, uint32_t MAX_ROUTES = 128u>
@@ -4481,13 +3284,6 @@ void D41MxGemmBatch16Kernel(const __grid_constant__ D41MxBatchDesc desc, uint32_
 	LmDependentRelease();
 }
 
-static __device__ __forceinline__ uint2 D41LoadU8x8(const uint8_t *p)
-{
-	if ( ((uintptr_t)p & 7u) == 0u ) return __ldg((const uint2 *)p);
-	const uint16_t *h = (const uint16_t *)p;
-	return make_uint2((uint32_t)__ldg(h) | ((uint32_t)__ldg(h + 1u) << 16u), (uint32_t)__ldg(h + 2u) | ((uint32_t)__ldg(h + 3u) << 16u));
-}
-
 struct D41SharedPartialsDesc
 {
 	const uint8_t *w[4];
@@ -4497,75 +3293,12 @@ struct D41SharedPartialsDesc
 };
 
 template<uint32_t MAX_R, uint32_t OUT_DIM, uint32_t MAX_WIDTH>
-static __global__ __launch_bounds__(256, 2)
-void D41SharedPartialsFusedKernel(const __grid_constant__ D41SharedPartialsDesc desc, const uint16_t *__restrict__ received,
-	uint64_t stride, uint32_t rows)
+static inline SparkGpuError D41SharedPartialsFusedLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const D41SharedPartialsDesc desc,
+	const uint16_t *received, uint64_t stride, uint32_t rows)
 {
-	constexpr uint32_t ROWS_PER_BLK = 16u, BLKS_PER_SRC = OUT_DIM / ROWS_PER_BLK;
-	static_assert(OUT_DIM % ROWS_PER_BLK == 0u && MAX_WIDTH % 32u == 0u, "shared partials tile 16 outputs per block");
-	__shared__ __align__(16) uint16_t s_act[MAX_R][MAX_WIDTH];
-	const uint32_t source = blockIdx.x / BLKS_PER_SRC, o_base = (blockIdx.x - source * BLKS_PER_SRC) * ROWS_PER_BLK;
-	const uint32_t row_base = blockIdx.y * MAX_R, live = rows > row_base ? (rows - row_base < MAX_R ? rows - row_base : MAX_R) : 0u;
-	const uint32_t width = desc.width[source], octets = width >> 3u, s_blocks = width >> 5u;
-	LmDependentWait();
-	if ( live == 0u ) { LmDependentRelease(); return; }
-	const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * stride);
-	const uint8_t *scales = bytes + (uint64_t)rows * width;
-	const uint32_t total_oct = live * octets;
-	for ( uint32_t idx = threadIdx.x; idx < total_oct; idx += 256u )
-	{
-		const uint32_t r = idx / octets, q = idx - r * octets, gr = row_base + r;
-		const float sc = __uint_as_float((uint32_t)scales[(uint64_t)gr * s_blocks + (q >> 2u)] << 23u);
-		((uint4 *)s_act[r])[q] = D41DequantE4m3x8(D41LoadU8x8(bytes + (uint64_t)gr * width + (uint64_t)q * 8u), sc);
-	}
-	__syncthreads();
-	const uint32_t hw = threadIdx.x >> 4u, hl = threadIdx.x & 15u, o = o_base + hw;
-	const uint8_t *w_row = desc.w[source] + (uint64_t)o * width;
-	const uint8_t *ws_row = desc.ws[source] + (uint64_t)o * s_blocks;
-	float acc[MAX_R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < MAX_R; ++r ) acc[r] = 0.0f;
-	for ( uint32_t k = hl * 16u; k < width; k += 256u )
-	{
-		const uint4 w16 = __ldcs((const uint4 *)(w_row + k));
-		const float wsc = __uint_as_float((uint32_t)__ldg(ws_row + (k >> 5u)) << 23u);
-		const uint32_t ww[4] = { w16.x, w16.y, w16.z, w16.w };
-		float wf[16];
-		#pragma unroll
-		for ( uint32_t i = 0u; i < 4u; ++i )
-		{
-			const float2 p0 = LmE4m3PairToFloat2((uint16_t)(ww[i] & 0xffffu));
-			const float2 p1 = LmE4m3PairToFloat2((uint16_t)(ww[i] >> 16u));
-			wf[i * 4u + 0u] = p0.x * wsc; wf[i * 4u + 1u] = p0.y * wsc;
-			wf[i * 4u + 2u] = p1.x * wsc; wf[i * 4u + 3u] = p1.y * wsc;
-		}
-		#pragma unroll
-		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			if ( r < live )
-			{
-				const uint4 a0 = *(const uint4 *)(s_act[r] + k);
-				const uint4 a1 = *(const uint4 *)(s_act[r] + k + 8u);
-				const uint32_t aw[8] = { a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w };
-				float s = acc[r];
-				#pragma unroll
-				for ( uint32_t i = 0u; i < 8u; ++i )
-				{
-					s = fmaf(wf[i * 2u], __uint_as_float(aw[i] << 16u), s);
-					s = fmaf(wf[i * 2u + 1u], __uint_as_float(aw[i] & 0xffff0000u), s);
-				}
-				acc[r] = s;
-			}
-	}
-	#pragma unroll
-	for ( uint32_t off = 8u; off != 0u; off >>= 1u )
-		#pragma unroll
-		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], off);
-	if ( hl == 0u )
-		#pragma unroll
-		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			if ( r < live ) desc.out[source][(uint64_t)(row_base + r) * OUT_DIM + o] = LmFloatToBf16(acc[r]);
-	LmDependentRelease();
+	static_assert((MAX_R == 1u || MAX_R == 8u) && MAX_WIDTH <= 640u && OUT_DIM % 16u == 0u, "shared partials skl2 supports r1/r8 w<=640");
+	return D41Skl2Launch(MAX_R == 1u ? D41SKL2_d41_shared_partials_r1_256 : D41SKL2_d41_shared_partials_r8_256, grid, block, 0, stream,
+		desc, received, stride, rows, OUT_DIM);
 }
 
 template<uint32_t MODE_RECV, uint32_t CELLS_PER_BLK, uint32_t WARP_CHUNKS, uint32_t STAGES, uint32_t EXPERTS, uint32_t SLICE, uint32_t IN_DIM, uint32_t OUT_DIM>
@@ -4833,202 +3566,17 @@ void D41CellMxSplitW2DirectKernel(const uint8_t *__restrict__ w2_cells, const ui
 		(const uint16_t *)0, output_bf16, group_row_offset, (const uint32_t *)0, active_experts, routes, 0ull, backup_cells, split_at);
 }
 
-template<uint32_t MAX_R>
-static __device__ __forceinline__ void D41CellFp4AccumTile(uint4 weight, uint8_t scale_code, const uint16_t s_act[MAX_R][128],
-	uint32_t step_off, uint32_t count, float acc[MAX_R])
-{
-	const uint32_t words[4] = { weight.x, weight.y, weight.z, weight.w };
-	float chunk[MAX_R];
-	#pragma unroll
-	for ( uint32_t r = 0u; r < MAX_R; ++r ) chunk[r] = 0.0f;
-	#pragma unroll
-	for ( uint32_t w = 0u; w < 4u; ++w )
-	{
-		float2 pair[4];
-		#pragma unroll
-		for ( uint32_t j = 0u; j < 4u; ++j ) pair[j] = LmE2m1PairToFloat((uint8_t)((words[w] >> (j * 8u)) & 0xffu));
-		#pragma unroll
-		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			if ( r < count )
-			{
-				const uint4 packed = *(const uint4 *)(s_act[r] + step_off + w * 8u);
-				float a0 = pair[0].x * __uint_as_float(packed.x << 16u);
-				float a1 = pair[0].y * __uint_as_float(packed.x & 0xffff0000u);
-				float a2 = pair[1].x * __uint_as_float(packed.y << 16u);
-				float a3 = pair[1].y * __uint_as_float(packed.y & 0xffff0000u);
-				a0 = fmaf(pair[2].x, __uint_as_float(packed.z << 16u), a0);
-				a1 = fmaf(pair[2].y, __uint_as_float(packed.z & 0xffff0000u), a1);
-				a2 = fmaf(pair[3].x, __uint_as_float(packed.w << 16u), a2);
-				a3 = fmaf(pair[3].y, __uint_as_float(packed.w & 0xffff0000u), a3);
-				chunk[r] += (a0 + a1) + (a2 + a3);
-			}
-	}
-	const float sc = LmUe8m0ToFloat(scale_code);
-	#pragma unroll
-	for ( uint32_t r = 0u; r < MAX_R; ++r )
-		if ( r < count ) acc[r] = fmaf(sc, chunk[r], acc[r]);
-}
-
 template<uint32_t EXPERTS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t MODE_RECV, uint32_t SLICE, uint32_t CELLS_PER_BLK = 4u, uint32_t STAGES = 3u>
-static __global__ __launch_bounds__(CELLS_PER_BLK * 32u, CELLS_PER_BLK == 4u ? 4 : 2)
-void D41CellFp4GemvKernel(const uint8_t *__restrict__ cells, const uint16_t *__restrict__ act_bf16,
-	const uint16_t *__restrict__ recv_base, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ group_row_offset,
-	const uint32_t *__restrict__ route_source_token, const uint32_t *__restrict__ active_experts, uint32_t routes, uint64_t recv_stride)
+static inline SparkGpuError D41CellFp4GemvLaunch(dim3 grid, dim3 block, SparkGpuStream stream, const uint8_t *cells, const uint16_t *act_bf16,
+	const uint16_t *recv_base, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token,
+	const uint32_t *active_experts, uint32_t routes, uint64_t recv_stride)
 {
-	constexpr uint32_t THREADS = CELLS_PER_BLK * 32u, TILE_K = 128u, K_STEPS = 4u, K_ITERS = IN_DIM / TILE_K;
-	constexpr uint32_t TOTAL_CELLS = OUT_DIM / 16u, N_BLOCKS = TOTAL_CELLS / CELLS_PER_BLK;
-	constexpr uint32_t CELL_VECS = 17u, CELL_BYTES = CELL_VECS * 16u;
-	constexpr uint32_t TILE_VECS = CELLS_PER_BLK * CELL_VECS, TILE_BYTES = CELLS_PER_BLK * CELL_BYTES;
-	constexpr uint32_t W_VECS = K_STEPS * TILE_VECS, W_BYTES = K_STEPS * TILE_BYTES;
-	constexpr uint32_t W_PASSES = (W_VECS + THREADS - 1u) / THREADS;
-	constexpr uint32_t MAX_R = 4u, S_BLOCKS = SLICE / SPARK_DSV41_FLASH_FP8_BLOCK;
-	constexpr uint64_t TILE_STRIDE = (uint64_t)TOTAL_CELLS * CELL_BYTES;
-	constexpr uint64_t GROUP_BYTES = (uint64_t)(IN_DIM / 32u) * TILE_STRIDE;
-	static_assert(OUT_DIM % (CELLS_PER_BLK * 16u) == 0u && IN_DIM % 128u == 0u && W_PASSES == 3u && STAGES >= 2u, "cell fp4 gemv geometry");
-	__shared__ __align__(128) uint8_t s_w[STAGES * W_BYTES];
-	__shared__ __align__(16) uint16_t s_act[2][MAX_R][TILE_K];
-	const uint32_t active_idx = blockIdx.x / N_BLOCKS, n_block = blockIdx.x - active_idx * N_BLOCKS;
-	LmDependentWait();
-	LmDependentRelease();
-	const uint32_t active_count = __ldg(active_experts + EXPERTS);
-	if ( active_idx >= active_count )
-		return;
-	const uint32_t group = __ldg(active_experts + active_idx);
-	const uint32_t start = __ldg(group_row_offset + group), end = __ldg(group_row_offset + group + 1u);
-	if ( start >= end )
-		return;
-	const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(s_w);
-	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, sub = lane & 15u, half = lane >> 4u;
-	const uint32_t block_cell0 = n_block * CELLS_PER_BLK;
-	const uint8_t *group_cells = cells + (uint64_t)group * GROUP_BYTES + (uint64_t)block_cell0 * CELL_BYTES;
-	uint32_t w_off[W_PASSES];
-	#pragma unroll
-	for ( uint32_t p = 0u; p < W_PASSES; ++p )
-	{
-		const uint32_t v = threadIdx.x + p * THREADS;
-		if ( v < W_VECS )
-		{
-			const uint32_t kt = v / TILE_VECS, in_kt = v - kt * TILE_VECS;
-			w_off[p] = (uint32_t)((uint64_t)kt * TILE_STRIDE + in_kt * 16u);
-		}
-		else
-			w_off[p] = 0u;
-	}
-	const uint8_t *r0 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 0ull * recv_stride) : (const uint8_t *)0;
-	const uint8_t *r1 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 1ull * recv_stride) : (const uint8_t *)0;
-	const uint8_t *r2 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 2ull * recv_stride) : (const uint8_t *)0;
-	const uint8_t *r3 = MODE_RECV != 0u ? (const uint8_t *)(recv_base + 3ull * recv_stride) : (const uint8_t *)0;
-	const uint64_t sc_off_base = (uint64_t)routes * SLICE;
-	for ( uint32_t first = start; first < end; first += MAX_R )
-	{
-		const uint32_t count = end - first < MAX_R ? end - first : MAX_R;
-		uint32_t src_tok[MAX_R];
-		#pragma unroll
-		for ( uint32_t r = 0u; r < MAX_R; ++r )
-			src_tok[r] = r < count ? (MODE_RECV == 0u ? __ldg(route_source_token + first + r) : first + r) : 0u;
-		const uint8_t *w_base = group_cells;
-		auto produce_w = [&](uint32_t st_off)
-		{
-			const uint32_t w_stage = sbase + st_off;
-			#pragma unroll
-			for ( uint32_t p = 0u; p < W_PASSES; ++p )
-				if ( threadIdx.x + p * THREADS < W_VECS )
-					LmCellMxCopy256(w_stage + (threadIdx.x + p * THREADS) * 16u, w_base + w_off[p], 16u);
-			w_base += (uint64_t)K_STEPS * TILE_STRIDE;
-		};
-		auto load_act = [&](uint32_t k_idx, uint32_t abuf)
-		{
-			if ( threadIdx.x < count * 16u )
-			{
-				const uint32_t r = threadIdx.x >> 4u, q = threadIdx.x & 15u;
-				if constexpr ( MODE_RECV == 0u )
-					((uint4 *)s_act[abuf][r])[q] = __ldg((const uint4 *)(act_bf16 + (uint64_t)src_tok[r] * IN_DIM + k_idx * TILE_K) + q);
-				else
-				{
-					const uint32_t elem = k_idx * TILE_K + q * 8u;
-					const uint32_t sr = elem / SLICE, within = elem - sr * SLICE;
-					const uint8_t *rb = sr == 0u ? r0 : sr == 1u ? r1 : sr == 2u ? r2 : r3;
-					const uint32_t route_i = src_tok[r];
-					const float sc = __uint_as_float((uint32_t)__ldg(rb + sc_off_base + (uint64_t)route_i * S_BLOCKS + (within >> 5u)) << 23u);
-					((uint4 *)s_act[abuf][r])[q] = D41DequantE4m3x8(D41LoadU8x8(rb + (uint64_t)route_i * SLICE + within), sc);
-				}
-			}
-		};
-		uint32_t kp = 0u, sp_off = 0u, sc_off = 0u;
-		auto advance = [](uint32_t &off) { off += W_BYTES; if ( off == STAGES * W_BYTES ) off = 0u; };
-		#pragma unroll
-		for ( uint32_t s = 0u; s + 1u < STAGES; ++s )
-		{
-			if ( kp < K_ITERS ) produce_w(sp_off);
-			LmCellMmaCommit();
-			++kp;
-			advance(sp_off);
-		}
-		if ( count == 1u )
-		{
-			float acc1[1] = { 0.0f };
-			for ( uint32_t k_step = 0u; k_step < K_ITERS; ++k_step )
-			{
-				const uint32_t abuf = k_step & 1u;
-				load_act(k_step, abuf);
-				LmCellMmaWait<STAGES - 2u>();
-				__syncthreads();
-				if ( kp < K_ITERS ) { produce_w(sp_off); ++kp; advance(sp_off); }
-				LmCellMmaCommit();
-				const uint8_t *w_stage = s_w + sc_off + warp * CELL_BYTES;
-				#pragma unroll
-				for ( uint32_t s_it = 0u; s_it < 2u; ++s_it )
-				{
-					const uint32_t step = half + s_it * 2u;
-					const uint8_t *cell_ptr = w_stage + step * TILE_BYTES;
-					const uint4 weight = *(const uint4 *)(cell_ptr + sub * 16u);
-					const uint8_t sc_code = cell_ptr[256u + sub];
-					D41CellFp4AccumTile<1u>(weight, sc_code, (const uint16_t (*)[128])s_act[abuf], step * 32u, 1u, acc1);
-				}
-				advance(sc_off);
-			}
-			LmCellMmaWait<0u>();
-			acc1[0] += __shfl_xor_sync(0xffffffffu, acc1[0], 16u);
-			if ( half == 0u )
-				output_bf16[(uint64_t)first * OUT_DIM + (block_cell0 + warp) * 16u + sub] = LmFloatToBf16(acc1[0]);
-		}
-		else
-		{
-			float acc[MAX_R];
-			#pragma unroll
-			for ( uint32_t r = 0u; r < MAX_R; ++r ) acc[r] = 0.0f;
-			for ( uint32_t k_step = 0u; k_step < K_ITERS; ++k_step )
-			{
-				const uint32_t abuf = k_step & 1u;
-				load_act(k_step, abuf);
-				LmCellMmaWait<STAGES - 2u>();
-				__syncthreads();
-				if ( kp < K_ITERS ) { produce_w(sp_off); ++kp; advance(sp_off); }
-				LmCellMmaCommit();
-				const uint8_t *w_stage = s_w + sc_off + warp * CELL_BYTES;
-				#pragma unroll
-				for ( uint32_t s_it = 0u; s_it < 2u; ++s_it )
-				{
-					const uint32_t step = half + s_it * 2u;
-					const uint8_t *cell_ptr = w_stage + step * TILE_BYTES;
-					const uint4 weight = *(const uint4 *)(cell_ptr + sub * 16u);
-					const uint8_t sc_code = cell_ptr[256u + sub];
-					D41CellFp4AccumTile<MAX_R>(weight, sc_code, s_act[abuf], step * 32u, count, acc);
-				}
-				advance(sc_off);
-			}
-			LmCellMmaWait<0u>();
-			#pragma unroll
-			for ( uint32_t r = 0u; r < MAX_R; ++r )
-				acc[r] += __shfl_xor_sync(0xffffffffu, acc[r], 16u);
-			if ( half == 0u )
-				#pragma unroll
-				for ( uint32_t r = 0u; r < MAX_R; ++r )
-					if ( r < count )
-						output_bf16[(uint64_t)(first + r) * OUT_DIM + (block_cell0 + warp) * 16u + sub] = LmFloatToBf16(acc[r]);
-		}
-		if ( first + MAX_R < end ) __syncthreads();
-	}
+	static_assert((CELLS_PER_BLK == 4u || CELLS_PER_BLK == 8u) && (MODE_RECV == 0u || MODE_RECV == 1u) && STAGES >= 2u, "cell fp4 gemv skl2 geometry");
+	const uint32_t id = CELLS_PER_BLK == 4u
+		? (MODE_RECV == 0u ? (uint32_t)D41SKL2_d41_cell_fp4_gemv_c4_m0 : (uint32_t)D41SKL2_d41_cell_fp4_gemv_c4_m1)
+		: (MODE_RECV == 0u ? (uint32_t)D41SKL2_d41_cell_fp4_gemv_c8_m0 : (uint32_t)D41SKL2_d41_cell_fp4_gemv_c8_m1);
+	return D41Skl2Launch(id, grid, block, 0, stream, cells, act_bf16, recv_base, output_bf16, group_row_offset, route_source_token,
+		active_experts, routes, recv_stride, EXPERTS, IN_DIM, OUT_DIM, SLICE);
 }
 
 

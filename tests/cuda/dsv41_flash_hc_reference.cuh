@@ -5,6 +5,18 @@
 #define SPARK_DSV41_FLASH_HC_MAX 8u
 #define SPARK_DSV41_FLASH_HC_MIX_MAX ((2u + SPARK_DSV41_FLASH_HC_MAX) * SPARK_DSV41_FLASH_HC_MAX)
 
+static __device__ __forceinline__ float SparkDsv41FlashBlockSum(float value, float *scratch)
+{
+	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, offset;
+	for (offset = 16u; offset != 0u; offset >>= 1u) value += __shfl_down_sync(0xffffffffu,value,offset);
+	__syncthreads();
+	if ( lane == 0u ) scratch[warp] = value;
+	__syncthreads();
+	if ( threadIdx.x == 0u ) { value = 0.0f; for (offset = 0u; offset < blockDim.x / 32u; offset++) value += scratch[offset]; scratch[0] = value; }
+	__syncthreads();
+	return(scratch[0]);
+}
+
 static __global__ void SparkDsv41FlashHcMixKernel(const uint16_t *streams_bf16, const float *fn_f32, float *mixes_f32, uint32_t flat_dimension, uint32_t mix_rows, float epsilon)
 {
 	__shared__ float scratch[SPARK_DSV41_FLASH_ROW_THREADS / 32u];

@@ -145,7 +145,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		Counts *counts_d = 0;
 		CUDA(cudaMalloc(&counts_d, sizeof(Counts)));
 		CUDA(cudaMemset(counts_d, 0xa5, sizeof(Counts)));
-		D41ExchangeCountsKernel<RANKS, EXPERTS><<<1u, 1024u>>>(experts_d, live[source], source * own, TOPK, owner_d, 1u, counts_d);
+		D41ExchangeCountsLaunch<RANKS, EXPERTS>(1u, 1024u, (SparkGpuStream)0, experts_d, live[source], source * own, TOPK, owner_d, 1u, counts_d);
 		CUDA(cudaGetLastError());
 		CUDA(cudaMemcpy(&parts[source], counts_d, sizeof(Counts), cudaMemcpyDeviceToHost));
 		std::vector<uint32_t> pairs(RANKS * RANKS, 0u), routes(EXPERTS, 0u), sole(RANKS * EXPERTS, 0u);
@@ -310,7 +310,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		uint16_t *quota_d = Device(own_quota);
 		CUDA(cudaMalloc(&slot_d[source], (size_t)spaces * RANKS * sizeof(uint32_t)));
 		CUDA(cudaMalloc(&count_d, RANKS * sizeof(uint32_t)));
-		D41ExchangeSlotsKernel<RANKS, EXPERTS, TOPK, COPIES><<<1u, D41K_SLOT_WARPS * 32u>>>(experts_d, routed, owner_d, backup_d, offload != 0u ? quota_d : 0,
+		D41ExchangeSlotsLaunch<RANKS, EXPERTS, TOPK, COPIES>(1u, D41K_SLOT_WARPS * 32u, (SparkGpuStream)0, experts_d, routed, owner_d, backup_d, offload != 0u ? quota_d : 0,
 			capacity, slot_d[source], count_d);
 		CUDA(cudaGetLastError());
 		slots[source] = Host(slot_d[source], (size_t)routed * RANKS);
@@ -637,7 +637,7 @@ static uint32_t EngramCase(uint32_t rows, uint32_t own, uint64_t table_rows, uin
 	uint32_t *slot_d = 0, *counts_d = 0;
 	CUDA(cudaMalloc(&slot_d, ids.size() * sizeof(uint32_t)));
 	CUDA(cudaMalloc(&counts_d, RANKS * RANKS * sizeof(uint32_t)));
-	D41EngramSlotsKernel<RANKS><<<RANKS, 1024u>>>(ids_d, rows, own, columns, part, table_rows, slot_d, counts_d);
+	D41EngramSlotsLaunch<RANKS>(RANKS, 1024u, (SparkGpuStream)0, ids_d, rows, own, columns, part, table_rows, slot_d, counts_d);
 	CUDA(cudaGetLastError());
 	const std::vector<uint32_t> counts = Host(counts_d, RANKS * RANKS);
 	std::vector<uint32_t> expected_counts(RANKS * RANKS, 0u);
@@ -673,7 +673,7 @@ static uint32_t EngramCase(uint32_t rows, uint32_t own, uint64_t table_rows, uin
 		scale_d[rank] = Device(scale);
 		CUDA(cudaMalloc(&send_d[rank], (size_t)RANKS * capacity * record));
 		CUDA(cudaMemset(send_d[rank], 0xa5, (size_t)RANKS * capacity * record));
-		D41EngramPackKernel<<<rows, 256u>>>(ids_d, slot_d, payload_d[rank], scale_d[rank], own, columns, (uint64_t)rank * part, local_rows[rank],
+		D41EngramPackLaunch(rows, 256u, (SparkGpuStream)0, ids_d, slot_d, payload_d[rank], scale_d[rank], own, columns, (uint64_t)rank * part, local_rows[rank],
 			capacity, send_d[rank]);
 		CUDA(cudaGetLastError());
 		CUDA(cudaMalloc(&dense_d[rank], (size_t)rows * columns * dim * sizeof(uint16_t)));
@@ -694,7 +694,7 @@ static uint32_t EngramCase(uint32_t rows, uint32_t own, uint64_t table_rows, uin
 			CUDA(cudaMemcpy(received_d + (size_t)source * capacity * record, send_d[source] + (size_t)owner * capacity * record, (size_t)capacity * record,
 				cudaMemcpyDeviceToDevice));
 		CUDA(cudaMemset(embed_d, 0x5a, (size_t)own * columns * dim * sizeof(uint16_t)));
-		D41EngramUnpackKernel<<<dim3(own, columns), 256u>>>(ids_d, slot_d, received_d, rows, owner * own, columns, part, table_rows, capacity, embed_d);
+		D41EngramUnpackLaunch(dim3(own, columns), 256u, (SparkGpuStream)0, ids_d, slot_d, received_d, rows, owner * own, columns, part, table_rows, capacity, embed_d);
 		CUDA(cudaGetLastError());
 		const std::vector<uint16_t> embed = Host(embed_d, (size_t)own * columns * dim);
 		for ( uint32_t local = 0u; local < own; ++local )
@@ -943,7 +943,7 @@ static uint32_t DirectCase(uint32_t own, uint32_t rows, uint32_t hot, uint32_t c
 		Counts *counts_d = 0;
 		CUDA(cudaMalloc(&counts_d, sizeof(Counts)));
 		CUDA(cudaMemset(counts_d, 0xa5, sizeof(Counts)));
-		D41ExchangeCountsKernel<RANKS, EXPERTS><<<1u, 1024u>>>(experts_d, live[source], source * own, TOPK, owner_d, copies_active != 0u ? 1u : 0u, counts_d);
+		D41ExchangeCountsLaunch<RANKS, EXPERTS>(1u, 1024u, (SparkGpuStream)0, experts_d, live[source], source * own, TOPK, owner_d, copies_active != 0u ? 1u : 0u, counts_d);
 		CUDA(cudaGetLastError());
 		CUDA(cudaMemcpy(&parts[source], counts_d, sizeof(Counts), cudaMemcpyDeviceToHost));
 		cudaFree(experts_d); cudaFree(counts_d);
@@ -998,7 +998,7 @@ static uint32_t DirectCase(uint32_t own, uint32_t rows, uint32_t hot, uint32_t c
 				memcpy(qrank.data() + c * EXPERTS, quota.data() + ((size_t)c * RANKS + source) * EXPERTS, EXPERTS * sizeof(uint16_t));
 			quota_d = Device(qrank);
 		}
-		D41ExchangeSlotsKernel<RANKS, EXPERTS, TOPK, COPIES><<<1u, D41K_SLOT_WARPS * 32u>>>(experts_d, n, owner_d, backup_d, quota_d, capacity, slot_d, count_d);
+		D41ExchangeSlotsLaunch<RANKS, EXPERTS, TOPK, COPIES>(1u, D41K_SLOT_WARPS * 32u, (SparkGpuStream)0, experts_d, n, owner_d, backup_d, quota_d, capacity, slot_d, count_d);
 		CUDA(cudaGetLastError());
 		std::vector<uint32_t> got_count = Host(count_d, RANKS);
 		for ( uint32_t t = 0u; t < RANKS; ++t )

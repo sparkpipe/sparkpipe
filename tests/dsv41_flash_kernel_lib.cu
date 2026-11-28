@@ -50,8 +50,7 @@ SPARK_TEST_EXPORT int dsv41_fp4_pow2_qdq(uintptr_t data, uint32_t groups, uint32
 {
     if (data == 0 || groups == 0u || group_size == 0u)
         return (int)cudaErrorInvalidValue;
-    SparkDsv41FlashFp4Pow2QdqKernel<<<(groups + 255u) / 256u, 256u>>>((uint16_t *)data, groups, group_size);
-    return (int)cudaGetLastError();
+    return (int)SparkDsv41FlashLaunchFp4Pow2QdqScalar(0, (uint16_t *)data, groups, group_size);
 }
 
 SPARK_TEST_EXPORT int dsv41_sink_attention(uintptr_t query, uintptr_t keys, uintptr_t indices, uint32_t index_count, uintptr_t sink, uintptr_t output, uint32_t heads, uint32_t head_dimension, float scale)
@@ -88,8 +87,7 @@ SPARK_TEST_EXPORT int dsv41_hc_post(uintptr_t sublayer, uintptr_t residual, uint
 
 SPARK_TEST_EXPORT int dsv41_compress_pool(uintptr_t kv_state, uintptr_t score_state, uintptr_t output, uint32_t ratio, uint32_t width)
 {
-    SparkDsv41FlashCompressPoolKernel<<<(width + 255u) / 256u, 256u>>>((const float *)kv_state, (const float *)score_state, (uint16_t *)output, ratio, width);
-    return (int)cudaGetLastError();
+    return (int)SparkDsv41FlashLaunchCompressPool(0, (const float *)kv_state, (const float *)score_state, (uint16_t *)output, ratio, width);
 }
 
 SPARK_TEST_EXPORT int dsv41_engram_gate(uintptr_t streams, uintptr_t kv, uintptr_t q_weight, uintptr_t k_weight, uint32_t rows, uint32_t hc, uint32_t dimension, float epsilon)

@@ -375,6 +375,15 @@ macro kv_shard_local_pos(degree, rank, grain, local, out_pos) {
 }
 
 @export
+macro warp_prefix_u32(val, lane) {
+    reg u32 a1 = shfl_up(val, 1); if (lane >= 1) { val = val + a1; }
+    reg u32 a2 = shfl_up(val, 2); if (lane >= 2) { val = val + a2; }
+    reg u32 a4 = shfl_up(val, 4); if (lane >= 4) { val = val + a4; }
+    reg u32 a8 = shfl_up(val, 8); if (lane >= 8) { val = val + a8; }
+    reg u32 a16 = shfl_up(val, 16); if (lane >= 16) { val = val + a16; }
+}
+
+@export
 macro kv_shard_slot_addr_gen(kv_view, seq, pos, page_slots, slot_bytes, out_addr, out_ok) {
     reg u32 page = 0; reg u32 slot_in_page = 0;
     u32_divmod(pos, page_slots, page, slot_in_page);
@@ -520,4 +529,19 @@ macro warp_argmax_u32(bk, bi) {
     u32_argmax_step(ok2, oi2, bk, bi);
     reg u32 ok1 = shfl_xor(bk, 1); reg u32 oi1 = shfl_xor(bi, 1);
     u32_argmax_step(ok1, oi1, bk, bi);
+}
+
+@export
+macro fp8_e4m3_qdq_lane_bf16(val_f, out_bf16) {
+    reg f32 am = fabsf(val_f);
+    am = maxf(am, shfl_xor(am, 16));
+    am = maxf(am, shfl_xor(am, 8));
+    am = maxf(am, shfl_xor(am, 4));
+    am = maxf(am, shfl_xor(am, 2));
+    am = maxf(am, shfl_xor(am, 1));
+    reg u32 sbits = pow2_ceil_e8m0_bits(maxf(am, 1.0e-4f)) << 23;
+    reg f32 sc = u32_as_f32(sbits);
+    reg f32 inv = u32_as_f32(0x7F000000 - sbits);
+    reg u32 q = cvt_f32x2_e4m3x2(minf(maxf(val_f * inv, -448.0f), 448.0f), 0.0f);
+    out_bf16 = f32_to_bf16(e4m3_to_f32(q & 0xFF) * sc);
 }

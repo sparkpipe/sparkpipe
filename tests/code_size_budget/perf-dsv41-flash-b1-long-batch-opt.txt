@@ -1,2 +1,0 @@
-+805
-dsv41_flash B1/long-context/batch/TP4 kernel optimizations: precomputed per-step RoPE table (also eliminating all 3 baseline D41WindowFoldSpread stack frames), coalesced/multi-block D41TopkBalanceRouteKernel, masked coalesced D41IndexScoreDirectKernel, vectorized D41WholeBlockMaxKernel, register-cached/chunked D41TopkExactFast/ChunkReg/GatherReg kernels, 4-head tiled D41WindowFoldWholeTiledKernel, fused D41TopkRoutePackedKernel for TP4 B1-B8, and lowered MXFP8/D41AttendKernel thresholds for GB10 (sm_121a).

@@ -166,8 +166,7 @@ static void AttentionStep(Attention *a, uint32_t position, const uint16_t *x, ui
         if ((position + 1u) % a->ratio == 0u)
         {
             uint16_t *row = a->ring + (size_t)(kWindow + a->compressed) * kHeadDim;
-            SparkDsv41FlashCompressPoolKernel<<<(kHeadDim + 255u) / 256u, 256u>>>(a->kv_state, a->score_state, a->pooled, a->ratio, kHeadDim);
-            CUDA(cudaGetLastError());
+            CUDA(SparkDsv41FlashLaunchCompressPool(0, a->kv_state, a->score_state, a->pooled, a->ratio, kHeadDim));
             CUDA(SparkDsv41FlashLaunchRmsNorm(0, a->pooled, a->compress_norm, row, 1u, kHeadDim, kEpsilon));
             CUDA(SparkDsv41FlashLaunchRope(0, row, a->rope + (size_t)(position + 1u - a->ratio) * kRope, 1u, kHeadDim, kRope, 0u));
             CUDA(SparkDsv41FlashLaunchKvFp4Qdq(0, row, kHeadDim, 1u, kHeadDim));
@@ -237,16 +236,14 @@ static void MoeStep(Moe *m, const uint16_t *x, uint16_t *out)
         CUDA(SparkDsv41FlashLaunchMxfp4Linear(0, m->payload[expert * 3u + 2u], m->scale[expert * 3u + 2u], x, m->activation, m->up_out, kHidden, kInter));
         CUDA(SparkDsv41FlashLaunchSwiglu(0, m->gate_out, m->up_out, m->hidden, kInter, kSwigluLimit, chosen_weight[slot]));
         CUDA(SparkDsv41FlashLaunchMxfp4Linear(0, m->payload[expert * 3u + 1u], m->scale[expert * 3u + 1u], m->hidden, m->activation, m->down, kInter, kHidden));
-        SparkDsv41FlashAccumulateKernel<<<(kHidden + 255u) / 256u, 256u>>>(m->accumulator, m->down, kHidden);
-        CUDA(cudaGetLastError());
+        CUDA(SparkDsv41FlashLaunchAccumulate(0, m->accumulator, m->down, kHidden));
     }
     CUDA(SparkDsv41FlashLaunchFp8BlockLinear(0, m->shared[0], m->shared_scale[0], x, m->activation, m->gate_out, 1u, kHidden, kInter));
     CUDA(SparkDsv41FlashLaunchFp8BlockLinear(0, m->shared[2], m->shared_scale[2], x, m->activation, m->up_out, 1u, kHidden, kInter));
     CUDA(SparkDsv41FlashLaunchSwiglu(0, m->gate_out, m->up_out, m->hidden, kInter, kSwigluLimit, 1.0f));
     CUDA(SparkDsv41FlashLaunchFp8BlockLinear(0, m->shared[1], m->shared_scale[1], m->hidden, m->activation, m->down, 1u, kInter, kHidden));
-    SparkDsv41FlashAccumulateKernel<<<(kHidden + 255u) / 256u, 256u>>>(m->accumulator, m->down, kHidden);
-    SparkDsv41FlashNarrowKernel<<<(kHidden + 255u) / 256u, 256u>>>(m->accumulator, out, kHidden);
-    CUDA(cudaGetLastError());
+    CUDA(SparkDsv41FlashLaunchAccumulate(0, m->accumulator, m->down, kHidden));
+    CUDA(SparkDsv41FlashLaunchNarrow(0, m->accumulator, out, kHidden));
 }
 
 static double Compare(const std::vector<uint16_t> &got, const uint16_t *expected, uint32_t positions, uint32_t width)

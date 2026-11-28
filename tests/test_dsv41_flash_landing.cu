@@ -148,7 +148,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 		float *records = sent + (uint64_t)source * DEGREE * stride;
 		REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(views[source], gathered, query_stride, LOCAL, HEADS, zeros_d,
 			length_d, bound_d, selected_d, TOPK, TOPK, scale, records, stride, LOCAL, 1u, rows, 0)) == cudaSuccess);
-		D41WindowFoldKernel<<<dim3(rows, HEADS), D41K_THREADS>>>(records, stride, LOCAL, gathered, query_stride, wave,
+		D41WindowFoldLaunch(dim3(rows, HEADS), D41K_THREADS, (SparkGpuStream)0, records, stride, LOCAL, gathered, query_stride, wave,
 			rings + (uint64_t)source * RING * LATENT, positions_d, zeros_d, ordinal_d, begin_d, indices_d, slot_d, 0u, RING, WINDOW, DEGREE, source,
 			scale, LOCAL, 1u);
 		CUDA(cudaGetLastError());
@@ -175,7 +175,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 				plan_d + 2u) == 0 && LmKvShardGatherViewWindow(&view, 0u, landing_keys) == 0);
 			REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
 				zeros_d, length_d, bound_d, selected_d, TOPK, TOPK, scale, received + (uint64_t)source * stride, stride, LOCAL, 1u, rows, 0)) == cudaSuccess);
-			D41WindowFoldKernel<<<dim3(rows, LOCAL), D41K_THREADS>>>(received + (uint64_t)source * stride, stride, LOCAL, query,
+			D41WindowFoldLaunch(dim3(rows, LOCAL), D41K_THREADS, (SparkGpuStream)0, received + (uint64_t)source * stride, stride, LOCAL, query,
 				(uint64_t)rows * LOCAL * LATENT, wave, ring_landing + (uint64_t)source * RING * LATENT, positions_d, zeros_d, ordinal_d, begin_d, indices_d,
 				slot_d, 0u, RING, WINDOW, DEGREE, source, scale, LOCAL, 1u);
 			CUDA(cudaGetLastError());
@@ -204,7 +204,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 				REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardGatherView, LATENT, 0u>(view, query, (uint64_t)rows * LOCAL * LATENT, LOCAL, LOCAL,
 					zeros_d, length_d, bound_d, selected_d, TOPK, TOPK, scale, received + (uint64_t)source * stride, stride, LOCAL, 1u, rows, 0,
 					split_selected, split_offsets, 1u)) == cudaSuccess);
-				D41WindowFoldKernel<<<dim3(rows, LOCAL), D41K_THREADS>>>(received + (uint64_t)source * stride, stride, LOCAL, query,
+				D41WindowFoldLaunch(dim3(rows, LOCAL), D41K_THREADS, (SparkGpuStream)0, received + (uint64_t)source * stride, stride, LOCAL, query,
 					(uint64_t)rows * LOCAL * LATENT, wave, ring_landing + (uint64_t)source * RING * LATENT, positions_d, zeros_d, ordinal_d, begin_d, indices_d,
 					slot_d, 0u, RING, WINDOW, DEGREE, source, scale, LOCAL, 1u);
 				CUDA(cudaGetLastError());
