@@ -8,11 +8,11 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKL2C = ROOT / "tools" / "skl2c" / "skl2c.py"
-SKL2_DIR = ROOT / "inference" / "skl2"
+SKL2C = ROOT / "skl2" / "compiler" / "skl2c" / "skl2c.py"
+SKL2_DIR = ROOT / "skl2"
 
-sys.path.insert(0, str(ROOT / "tools" / "skl2c"))
-sys.path.append(str(ROOT / "tools" / "sklc"))
+sys.path.insert(0, str(ROOT / "skl2" / "compiler" / "skl2c"))
+sys.path.append(str(ROOT / "skl2" / "compiler" / "sklc"))
 
 from skl2_frontend import Skl2CompileError, load_unit, parse_skl2_text
 from skl2_lower import build_lockfile, compile_unit, resolve_models, select_primitive_variant, verify_lockfile

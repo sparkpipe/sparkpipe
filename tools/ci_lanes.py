@@ -90,6 +90,7 @@ ENGINE_PATHS = (
     "scheduler/*",
     "schema/*",
     "scripts/*",
+    "skl2/*",
     "src/*",
     "tests/*",
     "text/*",

@@ -1,12 +1,10 @@
 # SKLC `sm_121` (Blackwell) SASS Instruction Encodings and CUBIN Format
 
 This document is the encoding reference and disassembly verification record for
-`tools/sklc/isa_sm121.py` and `tools/sklc/cubin_elf.py`.
+`skl2/compiler/sklc/isa_sm121.py` and `skl2/compiler/sklc/cubin_elf.py`.
 
-`tools/sklc/` is an offline prototype kernel compiler tested by
-`tests/test_sklc.py` against the 13 `.skl` kernels under
-`inference/kernels/skl/`. No production serving binary or model family uses
-`tools/sklc/` or `.skl` kernels. Every instruction encoding below is verified
+`skl2/compiler/sklc/` is the low-level Blackwell codegen/CUBIN backend under `skl2/compiler/`, tested by
+`tests/test_sklc.py` and `tests/test_skl2c.py`. Every instruction encoding below is verified
 against NVIDIA's `cuobjdump --dump-sass` and `nvdisasm` (CUDA 13.0) for target
 `sm_121a` (Blackwell GB10).
 
@@ -14,7 +12,7 @@ against NVIDIA's `cuobjdump --dump-sass` and `nvdisasm` (CUDA 13.0) for target
 
 Blackwell (`sm_121` / `sm_120`) SASS instructions are fixed 128-bit words
 packed little-endian as two 64-bit unsigned integers `(lo, hi)`
-(`struct.pack("<QQ", lo, hi)` in `tools/sklc/isa_sm121.py`).
+(`struct.pack("<QQ", lo, hi)` in `skl2/compiler/sklc/isa_sm121.py`).
 
 ### Low 64-Bit Word (`lo`)
 
@@ -44,7 +42,7 @@ packed little-endian as two 64-bit unsigned integers `(lo, hi)`
 
 ## 2. Registers, Special Registers, and Constant Bank `c[0x0]`
 
-Constants defined in `tools/sklc/isa_sm121.py`:
+Constants defined in `skl2/compiler/sklc/isa_sm121.py`:
 
 | Symbol | Value | Meaning |
 |---|---|---|
@@ -60,7 +58,7 @@ Constants defined in `tools/sklc/isa_sm121.py`:
 
 ## 3. Complete Instruction Encoding Table
 
-Every encoder function in `tools/sklc/isa_sm121.py`, its opcode/modifier bits,
+Every encoder function in `skl2/compiler/sklc/isa_sm121.py`, its opcode/modifier bits,
 and its verified `sm_121a` SASS disassembly under `cuobjdump --dump-sass` and
 `nvdisasm`:
 
@@ -183,7 +181,7 @@ Cache policy bits (`hi[31:15]`): `CACHE_DEFAULT = 0x0C1E0000`,
 | `encode_stg` (`STG_CACHE_STRONG_SYS`) | `0x0986 \| pred<<12` | `cache=0x0C114000`, `width_bits=STG_W_128\|STG_W_32` | `STG.E[.<width>].STRONG.SYS desc[UR][Raddr.64+off], Rval` |
 | `encode_membar` | `0x7992` | `hi \|= {SC_SYS: 0x3000, ALL_SYS: 0xB000}` | `MEMBAR.{SC\|ALL}.SYS` |
 
-## 4. CUBIN ELF64 Container Format (`tools/sklc/cubin_elf.py`)
+## 4. CUBIN ELF64 Container Format (`skl2/compiler/sklc/cubin_elf.py`)
 
 `build_cubin` writes an ELF64 executable (`ET_EXEC = 2`, `EM_CUDA = 190`,
 `EI_OSABI_CUDA = 0x41`, `EI_ABIVERSION_BLACKWELL = 8`):
@@ -211,7 +209,7 @@ Cache policy bits (`hi[31:15]`): `CACHE_DEFAULT = 0x0C1E0000`,
 Verified on GB10 (`sm_121a`, CUDA 13.0 `cuobjdump` and `nvdisasm`) across all
 6 `.skl` source files (13 kernels, 3,113 emitted instructions) and the 84-case
 synthetic encoder coverage suite covering every encoder in
-`tools/sklc/isa_sm121.py`:
+`skl2/compiler/sklc/isa_sm121.py`:
 
 | Source | Kernels | Instructions | `cuobjdump --dump-sass` | `nvdisasm` | Unknown / Illegal Opcodes |
 |---|---:|---:|---|---|---:|
@@ -222,14 +220,14 @@ synthetic encoder coverage suite covering every encoder in
 | `inference/kernels/skl/skinny_decode.skl` | 3 | 1,702 | PASS | PASS | 0 |
 | `inference/kernels/skl/tp_mesh_mem.skl` | 3 | 98 | PASS | PASS | 0 |
 | Exhaustive `isa_sm121.py` encoder suite | 1 | 84 | PASS | PASS | 0 |
-| `inference/skl2/` Slice 1 (`allreduce`, `linear`, `mma_gemm`, `norm_rope`) | 53 | 15,856 | PASS | PASS | 0 |
-| `inference/skl2/` Full Slice 2 (all 91 kernels, 0 spills, 100% `.skl` v1 retired) | 91 | 24,520 | PASS | PASS | 0 |
+| `skl2/` Slice 1 (`allreduce`, `linear`, `mma_gemm`, `norm_rope`) | 53 | 15,856 | PASS | PASS | 0 |
+| `skl2/` Full Slice 2 (all 91 kernels, 0 spills, 100% `.skl` v1 retired) | 91 | 24,520 | PASS | PASS | 0 |
 | **Total (active `skl2` + exhaustive encoder suite)** | **92** | **24,604** | **PASS** | **PASS** | **0** |
 
 To reproduce disassembly verification on any host with CUDA 13.0 tools:
 
 ```sh
-python3 tools/skl2c/skl2c.py --arch sm121a inference/skl2/stdlib/allreduce.skl2 inference/skl2/kernels/*.skl2 -o /tmp/skl2_all.cubin
+python3 skl2/compiler/skl2c/skl2c.py --arch sm121a skl2/stdlib/allreduce.skl2 skl2/kernels/*.skl2 -o /tmp/skl2_all.cubin
 cuobjdump --dump-sass /tmp/skl2_all.cubin | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
 nvdisasm /tmp/skl2_all.cubin | grep -iE 'unknown|illegal|invalid|\?\?\?' && exit 1
 ```

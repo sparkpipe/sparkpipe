@@ -1128,8 +1128,8 @@ endef
 SKL2_BUILD_DIR := build
 SKL2_ALLREDUCE_POLICY_H := $(SKL2_BUILD_DIR)/skl2_allreduce_policy.h
 
-$(SKL2_ALLREDUCE_POLICY_H): inference/skl2/stdlib/allreduce.skl2 $(wildcard tools/skl2c/*.py inference/skl2/stdlib/*.skl2) | build
-	python3 -I tools/skl2c/skl2c.py --emit-policy-h $@ inference/skl2/stdlib/allreduce.skl2
+$(SKL2_ALLREDUCE_POLICY_H): skl2/stdlib/allreduce.skl2 $(wildcard skl2/compiler/skl2c/*.py skl2/stdlib/*.skl2) | build
+	python3 -I skl2/compiler/skl2c/skl2c.py --emit-policy-h $@ skl2/stdlib/allreduce.skl2
 
 KERNEL_TEST_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -MMD -MP -MF $@.d -I. -Iinclude -Imodel-families/common/include
 CUDA_HEADER_DEPS := $(SKL2_ALLREDUCE_POLICY_H) $(wildcard inference/kernels/*.cuh inference/kernels/*.h inference/kernels/formats/*.cuh inference/kernels/formats/*.h inference/kernels/fused/*.cuh \
@@ -2337,7 +2337,7 @@ build/stage_runner_single_gpu_cuda: tests/cuda/stage_runner_single_gpu_cuda.cu i
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_single_gpu_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK) -o $@
 
 SKL2_K3_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_k3_embedded.h
-SKL2_K3_SOURCES := inference/skl2/kernels/moe_mma.skl2 inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/linear.skl2 inference/skl2/kernels/indexer.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
+SKL2_K3_SOURCES := skl2/kernels/moe_mma.skl2 skl2/kernels/mma_gemm.skl2 skl2/kernels/linear.skl2 skl2/kernels/indexer.skl2 skl2/kernels/attention.skl2 skl2/kernels/norm_rope.skl2 skl2/kernels/stage_mem.skl2
 SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 k3_splitk_reduce_situ_256 \
 	k3_wide_mma_32x32 k3_wide_mma_64x32 k3_kda_proj_mma_32x32 k3_kda_proj_mma_64x32 \
 	k3_index_head_mma_skip_32x32 k3_index_q_mma_wide_skip_64x128 k3_index_q_mma_wide_skip_128x128 \
@@ -2359,8 +2359,8 @@ SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 
 	k3_rms_norm_kv_shard_store_64 k3_layer_norm_kv_shard_store_32 k3_sparse_score_slots_256 \
 	k3_mla_gather_prefill_sparse_256 k3_mla_gather_prefill_6head_256
 
-$(SKL2_K3_EMBEDDED): $(SKL2_K3_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
-	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_K3_KERNELS),--only $(k)) --prefix K3Skl2 --emit-embedded-h $@ $(SKL2_K3_SOURCES)
+$(SKL2_K3_EMBEDDED): $(SKL2_K3_SOURCES) $(wildcard skl2/compiler/skl2c/*.py skl2/compiler/sklc/*.py skl2/stdlib/*.skl2) | build
+	python3 -I skl2/compiler/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_K3_KERNELS),--only $(k)) --prefix K3Skl2 --emit-embedded-h $@ $(SKL2_K3_SOURCES)
 
 build/k3_tp_context_cuda: tests/cuda/k3_tp_context_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_stage.cuh model-families/k3/source/k3_streamed_prefill.cuh model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu $(SKL2_K3_EMBEDDED) $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DEVICE_CUDA_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=0 -I. -Ibuild -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_tp_context_cuda.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs $(DEVICE_CUDA_NVCC_LINK) -o $@
@@ -2375,7 +2375,7 @@ $(K31_PRO_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(K31_PRO_TP16_SERVING_ADAPTER)
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DSPARK_K3_SERVING_INDEXER=1 -DK31_PRO_CONTRACT_SHA256=\"$(K31_PRO_TP16_CONTRACT_SHA256)\" -I. -Ibuild -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK) -libverbs); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 SKL2_QWEN38_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_qwen38_embedded.h
-SKL2_QWEN38_SOURCES := inference/skl2/kernels/mma_gemm.skl2 inference/skl2/kernels/recurrent.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/stage_mem.skl2 inference/skl2/kernels/hyperconn.skl2 inference/skl2/kernels/moe_route.skl2 inference/skl2/kernels/moe_mma.skl2 inference/skl2/kernels/indexer.skl2
+SKL2_QWEN38_SOURCES := skl2/kernels/mma_gemm.skl2 skl2/kernels/recurrent.skl2 skl2/kernels/norm_rope.skl2 skl2/kernels/attention.skl2 skl2/kernels/stage_mem.skl2 skl2/kernels/hyperconn.skl2 skl2/kernels/moe_route.skl2 skl2/kernels/moe_mma.skl2 skl2/kernels/indexer.skl2
 SKL2_QWEN38_KERNELS := qwen_exact_bf16_multi_w1x4_r4_n4 qwen_exact_bf16_multi_w2x4_r4_n4 qwen_exact_bf16_multi_w4x2_r4_n4 qwen_exact_bf16_multi_w4x2_r8_n2 \
 	qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4 qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2 \
 	qwen_bf16_dense_mma_16x64 qwen_bf16_dense_mma_32x64 qwen_bf16_dense_mma_64x64 qwen_bf16_dense_mma_128x64 \
@@ -2420,13 +2420,12 @@ SKL2_QWEN38_KERNELS := qwen_exact_bf16_multi_w1x4_r4_n4 qwen_exact_bf16_multi_w2
 	index_score_sharded_h4_256 index_score_sharded_gen_256 index_gathered_score_h4_256 index_gathered_score_gen_256 \
 	index_local_topk_pack_256 index_local_mask_from_scores_256 index_gathered_select_mask_256
 
-$(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
-	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
+$(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard skl2/compiler/skl2c/*.py skl2/compiler/sklc/*.py skl2/stdlib/*.skl2) | build
+	python3 -I skl2/compiler/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
 
 SKL2_DSV41_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_dsv41_embedded.h
-SKL2_DSV41_SOURCES := inference/skl2/kernels/moe_route.skl2 inference/skl2/kernels/route_quant.skl2 \
-	inference/skl2/kernels/linear.skl2 inference/skl2/kernels/indexer.skl2 \
-	inference/skl2/kernels/hyperconn.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
+SKL2_DSV41_SOURCES := skl2/kernels/moe_route.skl2 skl2/kernels/route_quant.skl2 skl2/kernels/linear.skl2 skl2/kernels/indexer.skl2 \
+	skl2/kernels/hyperconn.skl2 skl2/kernels/attention.skl2 skl2/kernels/norm_rope.skl2 skl2/kernels/stage_mem.skl2
 SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_unpack_r16 \
 	d41_record_place_r4 d41_record_place_r16 d41_exchange_finalize_r4 d41_exchange_finalize_r16 \
 	d41_finalize_map_r4 d41_finalize_map_r16 d41_shuffle_pack_256 d41_shuffle_unpack_r4 d41_shuffle_unpack_r16 \
@@ -2469,11 +2468,11 @@ SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_
 	d41_hc_mix_norm_staged_r4_256 d41_hc_mix_norm_staged_r8_256 d41_hc_mix_norm_staged_r16_256 \
 	d41_hc_mix_norm_ksplit_r1_256 d41_hc_mix_norm_ksplit_r4_256 d41_hc_mix_norm_ksplit_r8_256 d41_hc_mix_norm_ksplit_r16_256
 
-$(SKL2_DSV41_EMBEDDED): $(SKL2_DSV41_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
-	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_DSV41_KERNELS),--only $(k)) --prefix D41Skl2 --emit-embedded-h $@ $(SKL2_DSV41_SOURCES)
+$(SKL2_DSV41_EMBEDDED): $(SKL2_DSV41_SOURCES) $(wildcard skl2/compiler/skl2c/*.py skl2/compiler/sklc/*.py skl2/stdlib/*.skl2) | build
+	python3 -I skl2/compiler/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_DSV41_KERNELS),--only $(k)) --prefix D41Skl2 --emit-embedded-h $@ $(SKL2_DSV41_SOURCES)
 
 SKL2_GLM5NEXT_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_glm5next_embedded.h
-SKL2_GLM5NEXT_SOURCES := inference/skl2/kernels/moe_route.skl2 inference/skl2/kernels/moe_mma.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
+SKL2_GLM5NEXT_SOURCES := skl2/kernels/moe_route.skl2 skl2/kernels/moe_mma.skl2 skl2/kernels/norm_rope.skl2 skl2/kernels/stage_mem.skl2
 SKL2_GLM5NEXT_KERNELS := g5n_build_tile_prefix_32 \
 	g5n_moe_exact_w1_act_fp8 g5n_moe_exact_w1_act_bf16 g5n_moe_exact_w2_fp8 g5n_moe_exact_w2_bf16 \
 	g5n_shared_w1_act_tile_r4 g5n_shared_w1_act_tile_r8 \
@@ -2491,8 +2490,8 @@ SKL2_GLM5NEXT_KERNELS := g5n_build_tile_prefix_32 \
 	g5n_kda_causal_conv_prefill_128 g5n_kda_conv_window_commit_128 g5n_kda_decay_beta_256 \
 	g5n_copy_new_kv_256 g5n_gather_meta_32 g5n_unpack_prior_kv_64 g5n_pad_floats_256 g5n_pad_candidates_256
 
-$(SKL2_GLM5NEXT_EMBEDDED): $(SKL2_GLM5NEXT_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
-	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_GLM5NEXT_KERNELS),--only $(k)) --prefix Glm5NextSkl2 --emit-embedded-h $@ $(SKL2_GLM5NEXT_SOURCES)
+$(SKL2_GLM5NEXT_EMBEDDED): $(SKL2_GLM5NEXT_SOURCES) $(wildcard skl2/compiler/skl2c/*.py skl2/compiler/sklc/*.py skl2/stdlib/*.skl2) | build
+	python3 -I skl2/compiler/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_GLM5NEXT_KERNELS),--only $(k)) --prefix Glm5NextSkl2 --emit-embedded-h $@ $(SKL2_GLM5NEXT_SOURCES)
 
 QWEN38_27B_ADAPTER_DEPS := $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) $(SKL2_QWEN38_EMBEDDED) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 
@@ -2894,49 +2893,49 @@ build/obj/drafter/%.o: %.c | build
 $(K31_DSPARK_DRAFTER_MODULE): modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(DSV41_DSPARK_DRAFTER_MODULE): modules/dsv41_dspark_draft_stage/source/spark_dsv41_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(QWEN38_DSPINE_DRAFTER_MODULE): modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(GLM53_DSPARK_DRAFTER_MODULE): modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(QWEN38_MAX_DSPARK_DRAFTER_MODULE): modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(KEXAONE2_DSPARK_DRAFTER_MODULE): modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(GLM53_FLASH_DFLASH2_DRAFTER_MODULE): modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 $(AXK2_DSPARK_DRAFTER_MODULE): modules/axk2_dspark_draft_stage/source/spark_axk2_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
-	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	python3 -I skl2/tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
 drafter-modules: $(DRAFTER_MODULES)

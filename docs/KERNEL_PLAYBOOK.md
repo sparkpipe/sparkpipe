@@ -225,7 +225,7 @@ which could be mistaken for the qualified route.
   2-6% faster (Qwen3.8 Max up projection at 16 routes an expert: 4 x 4
   5.9 ms, 16 x 1 6.9 ms, 8 x 4 7.1 ms, 16 x 2 414 ms). The variants that
   share `LANES` give the same bytes.
-  `tools/kernel_spill_audit.py` refuses an `LmSkinnyGroupedKernel`
+  `skl2/tools/kernel_spill_audit.py` refuses an `LmSkinnyGroupedKernel`
   instantiation with local memory or a stack frame in any serving adapter or
   CUDA program (sm_121a compile gate, exit 10), and
   `tests/test_grouped_experts_bands_cuda.py` runs every family that reaches
@@ -283,7 +283,7 @@ which could be mistaken for the qualified route.
   measured as fast or up to 6% slower there. Every tile and warp row gives
   the same bytes, because each output adds its K blocks in the same order
   (`tests/test_stream_gemm_cuda.py`, `tests/test_stream_k_tail_cuda.py`).
-- **Hot-path kernels keep no frame.** `tools/kernel_spill_audit.py` reads
+- **Hot-path kernels keep no frame.** `skl2/tools/kernel_spill_audit.py` reads
   `cuobjdump -res-usage` for every serving adapter and CUDA program (sm_121a
   compile gate, exit 10) and lists every kernel with a stack frame or local
   memory, by family. A frame holds spilled registers or an array indexed at
@@ -970,7 +970,7 @@ beside that kernel.
 - **Before the wait, write nothing global.** No store to global memory, no
   atomic, no reduction and no counter before the wait, so the kernel never
   overwrites what the kernel still running beside it reads.
-  `tools/dependent_wait_audit.py` checks the compiled code. In every function
+  `skl2/tools/dependent_wait_audit.py` checks the compiled code. In every function
   that waits (`ACQBULK`), it refuses a global store, atomic or reduction before
   the first wait. The sm_121a compile gate runs it on every serving adapter
   and CUDA program. The mesh combines (`SparkTpMeshHardwareDirectKernel` and

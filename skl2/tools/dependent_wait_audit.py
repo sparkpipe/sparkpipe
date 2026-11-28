@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that no kernel writes global memory before it waits for the kernel it depends on.
 
-    python3 -I tools/dependent_wait_audit.py [--cuobjdump PATH] ARTIFACT...
+    python3 -I skl2/tools/dependent_wait_audit.py [--cuobjdump PATH] ARTIFACT...
 
 A kernel launched as a programmatic dependent may start while the kernel before
 it still runs: once that kernel has released its dependents, everything the

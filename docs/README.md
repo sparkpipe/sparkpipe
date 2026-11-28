@@ -69,7 +69,7 @@ current authority.
   hyper-connection block of the DeepSeek V4.1 Flash decode step.
 - [`SKLC_ENCODINGS.md`](SKLC_ENCODINGS.md): `sm_121` (Blackwell) 128-bit SASS
   instruction encodings, CUBIN ELF64 container layout, and `cuobjdump` /
-  `nvdisasm` verification receipt for `tools/sklc/`.
+  `nvdisasm` verification receipt for `skl2/compiler/sklc/`.
 - [`STAGEPACK_NAMING.md`](STAGEPACK_NAMING.md): pack directory and
   runtime-root naming; `tools/stagepack_naming.json` is the machine source.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): serving recipe datafile and KV

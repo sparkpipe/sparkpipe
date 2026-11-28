@@ -1566,6 +1566,9 @@ CEILING = 381622
 CEILING = 381652
 CEILING = 381715
 CEILING = 380539
+INFERENCE_CEILING = 304547
+SKL2_CEILING = 20320
+TOOLS_CEILING = 148266
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1588,7 +1591,7 @@ EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification',
 # .lane_cache holds lane agents' fetched reference/download artifacts
 # (e.g. the upstream transformers modeling files a lane consults); the
 # same class of exclusion as .agents. Authored lane code lives in
-# model-families/, modules/, tools/, and sources the counter sees.
+# model-families/, modules/, skl2/, tools/, and sources the counter sees.
 
 
 def budget():
@@ -1603,7 +1606,10 @@ def budget():
 
 def main():
     ceiling = CEILING + budget()
-    total = 0
+    inference = 0
+    vendor_nvrm = 0
+    skl2 = 0
+    tools = 0
     for path in ROOT.rglob('*'):
         relative = path.relative_to(ROOT)
         if not path.is_file():
@@ -1611,11 +1617,36 @@ def main():
         if any(component in EXCLUDED_COMPONENTS for component in relative.parts):
             continue
         if path.suffix in EXTENSIONS or path.name == 'Makefile':
-            total += sum(1 for _ in path.open(errors='surrogateescape'))
-    print(f"non-test authored lines: {total} (ceiling {ceiling} = {CEILING} + {ceiling - CEILING} from {BUDGET.relative_to(ROOT)})")
+            count = sum(1 for _ in path.open(errors='surrogateescape'))
+            top = relative.parts[0]
+            if top == 'skl2':
+                skl2 += count
+            elif top == 'tools':
+                tools += count
+            else:
+                inference += count
+                if relative.parts[:4] == ('runtime', 'device', 'nvrm', 'vendor'):
+                    vendor_nvrm += count
+    total = inference + skl2 + tools
+    print(f"inference lines: {inference} (ceiling {INFERENCE_CEILING}; includes {vendor_nvrm} vendored NVRM headers)")
+    print(f"skl2 lines:      {skl2} (ceiling {SKL2_CEILING})")
+    print(f"tools lines:     {tools} (ceiling {TOOLS_CEILING})")
+    print(f"total non-test authored lines: {total} (ceiling {ceiling} = {CEILING} + {ceiling - CEILING} from {BUDGET.relative_to(ROOT)})")
+    failed = False
+    for name, value, limit in (
+        ('inference', inference, INFERENCE_CEILING),
+        ('skl2', skl2, SKL2_CEILING),
+        ('tools', tools, TOOLS_CEILING),
+    ):
+        if value > limit:
+            print(f"\nFAIL {name} grew by {value - limit} over its ceiling ({value} > {limit}); "
+                  f"shrink {name} or explicitly update {name.upper()}_CEILING in tests/test_code_size.py")
+            failed = True
     if total > ceiling:
         print(f"\nFAIL authored code grew by {total - ceiling} over the ceiling; "
               f"shrink it, or add {BUDGET.relative_to(ROOT)}/<branch>.txt holding +<lines> and a justification")
+        failed = True
+    if failed:
         return 1
     if total < ceiling - 800:
         print(f"note: ceiling is {ceiling - total} above reality; "

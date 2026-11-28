@@ -1,4 +1,4 @@
-"""Host checks of tools/dependent_wait_audit.py on SASS listings.
+"""Host checks of skl2/tools/dependent_wait_audit.py on SASS listings.
 
 A function that waits for the kernel it depends on (ACQBULK) must not store to
 global memory, or touch it with an atomic or a reduction, before its first
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = importlib.util.spec_from_file_location("dependent_wait_audit", ROOT / "tools" / "dependent_wait_audit.py")
+SPEC = importlib.util.spec_from_file_location("dependent_wait_audit", ROOT / "skl2" / "tools" / "dependent_wait_audit.py")
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
 
@@ -73,7 +73,7 @@ def check(failures):
     if audit.stem("_Z19D41RmsNormQdqKernelILj256EEvPKt") != "D41RmsNormQdqKernel" or audit.stem("_ZN3foo3barEv") != "foo":
         failures.append("mangled names are not reduced to the kernel's name")
     gate = (ROOT / "tools" / "cuda13_sm121a_compile_gate.sh").read_text()
-    if "tools/dependent_wait_audit.py" not in gate:
+    if "skl2/tools/dependent_wait_audit.py" not in gate:
         failures.append("the sm_121a compile gate does not run the dependent wait audit")
 
 
