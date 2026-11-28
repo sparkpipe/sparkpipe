@@ -1,4 +1,5 @@
 import "stdlib/epilogues.skl2";
+import "stdlib/math.skl2";
 
 primitive std.allreduce @v1 {
     concept = allreduce;
@@ -207,15 +208,8 @@ kernel[256, 64] allreduce_combine_rmsnorm_bf16(
     f32 inv_dim
 ) {
     shared f32 smem[8];
-    acqbulk();
-    reg u32 row = ctaid_x();
-    if (row >= rows) {
-        preexit();
-        return;
-    }
-    reg u32 tid = tid_x();
-    reg u32 wid = warp_id();
-    reg u32 lane = lane_id();
+    reg u32 row = 0; reg u32 tid = 0; reg u32 wid = 0; reg u32 lane = 0;
+    pdl_row_prologue(rows, row, tid, wid, lane);
     ureg u64 p0 = ptr_add(rank0_bf16, row * chunks16, 32);
     ureg u64 p1 = ptr_add(rank1_bf16, row * chunks16, 32);
     ureg u64 po = ptr_add(out_bf16, row * chunks16, 32);

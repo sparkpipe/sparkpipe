@@ -780,10 +780,10 @@ macro stg_compact_half(primary, idx, count, s_warp, wid, lane, out_flag, out_off
     reg u32 v = out_flag; warp_prefix_u32(v, lane);
     if (lane == 31) { sts32(s_warp, wid, v); }
     barrier();
-    if (wid == 0) { reg u32 w = (lane < 8) ? lds32(s_warp, lane) : 0; warp_prefix_u32(w, lane); if (lane < 8) { sts32(s_warp, lane, w); } }
+    if (wid == 0) { reg u32 w = 0; if (lane < 8) { w = lds32(s_warp, lane); } warp_prefix_u32(w, lane); if (lane < 8) { sts32(s_warp, lane, w); } }
     barrier();
     out_tot = lds32(s_warp, 7);
-    out_off = ((wid > 0) ? lds32(s_warp, wid - 1) : 0) + v - out_flag;
+    reg u32 wb = 0; if (wid > 0) { wb = lds32(s_warp, wid - 1); } out_off = wb + v - out_flag;
 }
 
 @pdl
@@ -2003,3 +2003,46 @@ template kernel[BLK, 64] moe_finalize_k16_tpl<IS_T224, BLK>(
 
 instantiate moe_finalize_k16_tpl<0, 128> as k3_moe_finalize_warp_slice_128;
 instantiate moe_finalize_k16_tpl<1, 224> as k3_moe_finalize_token224_224;
+
+@pdl
+@concept(elementwise)
+kernel[BLOCK, 48] d41_engram_pack_256(
+    global u64* ids, global u32* slot, global u8* payload, global u8* scale,
+    u32 own, u32 columns, u64 first_row, u64 local_rows, u32 capacity, global u8* send
+) {
+    acqbulk();
+    reg u32 row = ctaid_x(); reg u32 lane = lane_id(); reg u32 qown = 0; reg u32 rown = 0;
+    u32_divmod(row, own, qown, rown);
+    for (reg u32 col = warp_id(); col < columns; col += 8) {
+        reg u32 entry = row * columns + col; reg u64 idv = ldg64_persist(ptr_add(ids, entry, 8));
+        if ((idv[1] >> 31) == 0 && idv[1] == 0 && idv[0] >= first_row[0] && idv[0] < first_row[0] + local_rows[0]) {
+            reg u32 loc = idv[0] - first_row[0];
+            reg u64 rec = ptr_add(send, qown * capacity + ldg32_persist(ptr_add(slot, entry, 4)), 272);
+            if (lane < 16) { stg128(ptr_add(rec, lane, 16), ldg128_stream(ptr_add(ptr_add(payload, loc, 256), lane, 16))); }
+            else if (lane == 16) { stg64(ptr_add(rec, 256, 1), ldg64_stream(ptr_add(scale, loc, 8))); }
+        }
+    }
+    preexit();
+}
+
+@pdl
+@concept(elementwise)
+kernel[BLOCK, 40] d41_engram_unpack_256(
+    global u64* ids, global u32* slot, global u8* received, u32 rows,
+    u32 first, u32 columns, u64 part, u64 table_rows, u32 capacity, global u32* embed
+) {
+    acqbulk();
+    reg u32 row = first + ctaid_x(); reg u32 col = ctaid_y(); reg u32 tid = tid_x();
+    reg u32 src = STG_NO_ROW; reg u64 rec = 0;
+    if (row < rows) {
+        reg u32 entry = row * columns + col; reg u64 idv = ldg64_persist(ptr_add(ids, entry, 8));
+        engram_source_rank(idv, part, table_rows, src);
+        if (src != STG_NO_ROW) { rec = ptr_add(received, src * capacity + ldg32_persist(ptr_add(slot, entry, 4)), 272); }
+    }
+    reg u32 out_bf = 0;
+    if (src != STG_NO_ROW) {
+        out_bf = f32_to_bf16(e4m3_to_f32(ldg8_stream(ptr_add(rec, tid, 1))) * ue8m0_to_f32(ldg8_stream(ptr_add(rec, 256 + (tid >> 5), 1))));
+    }
+    stg16(ptr_add(ptr_add(embed, ctaid_x() * columns + col, 512), tid, 2), out_bf);
+    preexit();
+}

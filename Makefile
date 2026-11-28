@@ -2424,8 +2424,8 @@ $(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tool
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
 
 SKL2_DSV41_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_dsv41_embedded.h
-SKL2_DSV41_SOURCES := inference/skl2/kernels/moe_route.skl2 \
-	inference/skl2/kernels/dsv41_gemv.skl2 inference/skl2/kernels/dsv41_ops.skl2 \
+SKL2_DSV41_SOURCES := inference/skl2/kernels/moe_route.skl2 inference/skl2/kernels/route_quant.skl2 \
+	inference/skl2/kernels/linear.skl2 inference/skl2/kernels/indexer.skl2 \
 	inference/skl2/kernels/hyperconn.skl2 inference/skl2/kernels/attention.skl2 inference/skl2/kernels/norm_rope.skl2 inference/skl2/kernels/stage_mem.skl2
 SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_unpack_r16 \
 	d41_record_place_r4 d41_record_place_r16 d41_exchange_finalize_r4 d41_exchange_finalize_r16 \

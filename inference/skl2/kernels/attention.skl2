@@ -1310,23 +1310,19 @@ kernel[256, 168] k3_mla_gather_prefill_sparse_256(
     f32 qk_scale, global u16* output_bf16, u32 rows, u32 total_heads, u32 total_ctx,
     global u32* union_positions, global u8* union_masks, global u32* union_counts, u32 union_capacity
 ) {
-    acqbulk();
     reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id(); reg u32 mat = lane >> 3; reg u32 wit = lane & 7;
-    reg u32 half = (wid >> 2) & 1; reg u32 key_group = wid & 3; reg u32 head_base = ctaid_y() << 1;
-    reg u64 tile_pos = 0; reg u64 tile_masks = 0; reg u32 first_row = 0; reg u32 row_end = 0; reg u32 last_pos = 0; reg u32 listed_keys = 0; reg u32 tiles = 0;
-    k3p_init_limits(0, union_positions, union_masks, union_counts, union_capacity, sequence_of_row, context_length, row_position, rows, total_ctx, K3P2_RLIM_W, tid, tile_pos, tile_masks, first_row, row_end, last_pos, listed_keys, tiles);
-    k3p_load_query_t(0, query_bf16, first_row, row_end, total_heads, head_base, tid);
-    reg u32 next_p = ATTN_NO_ROW; reg u32 next_m = 0;
-    k3p_init_prefetch(0, kv_all, query_bf16, tile_pos, tile_masks, listed_keys, tiles, 32, first_row, row_end, last_pos, total_ctx, K3P2_RLIM_W, K3P2_SLOT_W, K3P2_KROW_W, K3P2_RMAX_W, K3P2_RSUM_W, 16, tid, wid, lane, next_p, next_m);
+    reg u32 head_base = ctaid_y() << 1; reg u64 tile_pos = 0; reg u64 tile_masks = 0; reg u32 lim[7];
+    k3p_prologue(0, union_positions, union_masks, union_counts, union_capacity, sequence_of_row, context_length, row_position, rows, total_ctx, kv_all, query_bf16, total_heads, head_base, 32, K3P2_RLIM_W, K3P2_SLOT_W, K3P2_KROW_W, K3P2_RMAX_W, K3P2_RSUM_W, 16, tid, wid, lane, tile_pos, tile_masks, lim);
+    reg u32 half = (wid >> 2) & 1; reg u32 key_group = wid & 3;
     barrier();
     reg u32x4 q_frag[18]; reg u32 a_row = ((mat & 1) << 3) + wit; reg u32 q_row_b = 32 * K3P_ROW_B + a_row * K3P_ROW_B;
     unroll (st = 0..18) { q_frag[st] = ldsm_x4(q_row_b + (((((half * 18 + st) << 1) + (mat >> 1)) ^ (a_row & 7)) << 4)); }
     reg f32x4 out_acc[8]; unroll (f = 0..8) { out_acc[f] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
     reg f32 scale_log2 = qk_scale * 1.4426950408889634f;
     barrier();
-    for (reg u32 tile = 0; tile < tiles; tile += 1) {
+    for (reg u32 tile = 0; tile < lim[4]; tile += 1) {
         reg u32 buf = 0; reg u32 tile_base = 0; reg u32 ahead_p = ATTN_NO_ROW; reg u32 ahead_m = 0;
-        k3p_tile_prologue(0, tile, tiles, 32, kv_all, query_bf16, tile_pos, tile_masks, listed_keys, tid, wid, lane, buf, tile_base, ahead_p, ahead_m);
+        k3p_tile_prologue(0, tile, lim[4], 32, kv_all, query_bf16, tile_pos, tile_masks, lim[3], tid, wid, lane, buf, tile_base, ahead_p, ahead_m);
         reg f32x4 sc = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
         reg u32 b_row = (key_group << 3) + wit; reg u32 row_b = tile_base + b_row * K3P_ROW_B; reg u32 half_c = (half * 18) << 1;
         unroll (ps = 0..9) {
@@ -1345,10 +1341,23 @@ kernel[256, 168] k3_mla_gather_prefill_sparse_256(
                 k3p_pv_pair(ah, b4, out_acc[fp * 2], out_acc[fp * 2 + 1]);
             }
         }
-        k3p_tile_epilogue(32, tile, tiles, buf, next_p, next_m, ahead_p, ahead_m, first_row, row_end, last_pos, total_ctx, K3P2_RLIM_W, K3P2_SLOT_W, K3P2_KROW_W, tid);
+        k3p_tile_epilogue(32, tile, lim[4], buf, lim[5], lim[6], ahead_p, ahead_m, lim[0], lim[1], lim[2], total_ctx, K3P2_RLIM_W, K3P2_SLOT_W, K3P2_KROW_W, tid);
     }
-    k3p_store_tile_t(0, 0, output_bf16, first_row, row_end, total_heads, head_base, wid, lane, out_acc);
+    k3p_store_tile_t(0, 0, output_bf16, lim[0], lim[1], total_heads, head_base, wid, lane, out_acc);
     preexit();
+}
+
+macro k3p_prologue(
+    SIX, union_positions, union_masks, union_counts, union_capacity, sequence_of_row, context_length, row_position,
+    rows, total_ctx, kv_all, query_bf16, total_heads, head_base, tile_keys, rlim_w, slot_w, krow_w, rmax_w, rsum_w, q_rows,
+    tid, wid, lane, out_tile_pos, out_tile_masks, lim
+) {
+    acqbulk();
+    out_tile_pos = 0; out_tile_masks = 0; unroll (li_ = 0..5) { lim[li_] = 0; }
+    k3p_init_limits(SIX, union_positions, union_masks, union_counts, union_capacity, sequence_of_row, context_length, row_position, rows, total_ctx, rlim_w, tid, out_tile_pos, out_tile_masks, lim[0], lim[1], lim[2], lim[3], lim[4]);
+    k3p_load_query_t(SIX, query_bf16, lim[0], lim[1], total_heads, head_base, tid);
+    lim[5] = ATTN_NO_ROW; lim[6] = 0;
+    k3p_init_prefetch(SIX, kv_all, query_bf16, out_tile_pos, out_tile_masks, lim[3], lim[4], tile_keys, lim[0], lim[1], lim[2], total_ctx, rlim_w, slot_w, krow_w, rmax_w, rsum_w, q_rows, tid, wid, lane, lim[5], lim[6]);
 }
 
 @pdl
@@ -1358,21 +1367,17 @@ kernel[256, 184] k3_mla_gather_prefill_6head_256(
     f32 qk_scale, global u16* output_bf16, u32 rows, u32 total_ctx,
     global u32* union_positions, global u8* union_masks, global u32* union_counts, u32 union_capacity
 ) {
-    acqbulk();
     reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id(); reg u32 mat = lane >> 3; reg u32 wit = lane & 7;
+    reg u64 tile_pos = 0; reg u64 tile_masks = 0; reg u32 lim[7];
+    k3p_prologue(1, union_positions, union_masks, union_counts, union_capacity, sequence_of_row, context_length, row_position, rows, total_ctx, kv_all, query_bf16, 6, 0, 16, K3P6_RLIM_W, K3P6_SLOT_W, K3P6_KROW_W, K3P6_RMAX_W, K3P6_RSUM_W, 48, tid, wid, lane, tile_pos, tile_masks, lim);
     reg u32 k_split = wid >> 1; reg u32 key_group = wid & 1;
-    reg u64 tile_pos = 0; reg u64 tile_masks = 0; reg u32 first_row = 0; reg u32 row_end = 0; reg u32 last_pos = 0; reg u32 listed_keys = 0; reg u32 tiles = 0;
-    k3p_init_limits(1, union_positions, union_masks, union_counts, union_capacity, sequence_of_row, context_length, row_position, rows, total_ctx, K3P6_RLIM_W, tid, tile_pos, tile_masks, first_row, row_end, last_pos, listed_keys, tiles);
-    k3p_load_query_t(1, query_bf16, first_row, row_end, 6, 0, tid);
-    reg u32 next_p = ATTN_NO_ROW; reg u32 next_m = 0;
-    k3p_init_prefetch(1, kv_all, query_bf16, tile_pos, tile_masks, listed_keys, tiles, 16, first_row, row_end, last_pos, total_ctx, K3P6_RLIM_W, K3P6_SLOT_W, K3P6_KROW_W, K3P6_RMAX_W, K3P6_RSUM_W, 48, tid, wid, lane, next_p, next_m);
     reg f32x4 out0[8]; reg f32x4 out1[8]; reg f32x4 out2[8];
     unroll (f = 0..8) { out0[f] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); out1[f] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); out2[f] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
     reg f32 scale_log2 = qk_scale * 1.4426950408889634f;
     barrier();
-    for (reg u32 tile = 0; tile < tiles; tile += 1) {
+    for (reg u32 tile = 0; tile < lim[4]; tile += 1) {
         reg u32 buf = 0; reg u32 tile_base = 0; reg u32 ahead_p = ATTN_NO_ROW; reg u32 ahead_m = 0;
-        k3p_tile_prologue(1, tile, tiles, 16, kv_all, query_bf16, tile_pos, tile_masks, listed_keys, tid, wid, lane, buf, tile_base, ahead_p, ahead_m);
+        k3p_tile_prologue(1, tile, lim[4], 16, kv_all, query_bf16, tile_pos, tile_masks, lim[3], tid, wid, lane, buf, tile_base, ahead_p, ahead_m);
         reg f32x4 sc0 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); reg f32x4 sc1 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); reg f32x4 sc2 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
         reg u32 b_row = (key_group << 3) + wit; reg u32 kb_row = tile_base + b_row * K3P_ROW_B;
         reg u32 a_off = ((mat & 1) << 3) + wit; reg u32 q_r0 = K3P6_QBASE_B + a_off * K3P_ROW_B;
@@ -1399,11 +1404,11 @@ kernel[256, 184] k3_mla_gather_prefill_6head_256(
             k3p_pv_pair(ah1, b4, out1[fp * 2], out1[fp * 2 + 1]);
             k3p_pv_pair(ah2, b4, out2[fp * 2], out2[fp * 2 + 1]);
         }
-        k3p_tile_epilogue(16, tile, tiles, buf, next_p, next_m, ahead_p, ahead_m, first_row, row_end, last_pos, total_ctx, K3P6_RLIM_W, K3P6_SLOT_W, K3P6_KROW_W, tid);
+        k3p_tile_epilogue(16, tile, lim[4], buf, lim[5], lim[6], ahead_p, ahead_m, lim[0], lim[1], lim[2], total_ctx, K3P6_RLIM_W, K3P6_SLOT_W, K3P6_KROW_W, tid);
     }
-    k3p_store_tile_t(1, 0, output_bf16, first_row, row_end, 6, 0, wid, lane, out0);
-    k3p_store_tile_t(1, 1, output_bf16, first_row, row_end, 6, 0, wid, lane, out1);
-    k3p_store_tile_t(1, 2, output_bf16, first_row, row_end, 6, 0, wid, lane, out2);
+    k3p_store_tile_t(1, 0, output_bf16, lim[0], lim[1], 6, 0, wid, lane, out0);
+    k3p_store_tile_t(1, 1, output_bf16, lim[0], lim[1], 6, 0, wid, lane, out1);
+    k3p_store_tile_t(1, 2, output_bf16, lim[0], lim[1], 6, 0, wid, lane, out2);
     preexit();
 }
 
@@ -1487,8 +1492,8 @@ template kernel[256, 56] compressed_slot_copy_tpl<IS_STORE>(
     if (IS_STORE == 0) global u32* slots, if (IS_STORE == 0) u32 ratio,
     u32 elements_or_idxw, u32 page_slots, u32 slot_bytes
 ) {
-    acqbulk();
     if constexpr (IS_STORE == 0) {
+        acqbulk();
         reg u32 idx = ctaid_x(); if (idx >= ldg32_persist(path_count)) { preexit(); return; }
         reg u32 row = ldg32_persist(ptr_add(path_rows, idx, 4)); reg u32 pos = ldg32_persist(ptr_add(positions, row, 4));
         reg u32 q0 = 0; reg u32 r0 = 0; u32_divmod(pos + 1, ratio, q0, r0); if (r0 != 0) { preexit(); return; }
@@ -1501,11 +1506,8 @@ template kernel[256, 56] compressed_slot_copy_tpl<IS_STORE>(
         kv_shard_slot_addr_gen(view, seq, dst_p, page_slots, slot_bytes, to_p, ok_t);
         if (ok_f != 0 && ok_t != 0) { copy_bf16_1d(from_p, to_p, elements_or_idxw, tid_x(), 256); }
     } else {
-        reg u32 row = ctaid_x(); reg u32 pos = ldg32_persist(ptr_add(emit_row, row, 4));
-        if (pos == ATTN_NO_ROW) { preexit(); return; }
-        reg u64 slot = 0; reg u32 ok = 0;
-        kv_shard_slot_addr_gen(view, ldg32_persist(ptr_add(seq_of_row, row, 4)), pos, page_slots, slot_bytes, slot, ok);
-        if (ok == 0) { preexit(); return; }
+        reg u32 row = 0; reg u64 slot = 0;
+        kv_emit_slot_addr(view, emit_row, seq_of_row, page_slots, slot_bytes, row, slot);
         reg u32 tid = tid_x();
         copy_bf16_1d(ptr_add(latent, row, 1024), slot, 512, tid, 256);
         if ((index_key[0] | index_key[1]) != 0) { copy_bf16_1d(ptr_add(index_key, row, elements_or_idxw << 1), ptr_add(slot, 512, 2), elements_or_idxw, tid, 256); }
@@ -1655,6 +1657,20 @@ macro d41w_load_q_acc(NH, HAS_CARRY_FLAG, has_carried, query, records, row, head
     barrier();
 }
 
+macro d41w_fold_run(
+    NH, HAS_CARRY, END_BAR, has_carried, query, records, wave_kv, ring, positions, row_lane, row_ordinal,
+    seq_row_begin, seq_row_indices, recurrent_slot, ring_slot_stride, window, heads, qk_scale,
+    kptr_lo, kptr_hi, s_k, s_wsums, s_max, s_sum, s_keep, s_wt, out_row, out_hbase, out_tid, out_pos, out_ln, out_sring, acc0, acc1
+) {
+    acqbulk();
+    out_row = ctaid_x(); out_hbase = ctaid_y() * NH; out_tid = tid_x(); reg u32 lane_ = lane_id(); reg u32 wid_ = warp_id();
+    reg u32 count_ = 0;
+    d41w_init_kptrs(out_row, positions, row_lane, row_ordinal, seq_row_begin, seq_row_indices, recurrent_slot, ring, ring_slot_stride, window, wave_kv, out_tid, kptr_lo, kptr_hi, out_pos, out_ln, out_sring, count_);
+    reg f32 q0_[NH]; reg f32 q1_[NH];
+    d41w_load_q_acc(NH, HAS_CARRY, has_carried, query, records, out_row, heads, out_hbase, out_tid, q0_, q1_, acc0, acc1, s_max, s_sum);
+    d41w_window_tile_loop(NH, END_BAR, count_, kptr_lo, kptr_hi, s_k, s_wsums, s_max, s_sum, s_keep, s_wt, qk_scale, q0_, q1_, acc0, acc1, out_tid, lane_, wid_);
+}
+
 @pdl
 @concept(attention)
 template kernel[256, REGS] window_fold_whole_tpl<NH, REGS>(
@@ -1664,13 +1680,9 @@ template kernel[256, REGS] window_fold_whole_tpl<NH, REGS>(
 ) {
     shared u32 kptr_lo[128]; shared u32 kptr_hi[128]; shared u32 s_k[4096];
     shared f32 s_wsums[NH * 128]; shared f32 s_keep[NH * 16]; shared f32 s_wt[NH * 16]; shared f32 s_max[NH]; shared f32 s_sum[NH];
-    acqbulk();
-    reg u32 row = ctaid_x(); reg u32 hbase = ctaid_y() * NH; reg u32 tid = tid_x(); reg u32 lane = lane_id(); reg u32 wid = warp_id();
-    reg u32 pos = 0; reg u32 ln = 0; reg u64 sring = 0; reg u32 count = 0;
-    d41w_init_kptrs(row, positions, row_lane, row_ordinal, seq_row_begin, seq_row_indices, recurrent_slot, ring, ring_slot_stride, window, wave_kv, tid, kptr_lo, kptr_hi, pos, ln, sring, count);
-    reg f32 q0[NH]; reg f32 q1[NH]; reg f32 acc0[NH]; reg f32 acc1[NH];
-    d41w_load_q_acc(NH, 0, 1, query, records, row, heads, hbase, tid, q0, q1, acc0, acc1, s_max, s_sum);
-    d41w_window_tile_loop(NH, 0, count, kptr_lo, kptr_hi, s_k, s_wsums, s_max, s_sum, s_keep, s_wt, qk_scale, q0, q1, acc0, acc1, tid, lane, wid);
+    reg u32 row = 0; reg u32 hbase = 0; reg u32 tid = 0; reg u32 pos = 0; reg u32 ln = 0; reg u64 sring = 0;
+    reg f32 acc0[NH]; reg f32 acc1[NH];
+    d41w_fold_run(NH, 0, 0, 1, query, records, wave_kv, ring, positions, row_lane, row_ordinal, seq_row_begin, seq_row_indices, recurrent_slot, ring_slot_stride, window, heads, qk_scale, kptr_lo, kptr_hi, s_k, s_wsums, s_max, s_sum, s_keep, s_wt, row, hbase, tid, pos, ln, sring, acc0, acc1);
     unroll (h = 0..NH) {
         d41w_store_record(ptr_add(records, row * heads + hbase + h, 514 << 2), acc0[h], acc1[h], lds32(s_max, h), lds32(s_sum, h), tid, h);
     }
@@ -1690,13 +1702,9 @@ kernel[256, 80] d41_window_fold_spread_256(
 ) {
     shared u32 kptr_lo[128]; shared u32 kptr_hi[128]; shared u32 s_k[4096];
     shared f32 s_wsums[256]; shared f32 s_keep[32]; shared f32 s_wt[32]; shared f32 s_max[2]; shared f32 s_sum[2];
-    acqbulk();
-    reg u32 row = ctaid_x(); reg u32 hbase = ctaid_y() * 2; reg u32 tid = tid_x(); reg u32 lane = lane_id(); reg u32 wid = warp_id();
-    reg u32 pos = 0; reg u32 ln = 0; reg u64 sring = 0; reg u32 count = 0;
-    d41w_init_kptrs(row, positions, row_lane, row_ordinal, seq_row_begin, seq_row_indices, recurrent_slot, ring, ring_slot_stride, window, wave_kv, tid, kptr_lo, kptr_hi, pos, ln, sring, count);
-    reg f32 q0[2]; reg f32 q1[2]; reg f32 acc0[2]; reg f32 acc1[2];
-    d41w_load_q_acc(2, 1, has_carried, query, records, row, heads, hbase, tid, q0, q1, acc0, acc1, s_max, s_sum);
-    d41w_window_tile_loop(2, 1, count, kptr_lo, kptr_hi, s_k, s_wsums, s_max, s_sum, s_keep, s_wt, qk_scale, q0, q1, acc0, acc1, tid, lane, wid);
+    reg u32 row = 0; reg u32 hbase = 0; reg u32 tid = 0; reg u32 pos = 0; reg u32 ln = 0; reg u64 sring = 0;
+    reg f32 acc0[2]; reg f32 acc1[2];
+    d41w_fold_run(2, 1, 1, has_carried, query, records, wave_kv, ring, positions, row_lane, row_ordinal, seq_row_begin, seq_row_indices, recurrent_slot, ring_slot_stride, window, heads, qk_scale, kptr_lo, kptr_hi, s_k, s_wsums, s_max, s_sum, s_keep, s_wt, row, hbase, tid, pos, ln, sring, acc0, acc1);
     unroll (h = 0..2) {
         reg f32 mx = lds32(s_max, h); reg f32 top = maxf(-1.0e30f, mx);
         reg f32 sc = (mx != u32_as_f32(ATTN_NEG_INF)) ? exp2_ftz((mx - top) * 1.4426950408889634f) : 0.0f;
@@ -1729,5 +1737,73 @@ kernel[256, 80] d41_window_fold_spread_256(
             stg128(ptr_add(ptr_add(sring, rm, 1024), tid, 16), ldg128_stream(ptr_add(ptr_add(wave_kv, row, 1024), tid, 16)));
         }
     }
+    preexit();
+}
+
+@pdl
+@concept(attention)
+kernel[256, 48] d41_sink_attention_256(
+    global u32* query_bf16, global u32* keys_bf16, global u32* indices, u32 index_count,
+    global f32* sink_f32, global u32* output_bf16, u32 head_dimension, f32 softmax_scale
+) {
+    shared f32 probs[1024]; shared f32 rounded[1024]; shared f32 scratch[1];
+    acqbulk();
+    reg u32 head = ctaid_x(); reg u32 tid = tid_x(); reg u32 lane = lane_id(); reg u32 wid = warp_id();
+    reg u64 qp = ptr_add(query_bf16, head, head_dimension << 1);
+    for (reg u32 sl = wid; sl < index_count; sl += 8) {
+        reg u32 idx = ldg32_persist(ptr_add(indices, sl, 4)); reg f32 sc = 0.0f;
+        if ((idx >> 31) == 0) {
+            reg u64 kp = ptr_add(keys_bf16, idx, head_dimension << 1);
+            for (reg u32 e = lane; e < head_dimension; e += 32) { sc = fma(bf16_lo(ldg16_persist(ptr_add(qp, e, 2))), bf16_lo(ldg16_stream(ptr_add(kp, e, 2))), sc); }
+        }
+        warp_sum_down(sc);
+        if (lane == 0) { sts32(probs, sl, ((idx >> 31) == 0) ? (sc * softmax_scale) : u32_as_f32(ATTN_NEG_INF)); }
+    }
+    barrier();
+    if (tid == 0) { reg f32 top = -1.0e30f; for (reg u32 sl = 0; sl < index_count; sl += 1) { top = maxf(top, lds32(probs, sl)); } sts32(scratch, 0, top); }
+    barrier();
+    reg f32 top = lds32(scratch, 0);
+    for (reg u32 sl = tid; sl < index_count; sl += 256) {
+        reg f32 val = exp2_ftz((lds32(probs, sl) - top) * 1.4426950408889634f);
+        sts32(probs, sl, val); sts32(rounded, sl, bf16_lo(f32_to_bf16(val)));
+    }
+    barrier();
+    if (tid == 0) {
+        reg f32 den = 0.0f; for (reg u32 sl = 0; sl < index_count; sl += 1) { den = den + lds32(probs, sl); }
+        sts32(scratch, 0, den + exp2_ftz((u32_as_f32(ldg32_persist(ptr_add(sink_f32, head, 4))) - top) * 1.4426950408889634f));
+    }
+    barrier();
+    reg f32 den = lds32(scratch, 0); reg f32 inv_d = 0.0f; rcp_nr1_f32(den, inv_d);
+    reg u64 dst = ptr_add(output_bf16, head, head_dimension << 1);
+    for (reg u32 e = tid; e < head_dimension; e += 256) {
+        reg f32 acc = 0.0f;
+        for (reg u32 sl = 0; sl < index_count; sl += 1) {
+            reg u32 idx = ldg32_persist(ptr_add(indices, sl, 4));
+            if ((idx >> 31) == 0) { acc = fma(lds32(rounded, sl), bf16_lo(ldg16_stream(ptr_add(ptr_add(keys_bf16, idx, head_dimension << 1), e, 2))), acc); }
+        }
+        reg f32 out_f = 0.0f; div_nr1_f32(acc, den, inv_d, out_f); stg16(ptr_add(dst, e, 2), f32_to_bf16(out_f));
+    }
+    preexit();
+}
+
+@pdl
+@concept(attention)
+kernel[256, 40] d41_compress_pool_256(
+    global f32* kv_state_f32, global f32* score_state_f32, global u32* pooled_bf16, u32 ratio, u32 width
+) {
+    acqbulk();
+    reg u32 ch = ctaid_x() * ntid_x() + tid_x();
+    if (ch >= width) { preexit(); return; }
+    reg f32 top = u32_as_f32(ATTN_NEG_INF);
+    for (reg u32 s = 0; s < ratio; s += 1) { top = maxf(top, u32_as_f32(ldg32_stream(ptr_add(ptr_add(score_state_f32, s, width << 2), ch, 4)))); }
+    reg f32 sum = 0.0f;
+    for (reg u32 s = 0; s < ratio; s += 1) { sum = sum + exp2_ftz((u32_as_f32(ldg32_stream(ptr_add(ptr_add(score_state_f32, s, width << 2), ch, 4))) - top) * 1.4426950408889634f); }
+    reg f32 inv_s = 0.0f; rcp_nr1_f32(sum, inv_s); reg f32 total = 0.0f;
+    for (reg u32 s = 0; s < ratio; s += 1) {
+        reg f32 kv = u32_as_f32(ldg32_stream(ptr_add(ptr_add(kv_state_f32, s, width << 2), ch, 4)));
+        reg f32 sc = u32_as_f32(ldg32_stream(ptr_add(ptr_add(score_state_f32, s, width << 2), ch, 4)));
+        reg f32 wt = 0.0f; div_nr1_f32(exp2_ftz((sc - top) * 1.4426950408889634f), sum, inv_s, wt); total = fma(kv, wt, total);
+    }
+    stg16(ptr_add(pooled_bf16, ch, 2), f32_to_bf16(total));
     preexit();
 }

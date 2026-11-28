@@ -2,7 +2,7 @@ import hashlib
 import os
 from skl2_frontend import Parser, Skl2CompileError, tokenize
 
-MAX_CCN, MAX_NESTING, MAX_KERNEL_STMTS, DUP_WINDOW, REPO_DUP_WINDOW = 16, 4, 80, 10, 8
+MAX_CCN, MAX_NESTING, MAX_KERNEL_STMTS, DUP_WINDOW, REPO_DUP_WINDOW = 16, 4, 80, 8, 8
 MODEL_PREFIXES = ("dsv41_", "k3_", "glm5next_", "glm52_", "ling_", "gemma4_", "hy4_", "mimo26_", "motif_")
 STORE_CALLS = {
     "stg256", "stg128", "stg128_stream", "stg128_sys",
@@ -272,7 +272,7 @@ def check_anti_slop(unit, allow_unused_lib=False):
         _check_pdl(k, unit["macros"])
         _collect_refs_and_calls(k["body"], set(), all_calls)
         dup_items.append((f"kernel {name}", k["file"], k["body"]))
-    _check_dup_subtrees(dup_items)
+    _check_dup_subtrees(dup_items, window=DUP_WINDOW, norm_consts=True)
     if not allow_unused_lib:
         for mname, m in unit["macros"].items():
             if mname not in all_calls and not m.get("attrs", {}).get("export"):

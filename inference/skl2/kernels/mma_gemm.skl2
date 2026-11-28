@@ -945,6 +945,14 @@ template kernel[256, REGS] k3_index_q_mma_wide_skip_tpl<TILE_M, REGS>(
 instantiate k3_index_q_mma_wide_skip_tpl<64, 128> as k3_index_q_mma_wide_skip_64x128;
 instantiate k3_index_q_mma_wide_skip_tpl<128, 192> as k3_index_q_mma_wide_skip_128x128;
 
+macro k3_prefill_mma_run(BM, BN, ACC_N, WM_SH, WN_SH, act_ptr, w_ptr, row0, col0, rows, k_dim, part_n, out_wm_r0, out_wn_n0, out_lane, acc_g) {
+    reg u32 tid_ = tid_x(); reg u32 wid_ = warp_id(); out_lane = lane_id();
+    out_wm_r0 = (wid_ >> 1) << WM_SH; out_wn_n0 = (wid_ & 1) << WN_SH;
+    reg f32x4 acc_u_[1]; acc_u_[0] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    unroll (z_ = 0..ACC_N) { acc_g[z_] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
+    qmma_setup_and_run(3, 0, BM, BN, 256, 4, 1, 0, act_ptr, w_ptr, row0, col0, rows, k_dim, part_n, tid_, out_wm_r0, out_wn_n0, out_lane, acc_g, acc_u_);
+}
+
 @pdl
 @concept(linear)
 kernel[256, 192] k3_kda_proj_prefill_mma_128x128(blob[144, 8] args, u32 k_dim) {
@@ -954,11 +962,9 @@ kernel[256, 192] k3_kda_proj_prefill_mma_128x128(blob[144, 8] args, u32 k_dim) {
     reg u32 mt = 0; reg u32 nt = 0; k3_prefill_band_tile(ctaid_x(), (rows + 127) >> 7, total_n, 4, mt, nt);
     reg u32 row0 = mt << 7; reg u32 part = 0; reg u32 ltile = 0; reg u32 part_n = 0; reg u64 w_ptr = 0;
     k3_kda_proj_select_part(args, nt, part, ltile, part_n, w_ptr);
-    reg u32 col0 = ltile << 7; reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
-    reg u32 wm_r0 = (wid >> 1) << 5; reg u32 wn_n0 = (wid & 1) << 6;
-    reg f32x4 acc_g[16]; reg f32x4 acc_u[1]; acc_u[0] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
-    unroll (z = 0..16) { acc_g[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
-    qmma_setup_and_run(3, 0, 128, 128, 256, 4, 1, 0, param_u64(args, 24), w_ptr, row0, col0, rows, k_dim, part_n, tid, wm_r0, wn_n0, lane, acc_g, acc_u);
+    reg u32 col0 = ltile << 7; reg u32 wm_r0 = 0; reg u32 wn_n0 = 0; reg u32 lane = 0;
+    reg f32x4 acc_g[16];
+    k3_prefill_mma_run(128, 128, 16, 5, 6, param_u64(args, 24), w_ptr, row0, col0, rows, k_dim, part_n, wm_r0, wn_n0, lane, acc_g);
     unroll (mf = 0..2) {
         reg u32 r0 = row0 + wm_r0 + (mf << 4) + (lane >> 2); reg u32 r1 = r0 + 8;
         unroll (nf = 0..8) {
@@ -981,11 +987,9 @@ kernel[256, 128] k3_moe_down_route_prefill_mma_64x64(
     k3_prefill_band_tile(ctaid_x(), (rows + 63) >> 6, tiles0 + ((router_n + 63) >> 6), 8, mt, nt);
     reg u32 row0 = mt << 6; reg u32 part = (nt < tiles0) ? 0 : 1;
     reg u32 col0 = ((part == 0) ? nt : (nt - tiles0)) << 6; reg u32 part_n = (part == 0) ? down_n : router_n;
-    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
-    reg u32 wm_r0 = (wid >> 1) << 4; reg u32 wn_n0 = (wid & 1) << 5;
-    reg f32x4 acc_g[4]; reg f32x4 acc_u[1]; acc_u[0] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
-    unroll (z = 0..4) { acc_g[z] = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f); }
-    qmma_setup_and_run(3, 0, 64, 64, 256, 4, 1, 0, activation, (part == 0) ? w_down : w_router, row0, col0, rows, k_dim, part_n, tid, wm_r0, wn_n0, lane, acc_g, acc_u);
+    reg u32 wm_r0 = 0; reg u32 wn_n0 = 0; reg u32 lane = 0;
+    reg f32x4 acc_g[4];
+    k3_prefill_mma_run(64, 64, 4, 4, 5, activation, (part == 0) ? w_down : w_router, row0, col0, rows, k_dim, part_n, wm_r0, wn_n0, lane, acc_g);
     reg u32 r0 = row0 + wm_r0 + (lane >> 2); reg u32 r1 = r0 + 8;
     unroll (nf = 0..4) {
         reg u32 col = col0 + wn_n0 + (nf << 3) + ((lane & 3) << 1);
