@@ -37,6 +37,7 @@ struct LmHostRecorderFormat
 		return((uint8_t)(((int)clamped) & 15));
 	}
 };
+#include "tests/host_cuda/k3_host_skl2_emu.cuh"
 #include "model-families/k3/source/layer.cuh"
 #include "inference/kernels/stage_head.cuh"
 
