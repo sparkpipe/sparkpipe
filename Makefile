@@ -2410,7 +2410,8 @@ $(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tool
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_QWEN38_KERNELS),--only $(k)) --prefix QwenSkl2 --emit-embedded-h $@ $(SKL2_QWEN38_SOURCES)
 
 SKL2_DSV41_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_dsv41_embedded.h
-SKL2_DSV41_SOURCES := inference/skl2/kernels/dsv41_exchange.skl2 inference/skl2/kernels/dsv41_moe.skl2 inference/skl2/kernels/dsv41_stage.skl2
+SKL2_DSV41_SOURCES := inference/skl2/kernels/dsv41_exchange.skl2 inference/skl2/kernels/dsv41_moe.skl2 inference/skl2/kernels/dsv41_stage.skl2 \
+	inference/skl2/kernels/dsv41_window.skl2 inference/skl2/kernels/dsv41_gemv.skl2 inference/skl2/kernels/dsv41_ops.skl2
 SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_unpack_r16 \
 	d41_record_place_r4 d41_record_place_r16 d41_exchange_finalize_r4 d41_exchange_finalize_r16 \
 	d41_finalize_map_r4 d41_finalize_map_r16 d41_shuffle_pack_256 d41_shuffle_unpack_r4 d41_shuffle_unpack_r16 \
@@ -2427,7 +2428,22 @@ SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_
 	d41_moe_finalize_f32_256 d41_moe_finalize_f32_bf16_256 d41_sum_sources_f32_256 d41_sum_gathered_256 \
 	d41_fp8_slice_256 d41_compressor_save_256 d41_compressed_tree_map_256 d41_compressed_emit_position_256 \
 	d41_compressed_length_256 d41_gather_plan_32 d41_ring_pack_256 d41_init_records_256 \
-	d41_whole_block_max_256 d41_whole_block_apply_256 d41_whole_block_mask_256 d41_compact_active_experts_256
+	d41_whole_block_max_256 d41_whole_block_apply_256 d41_whole_block_mask_256 d41_compact_active_experts_256 \
+	d41_compressor_rows_256 d41_compressed_path_move_256 d41_store_compressed_256 \
+	d41_window_fold_256 d41_window_fold_whole_256 d41_window_fold_whole_tiled4_256 d41_window_fold_spread_256 \
+	d41_l2_prefetch_64 d41_wave_row_indices_256 d41_rms_norm_qdq_256 d41_qkv_norm_rope_qdq_256 \
+	d41_exchange_counts_r4_e384 d41_exchange_counts_r16_e384 d41_exchange_slots_r4_e384 d41_exchange_slots_r16_e384 \
+	d41_engram_slots_r4 d41_engram_slots_r16 d41_engram_pack_256 d41_engram_unpack_256 \
+	d41_pack_index_queries_mxfp4_256 d41_pack_index_keys_mxfp4_256 d41_index_score_direct_256 \
+	d41_shared_partials_r1_256 d41_shared_partials_r8_256 \
+	d41_cell_fp4_gemv_c4_m0 d41_cell_fp4_gemv_c4_m1 d41_cell_fp4_gemv_c8_m0 d41_cell_fp4_gemv_c8_m1 \
+	d41_topk_exact_fast_256 d41_topk_exact_chunk_reg_256 d41_topk_exact_gather_reg_256 \
+	d41_kv_fp4_qdq_vec_256 d41_kv_fp4_qdq_256 d41_engram_gate_256 d41_candidate_mask_256 \
+	d41_shard_block_max_256 d41_shard_block_mask_256 d41_shard_block_apply_256 \
+	d41_act_quant_256 d41_fp8_block_linear_256 d41_rms_norm_256 d41_rope_op_256 d41_fp8_qdq_256 \
+	d41_sink_attention_256 d41_grouped_fp8_linear_256 d41_gate_256 d41_mxfp4_linear_256 \
+	d41_swiglu_256 d41_accumulate_256 d41_narrow_256 d41_bf16_linear_256 d41_compress_pool_256 \
+	d41_fp4_pow2_qdq_vec_256 d41_fp4_pow2_qdq_256 d41_index_score_ref_256
 
 $(SKL2_DSV41_EMBEDDED): $(SKL2_DSV41_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_DSV41_KERNELS),--only $(k)) --prefix D41Skl2 --emit-embedded-h $@ $(SKL2_DSV41_SOURCES)
@@ -2651,14 +2667,14 @@ build/test_row_layout_round_span: tests/test_row_layout_round_span.c include/spa
 build/test_release: tests/test_release.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Xcompiler -fPIC -shared $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP libdsv41_flash_kernels (no nvcc on this host)"; fi
+build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu $(SKL2_DSV41_EMBEDDED) model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Ibuild -Iinclude -Xcompiler -fPIC -shared $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP libdsv41_flash_kernels (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_layer (no nvcc on this host)"; fi
+build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu $(SKL2_DSV41_EMBEDDED) model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Ibuild -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP test_dsv41_flash_layer (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_kernels: tests/test_dsv41_flash_kernels.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/dtype.cuh inference/kernels/topk_exact.cuh inference/kernels/index_shard.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_kernels (no nvcc on this host)"; fi
+build/test_dsv41_flash_kernels: tests/test_dsv41_flash_kernels.cu $(SKL2_DSV41_EMBEDDED) model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/dtype.cuh inference/kernels/topk_exact.cuh inference/kernels/index_shard.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Ibuild -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP test_dsv41_flash_kernels (no nvcc on this host)"; fi
 
 build/test_dsv41_flash_moe_slices: tests/test_dsv41_flash_moe_slices.cu $(SKL2_DSV41_EMBEDDED) model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/moe_local.cuh inference/kernels/route.cuh inference/kernels/skinny.cuh inference/kernels/cell_mma.cuh inference/kernels/cell_pack.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Ibuild -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@; else echo "SKIP test_dsv41_flash_moe_slices (no nvcc on this host)"; fi

@@ -7,6 +7,7 @@
 #include <vector>
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 #include "model-families/dsv41_flash/source/dsv41_flash_attend.cuh"
+#include "tests/cuda/dsv41_flash_hc_reference.cuh"
 #include "inference/kernels/index_score.cuh"
 #include "inference/kernels/mx_gemm.cuh"
 #include "inference/kernels/ngram_hash.cuh"
@@ -156,13 +157,13 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 		CUDA(cudaMemcpy(wave_d + 3u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
 	}
 	if ( c.whole == 1u )
-		D41WindowFoldWholeKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d, lanes_d,
+		D41WindowFoldWholeLaunch(dim3(c.rows, c.heads), D41K_THREADS, (SparkGpuStream)0, candidate_d, c.heads, query_d, wave_d, ring_d, positions_d, lanes_d,
 			ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
 	else if ( c.whole == 3u )
 		D41WindowFoldClusterKernel<<<dim3(D41K_WINDOW_PARTS, c.heads, c.rows), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d,
 			lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
 	else
-		D41WindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, destination_stride, c.heads_per_destination, query_d,
+		D41WindowFoldLaunch(dim3(c.rows, c.heads), D41K_THREADS, (SparkGpuStream)0, candidate_d, destination_stride, c.heads_per_destination, query_d,
 			query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, ring_rows, WINDOW, degree,
 			c.rank, scale, c.record_heads, c.record_copies);
 	CUDA(cudaGetLastError());
@@ -612,12 +613,12 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 	for ( uint32_t i = 0u; i < anchor; ++i )
 		pre_pos[i] = pre_ord[i] = pre_idx[i] = i;
 	uint32_t *pre_pos_d = Device(pre_pos), *pre_lane_d = Device(pre_lane), *pre_ord_d = Device(pre_ord), *pre_beg_d = Device(pre_beg), *pre_idx_d = Device(pre_idx), *seq0_d = Device(seq0);
-	D41CompressorRowsKernel<<<anchor, D41K_THREADS>>>(all_c_kv_d, all_c_score_d, pooled_d, emit_d, base_cstate_d, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, pre_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT);
+	D41CompressorRowsLaunch(anchor, D41K_THREADS, (SparkGpuStream)0, all_c_kv_d, all_c_score_d, pooled_d, emit_d, base_cstate_d, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, pre_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT);
 	if ( RATIO > 1u )
 		D41CompressorSaveLaunch(anchor, D41K_THREADS, (SparkGpuStream)0, all_c_kv_d, all_c_score_d, base_cstate_d, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, seq0_d, anchor, RATIO, 2u * LATENT, LATENT, 1u, (const uint32_t *)0);
 	for ( uint32_t r = 0u; r < degree; ++r )
 	{
-		D41StoreCompressedKernel<Kv><<<anchor, D41K_THREADS>>>(base_views[r], pooled_d, all_idx_key_d, emit_d, pre_lane_d, INDEX_DIM);
+		D41StoreCompressedLaunch<Kv>(anchor, D41K_THREADS, (SparkGpuStream)0, base_views[r], pooled_d, all_idx_key_d, emit_d, pre_lane_d, INDEX_DIM);
 		D41WindowRingStoreKernel<<<anchor, D41K_THREADS>>>(all_wave_d, base_rings_d + (size_t)r * ring_rows * LATENT, pre_pos_d, pre_lane_d, pre_ord_d, pre_beg_d, seq0_d,
 			(uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, anchor, 1u, (const uint32_t *)0);
 	}
@@ -645,9 +646,9 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 	D41CompressedTreeMapLaunch(1, 256, (SparkGpuStream)0, t_fork_d, t_off_d, t_cfork_d, t_coff_d, tree.rows, RATIO);
 	const float *t_ckv = all_c_kv_d + (size_t)anchor * LATENT, *t_cscore = all_c_score_d + (size_t)anchor * LATENT;
 	const uint16_t *t_ikey = all_idx_key_d + (size_t)anchor * INDEX_DIM, *t_wave = all_wave_d + (size_t)anchor * LATENT;
-	D41CompressorRowsKernel<<<tree.rows, D41K_THREADS>>>(t_ckv, t_cscore, t_pooled_d, emit_d, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT, t_slots_d, t_par_d);
+	D41CompressorRowsLaunch(tree.rows, D41K_THREADS, (SparkGpuStream)0, t_ckv, t_cscore, t_pooled_d, emit_d, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT, t_slots_d, t_par_d);
 	for ( uint32_t r = 0u; r < degree; ++r )
-		D41StoreCompressedKernel<Kv><<<tree.rows, D41K_THREADS>>>(work_views[r], t_pooled_d, t_ikey, emit_d, t_lane_d, INDEX_DIM);
+		D41StoreCompressedLaunch<Kv>(tree.rows, D41K_THREADS, (SparkGpuStream)0, work_views[r], t_pooled_d, t_ikey, emit_d, t_lane_d, INDEX_DIM);
 	float *t_scores_d = Scratch<float>((size_t)degree * tree.rows * score_stride);
 	const uint64_t t_rec_stride = (uint64_t)tree.rows * local_heads * D41K_RECORD;
 	const uint64_t t_q_stride = (uint64_t)tree.rows * local_heads * LATENT;
@@ -677,7 +678,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 		REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(work_views[r], t_q_rank_d, t_q_stride, local_heads, heads, t_lane_d, t_len_d, t_bound_d,
 			t_sel_d, TOPK, TOPK, qk_scale, t_recs_d + (size_t)r * degree * t_rec_stride, t_rec_stride, local_heads, 1u, tree.rows, 0,
 			(const uint32_t *)0, (const uint32_t *)0, 4u, t_cfork_d, t_coff_d)) == SPARK_GPU_SUCCESS);
-		D41WindowFoldKernel<<<dim3(tree.rows, heads), D41K_THREADS>>>(t_recs_d + (size_t)r * degree * t_rec_stride, t_rec_stride, local_heads, t_q_rank_d, t_q_stride,
+		D41WindowFoldLaunch(dim3(tree.rows, heads), D41K_THREADS, (SparkGpuStream)0, t_recs_d + (size_t)r * degree * t_rec_stride, t_rec_stride, local_heads, t_q_rank_d, t_q_stride,
 			t_wave, work_rings_d + (size_t)r * ring_rows * LATENT, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, (uint64_t)ring_rows * LATENT, ring_rows, WINDOW,
 			degree, r, qk_scale, local_heads, 1u, t_par_d);
 	}
@@ -719,13 +720,13 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 		CUDA(cudaMemcpy(s_ctx_d, &ctx, sizeof(uint32_t), cudaMemcpyHostToDevice));
 		D41CompressedEmitPositionLaunch(1, 64, (SparkGpuStream)0, s_pos_d, s_bound_d, 1u, RATIO);
 		D41CompressedLengthLaunch(1, 64, (SparkGpuStream)0, s_ctx_d, s_len_d, 1u, RATIO);
-		D41CompressorRowsKernel<<<1, D41K_THREADS>>>(all_c_kv_d + (size_t)tok_offset * LATENT, all_c_score_d + (size_t)tok_offset * LATENT, s_pooled_d, emit_d,
+		D41CompressorRowsLaunch(1, D41K_THREADS, (SparkGpuStream)0, all_c_kv_d + (size_t)tok_offset * LATENT, all_c_score_d + (size_t)tok_offset * LATENT, s_pooled_d, emit_d,
 			work_cstate_d, s_pos_d, s_lane_d, s_ord_d, s_beg_d, s_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT);
 		if ( RATIO > 1u )
 			D41CompressorSaveLaunch(1, D41K_THREADS, (SparkGpuStream)0, all_c_kv_d + (size_t)tok_offset * LATENT, all_c_score_d + (size_t)tok_offset * LATENT, work_cstate_d,
 				s_pos_d, s_lane_d, s_ord_d, s_beg_d, seq0_d, 1u, RATIO, 2u * LATENT, LATENT, 1u, (const uint32_t *)0);
 		for ( uint32_t r = 0u; r < degree; ++r )
-			D41StoreCompressedKernel<Kv><<<1, D41K_THREADS>>>(work_views[r], s_pooled_d, all_idx_key_d + (size_t)tok_offset * INDEX_DIM, emit_d, s_lane_d, INDEX_DIM);
+			D41StoreCompressedLaunch<Kv>(1, D41K_THREADS, (SparkGpuStream)0, work_views[r], s_pooled_d, all_idx_key_d + (size_t)tok_offset * INDEX_DIM, emit_d, s_lane_d, INDEX_DIM);
 		if ( eval_out )
 		{
 			CUDA(cudaMemcpy(s_sel_d, sel_host, TOPK * sizeof(uint32_t), cudaMemcpyHostToDevice));
@@ -737,7 +738,7 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 					s_scores_d + (size_t)r * score_stride, 0)) == SPARK_GPU_SUCCESS);
 				REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(work_views[r], s_q_d, (uint64_t)local_heads * LATENT, local_heads, heads,
 					s_lane_d, s_len_d, s_bound_d, s_sel_d, TOPK, TOPK, qk_scale, s_recs_d + (size_t)r * degree * s_rec_stride, s_rec_stride, local_heads, 1u, 1u, 0)) == SPARK_GPU_SUCCESS);
-				D41WindowFoldKernel<<<dim3(1u, heads), D41K_THREADS>>>(s_recs_d + (size_t)r * degree * s_rec_stride, s_rec_stride, local_heads, s_q_d,
+				D41WindowFoldLaunch(dim3(1u, heads), D41K_THREADS, (SparkGpuStream)0, s_recs_d + (size_t)r * degree * s_rec_stride, s_rec_stride, local_heads, s_q_d,
 					(uint64_t)local_heads * LATENT, all_wave_d + (size_t)tok_offset * LATENT, work_rings_d + (size_t)r * ring_rows * LATENT, s_pos_d, s_lane_d,
 					s_ord_d, s_beg_d, s_idx_d, seq0_d, (uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, qk_scale, local_heads, 1u);
 			}
@@ -785,15 +786,15 @@ static uint32_t RunTreeCsa2Case(uint32_t anchor, uint32_t degree, uint32_t slot_
 	{
 		const uint32_t kept = (uint32_t)acc.size();
 		cloneBase();
-		D41CompressorRowsKernel<<<tree.rows, D41K_THREADS>>>(t_ckv, t_cscore, t_pooled_d, emit_d, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT, t_slots_d, t_par_d);
+		D41CompressorRowsLaunch(tree.rows, D41K_THREADS, (SparkGpuStream)0, t_ckv, t_cscore, t_pooled_d, emit_d, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, t_idx_d, seq0_d, RATIO, 2u * LATENT, LATENT, t_slots_d, t_par_d);
 		for ( uint32_t r = 0u; r < degree; ++r )
-			D41StoreCompressedKernel<Kv><<<tree.rows, D41K_THREADS>>>(work_views[r], t_pooled_d, t_ikey, emit_d, t_lane_d, INDEX_DIM);
+			D41StoreCompressedLaunch<Kv>(tree.rows, D41K_THREADS, (SparkGpuStream)0, work_views[r], t_pooled_d, t_ikey, emit_d, t_lane_d, INDEX_DIM);
 		uint32_t *pr_d = Device(acc), *kv_d = Device(std::vector<uint32_t>{ kept });
 		for ( uint32_t r = 0u; r < degree; ++r )
 		{
 			D41WindowRingStoreKernel<<<tree.rows, D41K_THREADS>>>(t_wave, work_rings_d + (size_t)r * ring_rows * LATENT, t_pos_d, t_lane_d, t_ord_d, t_beg_d, seq0_d,
 				(uint64_t)ring_rows * LATENT, ring_rows, WINDOW, degree, r, tree.rows, 1u, kv_d, pr_d);
-			D41CompressedPathMoveKernel<Kv, D41K_THREADS><<<tree.rows, D41K_THREADS>>>(work_views[r], t_lane_d, t_pos_d, pr_d, kv_d, t_slots_d, RATIO, 1280u / 2u);
+			D41CompressedPathMoveLaunch<Kv>(tree.rows, D41K_THREADS, (SparkGpuStream)0, work_views[r], t_lane_d, t_pos_d, pr_d, kv_d, t_slots_d, RATIO, 1280u / 2u);
 		}
 		if ( RATIO > 1u )
 			D41CompressorSaveLaunch(tree.rows, D41K_THREADS, (SparkGpuStream)0, t_ckv, t_cscore, work_cstate_d, t_pos_d, t_lane_d, t_ord_d, t_beg_d, seq0_d, tree.rows, RATIO, 2u * LATENT, LATENT, 1u, kv_d, pr_d);
@@ -915,15 +916,15 @@ static uint32_t RunTreeGraphCase(void)
 		}
 		else
 			LmNgramHashKernel<<<1, 64, 0, stream>>>(tok_d, (const int32_t *)0, pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, hist_d, 4u, mult_d, primes_d, offs_d, ids_d, ROWS, ORDERS, EHEADS, 7, -1, 0u);
-		D41CompressorRowsKernel<<<ROWS, D41K_THREADS, 0, stream>>>(ckv_d, cscore_d, pooled_d, emit_d, cstate_d, pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, 2u, 2u * LATENT, LATENT,
+		D41CompressorRowsLaunch(ROWS, D41K_THREADS, stream, ckv_d, cscore_d, pooled_d, emit_d, cstate_d, pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, 2u, 2u * LATENT, LATENT,
 			is_tree ? slots_d : (const uint32_t *)0, is_tree ? par_d : (const uint32_t *)0);
-		D41StoreCompressedKernel<Kv><<<ROWS, D41K_THREADS, 0, stream>>>(view, pooled_d, ikey_d, emit_d, lane_d, INDEX_DIM);
+		D41StoreCompressedLaunch<Kv>(ROWS, D41K_THREADS, stream, view, pooled_d, ikey_d, emit_d, lane_d, INDEX_DIM);
 		REQUIRE((LmWeightedSparseScoreLaunch<Kv, INDEX_HEADS, INDEX_DIM, LmKvShardView, true>(iq_d, iw_d, idx_view, lane_d, len_d, bound_d, ROWS, score_stride, 1.0f,
 			scores_d, stream, is_tree ? cfork_d : (const uint32_t *)0, is_tree ? coff_d : (const uint32_t *)0)) == SPARK_GPU_SUCCESS);
 		REQUIRE((LmLatentShardAttendHeadsLaunch<Kv, LmKvShardView, LATENT, 0u>(view, query_d, (uint64_t)ROWS * HEADS * LATENT, HEADS, HEADS, lane_d, len_d, bound_d,
 			sel_d, TOPK, TOPK, qk_scale, recs_d, rec_stride, HEADS, 1u, ROWS, stream, (const uint32_t *)0, (const uint32_t *)0, 4u,
 			is_tree ? cfork_d : (const uint32_t *)0, is_tree ? coff_d : (const uint32_t *)0)) == SPARK_GPU_SUCCESS);
-		D41WindowFoldKernel<<<dim3(ROWS, HEADS), D41K_THREADS, 0, stream>>>(recs_d, rec_stride, HEADS, query_d, (uint64_t)ROWS * HEADS * LATENT, wave_d, ring_d,
+		D41WindowFoldLaunch(dim3(ROWS, HEADS), D41K_THREADS, stream, recs_d, rec_stride, HEADS, query_d, (uint64_t)ROWS * HEADS * LATENT, wave_d, ring_d,
 			pos_d, lane_d, ord_d, beg_d, idx_d, seq0_d, (uint64_t)WINDOW * LATENT, WINDOW, WINDOW, 1u, 0u, qk_scale, HEADS, 1u, is_tree ? par_d : (const uint32_t *)0);
 		D41MergeSinkKernel<<<dim3(ROWS, HEADS), D41K_THREADS, 0, stream>>>(recs_d, rec_stride, 1u, HEADS, sink_d, out_d);
 	};

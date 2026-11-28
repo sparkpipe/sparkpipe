@@ -21,11 +21,7 @@ macro d41_row_active_keys(row, seq, len, bound, out_active) {
 
 macro d41_compact_half(active_flag, s_warp, wid, lane, out_off, out_tot) {
     reg u32 v = active_flag;
-    reg u32 s1 = shfl_up(v, 1); if (lane >= 1) { v = v + s1; }
-    reg u32 s2 = shfl_up(v, 2); if (lane >= 2) { v = v + s2; }
-    reg u32 s4 = shfl_up(v, 4); if (lane >= 4) { v = v + s4; }
-    reg u32 s8 = shfl_up(v, 8); if (lane >= 8) { v = v + s8; }
-    reg u32 s16 = shfl_up(v, 16); if (lane >= 16) { v = v + s16; }
+    warp_prefix_u32(v, lane);
     if (lane == 31) { sts32(s_warp, wid, v); }
     barrier();
     if (wid == 0) {

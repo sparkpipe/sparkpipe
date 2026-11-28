@@ -10,356 +10,28 @@
 #include "sparkpipe/spark_kv_shard.h"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
+#include "skl2_dsv41_embedded.h"
+
+struct D41Skl2BundleTag {};
+
+template<typename... Args>
+static inline SparkGpuError D41Skl2Launch(uint32_t id, dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, Args... args)
+{
+	return LmLaunchEmbedded<D41Skl2BundleTag>(kD41Skl2Cubin, sizeof(kD41Skl2Cubin), (const char *)kD41Skl2Manifest,
+		sizeof(kD41Skl2Manifest) - 1u, kD41Skl2Names, (uint32_t)D41SKL2_COUNT, id, grid, block, shared, stream, args...);
+}
 
 #define SPARK_DSV41_FLASH_KV_FP4_GROUP 16u
 #define SPARK_DSV41_FLASH_KV_FP4_AMAX_FLOOR (6.0f * 0.001953125f)
 #define SPARK_DSV41_FLASH_ENGRAM_GATE_FLOOR 1e-6f
 #define SPARK_DSV41_FLASH_ENGRAM_THREADS 256u
-
-static __device__ __forceinline__ float SparkDsv41FlashE2m1Round(float value) { return(LmE2m1PairToFloat(LmFloatPairToE2m1(value,0.0f)).x); }
-
-static __global__ void SparkDsv41FlashKvFp4QdqVecKernel(uint16_t *data_bf16, uint64_t row_stride, uint32_t row_count, uint32_t width)
-{
-	const uint32_t octets_per_row = width >> 3u;
-	const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( idx >= (uint64_t)row_count * octets_per_row ) return;
-	const uint64_t off = (idx / octets_per_row) * row_stride + ((idx % octets_per_row) << 3u);
-	float v[8], amax = 0.0f;
-	LmLoadBf16x8AsFloat(*(const uint4 *)(data_bf16 + off), v);
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k ) amax = fmaxf(amax, fabsf(v[k]));
-	amax = fmaxf(fmaxf(amax, __shfl_xor_sync(__activemask(), amax, 1u)), SPARK_DSV41_FLASH_KV_FP4_AMAX_FLOOR);
-	const float scale = LmE4m3ToFloat(LmFloatToE4m3(amax / LM_E2M1_MAX));
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 4u; ++k ) {
-		const float2 r = LmE2m1PairToFloat(LmFloatPairToE2m1(fminf(fmaxf(v[2u * k] / scale, -LM_E2M1_MAX), LM_E2M1_MAX),
-			fminf(fmaxf(v[2u * k + 1u] / scale, -LM_E2M1_MAX), LM_E2M1_MAX)));
-		v[2u * k] = r.x * scale; v[2u * k + 1u] = r.y * scale;
-	}
-	*(uint4 *)(data_bf16 + off) = LmPackUint4FloatToBf16(v);
-}
-
-static __global__ void SparkDsv41FlashKvFp4QdqKernel(uint16_t *data_bf16, uint64_t row_stride, uint32_t row_count, uint32_t width)
-{
-	uint32_t groups_per_row = width / SPARK_DSV41_FLASH_KV_FP4_GROUP, element;
-	uint64_t group = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( group >= (uint64_t)row_count * groups_per_row ) return;
-	uint64_t base = (group / groups_per_row) * row_stride + (group % groups_per_row) * SPARK_DSV41_FLASH_KV_FP4_GROUP;
-	float amax = 0.0f;
-	for (element = 0u; element < SPARK_DSV41_FLASH_KV_FP4_GROUP; element++) amax = fmaxf(amax,fabsf(LmBf16ToFloat(data_bf16[base + element])));
-	const float scale = LmE4m3ToFloat(LmFloatToE4m3(fmaxf(amax,SPARK_DSV41_FLASH_KV_FP4_AMAX_FLOOR) / LM_E2M1_MAX));
-	for (element = 0u; element < SPARK_DSV41_FLASH_KV_FP4_GROUP; element++)
-		data_bf16[base + element] = LmFloatToBf16(SparkDsv41FlashE2m1Round(fminf(fmaxf(LmBf16ToFloat(data_bf16[base + element]) / scale,-LM_E2M1_MAX),LM_E2M1_MAX)) * scale);
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchKvFp4Qdq(SparkGpuStream stream, uint16_t *data_bf16, uint64_t row_stride, uint32_t row_count, uint32_t width)
-{
-	if ( data_bf16 == 0 || row_count == 0u || width == 0u || width % SPARK_DSV41_FLASH_KV_FP4_GROUP != 0u || row_stride < width ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	if ( (row_stride & 7u) == 0u && (((uintptr_t)data_bf16) & 15u) == 0u ) {
-		const uint64_t octets = (uint64_t)row_count * (width >> 3u);
-		LM_LAUNCH((SparkDsv41FlashKvFp4QdqVecKernel),(uint32_t)((octets + 255u) / 256u),256u,0,stream,data_bf16,row_stride,row_count,width);
-	} else {
-		const uint64_t groups = (uint64_t)row_count * (width / SPARK_DSV41_FLASH_KV_FP4_GROUP);
-		LM_LAUNCH((SparkDsv41FlashKvFp4QdqKernel),(uint32_t)((groups + 255u) / 256u),256u,0,stream,data_bf16,row_stride,row_count,width);
-	}
-	return(SparkGpuGetLastError());
-}
-
-static __device__ __forceinline__ float SparkDsv41FlashBlockSum(float value, float *scratch)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, offset;
-	for (offset = 16u; offset != 0u; offset >>= 1u) value += __shfl_down_sync(0xffffffffu,value,offset);
-	__syncthreads();
-	if ( lane == 0u ) scratch[warp] = value;
-	__syncthreads();
-	if ( threadIdx.x == 0u ) { value = 0.0f; for (offset = 0u; offset < blockDim.x / 32u; offset++) value += scratch[offset]; scratch[0] = value; }
-	__syncthreads();
-	return(scratch[0]);
-}
-
-static __global__ void SparkDsv41FlashEngramGateKernel(uint16_t *streams_bf16, const uint16_t *kv_bf16, const uint16_t *q_weight_bf16,
-	const uint16_t *k_weight_bf16, uint32_t hc, uint32_t dimension, float epsilon)
-{
-	__shared__ float scratch[SPARK_DSV41_FLASH_ENGRAM_THREADS / 32u];
-	const uint32_t row = blockIdx.x, copy = blockIdx.y;
-	uint16_t *s_ptr = streams_bf16 + ((uint64_t)row * hc + copy) * dimension;
-	const uint64_t kv_row = (uint64_t)row * (hc + 1u) * dimension;
-	const uint16_t *k_ptr = kv_bf16 + kv_row + (uint64_t)copy * dimension, *v_ptr = kv_bf16 + kv_row + (uint64_t)hc * dimension;
-	const uint16_t *qw_ptr = q_weight_bf16 + (uint64_t)copy * dimension, *kw_ptr = k_weight_bf16 + (uint64_t)copy * dimension;
-	float h_square = 0.0f, key_square = 0.0f, dot = 0.0f;
-	const bool vec = (dimension & 7u) == 0u && LmIsAligned16(s_ptr) && LmIsAligned16(k_ptr) && LmIsAligned16(v_ptr) && LmIsAligned16(qw_ptr) && LmIsAligned16(kw_ptr);
-	if ( vec ) {
-		for ( uint32_t q = threadIdx.x; q < (dimension >> 3u); q += blockDim.x ) {
-			float h[8], k[8], qw[8], kw[8];
-			LmLoadBf16x8AsFloat(((const uint4 *)s_ptr)[q], h); LmLoadBf16x8AsFloat(((const uint4 *)k_ptr)[q], k);
-			LmLoadBf16x8AsFloat(((const uint4 *)qw_ptr)[q], qw); LmLoadBf16x8AsFloat(((const uint4 *)kw_ptr)[q], kw);
-			#pragma unroll
-			for ( uint32_t i = 0u; i < 8u; ++i ) { h_square += h[i] * h[i]; key_square += k[i] * k[i]; dot += h[i] * (qw[i] * kw[i]) * k[i]; }
-		}
-	} else for ( uint32_t e = threadIdx.x; e < dimension; e += blockDim.x ) {
-		const float h = LmBf16ToFloat(s_ptr[e]), key = LmBf16ToFloat(k_ptr[e]);
-		h_square += h * h; key_square += key * key; dot += h * (LmBf16ToFloat(qw_ptr[e]) * LmBf16ToFloat(kw_ptr[e])) * key;
-	}
-	h_square = SparkDsv41FlashBlockSum(h_square, scratch); key_square = SparkDsv41FlashBlockSum(key_square, scratch); dot = SparkDsv41FlashBlockSum(dot, scratch);
-	const float gate = SparkMathSignedSqrtGate(dot, h_square, key_square, dimension, epsilon, SPARK_DSV41_FLASH_ENGRAM_GATE_FLOOR);
-	if ( vec ) {
-		for ( uint32_t q = threadIdx.x; q < (dimension >> 3u); q += blockDim.x ) {
-			float h[8], v[8];
-			LmLoadBf16x8AsFloat(((const uint4 *)s_ptr)[q], h); LmLoadBf16x8AsFloat(((const uint4 *)v_ptr)[q], v);
-			#pragma unroll
-			for ( uint32_t i = 0u; i < 8u; ++i ) h[i] += gate * v[i];
-			((uint4 *)s_ptr)[q] = LmPackUint4FloatToBf16(h);
-		}
-	} else for ( uint32_t e = threadIdx.x; e < dimension; e += blockDim.x ) s_ptr[e] = LmFloatToBf16(LmBf16ToFloat(s_ptr[e]) + gate * LmBf16ToFloat(v_ptr[e]));
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchEngramGate(SparkGpuStream stream, uint16_t *streams_bf16, const uint16_t *kv_bf16,
-	const uint16_t *q_weight_bf16, const uint16_t *k_weight_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, float epsilon)
-{
-	if ( streams_bf16 == 0 || kv_bf16 == 0 || q_weight_bf16 == 0 || k_weight_bf16 == 0 || row_count == 0u || hc == 0u || dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashEngramGateKernel), dim3(row_count, hc), SPARK_DSV41_FLASH_ENGRAM_THREADS, 0, stream, streams_bf16, kv_bf16, q_weight_bf16, k_weight_bf16, hc, dimension, epsilon);
-	return(SparkGpuGetLastError());
-}
-
 #define SPARK_DSV41_FLASH_CANDIDATE_THREADS 256u
-
-static __device__ __forceinline__ uint32_t SparkDsv41FlashOrderedKey(float value) { uint32_t bits = __float_as_uint(value); return((bits & 0x80000000u) != 0u ? ~bits : bits | 0x80000000u); }
-
-static __device__ __forceinline__ uint32_t SparkDsv41FlashBlockCount(uint32_t value, uint32_t *scratch)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, offset;
-	for (offset = 16u; offset != 0u; offset >>= 1u) value += __shfl_down_sync(0xffffffffu,value,offset);
-	__syncthreads();
-	if ( lane == 0u ) scratch[warp] = value;
-	__syncthreads();
-	if ( threadIdx.x == 0u ) { value = 0u; for (offset = 0u; offset < blockDim.x / 32u; offset++) value += scratch[offset]; scratch[0] = value; }
-	__syncthreads();
-	value = scratch[0];
-	__syncthreads();
-	return(value);
-}
-
-static __global__ void SparkDsv41FlashCandidateMaskKernel(float *scores_f32, const uint32_t *widths, uint64_t row_stride,
-	float *block_scores_f32, uint64_t block_stride, uint32_t block_size, uint32_t topk_blocks)
-{
-	__shared__ uint32_t counts[SPARK_DSV41_FLASH_CANDIDATE_THREADS / 32u], threshold_shared;
-	uint32_t row = blockIdx.x, width = widths[row], block_count, block, element, bit, candidate, prefix = 0u, greater, need, taken;
-	float *scores = scores_f32 + (uint64_t)row * row_stride, *blocks = block_scores_f32 + (uint64_t)row * block_stride, best;
-	if ( width == 0u ) return;
-	block_count = (width + block_size - 1u) / block_size;
-	for (block = threadIdx.x; block < block_count; block += blockDim.x) {
-		best = -INFINITY;
-		for (element = block * block_size; element < width && element < (block + 1u) * block_size; element++) best = fmaxf(best,scores[element]);
-		blocks[block] = block == (width - 1u) / block_size ? INFINITY : best;
-	}
-	__syncthreads();
-	if ( block_count > topk_blocks ) {
-		for (bit = 32u; bit-- > 0u;) {
-			candidate = prefix | (1u << bit); greater = 0u;
-			for (block = threadIdx.x; block < block_count; block += blockDim.x) greater += SparkDsv41FlashOrderedKey(blocks[block]) >= candidate ? 1u : 0u;
-			if ( SparkDsv41FlashBlockCount(greater,counts) >= topk_blocks ) prefix = candidate;
-		}
-		if ( threadIdx.x == 0u ) threshold_shared = prefix;
-		__syncthreads();
-		greater = 0u;
-		for (block = threadIdx.x; block < block_count; block += blockDim.x) greater += SparkDsv41FlashOrderedKey(blocks[block]) > threshold_shared ? 1u : 0u;
-		greater = SparkDsv41FlashBlockCount(greater,counts);
-		if ( threadIdx.x == 0u ) {
-			need = topk_blocks - greater; taken = 0u;
-			for (block = 0u; block < block_count; block++) {
-				if ( SparkDsv41FlashOrderedKey(blocks[block]) == threshold_shared ) {
-					if ( taken < need && blocks[block] > -INFINITY ) { taken++; blocks[block] = INFINITY; }
-					else blocks[block] = -INFINITY;
-				} else if ( SparkDsv41FlashOrderedKey(blocks[block]) < threshold_shared ) blocks[block] = -INFINITY;
-			}
-		}
-		__syncthreads();
-	}
-	for (element = threadIdx.x; element < width; element += blockDim.x)
-		if ( !(blocks[element / block_size] > -INFINITY) ) scores[element] = -INFINITY;
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchCandidateMask(SparkGpuStream stream, float *scores_f32, const uint32_t *widths, uint64_t row_stride,
-	float *block_scores_f32, uint64_t block_stride, uint32_t row_count, uint32_t block_size, uint32_t topk_blocks)
-{
-	if ( scores_f32 == 0 || widths == 0 || block_scores_f32 == 0 || row_count == 0u || block_size == 0u || topk_blocks == 0u || block_stride * block_size < row_stride ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashCandidateMaskKernel),row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,scores_f32,widths,row_stride,block_scores_f32,block_stride,block_size,topk_blocks);
-	return(SparkGpuGetLastError());
-}
-
-static __global__ void SparkDsv41FlashShardBlockMaxKernel(const float *scores_f32, uint64_t score_stride, SparkKvShard shard,
-	const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, float *block_scores_f32, uint32_t block_stride)
-{
-	const uint32_t row = blockIdx.x;
-	const float *scores = scores_f32 + (uint64_t)row * score_stride;
-	float *blocks = block_scores_f32 + (uint64_t)row * block_stride;
-	uint32_t reach = context_length[sequence_of_row[row]];
-	if ( row_position[row] + 1u < reach ) reach = row_position[row] + 1u;
-	const uint32_t local = SparkKvShardLocalKeys(shard, reach), pinned = reach != 0u ? (reach - 1u) / shard.grain : UINT32_MAX;
-	if ( shard.grain == 8u && (score_stride & 3u) == 0u && LmIsAligned16(scores) ) {
-		const uint32_t quads = block_stride * 2u;
-		for ( uint32_t base_q = 0u; base_q < quads; base_q += blockDim.x ) {
-			const uint32_t q = base_q + threadIdx.x, elem = q << 2u;
-			float m = -INFINITY;
-			if ( q < quads && elem < local ) {
-				if ( elem + 4u <= local ) { const float4 v = ((const float4 *)scores)[q]; m = fmaxf(fmaxf(v.x, v.y), fmaxf(v.z, v.w)); }
-				else for ( uint32_t e = elem; e < local; ++e ) m = fmaxf(m, scores[e]);
-			}
-			m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, 1u));
-			const uint32_t block = q >> 1u;
-			if ( (q & 1u) == 0u && block < block_stride ) blocks[block] = block * 8u < local && block * shard.degree + shard.rank == pinned ? INFINITY : m;
-		}
-		return;
-	}
-	for ( uint32_t block = threadIdx.x; block < block_stride; block += blockDim.x ) {
-		float best = -INFINITY;
-		const uint32_t end = (block + 1u) * shard.grain < local ? (block + 1u) * shard.grain : local;
-		for ( uint32_t element = block * shard.grain; element < end; ++element ) best = fmaxf(best, scores[element]);
-		blocks[block] = block * shard.grain < local && block * shard.degree + shard.rank == pinned ? INFINITY : best;
-	}
-}
-
-static __global__ void SparkDsv41FlashShardBlockMaskKernel(uint32_t global_stride, const uint32_t *selected, uint32_t keep,
-	SparkKvShard blocks, uint8_t *mask, uint32_t block_stride)
-{
-	uint8_t *line = mask + (uint64_t)blockIdx.x * block_stride;
-	for ( uint32_t block = threadIdx.x; block < block_stride; block += blockDim.x ) line[block] = 0u;
-	__syncthreads();
-	for ( uint32_t entry = threadIdx.x; entry < keep; entry += blockDim.x ) {
-		const uint32_t block = selected[(uint64_t)blockIdx.x * keep + entry];
-		if ( block < global_stride && block % blocks.degree == blocks.rank && block / blocks.degree < block_stride ) line[block / blocks.degree] = 1u;
-	}
-}
-
-static __global__ void SparkDsv41FlashShardBlockApplyKernel(float *scores_f32, uint64_t score_stride, uint32_t grain, const uint8_t *mask, uint32_t block_stride)
-{
-	const uint32_t row = blockIdx.y;
-	float *scores = scores_f32 + (uint64_t)row * score_stride;
-	const uint8_t *line = mask + (uint64_t)row * block_stride;
-	if ( grain == 8u && (score_stride & 3u) == 0u && LmIsAligned16(scores) ) {
-		for ( uint64_t q = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; q < (score_stride >> 2u); q += (uint64_t)gridDim.x * blockDim.x )
-			if ( (q >> 1u) >= block_stride || line[q >> 1u] == 0u ) ((float4 *)scores)[q] = make_float4(-INFINITY, -INFINITY, -INFINITY, -INFINITY);
-		return;
-	}
-	for ( uint64_t element = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; element < score_stride; element += (uint64_t)gridDim.x * blockDim.x )
-		if ( element / grain >= block_stride || line[element / grain] == 0u ) scores[element] = -INFINITY;
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchShardBlockMax(SparkGpuStream stream, const float *scores_f32, uint64_t score_stride, SparkKvShard shard,
-	const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, float *block_scores_f32, uint32_t block_stride, uint32_t row_count)
-{
-	if ( scores_f32 == 0 || sequence_of_row == 0 || context_length == 0 || row_position == 0 || block_scores_f32 == 0 || row_count == 0u ||
-		shard.grain == 0u || shard.degree == 0u || shard.rank >= shard.degree || (uint64_t)block_stride * shard.grain < score_stride ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashShardBlockMaxKernel),row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,scores_f32,score_stride,shard,sequence_of_row,context_length,row_position,block_scores_f32,block_stride);
-	return(SparkGpuGetLastError());
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchShardBlockMask(SparkGpuStream stream, uint32_t global_stride, const uint32_t *selected, uint32_t keep,
-	SparkKvShard blocks, uint8_t *mask, uint32_t block_stride, uint32_t row_count)
-{
-	if ( selected == 0 || mask == 0 || row_count == 0u || keep == 0u || blocks.degree == 0u || blocks.rank >= blocks.degree ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashShardBlockMaskKernel),row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,global_stride,selected,keep,blocks,mask,block_stride);
-	return(SparkGpuGetLastError());
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchShardBlockApply(SparkGpuStream stream, float *scores_f32, uint64_t score_stride, uint32_t grain,
-	const uint8_t *mask, uint32_t block_stride, uint32_t row_count)
-{
-	if ( scores_f32 == 0 || mask == 0 || row_count == 0u || grain == 0u || (uint64_t)block_stride * grain < score_stride ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	const uint64_t spans = (score_stride + 16u * SPARK_DSV41_FLASH_CANDIDATE_THREADS - 1u) / (16u * SPARK_DSV41_FLASH_CANDIDATE_THREADS);
-	LM_LAUNCH((SparkDsv41FlashShardBlockApplyKernel),dim3((uint32_t)(spans < 256u ? spans : 256u),row_count),SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,scores_f32,score_stride,grain,mask,block_stride);
-	return(SparkGpuGetLastError());
-}
-
 #define SPARK_DSV41_FLASH_FP8_BLOCK 32u
 #define SPARK_DSV41_FLASH_LINEAR_WARPS 8u
-
-static __global__ void SparkDsv41FlashActQuantKernel(const uint16_t *input_bf16, float *output_f32, uint32_t row_count, uint32_t width)
-{
-	uint32_t groups = width / SPARK_DSV41_FLASH_FP8_BLOCK, element;
-	uint64_t group = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( group >= (uint64_t)row_count * groups ) return;
-	uint64_t base = (group / groups) * width + (group % groups) * SPARK_DSV41_FLASH_FP8_BLOCK;
-	float amax = 0.0f;
-	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++) amax = fmaxf(amax,fabsf(LmBf16ToFloat(input_bf16[base + element])));
-	const float scale = SparkMathFp8QdqScale(amax);
-	for (element = 0u; element < SPARK_DSV41_FLASH_FP8_BLOCK; element++)
-		output_f32[base + element] = LmE4m3ToFloat(LmFloatToE4m3(fminf(fmaxf(LmBf16ToFloat(input_bf16[base + element]) / scale,-LM_E4M3_MAX),LM_E4M3_MAX))) * scale;
-}
-
-static __global__ void SparkDsv41FlashFp8BlockLinearKernel(const uint8_t *weight_e4m3, const uint8_t *scale_ue8m0,
-	const float *activation_f32, uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, output = blockIdx.x * SPARK_DSV41_FLASH_LINEAR_WARPS + warp, row = blockIdx.y, k, pair, offset;
-	uint32_t scale_columns = input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK;
-	if ( output >= output_dimension ) return;
-	const float *activation = activation_f32 + (uint64_t)row * input_dimension;
-	const uint8_t *weights = weight_e4m3 + (uint64_t)output * input_dimension;
-	float total = 0.0f;
-	for (k = lane * 16u; k < input_dimension; k += 32u * 16u) {
-		uint4 packed = *(const uint4 *)(weights + k);
-		const uint16_t *pairs = (const uint16_t *)&packed;
-		float scale = LmUe8m0ToFloat(scale_ue8m0[(uint64_t)(output / SPARK_DSV41_FLASH_FP8_BLOCK) * scale_columns + k / SPARK_DSV41_FLASH_FP8_BLOCK]), partial = 0.0f;
-		for (pair = 0u; pair < 8u; pair++) { float2 v = LmE4m3PairToFloat2(pairs[pair]); partial += v.x * activation[k + 2u * pair] + v.y * activation[k + 2u * pair + 1u]; }
-		total += partial * scale;
-	}
-	for (offset = 16u; offset != 0u; offset >>= 1u) total += __shfl_down_sync(0xffffffffu,total,offset);
-	if ( lane == 0u ) output_bf16[(uint64_t)row * output_dimension + output] = LmFloatToBf16(total);
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchFp8BlockLinear(SparkGpuStream stream, const uint8_t *weight_e4m3, const uint8_t *scale_ue8m0,
-	const uint16_t *input_bf16, float *activation_scratch_f32, uint16_t *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
-{
-	if ( weight_e4m3 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || activation_scratch_f32 == 0 || output_bf16 == 0 || row_count == 0u || input_dimension == 0u ||
-		input_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || output_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || ((uintptr_t)weight_e4m3 % 16u) != 0u )
-		return(SPARK_GPU_ERROR_INVALID_VALUE);
-	uint64_t groups = (uint64_t)row_count * (input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK);
-	LM_LAUNCH((SparkDsv41FlashActQuantKernel),(uint32_t)((groups + 255u) / 256u),256u,0,stream,input_bf16,activation_scratch_f32,row_count,input_dimension);
-	SparkGpuError status = SparkGpuGetLastError();
-	if ( status != SPARK_GPU_SUCCESS ) return(status);
-	LM_LAUNCH((SparkDsv41FlashFp8BlockLinearKernel), dim3((output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,row_count),
-		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, weight_e4m3,scale_ue8m0,activation_scratch_f32,output_bf16,input_dimension,output_dimension);
-	return(SparkGpuGetLastError());
-}
-
 #define SPARK_DSV41_FLASH_ROW_THREADS 256u
 #define SPARK_DSV41_FLASH_ATTENTION_MAX_KEYS 1024u
-
-static __global__ void SparkDsv41FlashRmsNormKernel(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t dimension, float epsilon)
-{
-	__shared__ float scratch[SPARK_DSV41_FLASH_ROW_THREADS / 32u];
-	uint64_t base = (uint64_t)blockIdx.x * dimension;
-	float square = 0.0f;
-	for (uint32_t element = threadIdx.x; element < dimension; element += blockDim.x) { float v = LmBf16ToFloat(input_bf16[base + element]); square += v * v; }
-	float inverse = rsqrtf(SparkDsv41FlashBlockSum(square,scratch) / (float)dimension + epsilon);
-	for (uint32_t element = threadIdx.x; element < dimension; element += blockDim.x)
-		output_bf16[base + element] = LmFloatToBf16(LmBf16ToFloat(weight_bf16[element]) * (LmBf16ToFloat(input_bf16[base + element]) * inverse));
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchRmsNorm(SparkGpuStream stream, const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
-{
-	if ( input_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 || row_count == 0u || dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashRmsNormKernel),row_count,SPARK_DSV41_FLASH_ROW_THREADS,0,stream,input_bf16,weight_bf16,output_bf16,dimension,epsilon);
-	return(SparkGpuGetLastError());
-}
-
-static __global__ void SparkDsv41FlashRopeKernel(uint16_t *data_bf16, const float *cos_sin_f32, uint32_t head_count, uint32_t head_dimension, uint32_t rope_dimension, uint32_t inverse)
-{
-	uint32_t head = blockIdx.x, pair = threadIdx.x;
-	if ( head >= head_count || pair >= rope_dimension / 2u ) return;
-	uint64_t base = (uint64_t)head * head_dimension + (head_dimension - rope_dimension) + 2u * pair;
-	float cosine = cos_sin_f32[2u * pair], sine = inverse != 0u ? -cos_sin_f32[2u * pair + 1u] : cos_sin_f32[2u * pair + 1u];
-	float real = LmBf16ToFloat(data_bf16[base]), imaginary = LmBf16ToFloat(data_bf16[base + 1u]);
-	data_bf16[base] = LmFloatToBf16(real * cosine - imaginary * sine);
-	data_bf16[base + 1u] = LmFloatToBf16(real * sine + imaginary * cosine);
-}
-
-static inline SparkGpuError SparkDsv41FlashLaunchRope(SparkGpuStream stream, uint16_t *data_bf16, const float *cos_sin_f32, uint32_t head_count, uint32_t head_dimension, uint32_t rope_dimension, uint32_t inverse)
-{
-	if ( data_bf16 == 0 || cos_sin_f32 == 0 || head_count == 0u || rope_dimension == 0u || rope_dimension > head_dimension || rope_dimension / 2u > 1024u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashRopeKernel),head_count,rope_dimension / 2u,0,stream,data_bf16,cos_sin_f32,head_count,head_dimension,rope_dimension,inverse);
-	return(SparkGpuGetLastError());
-}
+#define SPARK_DSV41_FLASH_MAX_EXPERTS 512u
+#define SPARK_DSV41_FLASH_MAX_ROUTED 16u
 
 static __device__ __forceinline__ uint16_t SparkDsv41FlashFp8QdqLane(float value)
 {
@@ -371,268 +43,150 @@ static __device__ __forceinline__ uint16_t SparkDsv41FlashFp8QdqLane(float value
 
 struct SparkDsv41FlashFp8QdqLaneOp { static __device__ __forceinline__ uint16_t Apply(float value) { return SparkDsv41FlashFp8QdqLane(value); } };
 
-static __global__ void SparkDsv41FlashFp8QdqKernel(const uint16_t *source_bf16, uint16_t *data_bf16, uint32_t group_count)
+static inline SparkGpuError SparkDsv41FlashLaunchKvFp4Qdq(SparkGpuStream stream, uint16_t *data_bf16, uint64_t row_stride, uint32_t row_count, uint32_t width)
 {
-	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;
-	const uint32_t element = threadIdx.x % SPARK_DSV41_FLASH_FP8_BLOCK;
-	LmDependentWait(); LmDependentRelease();
-	if ( group >= group_count ) return;
-	data_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(source_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element]));
+	if ( data_bf16 == 0 || row_count == 0u || width == 0u || width % SPARK_DSV41_FLASH_KV_FP4_GROUP != 0u || row_stride < width ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	if ( (row_stride & 7u) == 0u && (((uintptr_t)data_bf16) & 15u) == 0u ) {
+		const uint64_t octets = (uint64_t)row_count * (width >> 3u);
+		return D41Skl2Launch(D41SKL2_d41_kv_fp4_qdq_vec_256, (uint32_t)((octets + 255u) / 256u), 256u, 0, stream, data_bf16, row_stride, row_count, width);
+	}
+	const uint64_t groups = (uint64_t)row_count * (width / SPARK_DSV41_FLASH_KV_FP4_GROUP);
+	return D41Skl2Launch(D41SKL2_d41_kv_fp4_qdq_256, (uint32_t)((groups + 255u) / 256u), 256u, 0, stream, data_bf16, row_stride, row_count, width);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchEngramGate(SparkGpuStream stream, uint16_t *streams_bf16, const uint16_t *kv_bf16,
+	const uint16_t *q_weight_bf16, const uint16_t *k_weight_bf16, uint32_t row_count, uint32_t hc, uint32_t dimension, float epsilon)
+{
+	if ( streams_bf16 == 0 || kv_bf16 == 0 || q_weight_bf16 == 0 || k_weight_bf16 == 0 || row_count == 0u || hc == 0u || dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	return D41Skl2Launch(D41SKL2_d41_engram_gate_256, dim3(row_count, hc), SPARK_DSV41_FLASH_ENGRAM_THREADS, 0, stream, streams_bf16, kv_bf16, q_weight_bf16, k_weight_bf16, hc, dimension, epsilon);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchCandidateMask(SparkGpuStream stream, float *scores_f32, const uint32_t *widths, uint64_t row_stride,
+	float *block_scores_f32, uint64_t block_stride, uint32_t row_count, uint32_t block_size, uint32_t topk_blocks)
+{
+	if ( scores_f32 == 0 || widths == 0 || block_scores_f32 == 0 || row_count == 0u || block_size == 0u || topk_blocks == 0u || block_stride * block_size < row_stride ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	return D41Skl2Launch(D41SKL2_d41_candidate_mask_256, row_count, SPARK_DSV41_FLASH_CANDIDATE_THREADS, 0, stream, scores_f32, widths, row_stride, block_scores_f32, block_stride, block_size, topk_blocks);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchShardBlockMax(SparkGpuStream stream, const float *scores_f32, uint64_t score_stride, SparkKvShard shard,
+	const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, float *block_scores_f32, uint32_t block_stride, uint32_t row_count)
+{
+	if ( scores_f32 == 0 || sequence_of_row == 0 || context_length == 0 || row_position == 0 || block_scores_f32 == 0 || row_count == 0u ||
+		shard.grain == 0u || shard.degree == 0u || shard.rank >= shard.degree || (uint64_t)block_stride * shard.grain < score_stride ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	return D41Skl2Launch(D41SKL2_d41_shard_block_max_256, row_count, SPARK_DSV41_FLASH_CANDIDATE_THREADS, 0, stream, scores_f32, score_stride, shard, sequence_of_row, context_length, row_position, block_scores_f32, block_stride);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchShardBlockMask(SparkGpuStream stream, uint32_t global_stride, const uint32_t *selected, uint32_t keep,
+	SparkKvShard blocks, uint8_t *mask, uint32_t block_stride, uint32_t row_count)
+{
+	if ( selected == 0 || mask == 0 || row_count == 0u || keep == 0u || blocks.degree == 0u || blocks.rank >= blocks.degree ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	return D41Skl2Launch(D41SKL2_d41_shard_block_mask_256, row_count, SPARK_DSV41_FLASH_CANDIDATE_THREADS, 0, stream, global_stride, selected, keep, blocks, mask, block_stride);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchShardBlockApply(SparkGpuStream stream, float *scores_f32, uint64_t score_stride, uint32_t grain,
+	const uint8_t *mask, uint32_t block_stride, uint32_t row_count)
+{
+	if ( scores_f32 == 0 || mask == 0 || row_count == 0u || grain == 0u || (uint64_t)block_stride * grain < score_stride ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	const uint64_t spans = (score_stride + 16u * SPARK_DSV41_FLASH_CANDIDATE_THREADS - 1u) / (16u * SPARK_DSV41_FLASH_CANDIDATE_THREADS);
+	return D41Skl2Launch(D41SKL2_d41_shard_block_apply_256, dim3((uint32_t)(spans < 256u ? spans : 256u), row_count), SPARK_DSV41_FLASH_CANDIDATE_THREADS, 0, stream, scores_f32, score_stride, grain, mask, block_stride);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchFp8BlockLinear(SparkGpuStream stream, const uint8_t *weight_e4m3, const uint8_t *scale_ue8m0,
+	const uint16_t *input_bf16, float *activation_scratch_f32, uint16_t *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	if ( weight_e4m3 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || activation_scratch_f32 == 0 || output_bf16 == 0 || row_count == 0u || input_dimension == 0u ||
+		input_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || output_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || ((uintptr_t)weight_e4m3 % 16u) != 0u )
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
+	uint64_t groups = (uint64_t)row_count * (input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK);
+	SparkGpuError status = D41Skl2Launch(D41SKL2_d41_act_quant_256, (uint32_t)((groups + 255u) / 256u), 256u, 0, stream, input_bf16, activation_scratch_f32, row_count, input_dimension);
+	if ( status != SPARK_GPU_SUCCESS ) return(status);
+	return D41Skl2Launch(D41SKL2_d41_fp8_block_linear_256, dim3((output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, row_count),
+		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u, 0, stream, weight_e4m3, scale_ue8m0, activation_scratch_f32, output_bf16, input_dimension, output_dimension);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchRmsNorm(SparkGpuStream stream, const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
+{
+	if ( input_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 || row_count == 0u || dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	return D41Skl2Launch(D41SKL2_d41_rms_norm_256, row_count, SPARK_DSV41_FLASH_ROW_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, dimension, epsilon);
+}
+
+static inline SparkGpuError SparkDsv41FlashLaunchRope(SparkGpuStream stream, uint16_t *data_bf16, const float *cos_sin_f32, uint32_t head_count, uint32_t head_dimension, uint32_t rope_dimension, uint32_t inverse)
+{
+	if ( data_bf16 == 0 || cos_sin_f32 == 0 || head_count == 0u || rope_dimension == 0u || rope_dimension > head_dimension || rope_dimension / 2u > 1024u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
+	return D41Skl2Launch(D41SKL2_d41_rope_op_256, head_count, 256u, 0, stream, data_bf16, cos_sin_f32, head_count, head_dimension, rope_dimension, inverse);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchFp8QdqCopy(SparkGpuStream stream, const uint16_t *source_bf16, uint16_t *data_bf16, uint64_t element_count)
 {
 	if ( source_bf16 == 0 || data_bf16 == 0 || element_count == 0u || element_count % SPARK_DSV41_FLASH_FP8_BLOCK != 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
 	uint32_t groups = (uint32_t)(element_count / SPARK_DSV41_FLASH_FP8_BLOCK);
-	(void)LM_LAUNCH_DEPENDENT((SparkDsv41FlashFp8QdqKernel),(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream,source_bf16,data_bf16,groups);
-	return(SparkGpuGetLastError());
+	return D41Skl2Launch(D41SKL2_d41_fp8_qdq_256, (groups + 7u) / 8u, 8u * SPARK_DSV41_FLASH_FP8_BLOCK, 0, stream, source_bf16, data_bf16, groups);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchFp8Qdq(SparkGpuStream stream, uint16_t *data_bf16, uint64_t element_count) { return(SparkDsv41FlashLaunchFp8QdqCopy(stream, data_bf16, data_bf16, element_count)); }
 
-static __global__ void SparkDsv41FlashSinkAttentionKernel(const uint16_t *query_bf16, const uint16_t *keys_bf16, const int32_t *indices,
-	uint32_t index_count, const float *sink_f32, uint16_t *output_bf16, uint32_t head_dimension, float softmax_scale)
-{
-	__shared__ float probabilities[SPARK_DSV41_FLASH_ATTENTION_MAX_KEYS], rounded[SPARK_DSV41_FLASH_ATTENTION_MAX_KEYS], scratch[SPARK_DSV41_FLASH_ROW_THREADS / 32u];
-	uint32_t head = blockIdx.x, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, slot, element, offset;
-	const uint16_t *query = query_bf16 + (uint64_t)head * head_dimension;
-	float score, top = -1e30f, denominator = 0.0f, value;
-	for (slot = warp; slot < index_count; slot += blockDim.x / 32u) {
-		score = 0.0f;
-		if ( indices[slot] >= 0 )
-			for (element = lane; element < head_dimension; element += 32u) score += LmBf16ToFloat(query[element]) * LmBf16ToFloat(keys_bf16[(uint64_t)indices[slot] * head_dimension + element]);
-		for (offset = 16u; offset != 0u; offset >>= 1u) score += __shfl_down_sync(0xffffffffu,score,offset);
-		if ( lane == 0u ) probabilities[slot] = indices[slot] >= 0 ? score * softmax_scale : -INFINITY;
-	}
-	__syncthreads();
-	if ( threadIdx.x == 0u ) { for (slot = 0u; slot < index_count; slot++) top = fmaxf(top,probabilities[slot]); scratch[0] = top; }
-	__syncthreads();
-	top = scratch[0];
-	__syncthreads();
-	for (slot = threadIdx.x; slot < index_count; slot += blockDim.x) { value = expf(probabilities[slot] - top); probabilities[slot] = value; rounded[slot] = LmBf16ToFloat(LmFloatToBf16(value)); }
-	__syncthreads();
-	if ( threadIdx.x == 0u ) { for (slot = 0u; slot < index_count; slot++) denominator += probabilities[slot]; scratch[0] = denominator + expf(sink_f32[head] - top); }
-	__syncthreads();
-	denominator = scratch[0];
-	for (element = threadIdx.x; element < head_dimension; element += blockDim.x) {
-		value = 0.0f;
-		for (slot = 0u; slot < index_count; slot++)
-			if ( indices[slot] >= 0 ) value += rounded[slot] * LmBf16ToFloat(keys_bf16[(uint64_t)indices[slot] * head_dimension + element]);
-		output_bf16[(uint64_t)head * head_dimension + element] = LmFloatToBf16(value / denominator);
-	}
-}
-
 static inline SparkGpuError SparkDsv41FlashLaunchSinkAttention(SparkGpuStream stream, const uint16_t *query_bf16, const uint16_t *keys_bf16, const int32_t *indices, uint32_t index_count, const float *sink_f32, uint16_t *output_bf16, uint32_t head_count, uint32_t head_dimension, float softmax_scale)
 {
 	if ( query_bf16 == 0 || keys_bf16 == 0 || indices == 0 || sink_f32 == 0 || output_bf16 == 0 || index_count == 0u || index_count > SPARK_DSV41_FLASH_ATTENTION_MAX_KEYS || head_count == 0u || head_dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashSinkAttentionKernel),head_count,SPARK_DSV41_FLASH_ROW_THREADS,0,stream,query_bf16,keys_bf16,indices,index_count,sink_f32,output_bf16,head_dimension,softmax_scale);
-	return(SparkGpuGetLastError());
-}
-
-static __global__ void SparkDsv41FlashGroupedFp8LinearKernel(const uint8_t *weight_e4m3, const uint8_t *scale_ue8m0, const uint16_t *input_bf16,
-	uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t outputs_per_group)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, output = blockIdx.x * SPARK_DSV41_FLASH_LINEAR_WARPS + warp, k, pair, offset;
-	uint32_t scale_columns = input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK;
-	if ( output >= output_dimension ) return;
-	const uint16_t *activation = input_bf16 + (uint64_t)(output / outputs_per_group) * input_dimension;
-	const uint8_t *weights = weight_e4m3 + (uint64_t)output * input_dimension;
-	float total = 0.0f;
-	for (k = lane * 16u; k < input_dimension; k += 32u * 16u) {
-		uint4 packed = *(const uint4 *)(weights + k);
-		const uint16_t *pairs = (const uint16_t *)&packed;
-		float scale = LmUe8m0ToFloat(scale_ue8m0[(uint64_t)(output / SPARK_DSV41_FLASH_FP8_BLOCK) * scale_columns + k / SPARK_DSV41_FLASH_FP8_BLOCK]), partial = 0.0f;
-		for (pair = 0u; pair < 8u; pair++) { float2 v = LmE4m3PairToFloat2(pairs[pair]); partial += v.x * scale * LmBf16ToFloat(activation[k + 2u * pair]) + v.y * scale * LmBf16ToFloat(activation[k + 2u * pair + 1u]); }
-		total += partial;
-	}
-	for (offset = 16u; offset != 0u; offset >>= 1u) total += __shfl_down_sync(0xffffffffu,total,offset);
-	if ( lane == 0u ) output_bf16[output] = LmFloatToBf16(total);
+	return D41Skl2Launch(D41SKL2_d41_sink_attention_256, head_count, SPARK_DSV41_FLASH_ROW_THREADS, 0, stream, query_bf16, keys_bf16, indices, index_count, sink_f32, output_bf16, head_dimension, softmax_scale);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchGroupedFp8Linear(SparkGpuStream stream, const uint8_t *weight_e4m3, const uint8_t *scale_ue8m0, const uint16_t *input_bf16, uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension, uint32_t outputs_per_group)
 {
 	if ( weight_e4m3 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || output_bf16 == 0 || input_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || output_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || outputs_per_group == 0u || output_dimension % outputs_per_group != 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashGroupedFp8LinearKernel), (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, weight_e4m3,scale_ue8m0,input_bf16,output_bf16,input_dimension,output_dimension,outputs_per_group);
-	return(SparkGpuGetLastError());
-}
-
-#define SPARK_DSV41_FLASH_MAX_EXPERTS 512u
-#define SPARK_DSV41_FLASH_MAX_ROUTED 16u
-
-static __global__ void SparkDsv41FlashGateKernel(const uint16_t *input_bf16, const uint16_t *weight_bf16, const float *bias_f32,
-	uint32_t *indices_out, float *weights_out, uint32_t expert_count, uint32_t dimension, uint32_t topk, float route_scale)
-{
-	__shared__ float scores[SPARK_DSV41_FLASH_MAX_EXPERTS];
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, expert, element, offset, pick, best, chosen[SPARK_DSV41_FLASH_MAX_ROUTED];
-	float total, value, best_value, sum = 0.0f;
-	for (expert = warp; expert < expert_count; expert += blockDim.x / 32u) {
-		total = 0.0f;
-		for (element = lane; element < dimension; element += 32u) total += LmBf16ToFloat(input_bf16[element]) * LmBf16ToFloat(weight_bf16[(uint64_t)expert * dimension + element]);
-		for (offset = 16u; offset != 0u; offset >>= 1u) total += __shfl_down_sync(0xffffffffu,total,offset);
-		if ( lane == 0u ) scores[expert] = sqrtf(total > 20.0f ? total : log1pf(expf(total)));
-	}
-	__syncthreads();
-	if ( threadIdx.x != 0u ) return;
-	for (pick = 0u; pick < topk; pick++) {
-		best = UINT32_MAX; best_value = -INFINITY;
-		for (expert = 0u; expert < expert_count; expert++) {
-			value = scores[expert] + bias_f32[expert];
-			for (offset = 0u; offset < pick; offset++) if ( chosen[offset] == expert ) value = -INFINITY;
-			if ( value > best_value ) { best_value = value; best = expert; }
-		}
-		chosen[pick] = best; sum += scores[best];
-	}
-	for (pick = 0u; pick < topk; pick++) { indices_out[pick] = chosen[pick]; weights_out[pick] = scores[chosen[pick]] / (sum + 1e-20f) * route_scale; }
+	return D41Skl2Launch(D41SKL2_d41_grouped_fp8_linear_256, (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, SPARK_DSV41_FLASH_LINEAR_WARPS * 32u, 0, stream, weight_e4m3, scale_ue8m0, input_bf16, output_bf16, input_dimension, output_dimension, outputs_per_group);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchGate(SparkGpuStream stream, const uint16_t *input_bf16, const uint16_t *weight_bf16, const float *bias_f32, uint32_t *indices_out, float *weights_out, uint32_t expert_count, uint32_t dimension, uint32_t topk, float route_scale)
 {
 	if ( input_bf16 == 0 || weight_bf16 == 0 || bias_f32 == 0 || indices_out == 0 || weights_out == 0 || expert_count == 0u || expert_count > SPARK_DSV41_FLASH_MAX_EXPERTS || topk == 0u || topk > SPARK_DSV41_FLASH_MAX_ROUTED || topk > expert_count ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashGateKernel),1u,SPARK_DSV41_FLASH_ROW_THREADS,0,stream,input_bf16,weight_bf16,bias_f32,indices_out,weights_out,expert_count,dimension,topk,route_scale);
-	return(SparkGpuGetLastError());
-}
-
-static __global__ void SparkDsv41FlashMxfp4LinearKernel(const uint8_t *payload_e2m1, const uint8_t *scale_ue8m0, const float *activation_f32,
-	uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, output = blockIdx.x * SPARK_DSV41_FLASH_LINEAR_WARPS + warp, k, byte, offset;
-	if ( output >= output_dimension ) return;
-	const uint8_t *weights = payload_e2m1 + (uint64_t)output * (input_dimension / 2u);
-	float total = 0.0f;
-	for (k = lane * 32u; k < input_dimension; k += 32u * 32u) {
-		uint4 packed = *(const uint4 *)(weights + k / 2u);
-		const uint8_t *bytes = (const uint8_t *)&packed;
-		float partial = 0.0f;
-		for (byte = 0u; byte < 16u; byte++) { float2 v = LmE2m1PairToFloat(bytes[byte]); partial += v.x * activation_f32[k + 2u * byte] + v.y * activation_f32[k + 2u * byte + 1u]; }
-		total += partial * LmUe8m0ToFloat(scale_ue8m0[(uint64_t)output * (input_dimension / 32u) + k / 32u]);
-	}
-	for (offset = 16u; offset != 0u; offset >>= 1u) total += __shfl_down_sync(0xffffffffu,total,offset);
-	if ( lane == 0u ) output_bf16[output] = LmFloatToBf16(total);
+	return D41Skl2Launch(D41SKL2_d41_gate_256, 1u, SPARK_DSV41_FLASH_ROW_THREADS, 0, stream, input_bf16, weight_bf16, bias_f32, indices_out, weights_out, expert_count, dimension, topk, route_scale);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchMxfp4Linear(SparkGpuStream stream, const uint8_t *payload_e2m1, const uint8_t *scale_ue8m0, const uint16_t *input_bf16, float *activation_scratch_f32, uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
 {
 	if ( payload_e2m1 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || activation_scratch_f32 == 0 || output_bf16 == 0 || input_dimension == 0u || input_dimension % 32u != 0u || output_dimension == 0u || ((uintptr_t)payload_e2m1 % 16u) != 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashActQuantKernel),(input_dimension / 32u + 255u) / 256u,256u,0,stream,input_bf16,activation_scratch_f32,1u,input_dimension);
-	SparkGpuError status = SparkGpuGetLastError();
+	SparkGpuError status = D41Skl2Launch(D41SKL2_d41_act_quant_256, (input_dimension / 32u + 255u) / 256u, 256u, 0, stream, input_bf16, activation_scratch_f32, 1u, input_dimension);
 	if ( status != SPARK_GPU_SUCCESS ) return(status);
-	LM_LAUNCH((SparkDsv41FlashMxfp4LinearKernel), (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, payload_e2m1,scale_ue8m0,activation_scratch_f32,output_bf16,input_dimension,output_dimension);
-	return(SparkGpuGetLastError());
-}
-
-static __global__ void SparkDsv41FlashSwigluKernel(const uint16_t *gate_bf16, const uint16_t *up_bf16, uint16_t *output_bf16, uint32_t width, float limit, float weight)
-{
-	uint32_t element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( element >= width ) return;
-	float gate = fminf(LmBf16ToFloat(gate_bf16[element]),limit), up = fminf(fmaxf(LmBf16ToFloat(up_bf16[element]),-limit),limit);
-	output_bf16[element] = LmFloatToBf16(weight * ((gate / (1.0f + expf(-gate))) * up));
+	return D41Skl2Launch(D41SKL2_d41_mxfp4_linear_256, (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, SPARK_DSV41_FLASH_LINEAR_WARPS * 32u, 0, stream, payload_e2m1, scale_ue8m0, activation_scratch_f32, output_bf16, input_dimension, output_dimension);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchSwiglu(SparkGpuStream stream, const uint16_t *gate_bf16, const uint16_t *up_bf16, uint16_t *output_bf16, uint32_t width, float limit, float weight)
 {
 	if ( gate_bf16 == 0 || up_bf16 == 0 || output_bf16 == 0 || width == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashSwigluKernel),(width + 255u) / 256u,256u,0,stream,gate_bf16,up_bf16,output_bf16,width,limit,weight);
-	return(SparkGpuGetLastError());
+	return D41Skl2Launch(D41SKL2_d41_swiglu_256, (width + 255u) / 256u, 256u, 0, stream, gate_bf16, up_bf16, output_bf16, width, limit, weight);
 }
 
-static __global__ void SparkDsv41FlashAccumulateKernel(float *accumulator_f32, const uint16_t *value_bf16, uint32_t width)
-{ uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; if ( element < width ) accumulator_f32[element] += LmBf16ToFloat(value_bf16[element]); }
+static inline SparkGpuError SparkDsv41FlashLaunchAccumulate(SparkGpuStream stream, float *accumulator_f32, const uint16_t *value_bf16, uint32_t width)
+{ return D41Skl2Launch(D41SKL2_d41_accumulate_256, (width + 255u) / 256u, 256u, 0, stream, accumulator_f32, value_bf16, width); }
 
-static __global__ void SparkDsv41FlashNarrowKernel(const float *input_f32, uint16_t *output_bf16, uint32_t width)
-{ uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; if ( element < width ) output_bf16[element] = LmFloatToBf16(input_f32[element]); }
-
-static __global__ void SparkDsv41FlashBf16LinearKernel(const uint16_t *weight_bf16, const uint16_t *input_bf16, float *output_f32,
-	uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, output = blockIdx.x * SPARK_DSV41_FLASH_LINEAR_WARPS + warp, k, offset;
-	if ( output >= output_dimension ) return;
-	const uint16_t *weights = weight_bf16 + (uint64_t)output * input_dimension;
-	float total = 0.0f;
-	for (k = lane; k < input_dimension; k += 32u) total += LmBf16ToFloat(weights[k]) * LmBf16ToFloat(input_bf16[k]);
-	for (offset = 16u; offset != 0u; offset >>= 1u) total += __shfl_down_sync(0xffffffffu,total,offset);
-	if ( lane != 0u ) return;
-	if ( output_f32 != 0 ) output_f32[output] = total;
-	if ( output_bf16 != 0 ) output_bf16[output] = LmFloatToBf16(total);
-}
+static inline SparkGpuError SparkDsv41FlashLaunchNarrow(SparkGpuStream stream, const float *input_f32, uint16_t *output_bf16, uint32_t width)
+{ return D41Skl2Launch(D41SKL2_d41_narrow_256, (width + 255u) / 256u, 256u, 0, stream, input_f32, output_bf16, width); }
 
 static inline SparkGpuError SparkDsv41FlashLaunchBf16Linear(SparkGpuStream stream, const uint16_t *weight_bf16, const uint16_t *input_bf16, float *output_f32, uint16_t *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
 {
 	if ( weight_bf16 == 0 || input_bf16 == 0 || (output_f32 == 0 && output_bf16 == 0) || input_dimension == 0u || output_dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashBf16LinearKernel), (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, weight_bf16,input_bf16,output_f32,output_bf16,input_dimension,output_dimension);
-	return(SparkGpuGetLastError());
+	return D41Skl2Launch(D41SKL2_d41_bf16_linear_256, (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS, SPARK_DSV41_FLASH_LINEAR_WARPS * 32u, 0, stream, weight_bf16, input_bf16, output_f32, output_bf16, input_dimension, output_dimension);
 }
 
-static __global__ void SparkDsv41FlashCompressPoolKernel(const float *kv_state_f32, const float *score_state_f32, uint16_t *pooled_bf16, uint32_t ratio, uint32_t width)
-{
-	uint32_t channel = blockIdx.x * blockDim.x + threadIdx.x, slot;
-	float top = -INFINITY, sum = 0.0f, total = 0.0f;
-	if ( channel >= width ) return;
-	for (slot = 0u; slot < ratio; slot++) top = fmaxf(top,score_state_f32[(uint64_t)slot * width + channel]);
-	for (slot = 0u; slot < ratio; slot++) sum += expf(score_state_f32[(uint64_t)slot * width + channel] - top);
-	for (slot = 0u; slot < ratio; slot++) total += kv_state_f32[(uint64_t)slot * width + channel] * (expf(score_state_f32[(uint64_t)slot * width + channel] - top) / sum);
-	pooled_bf16[channel] = LmFloatToBf16(total);
-}
+static inline SparkGpuError SparkDsv41FlashLaunchCompressPool(SparkGpuStream stream, const float *kv_state_f32, const float *score_state_f32, uint16_t *pooled_bf16, uint32_t ratio, uint32_t width)
+{ return D41Skl2Launch(D41SKL2_d41_compress_pool_256, (width + 255u) / 256u, 256u, 0, stream, kv_state_f32, score_state_f32, pooled_bf16, ratio, width); }
 
-static __global__ void SparkDsv41FlashFp4Pow2QdqVecKernel(uint16_t *data_bf16, uint64_t octets)
-{
-	const uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( idx >= octets ) return;
-	float v[8], amax = 0.0f;
-	LmLoadBf16x8AsFloat(((const uint4 *)data_bf16)[idx], v);
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k ) amax = fmaxf(amax, fabsf(v[k]));
-	const unsigned mask = __activemask();
-	amax = fmaxf(amax, __shfl_xor_sync(mask, amax, 1u));
-	amax = fmaxf(amax, __shfl_xor_sync(mask, amax, 2u));
-	const float scale = SparkMathFp4Pow2QdqScale(amax), inv = __uint_as_float(0x7f000000u - __float_as_uint(scale));
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 4u; ++k ) {
-		const float2 r = LmE2m1PairToFloat(LmFloatPairToE2m1(fminf(fmaxf(v[2u * k] * inv, -LM_E2M1_MAX), LM_E2M1_MAX),
-			fminf(fmaxf(v[2u * k + 1u] * inv, -LM_E2M1_MAX), LM_E2M1_MAX)));
-		v[2u * k] = r.x * scale; v[2u * k + 1u] = r.y * scale;
-	}
-	((uint4 *)data_bf16)[idx] = LmPackUint4FloatToBf16(v);
-}
-
-static __global__ void SparkDsv41FlashFp4Pow2QdqKernel(uint16_t *data_bf16, uint32_t group_count, uint32_t group_size)
-{
-	uint32_t group = blockIdx.x * blockDim.x + threadIdx.x, element;
-	if ( group >= group_count ) return;
-	uint64_t base = (uint64_t)group * group_size;
-	float amax = 0.0f;
-	for (element = 0u; element < group_size; element++) amax = fmaxf(amax,fabsf(LmBf16ToFloat(data_bf16[base + element])));
-	const float scale = SparkMathFp4Pow2QdqScale(amax);
-	for (element = 0u; element < group_size; element++)
-		data_bf16[base + element] = LmFloatToBf16(SparkDsv41FlashE2m1Round(fminf(fmaxf(LmBf16ToFloat(data_bf16[base + element]) / scale,-LM_E2M1_MAX),LM_E2M1_MAX)) * scale);
-}
+static inline SparkGpuError SparkDsv41FlashLaunchFp4Pow2QdqScalar(SparkGpuStream stream, uint16_t *data_bf16, uint64_t group_count, uint32_t group_size)
+{ return D41Skl2Launch(D41SKL2_d41_fp4_pow2_qdq_256, (uint32_t)((group_count + 255u) / 256u), 256u, 0, stream, data_bf16, (uint32_t)group_count, group_size); }
 
 static inline void SparkDsv41FlashLaunchFp4Pow2Qdq(SparkGpuStream stream, uint16_t *data_bf16, uint64_t group_count, uint32_t group_size)
 {
 	if ( group_size == 32u && (((uintptr_t)data_bf16) & 15u) == 0u ) {
 		const uint64_t octets = group_count * 4u;
-		LM_LAUNCH((SparkDsv41FlashFp4Pow2QdqVecKernel), (uint32_t)((octets + 255u) / 256u), 256u, 0, stream, data_bf16, octets);
+		(void)D41Skl2Launch(D41SKL2_d41_fp4_pow2_qdq_vec_256, (uint32_t)((octets + 255u) / 256u), 256u, 0, stream, data_bf16, octets);
 		return;
 	}
-	LM_LAUNCH((SparkDsv41FlashFp4Pow2QdqKernel), (uint32_t)((group_count + 255u) / 256u), 256u, 0, stream, data_bf16, (uint32_t)group_count, group_size);
-}
-
-static __global__ void SparkDsv41FlashIndexScoreKernel(const uint16_t *query_bf16, const uint16_t *keys_bf16, const uint16_t *head_weights_bf16, float *scores_f32, uint32_t key_count, uint32_t head_count, uint32_t head_dimension)
-{
-	uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, key = blockIdx.x * (blockDim.x / 32u) + warp, head, element, offset;
-	float total = 0.0f;
-	if ( key >= key_count ) return;
-	for (head = 0u; head < head_count; head++) {
-		float dot = 0.0f;
-		for (element = lane; element < head_dimension; element += 32u) dot += LmBf16ToFloat(query_bf16[(uint64_t)head * head_dimension + element]) * LmBf16ToFloat(keys_bf16[(uint64_t)key * head_dimension + element]);
-		for (offset = 16u; offset != 0u; offset >>= 1u) dot += __shfl_xor_sync(0xffffffffu,dot,offset);
-		total += LmBf16ToFloat(LmFloatToBf16(fmaxf(LmBf16ToFloat(LmFloatToBf16(dot)),0.0f) * LmBf16ToFloat(head_weights_bf16[head])));
-	}
-	if ( lane == 0u ) scores_f32[key] = LmBf16ToFloat(LmFloatToBf16(total));
+	(void)SparkDsv41FlashLaunchFp4Pow2QdqScalar(stream, data_bf16, group_count, group_size);
 }
 
 static inline SparkGpuError SparkDsv41FlashLaunchIndexScore(SparkGpuStream stream, const uint16_t *query_bf16, const uint16_t *keys_bf16, const uint16_t *head_weights_bf16, float *scores_f32, uint32_t key_count, uint32_t head_count, uint32_t head_dimension)
 {
 	if ( query_bf16 == 0 || keys_bf16 == 0 || head_weights_bf16 == 0 || scores_f32 == 0 || key_count == 0u || head_count == 0u || head_dimension == 0u ) return(SPARK_GPU_ERROR_INVALID_VALUE);
-	LM_LAUNCH((SparkDsv41FlashIndexScoreKernel),(key_count + 7u) / 8u,256u,0,stream,query_bf16,keys_bf16,head_weights_bf16,scores_f32,key_count,head_count,head_dimension);
-	return(SparkGpuGetLastError());
+	return D41Skl2Launch(D41SKL2_d41_index_score_ref_256, (key_count + 7u) / 8u, 256u, 0, stream, query_bf16, keys_bf16, head_weights_bf16, scores_f32, key_count, head_count, head_dimension);
 }
