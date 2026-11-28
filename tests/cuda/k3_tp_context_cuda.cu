@@ -54,7 +54,7 @@ int main(void)
 	static SparkStageRunnerServices services;
 	SparkK3ModelState *state = (SparkK3ModelState *)calloc(1u, sizeof(SparkK3ModelState));
 	K3LayerBuffers *buffers = (K3LayerBuffers *)calloc(1u, sizeof(K3LayerBuffers));
-	const uint64_t bytes = (uint64_t)4u * K3_HIDDEN * sizeof(uint16_t);
+	const uint64_t bytes = (uint64_t)K3_TOP_K * (K3_EXPERT_INTERMEDIATE * 2u) * sizeof(uint16_t);
 	uint32_t index;
 	if ( state == 0 || buffers == 0 )
 		return 1;

@@ -1204,12 +1204,11 @@ static void XrDirectGatherSparseParityVerify(void)
 	cudaMemcpy(pos_d, pos_h.data(), rows * 4u, cudaMemcpyHostToDevice);
 	cudaMemcpy(ctx_d, &total_ctx, 4u, cudaMemcpyHostToDevice);
 	cudaMemcpy(sel_d, sel_h.data(), sel_h.size() * 4u, cudaMemcpyHostToDevice);
-	XrCheck(cudaFuncSetAttribute((const void *)K3MlaGatherPrefillKernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SHARED_BYTES) == cudaSuccess,
-		"direct gather sparse smem attribute");
 	LmPrefillSparseUnionKernel<8u, K3_INDEX_TOPK><<<blocks, LM_PREFILL_UNION_THREADS, 0, stream>>>(
 		sel_d, pos_d, rows, (const uint32_t *)0, UCAP, upos_d, umask_d, ucnt_d);
-	K3MlaGatherPrefillKernel<true><<<dim3(blocks, heads / 2u), LM_PREFILL_ATTN_THREADS, SHARED_BYTES, stream>>>(
-		q_d, kv_d, seq_d, ctx_d, pos_d, K3_MLA_QK_SCALE, out_d, rows, heads, total_ctx, upos_d, umask_d, ucnt_d, UCAP);
+	XrCheck(K3Skl2Launch(K3SKL2_k3_mla_gather_prefill_sparse_256, dim3(blocks, heads / 2u), LM_PREFILL_ATTN_THREADS, SHARED_BYTES, stream,
+		q_d, kv_d, seq_d, ctx_d, pos_d, (float)K3_MLA_QK_SCALE, out_d, rows, heads, total_ctx, upos_d, umask_d, ucnt_d, UCAP) == SPARK_GPU_SUCCESS,
+		"direct gather sparse skl2 launch");
 	XrCheck(cudaStreamSynchronize(stream) == cudaSuccess, "direct gather sparse sync");
 	std::vector<uint16_t> out_h((size_t)rows * heads * K3_KV_LORA_RANK);
 	cudaMemcpy(out_h.data(), out_d, out_h.size() * 2u, cudaMemcpyDeviceToHost);

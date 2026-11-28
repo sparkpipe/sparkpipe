@@ -374,3 +374,374 @@ kernel[K3_LYR_BLK256, 32] k3_fill_dense_selected_256(
     }
     preexit();
 }
+
+macro k3_rms_kv_vec64(src, norm_w, slot, dst_all, has_slot, has_all, eps, tid, wid, lane, red) {
+    reg u32x4 raw = ldg128_persist(ptr_add(src, tid, 16));
+    reg f32 s0 = 0.0f; reg f32 s1 = 0.0f;
+    unroll (k = 0..4) {
+        reg f32 lo = bf16_lo(raw[k]); reg f32 hi = bf16_hi(raw[k]);
+        s0 = fma(lo, lo, s0); s1 = fma(hi, hi, s1);
+    }
+    reg f32 total = s0 + s1;
+    warp_sum_down(total);
+    if (lane == 0) { sts32(red, wid, total); }
+    barrier();
+    reg f32 sum_sq = lds32(red, 0) + lds32(red, 1);
+    reg f32 scale = 0.0f;
+    rsqrt_exact_div(sum_sq, 512.0f, eps, scale);
+    reg u32x4 wv = ldg128_persist(ptr_add(norm_w, tid, 16));
+    reg u32 pk[4];
+    unroll (k = 0..4) {
+        reg f32 o0 = bf16_lo(f32_to_bf16(bf16_lo(raw[k]) * scale)) * bf16_lo(wv[k]);
+        reg f32 o1 = bf16_lo(f32_to_bf16(bf16_hi(raw[k]) * scale)) * bf16_hi(wv[k]);
+        pk[k] = pack_bf16x2(o0, o1);
+    }
+    reg u32x4 out_v = pack_u32x4(pk[0], pk[1], pk[2], pk[3]);
+    if (has_slot != 0) { stg128(ptr_add(slot, tid, 16), out_v); }
+    if (has_all != 0) { stg128(ptr_add(dst_all, tid, 16), out_v); }
+    if (tid < 8) {
+        reg u32x4 rope = ldg128_persist(ptr_add(src, 64 + tid, 16));
+        if (has_slot != 0) { stg128(ptr_add(slot, 64 + tid, 16), rope); }
+        if (has_all != 0) { stg128(ptr_add(dst_all, 64 + tid, 16), rope); }
+    }
+}
+
+macro k3_rms_kv_scalar64(src, norm_w, slot, dst_all, has_slot, has_all, eps, tid, wid, lane, red) {
+    reg f32 total = 0.0f;
+    for (reg u32 i = tid; i < 512; i += 64) {
+        reg f32 v = bf16_lo(ldg16_persist(ptr_add(src, i, 2)));
+        total = fma(v, v, total);
+    }
+    warp_sum_down(total);
+    if (lane == 0) { sts32(red, wid, total); }
+    barrier();
+    reg f32 sum_sq = lds32(red, 0) + lds32(red, 1);
+    reg f32 scale = 0.0f;
+    rsqrt_exact_div(sum_sq, 512.0f, eps, scale);
+    for (reg u32 i = tid; i < 512; i += 64) {
+        reg f32 v = bf16_lo(ldg16_persist(ptr_add(src, i, 2)));
+        reg f32 w = bf16_lo(ldg16_persist(ptr_add(norm_w, i, 2)));
+        reg u32 out = f32_to_bf16(bf16_lo(f32_to_bf16(v * scale)) * w);
+        if (has_slot != 0) { stg16(ptr_add(slot, i, 2), out); }
+        if (has_all != 0) { stg16(ptr_add(dst_all, i, 2), out); }
+    }
+    reg u32 rp = ldg16_persist(ptr_add(src, 512 + tid, 2));
+    if (has_slot != 0) { stg16(ptr_add(slot, 512 + tid, 2), rp); }
+    if (has_all != 0) { stg16(ptr_add(dst_all, 512 + tid, 2), rp); }
+}
+
+@pdl
+@concept(norm_rope)
+kernel[64, 56] k3_rms_norm_kv_shard_store_64(
+    blob[56, 8] view, global u16* rows_bf16, global u16* norm_weight,
+    global u32* sequence_of_row, global u32* position_of_row,
+    u32 row_count, f32 epsilon, global u16* kv_all, u32 total_ctx,
+    u32 page_slots, u32 slot_bytes
+) {
+    shared f32 red[2];
+    acqbulk();
+    reg u32 row = ctaid_x();
+    if (row >= row_count) { preexit(); return; }
+    reg u32 pos = ldg32_persist(ptr_add(position_of_row, row, 4));
+    reg u32 seq = ldg32_persist(ptr_add(sequence_of_row, row, 4));
+    reg u32 has_all = 0;
+    if ((kv_all[0] | kv_all[1]) != 0) {
+        if (pos < total_ctx) { has_all = 1; }
+    }
+    reg u64 dst_all = ptr_add(kv_all, pos, 1152);
+    reg u64 slot = 0; reg u32 has_slot = 0;
+    kv_shard_slot_addr_gen(view, seq, pos, page_slots, slot_bytes, slot, has_slot);
+    if (has_slot == 0 && has_all == 0) { preexit(); return; }
+    reg u64 src = ptr_add(rows_bf16, row, 1152);
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 mis = (src[0] | norm_weight[0]) & 15;
+    if (has_slot != 0) { mis = mis | (slot[0] & 15); }
+    if (has_all != 0) { mis = mis | (dst_all[0] & 15); }
+    if (mis == 0) {
+        k3_rms_kv_vec64(src, norm_weight, slot, dst_all, has_slot, has_all, epsilon, tid, wid, lane, red);
+    } else {
+        k3_rms_kv_scalar64(src, norm_weight, slot, dst_all, has_slot, has_all, epsilon, tid, wid, lane, red);
+    }
+    preexit();
+}
+
+@pdl
+@concept(norm_rope)
+kernel[32, 56] k3_layer_norm_kv_shard_store_32(
+    blob[56, 8] view, global u16* rows_bf16, global u16* weight, global u16* bias,
+    global u32* sequence_of_row, global u32* position_of_row,
+    u32 row_count, f32 epsilon, u32 page_slots, u32 slot_bytes
+) {
+    acqbulk();
+    reg u32 row = ctaid_x();
+    if (row >= row_count) { preexit(); return; }
+    reg u32 pos = ldg32_persist(ptr_add(position_of_row, row, 4));
+    reg u32 seq = ldg32_persist(ptr_add(sequence_of_row, row, 4));
+    reg u64 slot = 0; reg u32 ok = 0;
+    kv_shard_slot_addr_gen(view, seq, pos, page_slots, slot_bytes, slot, ok);
+    if (ok == 0) { preexit(); return; }
+    reg u32 lane = tid_x();
+    reg u64 src = ptr_add(rows_bf16, row, 256);
+    reg f32 v[8];
+    unroll (i = 0..8) { v[i] = 0.0f; }
+    reg f32 total = 0.0f; reg f32 total_sq = 0.0f;
+    if (lane < 16) {
+        reg u32x4 raw = ldg128_persist(ptr_add(src, lane, 16));
+        unroll (k = 0..4) {
+            reg f32 lo = bf16_lo(raw[k]); reg f32 hi = bf16_hi(raw[k]);
+            v[k * 2] = lo; v[k * 2 + 1] = hi;
+            total = total + (lo + hi);
+            total_sq = fma(hi, hi, fma(lo, lo, total_sq));
+        }
+    }
+    total = warp_sum(total);
+    total_sq = warp_sum(total_sq);
+    reg f32 mean = total * 0.0078125f;
+    reg f32 var = maxf((total_sq * 0.0078125f) - (mean * mean), 0.0f);
+    reg f32 inv = rsqrt(var + epsilon);
+    if (lane < 16) {
+        reg u32x4 wv = ldg128_persist(ptr_add(weight, lane, 16));
+        reg u32x4 bv = ldg128_persist(ptr_add(bias, lane, 16));
+        reg u32 pk[4];
+        unroll (k = 0..4) {
+            reg f32 o0 = ((v[k * 2] - mean) * inv * bf16_lo(wv[k])) + bf16_lo(bv[k]);
+            reg f32 o1 = ((v[k * 2 + 1] - mean) * inv * bf16_hi(wv[k])) + bf16_hi(bv[k]);
+            pk[k] = pack_bf16x2(o0, o1);
+        }
+        stg128(ptr_add(slot, lane, 16), pack_u32x4(pk[0], pk[1], pk[2], pk[3]));
+    }
+    preexit();
+}
+
+macro k3_idx_slot_index(view, seq, local_key, page_slots, out_idx) {
+    reg u32 pos = 0;
+    kv_shard_local_pos(param_u32(view, 40), param_u32(view, 44), param_u32(view, 48), local_key, pos);
+    reg u32 page = 0; reg u32 sip = 0;
+    u32_divmod(pos, page_slots, page, sip);
+    reg u32 ok = 0;
+    kv_shard_slot_index_page(view, seq, pos, page, sip, page_slots, out_idx, ok);
+    if (ok == 0) { out_idx = 0xFFFFFFFF; }
+}
+
+macro k3_idx_score_store(c0, c1, w0, w1, w2, w3, valid, bound, written, grp, row, score_stride, qk_scale, scores) {
+    reg f32 lo = fma(w3, maxf(c1[2], 0.0f), fma(w2, maxf(c1[0], 0.0f), fma(w1, maxf(c0[2], 0.0f), w0 * maxf(c0[0], 0.0f))));
+    reg f32 hi = fma(w3, maxf(c1[3], 0.0f), fma(w2, maxf(c1[1], 0.0f), fma(w1, maxf(c0[3], 0.0f), w0 * maxf(c0[1], 0.0f))));
+    lo = lo + shfl_xor(lo, 4); hi = hi + shfl_xor(hi, 4);
+    lo = lo + shfl_xor(lo, 8); hi = hi + shfl_xor(hi, 8);
+    lo = lo + shfl_xor(lo, 16); hi = hi + shfl_xor(hi, 16);
+    if (grp == 0) {
+        reg u32 s0 = 0xFF800000; reg u32 s1 = 0xFF800000;
+        if (valid != 0 && written < bound) { s0 = f32_as_u32(lo * qk_scale); }
+        if (valid != 0 && written + 1 < bound) { s1 = f32_as_u32(hi * qk_scale); }
+        reg u64 dst = ptr_add(ptr_add(scores, row, score_stride << 2), written, 4);
+        reg u32 align8 = 0;
+        if (written + 1 < score_stride && (dst[0] & 7) == 0) { align8 = 1; }
+        if (align8 != 0) {
+            stg64(dst, pack_u32x2(s0, s1));
+        } else {
+            if (written < score_stride) { stg32(dst, s0); }
+            if (written + 1 < score_stride) { stg32(ptr_add(dst, 1, 4), s1); }
+        }
+    }
+}
+
+macro k3_idx_load_query(index_query, head_weight, row, grp, pr, a0, a1, w0, w1, w2, w3) {
+    reg u64 qrow = ptr_add(index_query, row, 8192);
+    unroll (st = 0..8) {
+        reg u64 t0 = ptr_add(qrow, (grp << 7) + (st << 4) + (pr << 1), 2);
+        reg u64 b0 = ptr_add(t0, 1024, 2);
+        a0[st] = pack_u32x4(ldg32_persist(t0), ldg32_persist(b0), ldg32_persist(ptr_add(t0, 8, 2)), ldg32_persist(ptr_add(b0, 8, 2)));
+        reg u64 t1 = ptr_add(t0, 2048, 2);
+        reg u64 b1 = ptr_add(t1, 1024, 2);
+        a1[st] = pack_u32x4(ldg32_persist(t1), ldg32_persist(b1), ldg32_persist(ptr_add(t1, 8, 2)), ldg32_persist(ptr_add(b1, 8, 2)));
+    }
+    reg u64 hw = ptr_add(head_weight, row, 64);
+    w0 = bf16_lo(ldg16_persist(ptr_add(hw, grp, 2)));
+    w1 = bf16_lo(ldg16_persist(ptr_add(hw, grp + 8, 2)));
+    w2 = bf16_lo(ldg16_persist(ptr_add(hw, 16 + grp, 2)));
+    w3 = bf16_lo(ldg16_persist(ptr_add(hw, 24 + grp, 2)));
+}
+
+macro k3_idx_produce_stage(pool, fallback_ptr, s_slot, staged_base, chunk, stage, tid) {
+    unroll (q = 0..2) {
+        reg u32 piece = tid + (q << 8);
+        reg u32 key = piece >> 4;
+        reg u32 part = piece & 15;
+        reg u32 sidx = lds32(s_slot, (chunk << 5) + key);
+        reg u32 ok = (sidx != 0xFFFFFFFF) ? 1 : 0;
+        reg u64 src = fallback_ptr;
+        if (ok != 0) { src = ptr_add(ptr_add(pool, sidx, 256), part, 16); }
+        ldgsts128_z(staged_base + stage * 8704 + key * 272 + (part << 4), src, ok);
+    }
+    ldgdepbar();
+}
+
+macro k3_idx_staged_tile_pair(a0, a1, w0, w1, w2, w3, base, tile, first0, valid, bound, pr, grp, row, score_stride, qk_scale, scores) {
+    reg u32 first1 = first0 + 8;
+    reg u32 do1 = (first1 < score_stride) ? 1 : 0;
+    reg f32x4 c00 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    reg f32x4 c01 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    reg f32x4 c10 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    reg f32x4 c11 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (valid != 0 && first0 < bound) {
+        reg u32 addr0 = base + tile * 2176;
+        reg u32 addr1 = addr0 + 2176;
+        reg u32 cmp1 = 0;
+        if (do1 != 0 && first1 < bound) { cmp1 = 1; }
+        unroll (st = 0..4) {
+            reg u32x4 v0 = ldsm_x4(addr0 + (st << 6));
+            c00 = hmma16816_bf16(a0[st * 2], lo_u32x2(v0), c00);
+            c01 = hmma16816_bf16(a1[st * 2], lo_u32x2(v0), c01);
+            c00 = hmma16816_bf16(a0[st * 2 + 1], hi_u32x2(v0), c00);
+            c01 = hmma16816_bf16(a1[st * 2 + 1], hi_u32x2(v0), c01);
+            if (cmp1 != 0) {
+                reg u32x4 v1 = ldsm_x4(addr1 + (st << 6));
+                c10 = hmma16816_bf16(a0[st * 2], lo_u32x2(v1), c10);
+                c11 = hmma16816_bf16(a1[st * 2], lo_u32x2(v1), c11);
+                c10 = hmma16816_bf16(a0[st * 2 + 1], hi_u32x2(v1), c10);
+                c11 = hmma16816_bf16(a1[st * 2 + 1], hi_u32x2(v1), c11);
+            }
+        }
+    }
+    k3_idx_score_store(c00, c01, w0, w1, w2, w3, valid, bound, first0 + (pr << 1), grp, row, score_stride, qk_scale, scores);
+    if (do1 != 0) {
+        k3_idx_score_store(c10, c11, w0, w1, w2, w3, valid, bound, first1 + (pr << 1), grp, row, score_stride, qk_scale, scores);
+    }
+}
+
+macro k3_idx_shared_pipeline(pool, fallback_ptr, s_slot, staged_s, matrix_lane, tid, block_first, live_ok, bound, score_stride, a0, a1, w0, w1, w2, w3, pr, grp, row, qk_scale, scores) {
+    k3_idx_produce_stage(pool, fallback_ptr, s_slot, staged_s, 0, 0, tid);
+    k3_idx_produce_stage(pool, fallback_ptr, s_slot, staged_s, 1, 1, tid);
+    reg u32 st_cur = 0; reg u32 st_prod = 2;
+    for (reg u32 chunk = 0; chunk < 8; chunk += 1) {
+        depbar_le(1);
+        barrier();
+        if (chunk + 2 < 8) {
+            k3_idx_produce_stage(pool, fallback_ptr, s_slot, staged_s, chunk + 2, st_prod, tid);
+            st_prod = (st_prod == 2) ? 0 : (st_prod + 1);
+        } else {
+            ldgdepbar();
+        }
+        if (live_ok != 0) {
+            reg u32 base = staged_s + st_cur * 8704 + matrix_lane;
+            reg u32 f0 = block_first + (chunk << 5);
+            if (f0 < bound && f0 < score_stride) {
+                k3_idx_staged_tile_pair(a0, a1, w0, w1, w2, w3, base, 0, f0, 1, bound, pr, grp, row, score_stride, qk_scale, scores);
+            }
+            reg u32 f2 = f0 + 16;
+            if (f2 < bound && f2 < score_stride) {
+                k3_idx_staged_tile_pair(a0, a1, w0, w1, w2, w3, base, 2, f2, 1, bound, pr, grp, row, score_stride, qk_scale, scores);
+            }
+        }
+        st_cur = (st_cur == 2) ? 0 : (st_cur + 1);
+    }
+    depbar_le(0);
+}
+
+macro k3_idx_mixed_fallback(index_view, pool, seq, block_first, bound, score_stride, page_slots, a0, a1, w0, w1, w2, w3, pr, grp, row, qk_scale, scores) {
+    for (reg u32 tile = 0; tile < 32; tile += 1) {
+        reg u32 first = block_first + (tile << 3);
+        if (first < bound && first < score_stride) {
+            reg u32 sidx = 0xFFFFFFFF;
+            if (first + grp < bound) { k3_idx_slot_index(index_view, seq, first + grp, page_slots, sidx); }
+            reg f32x4 c0 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+            reg f32x4 c1 = pack_f32x4(0.0f, 0.0f, 0.0f, 0.0f);
+            reg u64 sp = pool;
+            if (sidx != 0xFFFFFFFF) { sp = ptr_add(pool, sidx, 256); }
+            unroll (st = 0..8) {
+                reg u32 b0 = 0; reg u32 b1 = 0;
+                if (sidx != 0xFFFFFFFF) {
+                    reg u64 kp = ptr_add(sp, (st << 4) + (pr << 1), 2);
+                    b0 = ldg32_persist(kp);
+                    b1 = ldg32_persist(ptr_add(kp, 8, 2));
+                }
+                reg u32x2 bv = pack_u32x2(b0, b1);
+                c0 = hmma16816_bf16(a0[st], bv, c0);
+                c1 = hmma16816_bf16(a1[st], bv, c1);
+            }
+            k3_idx_score_store(c0, c1, w0, w1, w2, w3, 1, bound, first + (pr << 1), grp, row, score_stride, qk_scale, scores);
+        }
+    }
+}
+
+macro k3_idx_resolve_block(index_view, seq_of_row, ctx_len, row_pos, row, rows, block_first, dense_limit, wid, lane, s_seq, s_bnd, out_seq, out_bnd, out_live, out_bseq, out_bbnd, out_mixed) {
+    out_seq = 0xFFFFFFFF; out_bnd = 0; out_live = 0;
+    if (row < rows) {
+        reg u32 seq = ldg32_persist(ptr_add(seq_of_row, row, 4));
+        if (seq < param_u32(index_view, 20)) {
+            reg u32 bnd = ldg32_persist(ptr_add(ctx_len, seq, 4));
+            if ((row_pos[0] | row_pos[1]) != 0) {
+                reg u32 rp1 = ldg32_persist(ptr_add(row_pos, row, 4)) + 1;
+                if (rp1 < bnd) { bnd = rp1; }
+            }
+            reg u32 is_dense = 0;
+            if (dense_limit != 0 && bnd <= dense_limit) { is_dense = 1; }
+            if (is_dense != 0) {
+                bnd = 0;
+            } else {
+                kv_shard_local_keys(param_u32(index_view, 40), param_u32(index_view, 44), param_u32(index_view, 48), bnd, bnd);
+            }
+            out_seq = seq; out_bnd = bnd;
+            if (bnd > block_first) { out_live = 1; }
+        }
+    }
+    if (lane == 0) {
+        sts32(s_seq, wid, (out_live != 0) ? out_seq : 0xFFFFFFFF);
+        sts32(s_bnd, wid, (out_live != 0) ? out_bnd : 0);
+    }
+    barrier();
+    out_bseq = 0xFFFFFFFF; out_bbnd = 0; out_mixed = 0;
+    unroll (w = 0..8) {
+        reg u32 sw = lds32(s_seq, w);
+        reg u32 bw = lds32(s_bnd, w);
+        if (bw > out_bbnd) { out_bbnd = bw; }
+        if (sw != 0xFFFFFFFF) {
+            if (out_bseq == 0xFFFFFFFF) { out_bseq = sw; }
+            else if (sw != out_bseq) { out_mixed = 1; }
+        }
+    }
+}
+
+@pdl
+@concept(indexer)
+kernel[K3_LYR_BLK256, 144] k3_sparse_score_slots_256(
+    global u16* index_query_bf16, global u16* head_weight, blob[56, 8] index_view,
+    global u32* sequence_of_row, global u32* context_length, global u32* row_position,
+    u32 rows, u32 score_stride, f32 qk_scale, global f32* scores, u32 dense_limit, u32 page_slots
+) {
+    shared u32 s_staged[6528];
+    shared u32 s_slot[256];
+    shared u32 s_seq[8];
+    shared u32 s_bnd[8];
+    acqbulk();
+    if ((scores[0] | scores[1]) == 0) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    reg u32 grp = lane >> 2; reg u32 pr = lane & 3;
+    reg u32 row = (ctaid_y() << 3) + wid;
+    reg u32 block_first = ctaid_x() << 8;
+    reg u32 seq = 0xFFFFFFFF; reg u32 bound = 0; reg u32 live_ok = 0;
+    reg u32 bseq = 0xFFFFFFFF; reg u32 bbnd = 0; reg u32 bmix = 0;
+    k3_idx_resolve_block(index_view, sequence_of_row, context_length, row_position, row, rows, block_first, dense_limit, wid, lane, s_seq, s_bnd, seq, bound, live_ok, bseq, bbnd, bmix);
+    if (bbnd <= block_first) { preexit(); return; }
+    reg u32x4 a0[8]; reg u32x4 a1[8];
+    reg f32 w0 = 0.0f; reg f32 w1 = 0.0f; reg f32 w2 = 0.0f; reg f32 w3 = 0.0f;
+    if (live_ok != 0) {
+        k3_idx_load_query(index_query_bf16, head_weight, row, grp, pr, a0, a1, w0, w1, w2, w3);
+    }
+    reg u64 pool = param_u64(index_view, 0);
+    reg u32 use_shared = 0;
+    if (bmix == 0 && bseq != 0xFFFFFFFF) { use_shared = 1; }
+    if (use_shared != 0) {
+        reg u32 pos = block_first + tid;
+        reg u32 sidx = 0xFFFFFFFF;
+        if (pos < bbnd && pos < score_stride) { k3_idx_slot_index(index_view, bseq, pos, page_slots, sidx); }
+        sts32(s_slot, tid, sidx);
+        barrier();
+        reg u32 staged_s = smem_base(s_staged);
+        reg u32 matrix_lane = (lane & 7) * 272 + ((lane >> 3) << 4);
+        k3_idx_shared_pipeline(pool, index_query_bf16, s_slot, staged_s, matrix_lane, tid, block_first, live_ok, bound, score_stride, a0, a1, w0, w1, w2, w3, pr, grp, row, qk_scale, scores);
+    } else if (live_ok != 0) {
+        k3_idx_mixed_fallback(index_view, pool, seq, block_first, bound, score_stride, page_slots, a0, a1, w0, w1, w2, w3, pr, grp, row, qk_scale, scores);
+    }
+    preexit();
+}
