@@ -1570,7 +1570,7 @@ CEILING = 380539
 
 ROOT = Path(__file__).resolve().parent.parent
 BUDGET = ROOT / 'tests' / 'code_size_budget'
-EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
+EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh', '.skl2'}
 # .agents holds per-model agent worktrees (full clones of this tree);
 # their copies are tooling infrastructure, not authored source, and must
 # never move the counter.

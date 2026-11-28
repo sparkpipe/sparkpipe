@@ -1,2 +1,0 @@
-+317
-k3 and glm5_next prefill wire-cut and GB10 attention optimization: adds zero-collective cold and prior-only warm KV-gather local-head MMA FlashAttention prefill (dense and sparse union) plus 16-way sharded indexer merge, Gate GX prefix-exact unification, and fused KDA head norm-gate-out for glm5_next (k3 gather prefill and KV-shard norm/score kernels retired to skl2).
