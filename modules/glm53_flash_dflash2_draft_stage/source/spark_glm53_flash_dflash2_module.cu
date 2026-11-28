@@ -1,25 +1,5 @@
-#include "sparkpipe/spark_clock.h"
-#include "sparkpipe/spark_device.h"
-#include "sparkpipe/spark_draft_tree_pack.h"
-#include "sparkpipe/spark_drafter_module.h"
-#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_glm52_model.h"
-#include "sparkpipe/spark_gpu.h"
-#include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_weightd.h"
-#include "sparkpipe/spark_weightd_lazy_pack.h"
-#include "inference/kernels/dense_rows.cuh"
-#include "inference/kernels/kernel_math.cuh"
-#include "inference/kernels/norm.cuh"
-#include "inference/kernels/drafter_blackwell.cuh"
-#include "runtime/launch.h"
-
-#include <math.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "inference/kernels/dspark_draft_stage_common.cuh"
 
 #define G53F_HIDDEN 4096u
 #define G53F_TAPS 5u
@@ -47,22 +27,14 @@
 #define G53F_TOP_K 16u
 #define G53F_BRANCH_LEN 4u
 #define G53F_INGEST_ROWS 256u
-#define G53F_THREADS 256u
-#define G53F_WARP 32u
-#define G53F_WARPS (G53F_THREADS / G53F_WARP)
-#define G53F_TOPK_THREADS 512u
 #define G53F_SPLIT_KEYS 256u
 #define G53F_SPLITS ((G53F_WINDOW + G53F_SPLIT_KEYS - 1u) / G53F_SPLIT_KEYS)
 #define G53F_ATTN_TILE 32u
-#define G53F_ATTN_THREADS (G53F_BLOCK * G53F_WARP)
+#define G53F_ATTN_THREADS (G53F_BLOCK * DSPARK_WARP)
 #define G53F_SEQUENCES_MAX 256u
 #define G53F_LAYER_KV ((uint64_t)G53F_KV_HEADS * G53F_COLUMNS * G53F_HEAD_DIM)
 #define G53F_SEQUENCE_ELEMENTS (2u * G53F_LAYERS * G53F_LAYER_KV)
 #define G53F_SEQUENCE_BYTES (G53F_SEQUENCE_ELEMENTS * sizeof(uint16_t))
-#define G53F_PACK_MAGIC 0x4B505244u
-#define G53F_PACK_VERSION 1u
-#define G53F_PACK_ALIGNMENT 128u
-#define G53F_INVERSE_PI 0.31830988618379067154
 
 typedef struct G53FLayer
 {
@@ -83,18 +55,8 @@ typedef struct G53FLayer
 	const uint16_t *down;
 } G53FLayer;
 
-typedef struct G53FSequence
-{
-	uint64_t id;
-	uint64_t control_generation;
-	uint64_t request_id;
-	uint64_t last_used;
-	uint32_t live;
-	uint32_t retired;
-	int64_t positions[G53F_WINDOW];
-	uint32_t tokens[G53F_WINDOW];
-	uint16_t *cache;
-} G53FSequence;
+using G53FSequence = DsparkRingSequence<G53F_WINDOW>;
+using G53FRingPool = DsparkRingPool<G53F_WINDOW, G53F_SEQUENCES_MAX>;
 
 typedef struct G53FDraft
 {
@@ -183,35 +145,10 @@ typedef struct G53FState
 	uint16_t *keys_raw;
 	uint16_t *values_raw;
 	uint16_t *caches;
-	uint32_t capacity;
-	uint64_t clock;
-	G53FSequence *sequences;
+	G53FRingPool ring;
 	uint64_t frames;
 	uint64_t rows;
-	uint64_t gaps;
 } G53FState;
-
-static __device__ __forceinline__ void G53FRotation(uint32_t position, float inverse, float *cosine, float *sine)
-{
-	const float angle = (float)position * inverse;
-	const double half_turns = (double)angle * G53F_INVERSE_PI;
-	const float reduced = (float)(half_turns - 2.0 * rint(0.5 * half_turns));
-	sincospif(reduced, sine, cosine);
-}
-
-static __device__ __forceinline__ float G53FWarpSum(float value)
-{
-	for ( uint32_t mask = G53F_WARP / 2u; mask > 0u; mask >>= 1u )
-		value += __shfl_xor_sync(0xffffffffu, value, mask);
-	return value;
-}
-
-static __device__ __forceinline__ float G53FWarpMax(float value)
-{
-	for ( uint32_t mask = G53F_WARP / 2u; mask > 0u; mask >>= 1u )
-		value = fmaxf(value, __shfl_xor_sync(0xffffffffu, value, mask));
-	return value;
-}
 
 static __device__ __forceinline__ float G53FLogAddExp(float a, float b)
 {
@@ -221,98 +158,7 @@ static __device__ __forceinline__ float G53FLogAddExp(float a, float b)
 	return hi + log1pf(expf(lo - hi));
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 1)
-void G53FRopeTableKernel(float *__restrict__ inverse, float theta)
-{
-	if ( threadIdx.x < G53F_HALF )
-		inverse[threadIdx.x] = 1.0f / powf(theta, (float)(2u * threadIdx.x) / (float)G53F_HEAD_DIM);
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
-void G53FRmsF32Kernel(const float *__restrict__ input, const uint16_t *__restrict__ weight, uint16_t *__restrict__ output, uint32_t dimension, float epsilon)
-{
-	__shared__ float reduction[G53F_WARPS];
-	const uint64_t row = blockIdx.x;
-	const float *src = input + row * dimension;
-	uint16_t *dst = output + row * dimension;
-	float total = 0.0f, scale;
-	for ( uint32_t index = threadIdx.x; index < dimension; index += G53F_THREADS )
-	{
-		const float value = src[index];
-		total += value * value;
-	}
-	total = LmBlockSum<G53F_THREADS>(total, reduction);
-	scale = rsqrtf(total / (float)dimension + epsilon);
-	for ( uint32_t index = threadIdx.x; index < dimension; index += G53F_THREADS )
-		dst[index] = LmFloatToBf16(src[index] * scale * LmBf16ToFloat(__ldg(weight + index)));
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_HEAD_DIM, 4)
-void G53FHeadNormRopeKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const float *__restrict__ inverse,
-	const uint32_t *__restrict__ positions, uint32_t heads, float epsilon, uint16_t *__restrict__ output, uint16_t *__restrict__ cache_keys,
-	const G53FDraft *__restrict__ draft, uint64_t layer_offset, uint32_t use_ring)
-{
-	if ( draft != 0 && output == 0 )
-		LmDependentWait();
-	__shared__ float reduction[G53F_HEAD_DIM / G53F_WARP];
-	__shared__ float normed[G53F_HEAD_DIM];
-	const uint32_t row = blockIdx.x / heads, head = blockIdx.x % heads, lane = threadIdx.x;
-	const uint32_t position = positions[row];
-	const float value = LmBf16ToFloat(__ldg(input + ((uint64_t)row * heads + head) * G53F_HEAD_DIM + lane));
-	float scale, cosine, sine, rotated;
-	scale = rsqrtf(LmBlockSum<G53F_HEAD_DIM>(value * value, reduction) / (float)G53F_HEAD_DIM + epsilon);
-	normed[lane] = value * scale * LmBf16ToFloat(__ldg(weight + lane));
-	__syncthreads();
-	G53FRotation(position, __ldg(inverse + (lane % G53F_HALF)), &cosine, &sine);
-	rotated = lane < G53F_HALF ? normed[lane] * cosine - normed[lane + G53F_HALF] * sine : normed[lane] * cosine + normed[lane - G53F_HALF] * sine;
-	if ( output == 0 )
-	{
-		uint16_t *dst_keys = cache_keys != 0 ? cache_keys : draft->cache + layer_offset;
-		const uint32_t column = use_ring != 0u ? position % G53F_WINDOW : draft->block_at + row;
-		dst_keys[((uint64_t)head * G53F_COLUMNS + column) * G53F_HEAD_DIM + lane] = LmFloatToBf16(rotated);
-	}
-	else
-		output[((uint64_t)row * heads + head) * G53F_HEAD_DIM + lane] = LmFloatToBf16(rotated);
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
-void G53FStoreValuesKernel(const uint16_t *__restrict__ values, const uint32_t *__restrict__ positions, const G53FDraft *__restrict__ draft,
-	uint64_t layer_offset, uint16_t *__restrict__ cache)
-{
-	if ( draft != 0 )
-		LmDependentWait();
-	const uint32_t row = blockIdx.x;
-	const uint32_t column = positions != 0 ? positions[row] % G53F_WINDOW : draft->block_at + row;
-	uint16_t *dst = cache != 0 ? cache : draft->cache + layer_offset;
-	const uint4 *vsrc = (const uint4 *)(values + (uint64_t)row * G53F_KV_WIDTH);
-	for ( uint32_t v = threadIdx.x; v < G53F_KV_WIDTH / 8u; v += G53F_THREADS )
-	{
-		const uint32_t head = v >> 4u, chunk = v & 15u;
-		*(uint4 *)(dst + ((uint64_t)head * G53F_COLUMNS + column) * G53F_HEAD_DIM + chunk * 8u) = __ldg(vsrc + v);
-	}
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
-void G53FEmbedKernel(const uint16_t *__restrict__ embed, const G53FDraft *__restrict__ draft, float *__restrict__ hidden)
-{
-	const uint32_t row = blockIdx.x, token = row == 0u ? draft->anchor : draft->mask;
-	const uint4 *src = (const uint4 *)(embed + (uint64_t)token * G53F_HIDDEN);
-	float4 *dst = (float4 *)(hidden + (uint64_t)row * G53F_HIDDEN);
-	for ( uint32_t index = threadIdx.x; index < G53F_HIDDEN / 8u; index += G53F_THREADS )
-	{
-		const uint4 p = __ldg(src + index);
-		dst[2u * index] = make_float4(__uint_as_float(p.x << 16u), __uint_as_float(p.x & 0xffff0000u),
-			__uint_as_float(p.y << 16u), __uint_as_float(p.y & 0xffff0000u));
-		dst[2u * index + 1u] = make_float4(__uint_as_float(p.z << 16u), __uint_as_float(p.z & 0xffff0000u),
-			__uint_as_float(p.w << 16u), __uint_as_float(p.w & 0xffff0000u));
-	}
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
+__global__ __launch_bounds__(DSPARK_THREADS, 2)
 void G53FConvPrepareKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
 	uint16_t *__restrict__ output)
 {
@@ -323,7 +169,7 @@ void G53FConvPrepareKernel(const uint16_t *__restrict__ input, const uint16_t *_
 	const uint16_t *in_cur = input + (uint64_t)row * G53F_HIDDEN;
 	const uint16_t *in_prev = row > 0u ? input + (uint64_t)(row - 1u) * G53F_HIDDEN : (const uint16_t *)0;
 	uint16_t *out_row = output + (uint64_t)row * G53F_HIDDEN;
-	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
+	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += DSPARK_THREADS )
 	{
 		const uint32_t group = col / G53F_CONV_GROUP;
 		const float c0 = LmBf16ToFloat(__ldg(base0 + col)) + LmBf16ToFloat(__ldg(delta0 + group));
@@ -338,37 +184,12 @@ void G53FConvPrepareKernel(const uint16_t *__restrict__ input, const uint16_t *_
 	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 2)
-void G53FConvFinishResidualKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
-	float *__restrict__ hidden)
-{
-	const uint32_t row = blockIdx.x;
-	const uint16_t *base0 = base + 2u * G53F_HIDDEN, *base1 = base + 3u * G53F_HIDDEN;
-	const uint16_t *delta0 = delta + (uint64_t)row * G53F_CONV_WIDTH + 2u * G53F_CONV_GROUPS;
-	const uint16_t *delta1 = delta0 + G53F_CONV_GROUPS;
-	const uint16_t *in_cur = input + (uint64_t)row * G53F_HIDDEN;
-	const uint16_t *in_prev = row > 0u ? input + (uint64_t)(row - 1u) * G53F_HIDDEN : (const uint16_t *)0;
-	float *hid_row = hidden + (uint64_t)row * G53F_HIDDEN;
-	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
-	{
-		const uint32_t group = col / G53F_CONV_GROUP;
-		const float c0 = LmBf16ToFloat(__ldg(base0 + col)) + LmBf16ToFloat(__ldg(delta0 + group));
-		float acc = c0 * LmBf16ToFloat(__ldg(in_cur + col));
-		if ( in_prev != 0 )
-		{
-			const float c1 = LmBf16ToFloat(__ldg(base1 + col)) + LmBf16ToFloat(__ldg(delta1 + group));
-			acc = fmaf(c1, LmBf16ToFloat(__ldg(in_prev + col)), acc);
-		}
-		hid_row[col] += acc;
-	}
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
-void G53FConvFinishResidualRmsKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
+template<bool DO_RMS>
+__global__ __launch_bounds__(DSPARK_THREADS, 2)
+void G53FConvFinishKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ base, const uint16_t *__restrict__ delta,
 	float *__restrict__ hidden, const uint16_t *__restrict__ weight, uint16_t *__restrict__ normed, float epsilon)
 {
-	__shared__ float reduction[G53F_WARPS];
+	__shared__ float reduction[DSPARK_WARPS];
 	const uint32_t row = blockIdx.x;
 	const uint16_t *base0 = base + 2u * G53F_HIDDEN, *base1 = base + 3u * G53F_HIDDEN;
 	const uint16_t *delta0 = delta + (uint64_t)row * G53F_CONV_WIDTH + 2u * G53F_CONV_GROUPS;
@@ -376,9 +197,8 @@ void G53FConvFinishResidualRmsKernel(const uint16_t *__restrict__ input, const u
 	const uint16_t *in_cur = input + (uint64_t)row * G53F_HIDDEN;
 	const uint16_t *in_prev = row > 0u ? input + (uint64_t)(row - 1u) * G53F_HIDDEN : (const uint16_t *)0;
 	float *hid_row = hidden + (uint64_t)row * G53F_HIDDEN;
-	uint16_t *out_row = normed + (uint64_t)row * G53F_HIDDEN;
-	float total = 0.0f, scale;
-	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
+	float total = 0.0f;
+	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += DSPARK_THREADS )
 	{
 		const uint32_t group = col / G53F_CONV_GROUP;
 		const float c0 = LmBf16ToFloat(__ldg(base0 + col)) + LmBf16ToFloat(__ldg(delta0 + group));
@@ -390,12 +210,16 @@ void G53FConvFinishResidualRmsKernel(const uint16_t *__restrict__ input, const u
 		}
 		const float value = hid_row[col] + acc;
 		hid_row[col] = value;
-		total += value * value;
+		if constexpr ( DO_RMS )
+			total += value * value;
 	}
-	total = LmBlockSum<G53F_THREADS>(total, reduction);
-	scale = rsqrtf(total / (float)G53F_HIDDEN + epsilon);
-	for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += G53F_THREADS )
-		out_row[col] = LmFloatToBf16(hid_row[col] * scale * LmBf16ToFloat(__ldg(weight + col)));
+	if constexpr ( DO_RMS )
+	{
+		const float scale = rsqrtf(LmBlockSum<DSPARK_THREADS>(total, reduction) / (float)G53F_HIDDEN + epsilon);
+		uint16_t *out_row = normed + (uint64_t)row * G53F_HIDDEN;
+		for ( uint32_t col = threadIdx.x; col < G53F_HIDDEN; col += DSPARK_THREADS )
+			out_row[col] = LmFloatToBf16(hid_row[col] * scale * LmBf16ToFloat(__ldg(weight + col)));
+	}
 	LmDependentRelease();
 }
 
@@ -410,7 +234,7 @@ void G53FAttentionSplitKernel(const uint16_t *__restrict__ q, uint64_t keys_offs
 	__shared__ float s_scores[G53F_BLOCK][G53F_ATTN_TILE];
 	__shared__ uint8_t s_vis[2][G53F_ATTN_TILE];
 	const uint32_t kv_head = blockIdx.x, split = blockIdx.y;
-	const uint32_t warp = threadIdx.x / G53F_WARP, lane = threadIdx.x % G53F_WARP;
+	const uint32_t warp = threadIdx.x / DSPARK_WARP, lane = threadIdx.x % DSPARK_WARP;
 	const uint32_t warp_bit = 1u << warp;
 	const uint32_t first = draft->start + split * G53F_SPLIT_KEYS, end = draft->block_at;
 	const uint32_t stop = first + G53F_SPLIT_KEYS < end ? first + G53F_SPLIT_KEYS : end;
@@ -477,21 +301,21 @@ void G53FAttentionSplitKernel(const uint16_t *__restrict__ q, uint64_t keys_offs
 			for ( uint32_t t = 0u; t < G53F_ATTN_TILE; t++ )
 			{
 				const uint32_t kp0 = s_k[buf][t][lane];
-				const uint32_t kp1 = s_k[buf][t][G53F_WARP + lane];
+				const uint32_t kp1 = s_k[buf][t][DSPARK_WARP + lane];
 				const float d0 = fmaf(q0[g], LmBf16ToFloat((uint16_t)(kp0 & 0xffffu)), q1[g] * LmBf16ToFloat((uint16_t)(kp0 >> 16u)));
 				const float d1 = fmaf(q2[g], LmBf16ToFloat((uint16_t)(kp1 & 0xffffu)), q3[g] * LmBf16ToFloat((uint16_t)(kp1 >> 16u)));
-				const float dot = G53FWarpSum(d0 + d1);
+				const float dot = DsparkWarpSum(d0 + d1);
 				if ( lane == 0u )
 					s_scores[warp][t] = (s_vis[buf][t] & warp_bit) != 0u ? dot * scale : -INFINITY;
 			}
 			__syncwarp();
 			{
 				const float sc = s_scores[warp][lane];
-				const float tile_max = G53FWarpMax(sc);
+				const float tile_max = DsparkWarpMax(sc);
 				const float next_max = fmaxf(running_max[g], tile_max);
 				const float rescale = running_max[g] == -INFINITY ? 0.0f : expf(running_max[g] - next_max);
 				const float weight = sc == -INFINITY ? 0.0f : expf(sc - next_max);
-				const float tile_sum = G53FWarpSum(weight);
+				const float tile_sum = DsparkWarpSum(weight);
 				running_sum[g] = running_sum[g] * rescale + tile_sum;
 				running_max[g] = next_max;
 				acc0[g] *= rescale;
@@ -505,7 +329,7 @@ void G53FAttentionSplitKernel(const uint16_t *__restrict__ q, uint64_t keys_offs
 			{
 				const float wt = s_scores[warp][t];
 				const uint32_t vp0 = s_v[buf][t][lane];
-				const uint32_t vp1 = s_v[buf][t][G53F_WARP + lane];
+				const uint32_t vp1 = s_v[buf][t][DSPARK_WARP + lane];
 				acc0[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 & 0xffffu)), acc0[g]);
 				acc1[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp0 >> 16u)), acc1[g]);
 				acc2[g] = fmaf(wt, LmBf16ToFloat((uint16_t)(vp1 & 0xffffu)), acc2[g]);
@@ -533,83 +357,35 @@ void G53FAttentionSplitKernel(const uint16_t *__restrict__ q, uint64_t keys_offs
 	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_HEAD_DIM, 4)
-void G53FAttentionMergeKernel(const uint16_t *__restrict__ q, uint64_t keys_offset, uint64_t values_offset,
-	const G53FDraft *__restrict__ draft, float scale, const float *__restrict__ partials, uint16_t *__restrict__ output)
-{
-	LmDependentWait();
-	__shared__ float reduction[G53F_HEAD_DIM / G53F_WARP];
-	const uint32_t row = blockIdx.x / G53F_HEADS, head = blockIdx.x % G53F_HEADS, kv_head = head / G53F_GROUP, lane = threadIdx.x;
-	const uint32_t block_at = draft->block_at, splits = draft->splits;
-	const float own = LmBf16ToFloat(__ldg(q + ((uint64_t)row * G53F_HEADS + head) * G53F_HEAD_DIM + lane));
-	const uint16_t *head_keys = draft->cache + keys_offset + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
-	const uint16_t *head_values = draft->cache + values_offset + (uint64_t)kv_head * G53F_COLUMNS * G53F_HEAD_DIM;
-	float top = -INFINITY, sum = 0.0f, accumulated = 0.0f;
-	for ( uint32_t split = 0u; split < splits; split++ )
-	{
-		const float *part = partials + (((uint64_t)head * G53F_SPLITS + split) * G53F_BLOCK + row) * (G53F_HEAD_DIM + 2u);
-		const float part_top = part[G53F_HEAD_DIM], next = fmaxf(top, part_top);
-		float carry, weight;
-		if ( part_top == -INFINITY )
-			continue;
-		carry = top == -INFINITY ? 0.0f : expf(top - next);
-		weight = expf(part_top - next);
-		sum = sum * carry + part[G53F_HEAD_DIM + 1u] * weight;
-		accumulated = accumulated * carry + part[lane] * weight;
-		top = next;
-	}
-	for ( uint32_t key = 0u; key < G53F_BLOCK; key++ )
-	{
-		const float score = LmBlockSum<G53F_HEAD_DIM>(own * LmBf16ToFloat(__ldg(head_keys + (uint64_t)(block_at + key) * G53F_HEAD_DIM + lane)), reduction) * scale;
-		const float next = fmaxf(top, score), carry = top == -INFINITY ? 0.0f : expf(top - next), weight = expf(score - next);
-		sum = sum * carry + weight;
-		accumulated = accumulated * carry + weight * LmBf16ToFloat(__ldg(head_values + (uint64_t)(block_at + key) * G53F_HEAD_DIM + lane));
-		top = next;
-	}
-	output[(uint64_t)row * G53F_Q_WIDTH + head * G53F_HEAD_DIM + lane] = LmFloatToBf16(accumulated / sum);
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
-void G53FSwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output, uint32_t count)
-{
-	for ( uint32_t index = blockIdx.x * G53F_THREADS + threadIdx.x; index < count; index += gridDim.x * G53F_THREADS )
-	{
-		const float g = LmBf16ToFloat(__ldg(gate + index));
-		output[index] = LmFloatToBf16(g / (1.0f + expf(-g)) * LmBf16ToFloat(__ldg(up + index)));
-	}
-	LmDependentRelease();
-}
-
-__global__ __launch_bounds__(G53F_THREADS, 2)
+__global__ __launch_bounds__(DSPARK_THREADS, 2)
 void G53FLogitsSummaryKernel(const uint16_t *__restrict__ logits, uint32_t *__restrict__ candidates, float *__restrict__ unary, float *__restrict__ tail)
 {
 	LmDependentWait();
-	__shared__ float s_max[G53F_WARPS];
-	__shared__ float s_sum[G53F_WARPS];
+	__shared__ float s_max[DSPARK_WARPS];
+	__shared__ float s_sum[DSPARK_WARPS];
 	__shared__ uint32_t s_tok[G53F_TOP_K];
 	__shared__ float s_val[G53F_TOP_K];
-	const uint32_t step = blockIdx.x, warp = threadIdx.x / G53F_WARP, lane = threadIdx.x % G53F_WARP;
+	const uint32_t step = blockIdx.x, warp = threadIdx.x / DSPARK_WARP, lane = threadIdx.x % DSPARK_WARP;
 	const uint16_t *row = logits + (uint64_t)step * G53F_VOCAB;
 	float local_max = -INFINITY, local_sum = 0.0f, row_max, row_sum, total;
-	for ( uint32_t index = threadIdx.x; index < G53F_VOCAB; index += G53F_THREADS )
+	for ( uint32_t index = threadIdx.x; index < G53F_VOCAB; index += DSPARK_THREADS )
 		local_max = fmaxf(local_max, LmBf16ToFloat(__ldg(row + index)));
-	local_max = G53FWarpMax(local_max);
+	local_max = DsparkWarpMax(local_max);
 	if ( lane == 0u )
 		s_max[warp] = local_max;
 	__syncthreads();
 	if ( warp == 0u )
 	{
-		float m = lane < G53F_WARPS ? s_max[lane] : -INFINITY;
-		m = G53FWarpMax(m);
+		float m = lane < DSPARK_WARPS ? s_max[lane] : -INFINITY;
+		m = DsparkWarpMax(m);
 		if ( lane == 0u )
 			s_max[0] = m;
 	}
 	__syncthreads();
 	row_max = s_max[0];
-	for ( uint32_t index = threadIdx.x; index < G53F_VOCAB; index += G53F_THREADS )
+	for ( uint32_t index = threadIdx.x; index < G53F_VOCAB; index += DSPARK_THREADS )
 		local_sum += expf(LmBf16ToFloat(__ldg(row + index)) - row_max);
-	row_sum = LmBlockSum<G53F_THREADS>(local_sum, s_sum);
+	row_sum = LmBlockSum<DSPARK_THREADS>(local_sum, s_sum);
 	total = row_max + logf(row_sum);
 	if ( threadIdx.x < G53F_TOP_K )
 	{
@@ -652,29 +428,29 @@ void G53FLogitsSummaryKernel(const uint16_t *__restrict__ logits, uint32_t *__re
 	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_THREADS, 2)
+__global__ __launch_bounds__(DSPARK_THREADS, 2)
 void G53FLatticeKernel(const G53FDraft *__restrict__ draft, const uint32_t *__restrict__ candidates, const float *__restrict__ unary,
 	const uint16_t *__restrict__ sel_hidden, const uint16_t *__restrict__ predecessors, const uint16_t *__restrict__ successors, float *__restrict__ edges)
 {
 	LmDependentWait();
 	__shared__ float gate[G53F_SELECTOR_RANK];
 	const uint32_t step = blockIdx.x / G53F_TOP_K, prev_slot = blockIdx.x % G53F_TOP_K;
-	const uint32_t warp = threadIdx.x / G53F_WARP, lane = threadIdx.x % G53F_WARP;
+	const uint32_t warp = threadIdx.x / DSPARK_WARP, lane = threadIdx.x % DSPARK_WARP;
 	if ( step != 0u || prev_slot == 0u )
 	{
 		const uint32_t prev_token = step == 0u ? draft->anchor : candidates[(step - 1u) * G53F_TOP_K + prev_slot];
-		for ( uint32_t r = threadIdx.x; r < G53F_SELECTOR_RANK; r += G53F_THREADS )
+		for ( uint32_t r = threadIdx.x; r < G53F_SELECTOR_RANK; r += DSPARK_THREADS )
 			gate[r] = LmBf16ToFloat(__ldg(predecessors + (uint64_t)prev_token * G53F_SELECTOR_RANK + r)) *
 				LmBf16ToFloat(__ldg(sel_hidden + (uint64_t)step * G53F_SELECTOR_RANK + r));
 		__syncthreads();
-		for ( uint32_t c = warp; c < G53F_TOP_K; c += G53F_WARPS )
+		for ( uint32_t c = warp; c < G53F_TOP_K; c += DSPARK_WARPS )
 		{
 			const uint32_t succ_token = candidates[step * G53F_TOP_K + c];
 			const uint16_t *succ_row = successors + (uint64_t)succ_token * G53F_SELECTOR_RANK;
 			float dot = 0.0f;
-			for ( uint32_t r = lane; r < G53F_SELECTOR_RANK; r += G53F_WARP )
+			for ( uint32_t r = lane; r < G53F_SELECTOR_RANK; r += DSPARK_WARP )
 				dot = fmaf(gate[r], LmBf16ToFloat(__ldg(succ_row + r)), dot);
-			dot = G53FWarpSum(dot);
+			dot = DsparkWarpSum(dot);
 			if ( lane == 0u )
 				edges[(step * G53F_TOP_K + prev_slot) * G53F_TOP_K + c] = unary[step * G53F_TOP_K + c] + dot;
 		}
@@ -682,7 +458,7 @@ void G53FLatticeKernel(const G53FDraft *__restrict__ draft, const uint32_t *__re
 	LmDependentRelease();
 }
 
-__global__ __launch_bounds__(G53F_WARP, 1)
+__global__ __launch_bounds__(DSPARK_WARP, 1)
 void G53FWalkKernel(const G53FDraft *__restrict__ draft, const uint32_t *__restrict__ candidates, const float *__restrict__ tail,
 	const float *__restrict__ edges, G53FPicks *__restrict__ picks)
 {
@@ -692,237 +468,109 @@ void G53FWalkKernel(const G53FDraft *__restrict__ draft, const uint32_t *__restr
 	const uint32_t tree = draft->tree;
 	uint32_t previous = 0u;
 	if ( lane < G53F_TOP_K )
-	for ( uint32_t step = 0u; step < G53F_DRAFTS; step++ )
-	{
-		const float row_val = edges[(step * G53F_TOP_K + previous) * G53F_TOP_K + lane];
-		const uint32_t cand_tok = candidates[step * G53F_TOP_K + lane];
-		float row_max = row_val, row_sum, lse_row, normalizer;
-		uint32_t choice = 0u, runner = 0u;
-		float chosen_val, runner_val;
-		for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-			row_max = fmaxf(row_max, __shfl_xor_sync(active, row_max, mask));
-		row_sum = expf(row_val - row_max);
-		for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-			row_sum += __shfl_xor_sync(active, row_sum, mask);
-		lse_row = row_max + logf(row_sum);
-		normalizer = G53FLogAddExp(lse_row, tail[step]);
-		if ( draft->greedy != 0u )
+		for ( uint32_t step = 0u; step < G53F_DRAFTS; step++ )
 		{
-			unsigned long long key = ((unsigned long long)SparkMathSampleOrdered(row_val) << 32u) | (unsigned long long)(0xffffffffu - lane);
+			const float row_val = edges[(step * G53F_TOP_K + previous) * G53F_TOP_K + lane];
+			const uint32_t cand_tok = candidates[step * G53F_TOP_K + lane];
+			float row_max = row_val, row_sum, lse_row, normalizer;
+			uint32_t choice = 0u, runner = 0u;
+			float chosen_val, runner_val;
 			for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-			{
-				const unsigned long long other = __shfl_xor_sync(active, key, mask);
-				key = other > key ? other : key;
-			}
-			choice = 0xffffffffu - (uint32_t)key;
-		}
-		else
-		{
-			const float scaled = row_val * draft->inverse_temperature;
-			float s_max = scaled, prob, s_sum, before = 0.0f;
-			uint32_t rank = 0u, winner_rank;
-			unsigned long long key;
-			for ( uint32_t other = 0u; other < G53F_TOP_K; other++ )
-			{
-				const float ov = __shfl_sync(active, scaled, other);
-				rank += ov > scaled || (ov == scaled && other < lane) ? 1u : 0u;
-			}
+				row_max = fmaxf(row_max, __shfl_xor_sync(active, row_max, mask));
+			row_sum = expf(row_val - row_max);
 			for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-				s_max = fmaxf(s_max, __shfl_xor_sync(active, s_max, mask));
-			prob = expf(scaled - s_max);
-			s_sum = prob;
-			for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-				s_sum += __shfl_xor_sync(active, s_sum, mask);
-			prob /= s_sum;
-			for ( uint32_t other = 0u; other < G53F_TOP_K; other++ )
+				row_sum += __shfl_xor_sync(active, row_sum, mask);
+			lse_row = row_max + logf(row_sum);
+			normalizer = G53FLogAddExp(lse_row, tail[step]);
+			if ( draft->greedy != 0u )
 			{
-				const float op = __shfl_sync(active, prob, other);
-				const float ov = __shfl_sync(active, scaled, other);
-				if ( ov > scaled || (ov == scaled && other < lane) )
-					before += op;
-			}
-			key = (((draft->nucleus <= 0.0f) || (before < draft->nucleus)) && (draft->top_k == 0u || rank < draft->top_k)) || rank == 0u
-				? ((unsigned long long)SparkMathSampleOrdered(scaled + SparkMathGumbelNoise(draft->seed, draft->positions[0] + step, cand_tok)) << 32u) |
-					(unsigned long long)(0xffffffffu - rank)
-				: 0ull;
-			for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-			{
-				const unsigned long long other = __shfl_xor_sync(active, key, mask);
-				key = other > key ? other : key;
-			}
-			winner_rank = 0xffffffffu - (uint32_t)key;
-			for ( uint32_t other = 0u; other < G53F_TOP_K; other++ )
-				if ( __shfl_sync(active, rank, other) == winner_rank )
-					choice = other;
-		}
-		{
-			const float masked_val = lane == choice ? -INFINITY : row_val;
-			unsigned long long rkey = ((unsigned long long)SparkMathSampleOrdered(masked_val) << 32u) | (unsigned long long)(0xffffffffu - lane);
-			for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-			{
-				const unsigned long long other = __shfl_xor_sync(active, rkey, mask);
-				rkey = other > rkey ? other : rkey;
-			}
-			runner = 0xffffffffu - (uint32_t)rkey;
-		}
-		chosen_val = __shfl_sync(active, row_val, choice);
-		runner_val = __shfl_sync(active, row_val, runner);
-		if ( lane == 0u )
-		{
-			picks->tokens[step] = candidates[step * G53F_TOP_K + choice];
-			picks->scores[step] = expf(chosen_val - normalizer);
-			picks->branch_tokens[step][0] = candidates[step * G53F_TOP_K + runner];
-			picks->branch_scores[step][0] = expf(runner_val - normalizer);
-		}
-		if ( tree != 0u )
-		{
-			uint32_t branch_lane = runner;
-			for ( uint32_t k = 1u; k < G53F_BRANCH_LEN && step + k < G53F_DRAFTS; k++ )
-			{
-				const uint32_t next_step = step + k;
-				const float bval = edges[(next_step * G53F_TOP_K + branch_lane) * G53F_TOP_K + lane];
-				float bmax = bval, bsum, blse, bnorm, best_bval;
-				unsigned long long bkey = ((unsigned long long)SparkMathSampleOrdered(bval) << 32u) | (unsigned long long)(0xffffffffu - lane);
+				unsigned long long key = ((unsigned long long)SparkMathSampleOrdered(row_val) << 32u) | (unsigned long long)(0xffffffffu - lane);
 				for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
 				{
-					const unsigned long long other = __shfl_xor_sync(active, bkey, mask);
-					bkey = other > bkey ? other : bkey;
-					bmax = fmaxf(bmax, __shfl_xor_sync(active, bmax, mask));
+					const unsigned long long other = __shfl_xor_sync(active, key, mask);
+					key = other > key ? other : key;
 				}
-				bsum = expf(bval - bmax);
+				choice = 0xffffffffu - (uint32_t)key;
+			}
+			else
+				DsparkWarpSampleSubwarp<G53F_TOP_K>(row_val * draft->inverse_temperature, cand_tok, lane, draft->seed, draft->positions[0] + step,
+					draft->nucleus, draft->top_k, &choice, (uint32_t *)0, (float *)0);
+			{
+				const float masked_val = lane == choice ? -INFINITY : row_val;
+				unsigned long long rkey = ((unsigned long long)SparkMathSampleOrdered(masked_val) << 32u) | (unsigned long long)(0xffffffffu - lane);
 				for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
-					bsum += __shfl_xor_sync(active, bsum, mask);
-				blse = bmax + logf(bsum);
-				bnorm = G53FLogAddExp(blse, tail[next_step]);
-				branch_lane = 0xffffffffu - (uint32_t)bkey;
-				best_bval = __shfl_sync(active, bval, branch_lane);
-				if ( lane == 0u )
 				{
-					picks->branch_tokens[step][k] = candidates[next_step * G53F_TOP_K + branch_lane];
-					picks->branch_scores[step][k] = expf(best_bval - bnorm);
+					const unsigned long long other = __shfl_xor_sync(active, rkey, mask);
+					rkey = other > rkey ? other : rkey;
+				}
+				runner = 0xffffffffu - (uint32_t)rkey;
+			}
+			chosen_val = __shfl_sync(active, row_val, choice);
+			runner_val = __shfl_sync(active, row_val, runner);
+			if ( lane == 0u )
+			{
+				picks->tokens[step] = candidates[step * G53F_TOP_K + choice];
+				picks->scores[step] = expf(chosen_val - normalizer);
+				picks->branch_tokens[step][0] = candidates[step * G53F_TOP_K + runner];
+				picks->branch_scores[step][0] = expf(runner_val - normalizer);
+			}
+			if ( tree != 0u )
+			{
+				uint32_t branch_lane = runner;
+				for ( uint32_t k = 1u; k < G53F_BRANCH_LEN && step + k < G53F_DRAFTS; k++ )
+				{
+					const uint32_t next_step = step + k;
+					const float bval = edges[(next_step * G53F_TOP_K + branch_lane) * G53F_TOP_K + lane];
+					float bmax = bval, bsum, blse, bnorm, best_bval;
+					unsigned long long bkey = ((unsigned long long)SparkMathSampleOrdered(bval) << 32u) | (unsigned long long)(0xffffffffu - lane);
+					for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
+					{
+						const unsigned long long other = __shfl_xor_sync(active, bkey, mask);
+						bkey = other > bkey ? other : bkey;
+						bmax = fmaxf(bmax, __shfl_xor_sync(active, bmax, mask));
+					}
+					bsum = expf(bval - bmax);
+					for ( uint32_t mask = G53F_TOP_K / 2u; mask > 0u; mask >>= 1u )
+						bsum += __shfl_xor_sync(active, bsum, mask);
+					blse = bmax + logf(bsum);
+					bnorm = G53FLogAddExp(blse, tail[next_step]);
+					branch_lane = 0xffffffffu - (uint32_t)bkey;
+					best_bval = __shfl_sync(active, bval, branch_lane);
+					if ( lane == 0u )
+					{
+						picks->branch_tokens[step][k] = candidates[next_step * G53F_TOP_K + branch_lane];
+						picks->branch_scores[step][k] = expf(best_bval - bnorm);
+					}
 				}
 			}
+			previous = choice;
 		}
-		previous = choice;
-	}
 	LmDependentRelease();
-}
-
-static SparkStatus G53FRefuse(SparkDrafterModuleBind *bind, SparkStatus status, const char *format, const char *detail)
-{
-	if ( bind != 0 )
-		snprintf(bind->text, sizeof(bind->text), format, detail);
-	SPARK_FAIL(status);
-}
-
-static SparkStatus G53FLoadManifest(const char *pack_path, SparkJsonDocument *document, uint64_t *payload_base)
-{
-	uint8_t header[16];
-	uint32_t magic, version;
-	uint64_t bytes;
-	char *text;
-	SparkStatus status;
-	FILE *file = fopen(pack_path, "rb");
-	if ( file == 0 )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	if ( fread(header, 1u, sizeof(header), file) != sizeof(header) )
-	{
-		(void)fclose(file);
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	memcpy(&magic, header, sizeof(magic));
-	memcpy(&version, header + sizeof(magic), sizeof(version));
-	memcpy(&bytes, header + sizeof(magic) + sizeof(version), sizeof(bytes));
-	if ( magic != G53F_PACK_MAGIC || version != G53F_PACK_VERSION || bytes == 0u || bytes > (UINT64_C(64) << 20) )
-	{
-		(void)fclose(file);
-		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
-	}
-	text = (char *)malloc((size_t)bytes);
-	if ( text == 0 || fread(text, 1u, (size_t)bytes, file) != (size_t)bytes )
-	{
-		free(text);
-		(void)fclose(file);
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	(void)fclose(file);
-	status = SparkJsonParseText(text, (size_t)bytes, document);
-	free(text);
-	*payload_base = (sizeof(header) + bytes + G53F_PACK_ALIGNMENT - 1u) / G53F_PACK_ALIGNMENT * G53F_PACK_ALIGNMENT;
-	if ( status != SPARK_STATUS_OK )
-		SPARK_FAIL(status);
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus G53FTensor(const G53FState *state, const SparkJsonDocument *document, uint64_t payload_base, const char *name, uint64_t expected,
-	const uint16_t **pointer)
-{
-	const int32_t tensors = SparkJsonFindObjectMember(document, SparkJsonGetRootToken(document), "tensors");
-	const int32_t entry = tensors < 0 ? -1 : SparkJsonFindObjectMember(document, tensors, name);
-	const int32_t offset_token = entry < 0 ? -1 : SparkJsonFindObjectMember(document, entry, "offset");
-	const int32_t bytes_token = entry < 0 ? -1 : SparkJsonFindObjectMember(document, entry, "bytes");
-	uint64_t offset = 0u, bytes = 0u;
-	const void *slice = 0;
-	if ( offset_token < 0 || bytes_token < 0 || SparkJsonGetUInt64(document, offset_token, &offset) != SPARK_STATUS_OK ||
-		SparkJsonGetUInt64(document, bytes_token, &bytes) != SPARK_STATUS_OK || bytes != expected * sizeof(uint16_t) )
-	{
-		fprintf(stderr, "glm53 flash dflash2: pack tensor %s is missing or is not %llu bf16 elements\n", name, (unsigned long long)expected);
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	if ( SparkWeightdLazyPackSlice(state->pack, payload_base + offset, bytes, &slice) != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	*pointer = (const uint16_t *)slice;
-	return SPARK_STATUS_OK;
-}
-
-static int32_t G53FMember(const SparkJsonDocument *document, int32_t object, const char *name)
-{
-	return object < 0 ? -1 : SparkJsonFindObjectMember(document, object, name);
 }
 
 static SparkStatus G53FShape(G53FState *state, const SparkJsonDocument *document)
 {
-	const int32_t config = G53FMember(document, SparkJsonGetRootToken(document), "config");
-	const int32_t checkpoint = G53FMember(document, config, "checkpoint_config");
-	const int32_t dflash = G53FMember(document, checkpoint, "dflash_config");
-	const int32_t rope = G53FMember(document, checkpoint, "rope_parameters");
-	const int32_t layers = G53FMember(document, dflash, "target_layer_ids");
-	const int32_t layer_types = G53FMember(document, checkpoint, "layer_types");
-	const struct
-	{
-		int32_t object;
-		const char *name;
-		uint64_t value;
-	} expected[] = {
-		{checkpoint, "hidden_size", G53F_HIDDEN},
-		{checkpoint, "intermediate_size", G53F_MLP},
-		{checkpoint, "num_hidden_layers", G53F_LAYERS},
-		{checkpoint, "num_attention_heads", G53F_HEADS},
-		{checkpoint, "num_key_value_heads", G53F_KV_HEADS},
-		{checkpoint, "head_dim", G53F_HEAD_DIM},
-		{checkpoint, "sliding_window", G53F_SLIDING},
-		{checkpoint, "vocab_size", G53F_VOCAB},
-		{dflash, "block_size", G53F_BLOCK},
-		{dflash, "conv_group_size", G53F_CONV_GROUP},
-		{dflash, "conv_kernel_size", G53F_CONV_TAPS},
-		{dflash, "selector_rank", G53F_SELECTOR_RANK},
+	const int32_t config = DsparkMember(document, SparkJsonGetRootToken(document), "config");
+	const int32_t checkpoint = DsparkMember(document, config, "checkpoint_config");
+	const int32_t dflash = DsparkMember(document, checkpoint, "dflash_config");
+	const int32_t rope = DsparkMember(document, checkpoint, "rope_parameters");
+	const int32_t layers = DsparkMember(document, dflash, "target_layer_ids");
+	const int32_t layer_types = DsparkMember(document, checkpoint, "layer_types");
+	const DsparkExpectedU64 expected[] = {
+		{checkpoint, "hidden_size", G53F_HIDDEN}, {checkpoint, "intermediate_size", G53F_MLP}, {checkpoint, "num_hidden_layers", G53F_LAYERS},
+		{checkpoint, "num_attention_heads", G53F_HEADS}, {checkpoint, "num_key_value_heads", G53F_KV_HEADS}, {checkpoint, "head_dim", G53F_HEAD_DIM},
+		{checkpoint, "sliding_window", G53F_SLIDING}, {checkpoint, "vocab_size", G53F_VOCAB}, {dflash, "block_size", G53F_BLOCK},
+		{dflash, "conv_group_size", G53F_CONV_GROUP}, {dflash, "conv_kernel_size", G53F_CONV_TAPS}, {dflash, "selector_rank", G53F_SELECTOR_RANK},
 		{dflash, "selector_top_k", G53F_TOP_K},
 	};
 	uint64_t value = 0u;
 	float theta = 0.0f;
 	bool is_causal = true;
 	int32_t token;
-	for ( uint32_t index = 0u; index < sizeof(expected) / sizeof(expected[0]); index++ )
-	{
-		token = G53FMember(document, expected[index].object, expected[index].name);
-		if ( token < 0 || SparkJsonGetUInt64(document, token, &value) != SPARK_STATUS_OK || value != expected[index].value )
-		{
-			fprintf(stderr, "glm53 flash dflash2: checkpoint_config %s is not %llu, the shape this module is built for\n", expected[index].name,
-				(unsigned long long)expected[index].value);
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		}
-	}
-	token = G53FMember(document, checkpoint, "is_causal");
+	SparkStatus status = DsparkCheckU64Table(document, "glm53 flash dflash2", expected, (uint32_t)(sizeof(expected) / sizeof(expected[0])));
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	token = DsparkMember(document, checkpoint, "is_causal");
 	if ( token < 0 || SparkJsonGetBoolean(document, token, &is_causal) != SPARK_STATUS_OK || is_causal )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( layers < 0 || SparkJsonGetArrayElementCount(document, layers) != G53F_TAPS )
@@ -935,23 +583,23 @@ static SparkStatus G53FShape(G53FState *state, const SparkJsonDocument *document
 		if ( item < 0 || !SparkJsonStringEquals(document, item, "sliding_attention") )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	token = G53FMember(document, dflash, "mask_token_id");
+	token = DsparkMember(document, dflash, "mask_token_id");
 	if ( token < 0 || SparkJsonGetUInt64(document, token, &value) != SPARK_STATUS_OK || value >= G53F_VOCAB )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	state->mask_token = (uint32_t)value;
-	token = G53FMember(document, checkpoint, "rms_norm_eps");
+	token = DsparkMember(document, checkpoint, "rms_norm_eps");
 	if ( token < 0 || SparkJsonGetFloat(document, token, &state->epsilon) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	token = G53FMember(document, rope, "rope_type");
+	token = DsparkMember(document, rope, "rope_type");
 	if ( token >= 0 && !SparkJsonStringEquals(document, token, "default") )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	token = G53FMember(document, rope, "rope_theta");
+	token = DsparkMember(document, rope, "rope_theta");
 	if ( token < 0 || SparkJsonGetFloat(document, token, &theta) != SPARK_STATUS_OK || theta <= 0.0f )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	state->softmax_scale = (float)(1.0 / sqrt((double)G53F_HEAD_DIM));
 	if ( SparkGpuMalloc((void **)&state->rope_inverse, G53F_HALF * sizeof(float)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	LM_LAUNCH((G53FRopeTableKernel), 1u, G53F_THREADS, 0, state->stream, state->rope_inverse, theta);
+	LM_LAUNCH((DsparkRopeTableKernel<G53F_HALF, G53F_HEAD_DIM>), 1u, DSPARK_THREADS, 0, state->stream, state->rope_inverse, theta);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
@@ -963,16 +611,12 @@ static SparkStatus G53FWeights(G53FState *state, const char *pack_path)
 	uint64_t payload_base = 0u;
 	SparkStatus status;
 	memset(&document, 0, sizeof(document));
-	status = G53FLoadManifest(pack_path, &document, &payload_base);
+	status = DsparkLoadManifest(pack_path, &document, &payload_base);
 	if ( status == SPARK_STATUS_OK )
 		status = G53FShape(state, &document);
+	if ( status == SPARK_STATUS_OK )
 	{
-		const struct
-		{
-			const char *name;
-			uint64_t elements;
-			const uint16_t **pointer;
-		} plain[] = {
+		const DsparkBf16Spec plain[] = {
 			{"fc.weight", (uint64_t)G53F_HIDDEN * G53F_TAP_WIDTH, &state->fc},
 			{"hidden_norm.weight", G53F_HIDDEN, &state->hidden_norm},
 			{"norm.weight", G53F_HIDDEN, &state->norm},
@@ -982,79 +626,63 @@ static SparkStatus G53FWeights(G53FState *state, const char *pack_path)
 			{"candidate_selector.predecessor_codebook", (uint64_t)G53F_VOCAB * G53F_SELECTOR_RANK, &state->predecessors},
 			{"candidate_selector.successor_codebook", (uint64_t)G53F_VOCAB * G53F_SELECTOR_RANK, &state->successors},
 		};
-		for ( uint32_t index = 0u; index < sizeof(plain) / sizeof(plain[0]) && status == SPARK_STATUS_OK; index++ )
-			status = G53FTensor(state, &document, payload_base, plain[index].name, plain[index].elements, plain[index].pointer);
+		status = DsparkLoadBf16Table(state->pack, &document, payload_base, "glm53 flash dflash2", plain, (uint32_t)(sizeof(plain) / sizeof(plain[0])));
 	}
 	for ( uint32_t layer = 0u; layer < G53F_LAYERS && status == SPARK_STATUS_OK; layer++ )
 	{
-		G53FLayer *weights = &state->layers[layer];
-		const struct
-		{
-			const char *suffix;
-			uint64_t elements;
-			const uint16_t **pointer;
-		} tensors[] = {
-			{"input_layernorm.weight", G53F_HIDDEN, &weights->input_norm},
-			{"post_attention_layernorm.weight", G53F_HIDDEN, &weights->post_norm},
-			{"attention_conv.base_kernel", (uint64_t)2u * G53F_CONV_TAPS * G53F_HIDDEN, &weights->attn_conv_base},
-			{"attention_conv.kernel_projection.weight", (uint64_t)G53F_CONV_WIDTH * G53F_HIDDEN, &weights->attn_conv_proj},
-			{"self_attn.q_proj.weight", (uint64_t)G53F_Q_WIDTH * G53F_HIDDEN, &weights->q},
-			{"self_attn.k_proj.weight", (uint64_t)G53F_KV_WIDTH * G53F_HIDDEN, &weights->k},
-			{"self_attn.v_proj.weight", (uint64_t)G53F_KV_WIDTH * G53F_HIDDEN, &weights->v},
-			{"self_attn.o_proj.weight", (uint64_t)G53F_HIDDEN * G53F_Q_WIDTH, &weights->o},
-			{"self_attn.q_norm.weight", G53F_HEAD_DIM, &weights->q_norm},
-			{"self_attn.k_norm.weight", G53F_HEAD_DIM, &weights->k_norm},
-			{"mlp_conv.base_kernel", (uint64_t)2u * G53F_CONV_TAPS * G53F_HIDDEN, &weights->mlp_conv_base},
-			{"mlp_conv.kernel_projection.weight", (uint64_t)G53F_CONV_WIDTH * G53F_HIDDEN, &weights->mlp_conv_proj},
-			{"mlp.gate_proj.weight", (uint64_t)G53F_MLP * G53F_HIDDEN, &weights->gate},
-			{"mlp.up_proj.weight", (uint64_t)G53F_MLP * G53F_HIDDEN, &weights->up},
-			{"mlp.down_proj.weight", (uint64_t)G53F_HIDDEN * G53F_MLP, &weights->down},
+		G53FLayer *w = &state->layers[layer];
+		const DsparkBf16Spec tensors[] = {
+			{"input_layernorm.weight", G53F_HIDDEN, &w->input_norm},
+			{"post_attention_layernorm.weight", G53F_HIDDEN, &w->post_norm},
+			{"attention_conv.base_kernel", (uint64_t)2u * G53F_CONV_TAPS * G53F_HIDDEN, &w->attn_conv_base},
+			{"attention_conv.kernel_projection.weight", (uint64_t)G53F_CONV_WIDTH * G53F_HIDDEN, &w->attn_conv_proj},
+			{"self_attn.q_proj.weight", (uint64_t)G53F_Q_WIDTH * G53F_HIDDEN, &w->q},
+			{"self_attn.k_proj.weight", (uint64_t)G53F_KV_WIDTH * G53F_HIDDEN, &w->k},
+			{"self_attn.v_proj.weight", (uint64_t)G53F_KV_WIDTH * G53F_HIDDEN, &w->v},
+			{"self_attn.o_proj.weight", (uint64_t)G53F_HIDDEN * G53F_Q_WIDTH, &w->o},
+			{"self_attn.q_norm.weight", G53F_HEAD_DIM, &w->q_norm},
+			{"self_attn.k_norm.weight", G53F_HEAD_DIM, &w->k_norm},
+			{"mlp_conv.base_kernel", (uint64_t)2u * G53F_CONV_TAPS * G53F_HIDDEN, &w->mlp_conv_base},
+			{"mlp_conv.kernel_projection.weight", (uint64_t)G53F_CONV_WIDTH * G53F_HIDDEN, &w->mlp_conv_proj},
+			{"mlp.gate_proj.weight", (uint64_t)G53F_MLP * G53F_HIDDEN, &w->gate},
+			{"mlp.up_proj.weight", (uint64_t)G53F_MLP * G53F_HIDDEN, &w->up},
+			{"mlp.down_proj.weight", (uint64_t)G53F_HIDDEN * G53F_MLP, &w->down},
 		};
-		for ( uint32_t index = 0u; index < sizeof(tensors) / sizeof(tensors[0]) && status == SPARK_STATUS_OK; index++ )
-		{
-			char name[128];
-			snprintf(name, sizeof(name), "layers.%u.%s", layer, tensors[index].suffix);
-			status = G53FTensor(state, &document, payload_base, name, tensors[index].elements, tensors[index].pointer);
-		}
+		status = DsparkLoadPrefixedBf16Table(state->pack, &document, payload_base, "glm53 flash dflash2", "layers.%u.%s", layer, tensors,
+			(uint32_t)(sizeof(tensors) / sizeof(tensors[0])));
 	}
 	SparkJsonDocumentDestroy(&document);
 	return status;
 }
 
-#define G53F_DEVICE(field, count) (SparkGpuMalloc((void **)&(field), (size_t)(count) * sizeof(*(field))) == SPARK_GPU_SUCCESS)
-
 static SparkStatus G53FScratch(G53FState *state, uint64_t context_bytes)
 {
-	G53FForward *forward = &state->forward;
+	G53FForward *f = &state->forward;
 	int multiprocessors = 0;
-	uint64_t capacity = context_bytes / G53F_SEQUENCE_BYTES;
-	capacity = capacity < 1u ? 1u : capacity > G53F_SEQUENCES_MAX ? G53F_SEQUENCES_MAX : capacity;
-	state->capacity = (uint32_t)capacity;
-	state->sequences = (G53FSequence *)calloc(capacity, sizeof(G53FSequence));
-	if ( state->sequences == 0 || SparkGpuDeviceGetAttribute(&multiprocessors, SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT, 0) != SPARK_GPU_SUCCESS ||
-		SparkGpuMallocHost((void **)&state->host_taps, (size_t)G53F_INGEST_ROWS * G53F_TAP_WIDTH * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMallocHost((void **)&state->host_positions, (size_t)G53F_INGEST_ROWS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMallocHost((void **)&forward->host_draft, sizeof(G53FDraft)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMallocHost((void **)&forward->host_picks, sizeof(G53FPicks)) != SPARK_GPU_SUCCESS ||
-		!G53F_DEVICE(state->caches, capacity * G53F_SEQUENCE_ELEMENTS) || !G53F_DEVICE(state->taps, (uint64_t)G53F_INGEST_ROWS * G53F_TAP_WIDTH) ||
-		!G53F_DEVICE(state->positions, G53F_INGEST_ROWS) || !G53F_DEVICE(state->features_raw, (uint64_t)G53F_INGEST_ROWS * G53F_HIDDEN) ||
-		!G53F_DEVICE(state->features, (uint64_t)G53F_INGEST_ROWS * G53F_HIDDEN) || !G53F_DEVICE(state->keys_raw, (uint64_t)G53F_INGEST_ROWS * G53F_KV_WIDTH) ||
-		!G53F_DEVICE(state->values_raw, (uint64_t)G53F_INGEST_ROWS * G53F_KV_WIDTH) || !G53F_DEVICE(forward->draft, 1u) || !G53F_DEVICE(forward->picks, 1u) ||
-		!G53F_DEVICE(forward->hidden, G53F_BLOCK * G53F_HIDDEN) || !G53F_DEVICE(forward->x, G53F_BLOCK * G53F_HIDDEN) ||
-		!G53F_DEVICE(forward->conv_coeff, G53F_BLOCK * G53F_CONV_WIDTH) || !G53F_DEVICE(forward->prepared, G53F_BLOCK * G53F_HIDDEN) ||
-		!G53F_DEVICE(forward->q, G53F_BLOCK * G53F_Q_WIDTH) || !G53F_DEVICE(forward->q_roped, G53F_BLOCK * G53F_Q_WIDTH) ||
-		!G53F_DEVICE(forward->k, G53F_BLOCK * G53F_KV_WIDTH) || !G53F_DEVICE(forward->v, G53F_BLOCK * G53F_KV_WIDTH) ||
-		!G53F_DEVICE(forward->partials, (uint64_t)G53F_HEADS * G53F_SPLITS * G53F_BLOCK * (G53F_HEAD_DIM + 2u)) ||
-		!G53F_DEVICE(forward->attended, G53F_BLOCK * G53F_Q_WIDTH) || !G53F_DEVICE(forward->projected, G53F_BLOCK * G53F_HIDDEN) ||
-		!G53F_DEVICE(forward->gate, G53F_BLOCK * G53F_MLP) || !G53F_DEVICE(forward->up, G53F_BLOCK * G53F_MLP) ||
-		!G53F_DEVICE(forward->act, G53F_BLOCK * G53F_MLP) || !G53F_DEVICE(forward->mlp, G53F_BLOCK * G53F_HIDDEN) ||
-		!G53F_DEVICE(forward->y, G53F_BLOCK * G53F_HIDDEN) || !G53F_DEVICE(forward->logits, (uint64_t)G53F_DRAFTS * G53F_VOCAB) ||
-		SparkDrafterTopkBf16Alloc(&forward->topk_ws, G53F_DRAFTS) != SPARK_STATUS_OK || !G53F_DEVICE(forward->sel_hidden, G53F_DRAFTS * G53F_SELECTOR_RANK) ||
-		!G53F_DEVICE(forward->candidates, G53F_DRAFTS * G53F_TOP_K) || !G53F_DEVICE(forward->unary, G53F_DRAFTS * G53F_TOP_K) ||
-		!G53F_DEVICE(forward->tail, G53F_DRAFTS) || !G53F_DEVICE(forward->edges, G53F_DRAFTS * G53F_TOP_K * G53F_TOP_K) )
+	if ( !state->ring.Init(context_bytes, G53F_SEQUENCE_ELEMENTS, &state->caches) ||
+		SparkGpuDeviceGetAttribute(&multiprocessors, SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT, 0) != SPARK_GPU_SUCCESS ||
+		!DsparkAllocHost(&state->host_taps, (size_t)G53F_INGEST_ROWS * G53F_TAP_WIDTH) ||
+		!DsparkAllocHost(&state->host_positions, G53F_INGEST_ROWS) || !DsparkAllocHost(&f->host_draft, 1u) ||
+		!DsparkAllocHost(&f->host_picks, 1u) ||
+		!DSPARK_DEVICE(state->taps, (uint64_t)G53F_INGEST_ROWS * G53F_TAP_WIDTH) || !DSPARK_DEVICE(state->positions, G53F_INGEST_ROWS) ||
+		!DSPARK_DEVICE(state->features_raw, (uint64_t)G53F_INGEST_ROWS * G53F_HIDDEN) ||
+		!DSPARK_DEVICE(state->features, (uint64_t)G53F_INGEST_ROWS * G53F_HIDDEN) ||
+		!DSPARK_DEVICE(state->keys_raw, (uint64_t)G53F_INGEST_ROWS * G53F_KV_WIDTH) ||
+		!DSPARK_DEVICE(state->values_raw, (uint64_t)G53F_INGEST_ROWS * G53F_KV_WIDTH) || !DSPARK_DEVICE(f->draft, 1u) ||
+		!DSPARK_DEVICE(f->picks, 1u) || !DSPARK_DEVICE(f->hidden, G53F_BLOCK * G53F_HIDDEN) || !DSPARK_DEVICE(f->x, G53F_BLOCK * G53F_HIDDEN) ||
+		!DSPARK_DEVICE(f->conv_coeff, G53F_BLOCK * G53F_CONV_WIDTH) || !DSPARK_DEVICE(f->prepared, G53F_BLOCK * G53F_HIDDEN) ||
+		!DSPARK_DEVICE(f->q, G53F_BLOCK * G53F_Q_WIDTH) || !DSPARK_DEVICE(f->q_roped, G53F_BLOCK * G53F_Q_WIDTH) ||
+		!DSPARK_DEVICE(f->k, G53F_BLOCK * G53F_KV_WIDTH) || !DSPARK_DEVICE(f->v, G53F_BLOCK * G53F_KV_WIDTH) ||
+		!DSPARK_DEVICE(f->partials, (uint64_t)G53F_HEADS * G53F_SPLITS * G53F_BLOCK * (G53F_HEAD_DIM + 2u)) ||
+		!DSPARK_DEVICE(f->attended, G53F_BLOCK * G53F_Q_WIDTH) || !DSPARK_DEVICE(f->projected, G53F_BLOCK * G53F_HIDDEN) ||
+		!DSPARK_DEVICE(f->gate, G53F_BLOCK * G53F_MLP) || !DSPARK_DEVICE(f->up, G53F_BLOCK * G53F_MLP) ||
+		!DSPARK_DEVICE(f->act, G53F_BLOCK * G53F_MLP) || !DSPARK_DEVICE(f->mlp, G53F_BLOCK * G53F_HIDDEN) ||
+		!DSPARK_DEVICE(f->y, G53F_BLOCK * G53F_HIDDEN) || !DSPARK_DEVICE(f->logits, (uint64_t)G53F_DRAFTS * G53F_VOCAB) ||
+		SparkDrafterTopkBf16Alloc(&f->topk_ws, G53F_DRAFTS) != SPARK_STATUS_OK ||
+		!DSPARK_DEVICE(f->sel_hidden, G53F_DRAFTS * G53F_SELECTOR_RANK) || !DSPARK_DEVICE(f->candidates, G53F_DRAFTS * G53F_TOP_K) ||
+		!DSPARK_DEVICE(f->unary, G53F_DRAFTS * G53F_TOP_K) || !DSPARK_DEVICE(f->tail, G53F_DRAFTS) ||
+		!DSPARK_DEVICE(f->edges, G53F_DRAFTS * G53F_TOP_K * G53F_TOP_K) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for ( uint32_t index = 0u; index < state->capacity; index++ )
-		state->sequences[index].cache = state->caches + (uint64_t)index * G53F_SEQUENCE_ELEMENTS;
 	state->multiprocessors = (uint32_t)multiprocessors;
 	return SPARK_STATUS_OK;
 }
@@ -1069,257 +697,39 @@ static uint16_t *G53FValues(const G53FSequence *sequence, uint32_t layer)
 	return sequence->cache + (uint64_t)(2u * layer + 1u) * G53F_LAYER_KV;
 }
 
-static void G53FReset(G53FSequence *sequence)
-{
-	for ( uint32_t slot = 0u; slot < G53F_WINDOW; slot++ )
-	{
-		sequence->positions[slot] = -1;
-		sequence->tokens[slot] = 0u;
-	}
-	sequence->retired = 0u;
-}
-
-static G53FSequence *G53FLive(G53FState *state, uint64_t id)
-{
-	for ( uint32_t index = 0u; index < state->capacity; index++ )
-		if ( state->sequences[index].live != 0u && state->sequences[index].retired == 0u && state->sequences[index].id == id )
-			return &state->sequences[index];
-	return 0;
-}
-
-static G53FSequence *G53FClaim(G53FState *state)
-{
-	G53FSequence *oldest = 0;
-	for ( uint32_t index = 0u; index < state->capacity; index++ )
-	{
-		G53FSequence *sequence = &state->sequences[index];
-		if ( sequence->live == 0u )
-			return sequence;
-		if ( oldest == 0 || sequence->last_used < oldest->last_used )
-			oldest = sequence;
-	}
-	return oldest;
-}
-
-static uint32_t G53FHeld(const G53FSequence *sequence, uint64_t position)
-{
-	return sequence->positions[position % G53F_WINDOW] == (int64_t)position ? 1u : 0u;
-}
-
-static SparkStatus G53FGemm(G53FState *state, const uint16_t *weight, const uint16_t *input, uint16_t *output, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension)
-{
-	if ( LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), input, output, (float *)0, rows, input_dimension, output_dimension, 0u,
-		state->multiprocessors, state->stream) != LM_LAUNCH_OK )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus G53FGemmF32(G53FState *state, const uint16_t *weight, const uint16_t *input, float *output, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension)
-{
-	if ( LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), input, (uint16_t *)0, output, rows, input_dimension, output_dimension, 0u,
-		state->multiprocessors, state->stream) != LM_LAUNCH_OK )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	return SPARK_STATUS_OK;
-}
-
 static SparkStatus G53FIngestRows(G53FState *state, G53FSequence *sequence, uint32_t rows)
 {
-	SparkStatus status = G53FGemmF32(state, state->fc, state->taps, state->features_raw, rows, G53F_TAP_WIDTH, G53F_HIDDEN);
+	SparkStatus status = DsparkGemmF32(state->fc, state->taps, state->features_raw, rows, G53F_TAP_WIDTH, G53F_HIDDEN, state->multiprocessors,
+		state->stream);
 	if ( status == SPARK_STATUS_OK )
-		LM_LAUNCH((G53FRmsF32Kernel), rows, G53F_THREADS, 0, state->stream, state->features_raw, state->hidden_norm, state->features, G53F_HIDDEN, state->epsilon);
+		LM_LAUNCH((DsparkRmsKernel<false, false, float>), rows, DSPARK_THREADS, 0, state->stream, state->features_raw, state->hidden_norm,
+			state->features, G53F_HIDDEN, state->epsilon);
 	for ( uint32_t layer = 0u; layer < G53F_LAYERS && status == SPARK_STATUS_OK; layer++ )
 	{
-		status = G53FGemm(state, state->layers[layer].k, state->features, state->keys_raw, rows, G53F_HIDDEN, G53F_KV_WIDTH);
+		status = DsparkGemm(state->layers[layer].k, state->features, state->keys_raw, rows, G53F_HIDDEN, G53F_KV_WIDTH, state->multiprocessors,
+			state->stream);
 		if ( status == SPARK_STATUS_OK )
-			status = G53FGemm(state, state->layers[layer].v, state->features, state->values_raw, rows, G53F_HIDDEN, G53F_KV_WIDTH);
+			status = DsparkGemm(state->layers[layer].v, state->features, state->values_raw, rows, G53F_HIDDEN, G53F_KV_WIDTH, state->multiprocessors,
+				state->stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FHeadNormRopeKernel), rows * G53F_KV_HEADS, G53F_HEAD_DIM, 0, state->stream, state->keys_raw, state->layers[layer].k_norm,
-			state->rope_inverse, state->positions, G53F_KV_HEADS, state->epsilon, (uint16_t *)0, G53FKeys(sequence, layer), (const G53FDraft *)0, 0u, 1u);
-		LM_LAUNCH((G53FStoreValuesKernel), rows, G53F_THREADS, 0, state->stream, state->values_raw, state->positions, (const G53FDraft *)0, 0u,
-			G53FValues(sequence, layer));
+		LM_LAUNCH((DsparkHeadNormRopeRingKernel<G53F_HEAD_DIM, G53F_HEAD_DIM, G53F_WINDOW, G53F_COLUMNS, DSPARK_NORM_F32, false, G53FDraft>),
+			rows * G53F_KV_HEADS, G53F_HEAD_DIM, 0, state->stream, state->keys_raw, state->layers[layer].k_norm, state->rope_inverse, 1.0f,
+			state->positions, G53F_KV_HEADS, state->epsilon, (uint16_t *)0, G53FKeys(sequence, layer), (const G53FDraft *)0, 0u, 1u);
+		LM_LAUNCH((DsparkStoreValuesRingKernel<G53F_KV_WIDTH, G53F_HEAD_DIM, G53F_WINDOW, G53F_COLUMNS, G53FDraft>), rows, DSPARK_THREADS, 0,
+			state->stream, state->values_raw, state->positions, (const G53FDraft *)0, 0u, G53FValues(sequence, layer));
 	}
 	if ( status == SPARK_STATUS_OK && SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_INTERNAL_ERROR;
-	if ( SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS && status == SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return status;
+	return DsparkSettle(state->stream, status);
 }
 
 static SparkStatus G53FIngest(void *opaque, const SparkTapStreamReaderFrame *frame)
 {
 	G53FState *state = (G53FState *)opaque;
-	const uint32_t rows = frame->header.row_count;
-	const uint64_t hidden = frame->hello != 0 ? frame->hello->hidden : 0u;
-	const uint32_t skip = rows > G53F_WINDOW ? rows - G53F_WINDOW : 0u;
-	const uint64_t first = frame->header.first_position + skip;
-	G53FSequence *sequence;
-	SparkStatus status = SPARK_STATUS_OK;
-	if ( rows == 0u )
-		return SPARK_STATUS_OK;
-	if ( frame->required_count != G53F_TAPS || hidden != G53F_HIDDEN || frame->rows == 0 )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	for ( uint32_t tap = 0u; tap < G53F_TAPS; tap++ )
-		if ( ((uint64_t)frame->required_index[tap] + 1u) * G53F_HIDDEN > frame->row_elements )
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	if ( frame->header.first_position + rows > UINT32_MAX )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	sequence = G53FLive(state, frame->header.sequence_id);
-	if ( sequence != 0 && frame->header.first_position != 0u &&
-		(sequence->control_generation != frame->header.control_generation || sequence->request_id != frame->header.request_id) )
-	{
-		sequence->retired = 1u;
-		sequence->last_used = ++state->clock;
-		sequence = 0;
-	}
-	if ( sequence == 0 )
-	{
-		sequence = G53FClaim(state);
-		G53FReset(sequence);
-		sequence->live = 1u;
-		sequence->id = frame->header.sequence_id;
-	}
-	else if ( frame->header.first_position == 0u )
-		G53FReset(sequence);
-	sequence->control_generation = frame->header.control_generation;
-	sequence->request_id = frame->header.request_id;
-	sequence->last_used = ++state->clock;
-	for ( uint32_t row = skip; row < rows; row++ )
-		sequence->positions[(frame->header.first_position + row) % G53F_WINDOW] = -1;
-	for ( uint32_t done = skip; done < rows && status == SPARK_STATUS_OK; done += G53F_INGEST_ROWS )
-	{
-		const uint32_t part = rows - done < G53F_INGEST_ROWS ? rows - done : G53F_INGEST_ROWS;
-		for ( uint32_t row = 0u; row < part; row++ )
-		{
-			const uint16_t *source = frame->rows + (uint64_t)(done + row) * frame->row_elements;
-			for ( uint32_t tap = 0u; tap < G53F_TAPS; tap++ )
-				memcpy(state->host_taps + (uint64_t)row * G53F_TAP_WIDTH + (uint64_t)tap * G53F_HIDDEN,
-					source + (uint64_t)frame->required_index[tap] * G53F_HIDDEN, G53F_HIDDEN * sizeof(uint16_t));
-			state->host_positions[row] = (uint32_t)(frame->header.first_position + done + row);
-		}
-		if ( SparkGpuMemcpyAsync(state->taps, state->host_taps, (size_t)part * G53F_TAP_WIDTH * sizeof(uint16_t), SPARK_GPU_COPY_HOST_TO_DEVICE,
-			state->stream) != SPARK_GPU_SUCCESS || SparkGpuMemcpyAsync(state->positions, state->host_positions, (size_t)part * sizeof(uint32_t),
-			SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
-		{
-			(void)SparkGpuStreamSynchronize(state->stream);
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
-		status = G53FIngestRows(state, sequence, part);
-	}
-	if ( status == SPARK_STATUS_OK )
-	{
-		for ( uint32_t slot = 0u; slot < G53F_WINDOW; slot++ )
-			if ( sequence->positions[slot] >= (int64_t)first )
-				sequence->positions[slot] = -1;
-		for ( uint32_t row = skip; row < rows; row++ )
-		{
-			const uint64_t position = frame->header.first_position + row;
-			sequence->positions[position % G53F_WINDOW] = (int64_t)position;
-			sequence->tokens[position % G53F_WINDOW] = frame->tokens != 0 ? frame->tokens[row] : 0u;
-		}
-	}
-	state->frames++;
-	state->rows += rows;
-	return status;
-}
-
-static SparkStatus G53FCopySlots(G53FState *state, G53FSequence *sequence, const G53FSequence *donor, uint32_t slot, uint32_t count)
-{
-	for ( uint32_t layer = 0u; layer < G53F_LAYERS; layer++ )
-		for ( uint32_t head = 0u; head < G53F_KV_HEADS; head++ )
-		{
-			const uint64_t at = ((uint64_t)head * G53F_COLUMNS + slot) * G53F_HEAD_DIM;
-			const size_t bytes = (size_t)count * G53F_HEAD_DIM * sizeof(uint16_t);
-			if ( SparkGpuMemcpyAsync(G53FKeys(sequence, layer) + at, G53FKeys(donor, layer) + at, bytes, SPARK_GPU_COPY_DEVICE_TO_DEVICE, state->stream) !=
-				SPARK_GPU_SUCCESS || SparkGpuMemcpyAsync(G53FValues(sequence, layer) + at, G53FValues(donor, layer) + at, bytes, SPARK_GPU_COPY_DEVICE_TO_DEVICE,
-				state->stream) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
-	return SPARK_STATUS_OK;
-}
-
-static uint32_t G53FUsable(const G53FSequence *sequence, const G53FSequence *donor, const SparkDraftServerRequest *request, uint64_t position)
-{
-	return G53FHeld(sequence, position) == 0u && G53FHeld(donor, position) != 0u && position < request->committed_token_count &&
-		donor->tokens[position % G53F_WINDOW] == request->committed_token_ids[position] ? 1u : 0u;
-}
-
-static SparkStatus G53FFillFromDonors(G53FState *state, G53FSequence *sequence, const SparkDraftServerRequest *request, uint64_t first)
-{
-	uint8_t tried[G53F_SEQUENCES_MAX];
-	memset(tried, 0, sizeof(tried));
-	for ( ;; )
-	{
-		G53FSequence *donor = 0;
-		uint32_t chosen = 0u, missing = 0u;
-		uint64_t position = first;
-		for ( uint64_t at = first; at < request->position; at++ )
-			missing += G53FHeld(sequence, at) == 0u ? 1u : 0u;
-		if ( missing == 0u )
-			return SPARK_STATUS_OK;
-		for ( uint32_t index = 0u; index < state->capacity; index++ )
-		{
-			G53FSequence *other = &state->sequences[index];
-			if ( other->live != 0u && other != sequence && tried[index] == 0u && (donor == 0 || other->last_used > donor->last_used) )
-			{
-				donor = other;
-				chosen = index;
-			}
-		}
-		if ( donor == 0 )
-			return SPARK_STATUS_OK;
-		tried[chosen] = 1u;
-		while ( position < request->position )
-		{
-			uint64_t stop = position;
-			if ( G53FUsable(sequence, donor, request, position) == 0u )
-			{
-				position++;
-				continue;
-			}
-			while ( stop < request->position && G53FUsable(sequence, donor, request, stop) != 0u && (stop == position || stop % G53F_WINDOW != 0u) )
-				stop++;
-			if ( G53FCopySlots(state, sequence, donor, (uint32_t)(position % G53F_WINDOW), (uint32_t)(stop - position)) != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-			for ( uint64_t at = position; at < stop; at++ )
-			{
-				sequence->positions[at % G53F_WINDOW] = (int64_t)at;
-				sequence->tokens[at % G53F_WINDOW] = donor->tokens[at % G53F_WINDOW];
-			}
-			position = stop;
-		}
-	}
-}
-
-static void G53FSpan(G53FSequence *sequence, uint64_t checked, uint64_t position, G53FDraft *draft)
-{
-	const uint64_t count = position - checked;
-	const uint32_t first = count != 0u ? (uint32_t)(checked % G53F_WINDOW) : 0u, end = first + (uint32_t)count;
-	const uint32_t need_mask = position > G53F_SLIDING - G53F_BLOCK ? 1u : 0u;
-	uint32_t newer = 0u;
-	memset(draft->valid, 0, sizeof(draft->valid));
-	draft->masked = 0u;
-	for ( uint32_t slot = end; slot < G53F_WINDOW && slot < end + G53F_BLOCK; slot++ )
-		newer |= count != 0u && sequence->positions[slot] > (int64_t)(position - 1u) ? 1u : 0u;
-	if ( need_mask == 0u && end <= G53F_WINDOW && newer == 0u )
-	{
-		for ( uint32_t slot = end; slot < G53F_WINDOW && slot < end + G53F_BLOCK; slot++ )
-			sequence->positions[slot] = -1;
-		draft->start = first;
-		draft->block_at = end;
-		return;
-	}
-	for ( uint64_t at = checked; at < position; at++ )
-	{
-		const uint64_t gap = position - at;
-		const uint32_t max_row = gap <= G53F_SLIDING - G53F_BLOCK ? G53F_BLOCK - 1u : (uint32_t)((G53F_SLIDING - 1u) - gap);
-		draft->valid[at % G53F_WINDOW] = (uint8_t)((1u << (max_row + 1u)) - 1u);
-	}
-	draft->masked = 1u;
-	draft->start = 0u;
-	draft->block_at = G53F_WINDOW;
+	return state->ring.IngestFrame<G53F_TAPS, G53F_HIDDEN, G53F_INGEST_ROWS>(frame, state->host_taps, state->host_positions, state->taps,
+		state->positions, state->stream, &state->frames, &state->rows,
+		[&](G53FSequence *sequence, uint32_t part) { return G53FIngestRows(state, sequence, part); });
 }
 
 static SparkStatus G53FPrepare(G53FState *state, G53FSequence *sequence, uint32_t anchor, uint64_t position, uint64_t checked,
@@ -1341,7 +751,7 @@ static SparkStatus G53FPrepare(G53FState *state, G53FSequence *sequence, uint32_
 	draft->nucleus = sampling->nucleus < 1.0f ? sampling->nucleus : 0.0f;
 	draft->top_k = sampling->top_k;
 	draft->tree = tree;
-	G53FSpan(sequence, checked, position, draft);
+	G53FRingPool::Span<G53F_BLOCK, G53F_SLIDING, true>(sequence, checked, position, draft);
 	span = draft->block_at - draft->start;
 	splits = (span + G53F_SPLIT_KEYS - 1u) / G53F_SPLIT_KEYS;
 	draft->splits = splits;
@@ -1354,69 +764,75 @@ static SparkStatus G53FPrepare(G53FState *state, G53FSequence *sequence, uint32_
 
 static SparkStatus G53FRunForward(G53FState *state, uint32_t layers, uint32_t splits)
 {
-	G53FForward *forward = &state->forward;
+	G53FForward *f = &state->forward;
 	const SparkGpuStream stream = state->stream;
-	const uint32_t *positions = (const uint32_t *)((const uint8_t *)forward->draft + offsetof(G53FDraft, positions));
+	const uint32_t *positions = (const uint32_t *)((const uint8_t *)f->draft + offsetof(G53FDraft, positions));
 	SparkStatus status = SPARK_STATUS_OK;
-	LM_LAUNCH((G53FEmbedKernel), G53F_BLOCK, G53F_THREADS, 0, stream, state->embed, forward->draft, forward->hidden);
-	LM_LAUNCH((G53FRmsF32Kernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->hidden, state->layers[0].input_norm, forward->x, G53F_HIDDEN, state->epsilon);
+	LM_LAUNCH((DsparkEmbedF32Kernel<G53F_HIDDEN, G53FDraft>), G53F_BLOCK, DSPARK_THREADS, 0, stream, state->embed, f->draft, f->hidden);
+	LM_LAUNCH((DsparkRmsKernel<false, false, float>), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->hidden, state->layers[0].input_norm, f->x,
+		G53F_HIDDEN, state->epsilon);
 	for ( uint32_t layer = 0u; layer < layers && status == SPARK_STATUS_OK; layer++ )
 	{
-		const G53FLayer *weights = &state->layers[layer];
+		const G53FLayer *w = &state->layers[layer];
 		const uint64_t keys_offset = (uint64_t)(2u * layer) * G53F_LAYER_KV;
 		const uint64_t values_offset = (uint64_t)(2u * layer + 1u) * G53F_LAYER_KV;
-		status = G53FGemm(state, weights->attn_conv_proj, forward->x, forward->conv_coeff, G53F_BLOCK, G53F_HIDDEN, G53F_CONV_WIDTH);
+		status = DsparkGemm(w->attn_conv_proj, f->x, f->conv_coeff, G53F_BLOCK, G53F_HIDDEN, G53F_CONV_WIDTH, state->multiprocessors, stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FConvPrepareKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->x, weights->attn_conv_base, forward->conv_coeff, forward->prepared);
-		status = G53FGemm(state, weights->q, forward->prepared, forward->q, G53F_BLOCK, G53F_HIDDEN, G53F_Q_WIDTH);
+		LM_LAUNCH((G53FConvPrepareKernel), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->x, w->attn_conv_base, f->conv_coeff, f->prepared);
+		status = DsparkGemm(w->q, f->prepared, f->q, G53F_BLOCK, G53F_HIDDEN, G53F_Q_WIDTH, state->multiprocessors, stream);
 		if ( status == SPARK_STATUS_OK )
-			status = G53FGemm(state, weights->k, forward->prepared, forward->k, G53F_BLOCK, G53F_HIDDEN, G53F_KV_WIDTH);
+			status = DsparkGemm(w->k, f->prepared, f->k, G53F_BLOCK, G53F_HIDDEN, G53F_KV_WIDTH, state->multiprocessors, stream);
 		if ( status == SPARK_STATUS_OK )
-			status = G53FGemm(state, weights->v, forward->prepared, forward->v, G53F_BLOCK, G53F_HIDDEN, G53F_KV_WIDTH);
+			status = DsparkGemm(w->v, f->prepared, f->v, G53F_BLOCK, G53F_HIDDEN, G53F_KV_WIDTH, state->multiprocessors, stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FHeadNormRopeKernel), G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, forward->q, weights->q_norm, state->rope_inverse, positions,
-			G53F_HEADS, state->epsilon, forward->q_roped, (uint16_t *)0, forward->draft, 0u, 0u);
-		if ( LM_LAUNCH_DEPENDENT((G53FHeadNormRopeKernel), G53F_BLOCK * G53F_KV_HEADS, G53F_HEAD_DIM, 0, stream, forward->k, weights->k_norm,
-			state->rope_inverse, positions, G53F_KV_HEADS, state->epsilon, (uint16_t *)0, (uint16_t *)0, forward->draft, keys_offset, 0u) != SPARK_GPU_SUCCESS ||
-			LM_LAUNCH_DEPENDENT((G53FStoreValuesKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->v, (const uint32_t *)0, forward->draft,
-				values_offset, (uint16_t *)0) != SPARK_GPU_SUCCESS )
+		LM_LAUNCH((DsparkHeadNormRopeRingKernel<G53F_HEAD_DIM, G53F_HEAD_DIM, G53F_WINDOW, G53F_COLUMNS, DSPARK_NORM_F32, false, G53FDraft>),
+			G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, f->q, w->q_norm, state->rope_inverse, 1.0f, positions, G53F_HEADS, state->epsilon,
+			f->q_roped, (uint16_t *)0, f->draft, 0u, 0u);
+		if ( LM_LAUNCH_DEPENDENT((DsparkHeadNormRopeRingKernel<G53F_HEAD_DIM, G53F_HEAD_DIM, G53F_WINDOW, G53F_COLUMNS, DSPARK_NORM_F32, false,
+					G53FDraft>),
+				G53F_BLOCK * G53F_KV_HEADS, G53F_HEAD_DIM, 0, stream, f->k, w->k_norm, state->rope_inverse, 1.0f, positions, G53F_KV_HEADS,
+				state->epsilon, (uint16_t *)0, (uint16_t *)0, f->draft, keys_offset, 0u) != SPARK_GPU_SUCCESS ||
+			LM_LAUNCH_DEPENDENT((DsparkStoreValuesRingKernel<G53F_KV_WIDTH, G53F_HEAD_DIM, G53F_WINDOW, G53F_COLUMNS, G53FDraft>), G53F_BLOCK,
+				DSPARK_THREADS, 0, stream, f->v, (const uint32_t *)0, f->draft, values_offset, (uint16_t *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( splits != 0u &&
-			LM_LAUNCH_DEPENDENT((G53FAttentionSplitKernel), dim3(G53F_KV_HEADS, splits), G53F_ATTN_THREADS, 0, stream, forward->q_roped, keys_offset,
-				values_offset, forward->draft, state->softmax_scale, forward->partials) != SPARK_GPU_SUCCESS )
+			LM_LAUNCH_DEPENDENT((G53FAttentionSplitKernel), dim3(G53F_KV_HEADS, splits), G53F_ATTN_THREADS, 0, stream, f->q_roped, keys_offset,
+				values_offset, f->draft, state->softmax_scale, f->partials) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( LM_LAUNCH_DEPENDENT((G53FAttentionMergeKernel), G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, forward->q_roped, keys_offset,
-			values_offset, forward->draft, state->softmax_scale, forward->partials, forward->attended) != SPARK_GPU_SUCCESS )
+		if ( LM_LAUNCH_DEPENDENT((DsparkAttentionMergeKernel<G53F_HEADS, G53F_KV_HEADS, G53F_BLOCK, G53F_COLUMNS, G53F_HEAD_DIM, G53F_SPLITS, false,
+					false, false, G53FDraft>),
+				G53F_BLOCK * G53F_HEADS, G53F_HEAD_DIM, 0, stream, f->q_roped, (const uint16_t *)0, (const uint16_t *)0, keys_offset, values_offset,
+				f->draft, state->softmax_scale, f->partials, f->attended) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = G53FGemm(state, weights->o, forward->attended, forward->projected, G53F_BLOCK, G53F_Q_WIDTH, G53F_HIDDEN);
+		status = DsparkGemm(w->o, f->attended, f->projected, G53F_BLOCK, G53F_Q_WIDTH, G53F_HIDDEN, state->multiprocessors, stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FConvFinishResidualRmsKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->projected, weights->attn_conv_base, forward->conv_coeff,
-			forward->hidden, weights->post_norm, forward->x, state->epsilon);
-		status = G53FGemm(state, weights->mlp_conv_proj, forward->x, forward->conv_coeff, G53F_BLOCK, G53F_HIDDEN, G53F_CONV_WIDTH);
+		LM_LAUNCH((G53FConvFinishKernel<true>), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->projected, w->attn_conv_base, f->conv_coeff, f->hidden,
+			w->post_norm, f->x, state->epsilon);
+		status = DsparkGemm(w->mlp_conv_proj, f->x, f->conv_coeff, G53F_BLOCK, G53F_HIDDEN, G53F_CONV_WIDTH, state->multiprocessors, stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FConvPrepareKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->x, weights->mlp_conv_base, forward->conv_coeff, forward->prepared);
-		status = G53FGemm(state, weights->gate, forward->prepared, forward->gate, G53F_BLOCK, G53F_HIDDEN, G53F_MLP);
+		LM_LAUNCH((G53FConvPrepareKernel), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->x, w->mlp_conv_base, f->conv_coeff, f->prepared);
+		status = DsparkGemm(w->gate, f->prepared, f->gate, G53F_BLOCK, G53F_HIDDEN, G53F_MLP, state->multiprocessors, stream);
 		if ( status == SPARK_STATUS_OK )
-			status = G53FGemm(state, weights->up, forward->prepared, forward->up, G53F_BLOCK, G53F_HIDDEN, G53F_MLP);
+			status = DsparkGemm(w->up, f->prepared, f->up, G53F_BLOCK, G53F_HIDDEN, G53F_MLP, state->multiprocessors, stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		LM_LAUNCH((G53FSwigluKernel), 2u * state->multiprocessors, G53F_THREADS, 0, stream, forward->gate, forward->up, forward->act, G53F_BLOCK * G53F_MLP);
-		status = G53FGemm(state, weights->down, forward->act, forward->mlp, G53F_BLOCK, G53F_MLP, G53F_HIDDEN);
+		LM_LAUNCH((DsparkSwigluKernel), 2u * state->multiprocessors, DSPARK_THREADS, 0, stream, f->gate, f->up, f->act, G53F_BLOCK * G53F_MLP);
+		status = DsparkGemm(w->down, f->act, f->mlp, G53F_BLOCK, G53F_MLP, G53F_HIDDEN, state->multiprocessors, stream);
 		if ( status != SPARK_STATUS_OK )
 			break;
 		if ( layer + 1u < layers )
-			LM_LAUNCH((G53FConvFinishResidualRmsKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff,
-				forward->hidden, state->layers[layer + 1u].input_norm, forward->x, state->epsilon);
+			LM_LAUNCH((G53FConvFinishKernel<true>), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->mlp, w->mlp_conv_base, f->conv_coeff, f->hidden,
+				state->layers[layer + 1u].input_norm, f->x, state->epsilon);
 		else if ( layers == G53F_LAYERS )
-			LM_LAUNCH((G53FConvFinishResidualRmsKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff,
-				forward->hidden, state->norm, forward->y, state->epsilon);
+			LM_LAUNCH((G53FConvFinishKernel<true>), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->mlp, w->mlp_conv_base, f->conv_coeff, f->hidden,
+				state->norm, f->y, state->epsilon);
 		else
-			LM_LAUNCH((G53FConvFinishResidualKernel), G53F_BLOCK, G53F_THREADS, 0, stream, forward->mlp, weights->mlp_conv_base, forward->conv_coeff,
-				forward->hidden);
+			LM_LAUNCH((G53FConvFinishKernel<false>), G53F_BLOCK, DSPARK_THREADS, 0, stream, f->mlp, w->mlp_conv_base, f->conv_coeff, f->hidden,
+				(const uint16_t *)0, (uint16_t *)0, 0.0f);
 	}
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -1427,52 +843,30 @@ static SparkStatus G53FRunForward(G53FState *state, uint32_t layers, uint32_t sp
 
 static SparkStatus G53FHeads(G53FState *state)
 {
-	G53FForward *forward = &state->forward;
+	G53FForward *f = &state->forward;
 	const SparkGpuStream stream = state->stream;
-	const uint16_t *rows = forward->y + G53F_HIDDEN;
-	SparkStatus status = G53FGemm(state, state->head, rows, forward->logits, G53F_DRAFTS, G53F_HIDDEN, G53F_VOCAB);
+	const uint16_t *rows = f->y + G53F_HIDDEN;
+	SparkStatus status = DsparkGemm(state->head, rows, f->logits, G53F_DRAFTS, G53F_HIDDEN, G53F_VOCAB, state->multiprocessors, stream);
 	if ( status == SPARK_STATUS_OK )
-		status = G53FGemm(state, state->selector_hidden, rows, forward->sel_hidden, G53F_DRAFTS, G53F_HIDDEN, G53F_SELECTOR_RANK);
+		status = DsparkGemm(state->selector_hidden, rows, f->sel_hidden, G53F_DRAFTS, G53F_HIDDEN, G53F_SELECTOR_RANK, state->multiprocessors,
+			stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	status = SparkDrafterTopkBf16Launch(forward->logits, G53F_DRAFTS, G53F_VOCAB, G53F_TOP_K, &forward->topk_ws, forward->candidates, stream);
+	status = SparkDrafterTopkBf16Launch(f->logits, G53F_DRAFTS, G53F_VOCAB, G53F_TOP_K, &f->topk_ws, f->candidates, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( LM_LAUNCH_DEPENDENT((G53FLogitsSummaryKernel), G53F_DRAFTS, G53F_THREADS, 0, stream, forward->logits, forward->candidates, forward->unary,
-		forward->tail) != SPARK_GPU_SUCCESS ||
-		LM_LAUNCH_DEPENDENT((G53FLatticeKernel), G53F_DRAFTS * G53F_TOP_K, G53F_THREADS, 0, stream, forward->draft, forward->candidates, forward->unary,
-			forward->sel_hidden, state->predecessors, state->successors, forward->edges) != SPARK_GPU_SUCCESS ||
-		LM_LAUNCH_DEPENDENT((G53FWalkKernel), 1u, G53F_WARP, 0, stream, forward->draft, forward->candidates, forward->tail, forward->edges,
-			forward->picks) != SPARK_GPU_SUCCESS )
+	if ( LM_LAUNCH_DEPENDENT((G53FLogitsSummaryKernel), G53F_DRAFTS, DSPARK_THREADS, 0, stream, f->logits, f->candidates, f->unary, f->tail) !=
+			SPARK_GPU_SUCCESS ||
+		LM_LAUNCH_DEPENDENT((G53FLatticeKernel), G53F_DRAFTS * G53F_TOP_K, DSPARK_THREADS, 0, stream, f->draft, f->candidates, f->unary,
+			f->sel_hidden, state->predecessors, state->successors, f->edges) != SPARK_GPU_SUCCESS ||
+		LM_LAUNCH_DEPENDENT((G53FWalkKernel), 1u, DSPARK_WARP, 0, stream, f->draft, f->candidates, f->tail, f->edges, f->picks) !=
+			SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(G53FPicks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
+	if ( SparkGpuMemcpyAsync(f->host_picks, f->picks, sizeof(G53FPicks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
-}
-
-static SparkStatus G53FSettle(G53FState *state, SparkStatus status)
-{
-	if ( SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS && status == SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return status;
-}
-
-static void G53FForwardFree(G53FForward *forward)
-{
-	void *buffers[] = {
-		forward->draft, forward->picks, forward->hidden, forward->x, forward->conv_coeff, forward->prepared, forward->q, forward->q_roped, forward->k,
-		forward->v, forward->partials, forward->attended, forward->projected, forward->gate, forward->up, forward->act, forward->mlp, forward->y,
-		forward->logits, forward->sel_hidden, forward->candidates, forward->unary, forward->tail, forward->edges,
-	};
-	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
-		(void)SparkGpuFree(buffers[index]);
-	SparkDrafterTopkBf16Free(&forward->topk_ws);
-	if ( forward->host_draft != 0 )
-		(void)SparkGpuFreeHost(forward->host_draft);
-	if ( forward->host_picks != 0 )
-		(void)SparkGpuFreeHost(forward->host_picks);
 }
 
 static SparkStatus G53FClose(void *opaque)
@@ -1484,162 +878,79 @@ static SparkStatus G53FClose(void *opaque)
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamSynchronize(state->stream);
 	SparkDrafterGraphCacheDestroy(&state->graphs);
-	G53FForwardFree(&state->forward);
 	{
+		G53FForward *f = &state->forward;
 		void *buffers[] = {
-			state->caches, state->taps, state->positions, state->features_raw, state->features, state->keys_raw, state->values_raw, state->rope_inverse,
+			f->draft, f->picks, f->hidden, f->x, f->conv_coeff, f->prepared, f->q, f->q_roped, f->k, f->v, f->partials, f->attended, f->projected,
+			f->gate, f->up, f->act, f->mlp, f->y, f->logits, f->sel_hidden, f->candidates, f->unary, f->tail, f->edges, state->caches, state->taps,
+			state->positions, state->features_raw, state->features, state->keys_raw, state->values_raw, state->rope_inverse,
 		};
-		for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
-			(void)SparkGpuFree(buffers[index]);
+		void *host_buffers[] = { f->host_draft, f->host_picks, state->host_taps, state->host_positions };
+		DsparkFreeDeviceBuffers(buffers, (uint32_t)(sizeof(buffers) / sizeof(buffers[0])));
+		SparkDrafterTopkBf16Free(&f->topk_ws);
+		DsparkFreeHostBuffers(host_buffers, (uint32_t)(sizeof(host_buffers) / sizeof(host_buffers[0])));
 	}
-	if ( state->host_taps != 0 )
-		(void)SparkGpuFreeHost(state->host_taps);
-	if ( state->host_positions != 0 )
-		(void)SparkGpuFreeHost(state->host_positions);
 	if ( state->stream != 0 )
 		(void)SparkGpuStreamDestroy(state->stream);
 	if ( state->pack != 0 )
 		status = SparkWeightdLazyPackDestroy(state->pack);
-	free(state->sequences);
+	free(state->ring.sequences);
 	free(state);
 	return status;
 }
 
 static SparkStatus G53FOpen(const SparkDrafterModuleLane *lane, void **state_out, SparkDrafterModuleBind *bind)
 {
-	SparkWeightdLazyAttachRequest request;
-	SparkWeightdLazyPackOptions options;
-	G53FState *state;
-	size_t free_bytes = 0u, total_bytes = 0u;
-	uint64_t need, started;
-	SparkStatus status;
-	*state_out = 0;
-	if ( lane == 0 || lane->abi_version != SPARK_DRAFTER_MODULE_ABI_VERSION || lane->descriptor_bytes < sizeof(*lane) )
-		return G53FRefuse(bind, SPARK_STATUS_ABI_MISMATCH, "the lane descriptor is not drafter ABI %s", "1");
-	{
-		const SparkStatus device = SparkDeviceInitialize(0);
-		if ( (device != SPARK_STATUS_OK && device != SPARK_STATUS_DUPLICATE) || SparkGpuMemGetInfo(&free_bytes, &total_bytes) != SPARK_GPU_SUCCESS )
-			return G53FRefuse(bind, SPARK_STATUS_IO_ERROR, "lane %s cannot read the device's free memory", lane->lane_name);
-	}
-	bind->device_free_bytes = (uint64_t)free_bytes;
-	bind->device_total_bytes = (uint64_t)total_bytes;
-	need = lane->pack_bytes + 255u + lane->context_bytes;
-	if ( need > (uint64_t)free_bytes )
-	{
-		snprintf(bind->text, sizeof(bind->text), "lane %s needs %llu bytes of device memory (pack %llu + context cap %llu), %llu of %llu free",
-			lane->lane_name, (unsigned long long)need, (unsigned long long)lane->pack_bytes, (unsigned long long)lane->context_bytes,
-			(unsigned long long)free_bytes, (unsigned long long)total_bytes);
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
-	if ( lane->context_bytes < G53F_SEQUENCE_BYTES )
-		return G53FRefuse(bind, SPARK_STATUS_INVALID_ARGUMENT, "lane %s has a context cap below one sequence's window", lane->lane_name);
-	state = (G53FState *)calloc(1u, sizeof(*state));
-	if ( state == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	memset(&request, 0, sizeof(request));
-	memset(&options, 0, sizeof(options));
-	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = lane->pack_bytes;
-	snprintf(request.identity.model, sizeof(request.identity.model), "%s", lane->model);
-	snprintf(request.identity.revision, sizeof(request.identity.revision), "%s", lane->revision);
-	snprintf(request.identity.pack_sha256, sizeof(request.identity.pack_sha256), "%s", lane->pack_sha256);
-	snprintf(request.pack_path, sizeof(request.pack_path), "%s", lane->pack_path);
-	options.timeout_nanoseconds = lane->timeout_ns;
-	started = SparkMonotonicNs();
-	status = SparkWeightdLazyPackCreate(lane->weightd_socket, &request, &options, &state->pack);
-	if ( status != SPARK_STATUS_OK )
-	{
-		snprintf(bind->text, sizeof(bind->text), "lane %s: the pack %s did not bind", lane->lane_name, lane->pack_path);
-		free(state);
-		SPARK_FAIL(status);
-	}
-	status = SparkGpuStreamCreateWithFlags(&state->stream, SPARK_GPU_STREAM_NON_BLOCKING) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK )
-		status = G53FWeights(state, lane->pack_path);
-	if ( status == SPARK_STATUS_OK )
-		status = G53FScratch(state, lane->context_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = G53FSettle(state, SPARK_STATUS_OK);
-	if ( status != SPARK_STATUS_OK )
-	{
-		snprintf(bind->text, sizeof(bind->text), "lane %s: the pack %s is not a GLM-5.3-Flash DFlash2 pack this module reads", lane->lane_name, lane->pack_path);
-		(void)G53FClose(state);
-		SPARK_FAIL(status);
-	}
-	bind->bind_ns = SparkMonotonicNs() - started;
-	bind->device_bytes = state->pack->spine_allocation_bytes;
-	bind->first_hold = state->pack->attached.loaded_from_pack;
-	snprintf(bind->text, sizeof(bind->text), "lane %s bound %s with %u sequence windows", lane->lane_name, lane->pack_path, state->capacity);
-	*state_out = state;
-	return SPARK_STATUS_OK;
+	return DsparkDrafterOpen<G53FState>(lane, G53F_SEQUENCE_BYTES, "lane %s has a context cap below one sequence's window",
+		"lane %s: the pack %s is not a GLM-5.3-Flash DFlash2 pack this module reads", true, state_out, bind, G53FClose,
+		[&](G53FState *state) -> SparkStatus {
+			SparkStatus status = G53FWeights(state, lane->pack_path);
+			if ( status == SPARK_STATUS_OK )
+				status = G53FScratch(state, lane->context_bytes);
+			if ( status == SPARK_STATUS_OK )
+				status = DsparkSettle(state->stream, SPARK_STATUS_OK);
+			return status;
+		},
+		[](const G53FState *state) { return state->ring.capacity; });
 }
 
 static SparkStatus G53FPropose(void *opaque, const SparkDraftServerRequest *request, SparkDraftBridgeNode *nodes, uint32_t capacity, uint32_t *count)
 {
 	G53FState *state = (G53FState *)opaque;
-	G53FSequence *sequence = G53FLive(state, request->sequence_id);
 	const uint32_t source = request->speculator_mask & (~request->speculator_mask + 1u);
 	const uint64_t first = request->position > G53F_SLIDING - 1u ? request->position - (G53F_SLIDING - 1u) : 0u;
 	const uint32_t requested = request->depth < request->max_depth ? request->depth : request->max_depth;
 	const uint32_t limit = request->node_capacity != 0u && request->node_capacity < capacity ? request->node_capacity : capacity;
-	uint32_t drafts = requested;
+	uint32_t drafts = requested, splits = 0u;
+	G53FSequence *sequence = 0;
 	uint64_t checked = first;
 	SparkStatus status;
 	*count = 0u;
 	if ( limit == 0u )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( sequence == 0 || (request->position != 0u && G53FHeld(sequence, request->position - 1u) == 0u) )
-		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
-	status = G53FFillFromDonors(state, sequence, request, first);
+	status = state->ring.PrepareProposeContext(request, first, state->stream, &sequence, &checked,
+		[&](G53FSequence *dst, const G53FSequence *src, uint32_t slot, uint32_t n) {
+			return G53FRingPool::CopyKvRange<G53F_LAYERS, G53F_KV_HEADS, G53F_COLUMNS, G53F_HEAD_DIM>(dst, src, slot, n, state->stream);
+		});
 	if ( status != SPARK_STATUS_OK )
-		return G53FSettle(state, status);
-	for ( uint64_t position = first; position < request->position; position++ )
-		if ( G53FHeld(sequence, position) == 0u )
-			checked = position + 1u;
-	if ( checked != first )
-		state->gaps++;
-	if ( request->committed_token_count < request->position )
-		return G53FSettle(state, SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT);
-	for ( uint64_t position = checked; position < request->position; position++ )
-		if ( sequence->tokens[position % G53F_WINDOW] != request->committed_token_ids[position] )
-			return G53FSettle(state, SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT);
+		return status;
 	drafts = drafts < G53F_DRAFTS ? drafts : G53F_DRAFTS;
 	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	{
 		const uint32_t tree = limit > (requested > drafts ? requested : drafts) + 1u ? 1u : 0u;
-		uint32_t splits = 0u;
-		SparkDraftTreeBranch branches[G53F_DRAFTS];
-		uint32_t branch_count = 0u;
 		status = G53FPrepare(state, sequence, request->anchor_token_id, request->position, checked, &request->sampling, tree, &splits);
 		if ( status == SPARK_STATUS_OK )
-		{
-			const uint64_t key = (uint64_t)splits;
-			status = SparkDrafterGraphRun(&state->graphs, state->stream, key, [&]() -> SparkStatus
-			{
+			status = SparkDrafterGraphRun(&state->graphs, state->stream, (uint64_t)splits, [&]() -> SparkStatus {
 				SparkStatus inner = G53FRunForward(state, G53F_LAYERS, splits);
 				if ( inner == SPARK_STATUS_OK )
 					inner = G53FHeads(state);
 				return inner;
 			});
-		}
-		status = G53FSettle(state, status);
+		status = DsparkSettle(state->stream, status);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( tree != 0u )
-			for ( uint32_t step = 0u; step < drafts; step++ )
-			{
-				const uint32_t len = drafts - step < G53F_BRANCH_LEN ? drafts - step : G53F_BRANCH_LEN;
-				branches[branch_count].fork_step = step;
-				branches[branch_count].length = len;
-				for ( uint32_t k = 0u; k < len; k++ )
-				{
-					branches[branch_count].tokens[k] = state->forward.host_picks->branch_tokens[step][k];
-					branches[branch_count].scores[k] = state->forward.host_picks->branch_scores[step][k];
-				}
-				branch_count++;
-			}
-		*count = SparkDraftTreePackBranches(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
-			branches, branch_count, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
+		*count = DsparkPackGridTree<G53F_DRAFTS, G53F_BRANCH_LEN>(request->anchor_token_id, source, state->forward.host_picks, tree, drafts,
+			requested, limit, nodes);
 	}
 	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
@@ -1654,13 +965,6 @@ static const SparkDrafterModuleInterface g53f_interface = {
 	G53FClose,
 };
 
-static SparkStatus G53FReadback(void *host, const void *device, size_t bytes)
-{
-	if ( SparkGpuMemcpy(host, device, bytes, SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	return SPARK_STATUS_OK;
-}
-
 extern "C" __attribute__((visibility("default"))) const SparkDrafterModuleInterface *spark_drafter_module_interface(void)
 {
 	return &g53f_interface;
@@ -1670,43 +974,37 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_glm53_flash_
 	uint16_t *keys, uint16_t *values, int64_t *positions)
 {
 	G53FState *state = (G53FState *)opaque;
-	const G53FSequence *sequence = state != 0 ? G53FLive(state, sequence_id) : 0;
-	SparkStatus status;
-	if ( sequence == 0 || layer >= G53F_LAYERS || keys == 0 || values == 0 || positions == 0 )
+	if ( state == 0 )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	memcpy(positions, sequence->positions, sizeof(sequence->positions));
-	status = G53FReadback(keys, G53FKeys(sequence, layer), G53F_LAYER_KV * sizeof(uint16_t));
+	return state->ring.CacheReadback<G53F_LAYERS, G53F_LAYER_KV>(sequence_id, layer, keys, values, positions);
+}
+
+static SparkStatus G53FRunDiag(G53FState *state, uint64_t sequence_id, uint32_t anchor, uint64_t position, uint32_t layers, SparkStatus missing)
+{
+	G53FSequence *sequence = state != 0 ? state->ring.Live(sequence_id) : 0;
+	const uint64_t first = position > G53F_SLIDING - 1u ? position - (G53F_SLIDING - 1u) : 0u;
+	uint32_t splits = 0u;
+	SparkRowSampling greedy;
+	SparkStatus status;
+	if ( sequence == 0 )
+		SPARK_FAIL(missing);
+	memset(&greedy, 0, sizeof(greedy));
+	status = G53FPrepare(state, sequence, anchor, position, G53FRingPool::CheckedFrom(sequence, first, position), &greedy, 0u, &splits);
 	if ( status == SPARK_STATUS_OK )
-		status = G53FReadback(values, G53FValues(sequence, layer), G53F_LAYER_KV * sizeof(uint16_t));
-	return status;
+		status = G53FRunForward(state, layers, splits);
+	return DsparkSettle(state->stream, status);
 }
 
 extern "C" __attribute__((visibility("default"))) SparkStatus spark_glm53_flash_dflash2_forward(void *opaque, uint64_t sequence_id, uint32_t anchor,
 	uint64_t position, uint16_t *y, uint64_t *elapsed_ns)
 {
 	G53FState *state = (G53FState *)opaque;
-	G53FSequence *sequence = state != 0 ? G53FLive(state, sequence_id) : 0;
-	const uint64_t started = SparkMonotonicNs(), first = position > G53F_SLIDING - 1u ? position - (G53F_SLIDING - 1u) : 0u;
-	uint64_t checked = first;
-	SparkRowSampling greedy;
-	SparkStatus status;
-	if ( sequence == 0 )
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	for ( uint64_t at = first; at < position; at++ )
-		if ( G53FHeld(sequence, at) == 0u )
-			checked = at + 1u;
-	memset(&greedy, 0, sizeof(greedy));
-	{
-		uint32_t splits = 0u;
-		status = G53FPrepare(state, sequence, anchor, position, checked, &greedy, 0u, &splits);
-		if ( status == SPARK_STATUS_OK )
-			status = G53FRunForward(state, G53F_LAYERS, splits);
-	}
-	status = G53FSettle(state, status);
+	const uint64_t started = SparkMonotonicNs();
+	SparkStatus status = G53FRunDiag(state, sequence_id, anchor, position, G53F_LAYERS, SPARK_STATUS_NOT_FOUND);
 	if ( elapsed_ns != 0 )
 		*elapsed_ns = SparkMonotonicNs() - started;
 	if ( status == SPARK_STATUS_OK && y != 0 )
-		status = G53FReadback(y, state->forward.y, (size_t)G53F_BLOCK * G53F_HIDDEN * sizeof(uint16_t));
+		status = DsparkReadback(y, state->forward.y, (size_t)G53F_BLOCK * G53F_HIDDEN * sizeof(uint16_t));
 	return status;
 }
 
@@ -1714,25 +1012,11 @@ extern "C" __attribute__((visibility("default"))) SparkStatus spark_glm53_flash_
 	uint64_t position, uint32_t layers, float *hidden)
 {
 	G53FState *state = (G53FState *)opaque;
-	G53FSequence *sequence = state != 0 ? G53FLive(state, sequence_id) : 0;
-	const uint64_t first = position > G53F_SLIDING - 1u ? position - (G53F_SLIDING - 1u) : 0u;
-	uint64_t checked = first;
-	SparkRowSampling greedy;
 	SparkStatus status;
-	if ( sequence == 0 || hidden == 0 || layers == 0u || layers > G53F_LAYERS )
+	if ( state == 0 || hidden == 0 || layers == 0u || layers > G53F_LAYERS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for ( uint64_t at = first; at < position; at++ )
-		if ( G53FHeld(sequence, at) == 0u )
-			checked = at + 1u;
-	memset(&greedy, 0, sizeof(greedy));
-	{
-		uint32_t splits = 0u;
-		status = G53FPrepare(state, sequence, anchor, position, checked, &greedy, 0u, &splits);
-		if ( status == SPARK_STATUS_OK )
-			status = G53FRunForward(state, layers, splits);
-	}
-	status = G53FSettle(state, status);
+	status = G53FRunDiag(state, sequence_id, anchor, position, layers, SPARK_STATUS_INVALID_ARGUMENT);
 	if ( status == SPARK_STATUS_OK )
-		status = G53FReadback(hidden, state->forward.hidden, (size_t)G53F_BLOCK * G53F_HIDDEN * sizeof(float));
+		status = DsparkReadback(hidden, state->forward.hidden, (size_t)G53F_BLOCK * G53F_HIDDEN * sizeof(float));
 	return status;
 }

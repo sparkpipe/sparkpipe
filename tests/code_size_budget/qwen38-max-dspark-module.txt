@@ -1,2 +1,0 @@
-+1739
-Qwen3.8-Max RadixArk DSpark drafter module (`modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu`), `qwen38maxdspark` packer support in `tools/drafter_pack.py`, and Makefile build rules for `QWEN38_MAX_DSPARK_DRAFTER_MODULE` and `build/qwen38_max_dspark_block_probe` (+1700 authored lines, plus +39 ceiling reconciliation with main).

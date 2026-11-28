@@ -1,2 +1,0 @@
-+1719
-A.X-K2 official DSpark drafter module (`modules/axk2_dspark_draft_stage/source/spark_axk2_dspark_module.cu`), `axk2dspark` packer support in `tools/drafter_pack.py`, and Makefile build rules for `AXK2_DSPARK_DRAFTER_MODULE` and `build/axk2_dspark_block_probe`.
