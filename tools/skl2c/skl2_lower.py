@@ -298,16 +298,20 @@ def resolve_models(unit, model_names=None):
         codec, act, norm, mixer, ffn = spec.get("weight_codec", "BF16"), spec.get("act_dtype", "bf16"), spec.get("norm", "rmsnorm"), spec.get("mixer", "gqa"), spec.get("ffn", "swiglu")
         fusions = spec.get("fusions", [])
         fused_tags = {rhs for _, rhs in fusions}
-        resolved_prims, ar_ctx = {}, {"msg_bytes": int(spec.get("hidden", 4096)) * 2, "ranks": int(spec.get("tp_degree", 16)), "topology": spec.get("topology", "hybrid_mode0")}
+        resolved_prims, compiled_k, ar_ctx = {}, [], {"msg_bytes": int(spec.get("hidden", 4096)) * 2, "ranks": int(spec.get("tp_degree", 16)), "topology": spec.get("topology", "hybrid_mode0"), "mixer": mixer, "head_codec": spec.get("head_codec", "FP8_E4M3"), "batch": 1, "fuse_rope": 0, "fuse_residual": 1}
         for u in list(unit.get("uses", [])) + list(spec.get("uses", [])):
             if u["ref"] in unit["primitives"]:
                 sel = select_primitive_variant(unit, u["ref"], u["version"], context=ar_ctx)
                 resolved_prims[u["ref"]] = f"{sel['version']}:{sel['variant']}"
+                vs = sel.get("variant_spec", {})
+                if isinstance(vs.get("kernel"), str): compiled_k.append(vs["kernel"])
+                if isinstance(vs.get("kernels"), list): compiled_k.extend(k for k in vs["kernels"] if isinstance(k, str))
         tp = spec.get("tp_collective")
         if not tp and "std.allreduce" in unit["primitives"]:
             sel = select_primitive_variant(unit, "std.allreduce", "latest", context=ar_ctx)
             tp = sel["variant"]
             resolved_prims.setdefault("std.allreduce", f"{sel['version']}:{sel['variant']}")
+            if isinstance(sel.get("variant_spec", {}).get("kernel"), str): compiled_k.append(sel["variant_spec"]["kernel"])
         tp = tp or "hybrid_inline_128"
         kernels = [
             f"linear.skinny_gemv.{codec.lower()}_{act}", f"linear.mma_gemm.{codec.lower()}_{act}",
@@ -329,7 +333,8 @@ def resolve_models(unit, model_names=None):
         resolved[m_name] = {
             "version": actual_v, "inheritance": chain, "resolved_fields": _count_leaf_fields(spec),
             "diff_fields": _count_leaf_fields(m["spec"]), "resolved_primitives": resolved_prims,
-            "spec": spec, "fusions": [f"{'+'.join(lhs)}->{rhs}" for lhs, rhs in fusions], "kernels": sorted(set(kernels)),
+            "spec": spec, "fusions": [f"{'+'.join(lhs)}->{rhs}" for lhs, rhs in fusions],
+            "kernels": sorted(set(kernels)), "compiled_kernels": sorted(set(compiled_k)),
         }
     total_slots = sum(len(v["kernels"]) for v in resolved.values())
     unique_kernels = sorted(kernel_registry)
@@ -430,6 +435,33 @@ def emit_c_header(images, model_plan=None, arch="sm121", unit=None):
         *layout_cases, "\tdefault: *count = 0u; *bytes = 0u; return 0; } }",
         *launch_fns, "#ifdef __cplusplus", "}", "#endif", "#endif",
     ])
+    return "\n".join(lines) + "\n"
+
+
+def emit_policy_header(unit, prim_name=None, version="latest"):
+    prims = [prim_name] if prim_name else sorted(unit["primitives"])
+    guard = _cid(prims[0] if len(prims) == 1 else "ALL").upper()
+    lines = [
+        f"#ifndef SKL2_POLICY_{guard}_H", f"#define SKL2_POLICY_{guard}_H", "#include <stdint.h>",
+        "#ifdef __cplusplus", 'extern "C" {', "#endif",
+        "#ifndef SKL2_INLINE", "#if defined(__GNUC__) || defined(__clang__)",
+        "#define SKL2_INLINE static inline __attribute__((unused))", "#else", "#define SKL2_INLINE static inline", "#endif", "#endif",
+    ]
+    for pn in prims:
+        ver, obj = resolve_version(unit["primitives"], pn, version, kind="primitive")
+        spec = obj["spec"]
+        con = _cid(spec.get("concept", pn.split(".")[-1])).upper()
+        lines.append(f'#define SKL2_{con}_VERSION "{ver}"')
+        lines.append(f'#define SKL2_{con}_SHA256 "{_canon_sha256(spec)[:16]}"')
+        v0 = next(iter(spec.get("variants", {}).values()), {})
+        if isinstance(v0, dict):
+            for fk, fv in sorted(v0.items()):
+                if str(fk).startswith("_"): continue
+                mk = f"SKL2_{con}_{_cid(fk).upper()}"
+                if isinstance(fv, bool): lines.append(f"#define {mk} {1 if fv else 0}u")
+                elif isinstance(fv, int): lines.append(f"#define {mk} {fv}{'ull' if (fv > 0xFFFFFFFF or 'bytes' in fk) else 'u'}")
+    lines.extend(_emit_policy_c99(unit, None, set()))
+    lines.extend(["#ifdef __cplusplus", "}", "#endif", "#endif"])
     return "\n".join(lines) + "\n"
 
 

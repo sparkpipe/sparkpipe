@@ -197,11 +197,17 @@ def check_lane_memory_plan(failures):
 
     lanes_doc = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))
     runner_src = (ROOT / "inference" / "runner" / "stage_runner.cu").read_text(encoding="utf-8")
+    ar_src = (ROOT / "inference" / "skl2" / "stdlib" / "allreduce.skl2").read_text(encoding="utf-8")
     m_max = re.search(r"#define\s+STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT\s+(\d+)u", runner_src)
+    if not m_max and "SKL2_ALLREDUCE_GRAPH_MAX_ACTIVE" in runner_src:
+        m_max = re.search(r"graph_max_active\s*=\s*(\d+)\s*;", ar_src)
     m_bytes = re.search(r"#define\s+STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT\s+\((\d+)ull\s*<<\s*(\d+)\)", runner_src)
+    graph_budget = (int(m_bytes.group(1)) << int(m_bytes.group(2))) if m_bytes else 0
+    if not graph_budget and "SKL2_ALLREDUCE_GRAPH_MAX_BYTES" in runner_src:
+        m_ar_b = re.search(r"graph_max_bytes\s*=\s*(\d+)\s*;", ar_src)
+        graph_budget = int(m_ar_b.group(1)) if m_ar_b else 0
     if not m_max or int(m_max.group(1)) > 32:
         failures.append(f"stage_runner.cu STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT must be <= 32 (got {m_max.group(1) if m_max else None})")
-    graph_budget = (int(m_bytes.group(1)) << int(m_bytes.group(2))) if m_bytes else 0
     if graph_budget <= 0 or graph_budget > 1536 * (1024 ** 2):
         failures.append(f"stage_runner.cu STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT must be in (0, 1.5 GiB] (got {graph_budget})")
     weightd = lanes_doc.get("weightd", {})

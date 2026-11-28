@@ -1125,8 +1125,14 @@ ADAPTER_NVCC_FLAGS =
 define nvcc_module
 rm -rf $@.kernels && mkdir -p $@.kernels && { $(NVCC) $(NVCCFLAGS)$(if $(ADAPTER_NVCC_FLAGS), $(ADAPTER_NVCC_FLAGS)) $(MODULE_KERNELS_FLAGS) $(1) -o $@ || { status=$$?; rm -rf $@ $@.kernels; exit $$status; }; } && { python3 -I tools/module_kernels.py --module $@ --nvcc $(NVCC) --flags="$(NVCCFLAGS)" --arch $(CUDA_ARCH) $(filter %.cu,$(1)) || { rm -f $@; exit 1; }; }
 endef
+SKL2_BUILD_DIR := build
+SKL2_ALLREDUCE_POLICY_H := $(SKL2_BUILD_DIR)/skl2_allreduce_policy.h
+
+$(SKL2_ALLREDUCE_POLICY_H): inference/skl2/stdlib/allreduce.skl2 $(wildcard tools/skl2c/*.py inference/skl2/stdlib/*.skl2) | build
+	python3 -I tools/skl2c/skl2c.py --emit-policy-h $@ inference/skl2/stdlib/allreduce.skl2
+
 KERNEL_TEST_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -MMD -MP -MF $@.d -I. -Iinclude -Imodel-families/common/include
-CUDA_HEADER_DEPS := $(wildcard inference/kernels/*.cuh inference/kernels/*.h inference/kernels/formats/*.cuh inference/kernels/formats/*.h inference/kernels/fused/*.cuh \
+CUDA_HEADER_DEPS := $(SKL2_ALLREDUCE_POLICY_H) $(wildcard inference/kernels/*.cuh inference/kernels/*.h inference/kernels/formats/*.cuh inference/kernels/formats/*.h inference/kernels/fused/*.cuh \
 	inference/runner/*.cuh inference/runner/*.h runtime/*.cuh runtime/*.h runtime/device/*.h runtime/device/cuda/*.h \
 	model-families/common/include/sparkpipe/*.h model-families/common/include/sparkpipe/*.cuh \
 	include/sparkpipe/*.h include/sparkpipe/family/*.h include/sparkpipe/family/*/*.h)
@@ -2330,7 +2336,6 @@ build/stage_runner_failed_dispatch_cuda: tests/cuda/stage_runner_failed_dispatch
 build/stage_runner_single_gpu_cuda: tests/cuda/stage_runner_single_gpu_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_single_gpu_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK) -o $@
 
-SKL2_BUILD_DIR := build
 SKL2_K3_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_k3_embedded.h
 SKL2_K3_SOURCES := inference/skl2/kernels/k3_mma.skl2 inference/skl2/kernels/k3_ops.skl2 inference/skl2/kernels/k3_cells.skl2 inference/skl2/kernels/k3_stage_ops.skl2 inference/skl2/kernels/k3_layer_ops.skl2 inference/skl2/kernels/k3_prefill_attn.skl2
 SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 k3_splitk_reduce_situ_256 \

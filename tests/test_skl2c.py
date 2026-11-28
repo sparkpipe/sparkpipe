@@ -480,13 +480,67 @@ def test_pdl_preexit_and_mio_war_invariants():
             raise AssertionError(f"MIO WAR hazard at pc={pc*16:#x}: writes R{rd_r} while SHFL bar mask {rd_bar[rd_r]:#x} pending")
 
 
+def test_repo_wide_dry_policy_and_model_cubin():
+    res_aud = subprocess.run([sys.executable, str(SKL2C), "--audit-repo", str(SKL2_DIR)], capture_output=True, text=True, check=False)
+    assert res_aud.returncode == 0, res_aud.stderr
+    audit = json.loads(res_aud.stdout)
+    legacy_model_files = {
+        "kernels/dsv41_exchange.skl2", "kernels/dsv41_gemv.skl2", "kernels/dsv41_hc.skl2",
+        "kernels/dsv41_moe.skl2", "kernels/dsv41_ops.skl2", "kernels/dsv41_rope_prep.skl2",
+        "kernels/dsv41_route.skl2", "kernels/dsv41_stage.skl2", "kernels/dsv41_window.skl2",
+        "kernels/glm5next_moe.skl2", "kernels/glm5next_ops.skl2",
+        "kernels/k3_cells.skl2", "kernels/k3_layer_ops.skl2", "kernels/k3_mma.skl2",
+        "kernels/k3_ops.skl2", "kernels/k3_prefill_attn.skl2", "kernels/k3_stage_ops.skl2",
+    }
+    new_model_files = set(audit["model_files"]) - legacy_model_files
+    assert not new_model_files, f"FORBIDDEN new model-prefixed .skl2 files (use parameterized stdlib instead): {sorted(new_model_files)}"
+    assert audit["total_lines"] <= 21860, f".skl2 line budget exceeded: {audit['total_lines']} > 21860"
+    assert audit["dup_cross"] <= 42, f"cross-file 8-stmt structural duplicates grew: {audit['dup_cross']} > 42 ({audit['top_dup_pairs'][:5]})"
+    with tempfile.TemporaryDirectory() as tmp:
+        pol_h = pathlib.Path(tmp) / "skl2_allreduce_policy.h"
+        res_p = subprocess.run([sys.executable, str(SKL2C), "--emit-policy-h", str(pol_h), str(SKL2_DIR / "stdlib" / "allreduce.skl2")], capture_output=True, text=True, check=False)
+        assert res_p.returncode == 0, res_p.stderr
+        ptxt = pol_h.read_text(encoding="utf-8")
+        assert "//" not in ptxt and "/*" not in ptxt
+        for tok in (
+            '#define SKL2_ALLREDUCE_VERSION "v4"',
+            "#define SKL2_ALLREDUCE_GRAPH_MAX_ACTIVE 24u",
+            "#define SKL2_ALLREDUCE_GRAPH_MAX_BYTES 671088640ull",
+            "#define SKL2_ALLREDUCE_GRAPH_MEM_FLOOR_DIV 14u",
+            "#define SKL2_ALLREDUCE_GRAPH_BYTES_NODE_FLOOR 16384ull",
+            "#define SKL2_ALLREDUCE_RSAG_FUSED_MAX_ELEMENTS 65536u",
+            "#define SKL2_ALLREDUCE_A2A_FUSED_MAX_ELEMENTS 8192u",
+            "#define SKL2_ALLREDUCE_GATHER_FUSED_MAX_LOCAL 4096u",
+            "Skl2Select_allreduce",
+        ):
+            assert tok in ptxt, f"missing {tok!r} in policy header"
+        cc_p = subprocess.run(["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-x", "c", str(pol_h)], capture_output=True, text=True, check=False)
+        assert cc_p.returncode == 0, cc_p.stderr
+        mcubin = pathlib.Path(tmp) / "dsv41_model.cubin"
+        mman = pathlib.Path(tmp) / "dsv41_model.manifest"
+        model_inputs = [
+            str(SKL2_DIR / "models" / "families.skl2"),
+            str(SKL2_DIR / "kernels" / "linear.skl2"),
+            str(SKL2_DIR / "kernels" / "norm_rope.skl2"),
+            str(SKL2_DIR / "kernels" / "attention.skl2"),
+            str(SKL2_DIR / "kernels" / "route_quant.skl2"),
+            str(SKL2_DIR / "kernels" / "head.skl2"),
+        ]
+        res_m = subprocess.run([sys.executable, str(SKL2C), "--arch", "sm121", "--model", "deepseek_v41_flash", "-o", str(mcubin), "--manifest", str(mman), *model_inputs], capture_output=True, text=True, check=False)
+        assert res_m.returncode == 0, res_m.stderr
+        mmtxt = mman.read_text(encoding="utf-8")
+        for req in ("allreduce_wqe_stg128", "skinny_bf16_b1", "latent_attn_decode_512_64", "fused_residual_rmsnorm_bf16x8", "head_certified_fp8_score_1024"):
+            assert f"kernel {req} " in mmtxt, f"model-driven cubin missing {req}: {mmtxt}"
+
+
 def main():
     test_anti_slop_hard_errors()
     test_stdlib_policy_versioning_and_lockfile()
     test_differential_models_and_dedup()
     test_full_cubin_emission_and_cli()
     test_pdl_preexit_and_mio_war_invariants()
-    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, C99 NVRM header gen, differential models, and 123 sm_121a/sm_120a kernels (0 legacy .skl files)")
+    test_repo_wide_dry_policy_and_model_cubin()
+    print("PASS skl2c anti-slop gates, hill-climbed stdlib policy/versioning/lockfile, live C99 policy gen, repo-wide DRY ratchet, model-driven cubin emission, and 497 sm_121a/sm_120a kernels")
     return 0
 
 
