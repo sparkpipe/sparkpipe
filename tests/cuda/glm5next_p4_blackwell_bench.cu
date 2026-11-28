@@ -221,7 +221,8 @@ static void BenchKdaFusedAndWy(cudaStream_t stream)
 		LM_LAUNCH((LmSplit2RowsKernel<G5N_THREADS>), rows, G5N_THREADS, 0, (SparkGpuStream)stream, fused_dg, decay_lat, gate_lat, rows, G5N_KDA_LOW_RANK);
 		CHECK_OK(LmStreamGemmDense<LmBf16Format>(decay_up_w, LmScaleTensorNone(), decay_lat, decay_logit, (float *)0, rows, G5N_KDA_LOW_RANK, rank_qk, 0u, 0u, g_sms, (SparkGpuStream)stream));
 		CHECK_OK(LmStreamGemmDense<LmBf16Format>(gate_up_w, LmScaleTensorNone(), gate_lat, gate_ref, (float *)0, rows, G5N_KDA_LOW_RANK, rank_qk, 0u, 0u, g_sms, (SparkGpuStream)stream));
-		LM_LAUNCH_DEPENDENT((Glm5NextKdaDecayBetaKernel), rows, G5N_THREADS, 0, (SparkGpuStream)stream, decay_logit, decay_bias, head_log, beta_only, ret_ref, wg_ref, heads, rows);
+		CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_kda_decay_beta_256, rows, G5N_THREADS, 0u, (SparkGpuStream)stream,
+			decay_logit, decay_bias, head_log, beta_only, ret_ref, wg_ref, heads, rows));
 	};
 	auto run_up_opt = [&]()
 	{
@@ -668,13 +669,13 @@ static void BenchMoeCodec(const char *tag, cudaStream_t stream)
 			LmScaleTensor s1 = LmWeightCodecScaleTensor<ExpertCodec>(exp_s1, G5N_EXPERTS, 2u * inter, G5N_HIDDEN);
 			LmScaleTensor s2 = LmWeightCodecScaleTensor<ExpertCodec>(exp_s2, G5N_EXPERTS, G5N_HIDDEN, inter);
 			CHECK_OK(LmStreamGemmGrouped<Format>(exp_w1, s1, normed, gate_up, group_off, src_tok, G5N_EXPERTS, packed, G5N_HIDDEN, 2u * inter, g_sms, (SparkGpuStream)stream));
-			LM_LAUNCH_DEPENDENT((Glm5NextClampedUpGatePacked128Kernel), (packed + 15u) / 16u, 256u, 0, (SparkGpuStream)stream, gate_up, inter_ref, packed);
+			CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_clamped_up_gate_packed128_256, (packed + 15u) / 16u, 256u, 0u, (SparkGpuStream)stream, gate_up, inter_ref, packed));
 			CHECK_OK(LmStreamGemmGrouped<Format>(exp_w2, s2, inter_ref, eout_ref, group_off, 0, G5N_EXPERTS, packed, inter, G5N_HIDDEN, g_sms, (SparkGpuStream)stream));
 			CHECK_OK(LmStreamGemmDense<LmBf16Format>(shared_w1, LmScaleTensorNone(), normed, gate_up, (float *)0, rows, G5N_HIDDEN, 2u * inter, 0u, 0u, g_sms, (SparkGpuStream)stream));
-			LM_LAUNCH_DEPENDENT((Glm5NextClampedUpGatePacked128Kernel), (rows + 15u) / 16u, 256u, 0, (SparkGpuStream)stream, gate_up, inter_ref, rows);
+			CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_clamped_up_gate_packed128_256, (rows + 15u) / 16u, 256u, 0u, (SparkGpuStream)stream, gate_up, inter_ref, rows));
 			CHECK_OK(LmStreamGemmDense<LmBf16Format>(shared_w2, LmScaleTensorNone(), inter_ref, sout_ref, (float *)0, rows, inter, G5N_HIDDEN, 0u, 0u, g_sms, (SparkGpuStream)stream));
-			LM_LAUNCH_DEPENDENT((Glm5NextMoeFinalizeAddKernel), dim3((G5N_HIDDEN / 8u + 255u) / 256u, rows), 256u, 0, (SparkGpuStream)stream,
-				eout_ref, packed_row, route_w, sout_ref, out_ref, rows);
+			CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_moe_finalize_add_256, dim3((G5N_HIDDEN / 8u + 255u) / 256u, rows), 256u, 0u, (SparkGpuStream)stream,
+				eout_ref, packed_row, route_w, sout_ref, out_ref, rows));
 		};
 		auto run_opt = [&]()
 		{
@@ -820,14 +821,14 @@ static void Check5cBatchInvariance(cudaStream_t stream)
 		conv.channels[s] = rank_qk;
 	}
 	CHECK_OK(LmCausalConvStreamsLaunch<G5N_KDA_CONV, LM_CONV_SWISH, uint16_t>(conv, s_idx, s_beg, 0, 1u, 1u, 0, kda_rows, (SparkGpuStream)stream, 0) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	LM_LAUNCH_DEPENDENT((Glm5NextKdaCausalConvPrefillKernel), dim3((kda_rows + 7u) / 8u, 3u * (rank_qk / 128u)), 128u, 0, (SparkGpuStream)stream,
+	CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_kda_causal_conv_prefill_128, dim3((kda_rows + 7u) / 8u, 3u * (rank_qk / 128u)), 128u, 0u, (SparkGpuStream)stream,
 		win_opt, win_opt + rank_qk * 4u, win_opt + 2u * rank_qk * 4u, s_idx, s_beg, (const uint32_t *)0,
 		in_qkv, in_qkv + (uint64_t)kda_rows * rank_qk, in_qkv + 2u * (uint64_t)kda_rows * rank_qk,
 		w_conv, w_conv + rank_qk * 4u, w_conv + 2u * rank_qk * 4u,
-		out_conv_opt, out_conv_opt + (uint64_t)kda_rows * rank_qk, out_conv_opt + 2u * (uint64_t)kda_rows * rank_qk, rank_qk, kda_rows);
-	LM_LAUNCH_DEPENDENT((Glm5NextKdaConvWindowCommitKernel), 3u * (rank_qk / 128u), 128u, 0, (SparkGpuStream)stream,
+		out_conv_opt, out_conv_opt + (uint64_t)kda_rows * rank_qk, out_conv_opt + 2u * (uint64_t)kda_rows * rank_qk, rank_qk, kda_rows, (uint32_t)1u, (uint32_t)0u));
+	CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_kda_conv_window_commit_128, 3u * (rank_qk / 128u), 128u, 0u, (SparkGpuStream)stream,
 		win_opt, win_opt + rank_qk * 4u, win_opt + 2u * rank_qk * 4u, s_idx, s_beg, (const uint32_t *)0,
-		in_qkv, in_qkv + (uint64_t)kda_rows * rank_qk, in_qkv + 2u * (uint64_t)kda_rows * rank_qk, rank_qk, kda_rows);
+		in_qkv, in_qkv + (uint64_t)kda_rows * rank_qk, in_qkv + 2u * (uint64_t)kda_rows * rank_qk, rank_qk, kda_rows, (uint32_t)1u, (uint32_t)0u));
 	CheckTol("KDA CausalConvPrefill output 0-ULP", CompareBf16(out_conv_opt, out_conv_ref, 3u * (uint64_t)kda_rows * rank_qk, stream), 0.0, 0.0, true);
 	CheckTol("KDA ConvWindowCommit state 0-ULP", CompareBf16(win_opt, win_ref, 3u * rank_qk * 4u, stream), 0.0, 0.0, true);
 
@@ -865,10 +866,10 @@ static void Check5cBatchInvariance(cudaStream_t stream)
 	for ( uint32_t i = 0u; i < 8u * G5N_TOP_K; ++i ) h_rp[i] = i;
 	CHECK_CUDA(cudaMemcpyAsync(r_pack, h_rp.data(), 8u * G5N_TOP_K * 4u, cudaMemcpyHostToDevice, stream));
 	CHECK_OK(Glm5NextLinear(&b, sh_in, sh_w2, sh_tmp, 8u, 128u, G5N_HIDDEN, g_sms, (SparkGpuStream)stream));
-	LM_LAUNCH_DEPENDENT((Glm5NextMoeFinalizeAddKernel), dim3((G5N_HIDDEN / 8u + 255u) / 256u, 8u), 256u, 0, (SparkGpuStream)stream,
-		e_out, r_pack, r_w, sh_tmp, fin_ref, 8u);
-	LM_LAUNCH_DEPENDENT((Glm5NextSharedDownFinalizeExactKernel<8u>), dim3(G5N_HIDDEN / 16u, 1u), 256u, 0, (SparkGpuStream)stream,
-		sh_w2, sh_in, e_out, r_pack, r_w, fin_opt, 8u);
+	CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_moe_finalize_add_256, dim3((G5N_HIDDEN / 8u + 255u) / 256u, 8u), 256u, 0u, (SparkGpuStream)stream,
+		e_out, r_pack, r_w, sh_tmp, fin_ref, (uint32_t)8u));
+	CHECK_GPU(Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_shared_down_finalize_exact_r8, dim3(G5N_HIDDEN / 16u, 1u), 256u, 0u, (SparkGpuStream)stream,
+		sh_w2, sh_in, e_out, r_pack, r_w, fin_opt, (uint32_t)8u));
 	CheckTol("5c SharedDownFinalizeExact B8 0-ULP", CompareBf16(fin_opt, fin_ref, 8u * G5N_HIDDEN, stream), 0.0, 0.0, true);
 
 	(void)heads;

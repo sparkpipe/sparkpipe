@@ -30,8 +30,9 @@ if shutil.which(NVCC) is None:
     raise SystemExit("FAIL test_glm5_next_hc_site_cuda: an sm_121 device is present but nvcc is unavailable")
 with tempfile.TemporaryDirectory(prefix="glm5-next-hc-site-cuda-") as directory:
     binary = str(pathlib.Path(directory) / "probe")
+    subprocess.run(["make", "-s", "build/skl2_glm5next_embedded.h"], cwd=ROOT, check=True)
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
-                    "-I.", "-Iinclude", "-Isrc", "-Imodel-families/glm5_next/source",
+                    "-I.", "-Ibuild", "-Iinclude", "-Isrc", "-Imodel-families/glm5_next/source",
                     "-Imodel-families/glm5_next/include", "-Imodel-families/common/include",
                     "tests/cuda/glm5_next_hc_site_cuda.cu", "-o", binary, "-lcuda"], cwd=ROOT, check=True)
     subprocess.run([binary], check=True, timeout=900)

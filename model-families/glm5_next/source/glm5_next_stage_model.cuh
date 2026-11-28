@@ -759,17 +759,17 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 					if ( candidates != 0u )
 					{
 						const uint64_t pad_elems = (uint64_t)(padded_rows - rows) * keep;
-						LM_LAUNCH_DEPENDENT((Glm5NextPadCandidatesKernel), (uint32_t)((pad_elems + G5N_THREADS - 1u) / G5N_THREADS), G5N_THREADS, 0,
-							stream, (uint2 *)b->shard_partials_f32, rows, padded_rows, keep);
+						if ( Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_pad_candidates_256, (uint32_t)((pad_elems + G5N_THREADS - 1u) / G5N_THREADS),
+							G5N_THREADS, 0u, stream, (uint2 *)b->shard_partials_f32, rows, padded_rows, keep) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 					}
 					else
 					{
 						const uint64_t pad_elems = (uint64_t)(padded_rows - rows) * local_stride;
-						LM_LAUNCH_DEPENDENT((Glm5NextPadFloatsKernel), (uint32_t)((pad_elems + G5N_THREADS - 1u) / G5N_THREADS), G5N_THREADS, 0,
-							stream, b->shard_partials_f32, rows, padded_rows, local_stride);
+						if ( Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_pad_floats_256, (uint32_t)((pad_elems + G5N_THREADS - 1u) / G5N_THREADS),
+							G5N_THREADS, 0u, stream, b->shard_partials_f32, rows, padded_rows, local_stride) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 					}
-					if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 				status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, select_slice, idx_row_elems,
 					b->shard_partials_f32, b->shard_query_gathered_bf16);
@@ -785,13 +785,11 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 									(uint64_t)select_slice * keep, D, keep, own_rows, pools, b->selection_scores, stream) != SPARK_GPU_SUCCESS )
 								SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 						}
-						else
-						{
-							LM_LAUNCH((Glm5NextPoolPermuteKernel<G5N_THREADS>), own_rows, G5N_THREADS, 0, stream,
-								(const float *)b->shard_query_gathered_bf16, b->selection_scores, pools, local_stride,
-								(uint64_t)select_slice * local_stride, D, b->sequence_of_row + own_first, b->context_length,
-								b->positions + own_first, G5N_SELECTED);
-						}
+						else if ( Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_pool_permute_256, own_rows, G5N_THREADS, 0u, stream,
+							(const float *)b->shard_query_gathered_bf16, b->selection_scores, pools, local_stride,
+							(uint64_t)select_slice * local_stride * sizeof(float), D, b->sequence_of_row + own_first, b->context_length,
+							b->positions + own_first, (uint32_t)G5N_SELECTED, (uint32_t)1u, (uint32_t)1u) != SPARK_GPU_SUCCESS )
+							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 						LmTopkExactRowsLaunch<G5N_THREADS>(b->selection_scores, own_rows, pools, keep, b->selected_pools, stream,
 							b->sequence_of_row + own_first, b->context_length, b->positions + own_first, G5N_SELECTED, G5N_KPOOL);
 						if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
@@ -801,19 +799,17 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 						b->selected_pools, b->shard_partials_f32);
 					if ( status == SPARK_STATUS_OK )
 					{
-						LM_LAUNCH((Glm5NextPoolExpandKernel<G5N_THREADS, G5N_KPOOL, G5N_SELECTED, G5N_INDEX_WIDTH>), rows, G5N_THREADS, 0, stream,
+						if ( Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_pool_expand_256, rows, G5N_THREADS, 0u, stream,
 							(const uint32_t *)b->shard_partials_f32, b->sequence_of_row, b->context_length, b->positions, b->selected_positions,
-							rows, G5N_SELECTED, 1u);
-						if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+							rows, (uint32_t)G5N_SELECTED, (uint32_t)1u) != SPARK_GPU_SUCCESS )
 							SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 					}
 				}
 			}
 			if ( status == SPARK_STATUS_OK && old_ctx != 0u )
 			{
-				LM_LAUNCH_DEPENDENT((Glm5NextGatherMetaKernel), 1u, 32u, 0, stream, b->sequence_of_row, old_ctx,
-					state->gather_seq, state->gather_offset, state->gather_prior_ctx);
-				if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ||
+				if ( Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_gather_meta_32, 1u, 32u, 0u, stream, b->sequence_of_row, old_ctx,
+					state->gather_seq, state->gather_offset, state->gather_prior_ctx) != SPARK_GPU_SUCCESS ||
 					LmKvShardGatherPackLaunch<Glm5NextKv, G5N_THREADS>(b->cache, state->gather_seq, state->gather_offset, state->gather_prior_ctx,
 						1u, prior_local_keys, (uint8_t *)b->shard_partials_f32, stream) != SPARK_GPU_SUCCESS )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -821,9 +817,9 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 					b->shard_partials_f32, b->shard_query_gathered_bf16);
 				if ( status == SPARK_STATUS_OK )
 				{
-					LM_LAUNCH_DEPENDENT((Glm5NextUnpackPriorKvKernel), dim3(prior_local_keys, D), 64u, 0, stream, b->cache.shard,
-						(const uint8_t *)b->shard_query_gathered_bf16, kv_rank_stride, prior_local_keys, old_ctx, kv_all);
-					if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+					if ( Glm5NextSkl2Launch(GLM5NEXTSKL2_g5n_unpack_prior_kv_64, dim3(prior_local_keys, D), 64u, 0u, stream,
+						(uint32_t)b->cache.shard.degree, (uint32_t)b->cache.shard.grain, (const uint8_t *)b->shard_query_gathered_bf16,
+						(uint64_t)kv_rank_stride, prior_local_keys, old_ctx, kv_all) != SPARK_GPU_SUCCESS )
 						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				}
 			}
