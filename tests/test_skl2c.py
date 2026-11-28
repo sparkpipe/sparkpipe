@@ -485,17 +485,14 @@ def test_repo_wide_dry_policy_and_model_cubin():
     assert res_aud.returncode == 0, res_aud.stderr
     audit = json.loads(res_aud.stdout)
     legacy_model_files = {
-        "kernels/dsv41_exchange.skl2", "kernels/dsv41_gemv.skl2", "kernels/dsv41_hc.skl2",
-        "kernels/dsv41_moe.skl2", "kernels/dsv41_ops.skl2",
-        "kernels/dsv41_route.skl2", "kernels/dsv41_window.skl2",
-        "kernels/glm5next_moe.skl2",
-        "kernels/k3_cells.skl2", "kernels/k3_mma.skl2",
-        "kernels/k3_ops.skl2", "kernels/k3_prefill_attn.skl2",
+        "kernels/dsv41_exchange.skl2", "kernels/dsv41_gemv.skl2",
+        "kernels/dsv41_ops.skl2", "kernels/dsv41_window.skl2",
+        "kernels/k3_mma.skl2", "kernels/k3_ops.skl2", "kernels/k3_prefill_attn.skl2",
     }
     new_model_files = set(audit["model_files"]) - legacy_model_files
     assert not new_model_files, f"FORBIDDEN new model-prefixed .skl2 files (use parameterized stdlib instead): {sorted(new_model_files)}"
-    assert audit["total_lines"] <= 20320, f".skl2 line budget exceeded: {audit['total_lines']} > 20320"
-    assert audit["dup_cross"] <= 29, f"cross-file 8-stmt structural duplicates grew: {audit['dup_cross']} > 29 ({audit['top_dup_pairs'][:5]})"
+    assert audit["total_lines"] <= 18520, f".skl2 line budget exceeded: {audit['total_lines']} > 18520"
+    assert audit["dup_cross"] <= 17, f"cross-file 8-stmt structural duplicates grew: {audit['dup_cross']} > 17 ({audit['top_dup_pairs'][:5]})"
     with tempfile.TemporaryDirectory() as tmp:
         pol_h = pathlib.Path(tmp) / "skl2_allreduce_policy.h"
         res_p = subprocess.run([sys.executable, str(SKL2C), "--emit-policy-h", str(pol_h), str(SKL2_DIR / "stdlib" / "allreduce.skl2")], capture_output=True, text=True, check=False)
