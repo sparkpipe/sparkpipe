@@ -131,6 +131,16 @@ primitive std.allreduce @v4 {
         graph_mem_floor_div = 14;
         graph_max_active = 24;
         graph_max_bytes = 671088640;
+        stream_reduce_max_elements = 49152;
+        rsag_stream_span_max = 49152;
+        rsag_fused_max_elements = 65536;
+        gather_fused_max_local = 4096;
+        a2a_fused_max_elements = 8192;
+        max_u64_fused_max_elements = 64;
+        two_d_min_elements = 131072;
+        wide_gather_min_elements = 4096;
+        wide_publish_bytes = 49152;
+        wide_stage_bytes = 40960;
         max_fused_bytes = 131072;
         max_inline_bytes = 828;
     }

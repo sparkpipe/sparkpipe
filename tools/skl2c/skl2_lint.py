@@ -1,7 +1,9 @@
 import hashlib
-from skl2_frontend import Skl2CompileError
+import os
+from skl2_frontend import Parser, Skl2CompileError, tokenize
 
-MAX_CCN, MAX_NESTING, MAX_KERNEL_STMTS, DUP_WINDOW = 16, 4, 80, 10
+MAX_CCN, MAX_NESTING, MAX_KERNEL_STMTS, DUP_WINDOW, REPO_DUP_WINDOW = 16, 4, 80, 10, 8
+MODEL_PREFIXES = ("dsv41_", "k3_", "glm5next_", "glm52_", "ling_", "gemma4_", "hy4_", "mimo26_", "motif_")
 STORE_CALLS = {
     "stg256", "stg128", "stg128_stream", "stg128_sys",
     "stg64", "stg32", "stg32_stream", "stg32_sys", "stg16", "stg8",
@@ -60,38 +62,38 @@ def _ccn_and_depth(stmts, depth=0):
     return ccn, max_d
 
 
-def _norm_expr(e, vmap):
+def _norm_expr(e, vmap, norm_consts=False):
     if not isinstance(e, tuple): return repr(e)
     k = e[0]
-    if k in ("int", "float", "str"): return f"{k}:{e[1]}"
+    if k in ("int", "float", "str"): return f"#{k[0].upper()}" if norm_consts else f"{k}:{e[1]}"
     if k == "ident": return vmap.setdefault(e[1], f"${len(vmap)}")
-    if k == "un": return f"({e[1]}{_norm_expr(e[2], vmap)})"
-    if k == "bin": return f"({_norm_expr(e[2], vmap)}{e[1]}{_norm_expr(e[3], vmap)})"
-    if k == "ternary": return f"({_norm_expr(e[1], vmap)}?{_norm_expr(e[2], vmap)}:{_norm_expr(e[3], vmap)})"
-    if k == "call": return f"{e[1]}({','.join(_norm_expr(a, vmap) for a in e[2])})"
-    if k == "index": return f"{_norm_expr(e[1], vmap)}[{_norm_expr(e[2], vmap)}]"
-    if k == "field": return f"{_norm_expr(e[1], vmap)}.{e[2]}"
+    if k == "un": return f"({e[1]}{_norm_expr(e[2], vmap, norm_consts)})"
+    if k == "bin": return f"({_norm_expr(e[2], vmap, norm_consts)}{e[1]}{_norm_expr(e[3], vmap, norm_consts)})"
+    if k == "ternary": return f"({_norm_expr(e[1], vmap, norm_consts)}?{_norm_expr(e[2], vmap, norm_consts)}:{_norm_expr(e[3], vmap, norm_consts)})"
+    if k == "call": return f"{e[1]}({','.join(_norm_expr(a, vmap, norm_consts) for a in e[2])})"
+    if k == "index": return f"{_norm_expr(e[1], vmap, norm_consts)}[{_norm_expr(e[2], vmap, norm_consts)}]"
+    if k == "field": return f"{_norm_expr(e[1], vmap, norm_consts)}.{e[2]}"
     return repr(e)
 
 
-def _norm_stmt(st, vmap):
+def _norm_stmt(st, vmap, norm_consts=False):
     k = st[0]
-    if k == "shared": return f"shared {st[1]} {vmap.setdefault(st[2], f'${len(vmap)}')}[{_norm_expr(st[3], vmap)}]"
-    if k == "reg_array": return f"{st[1]} {st[2]} {vmap.setdefault(st[3], f'${len(vmap)}')}[{_norm_expr(st[4], vmap)}]"
+    if k == "shared": return f"shared {st[1]} {vmap.setdefault(st[2], f'${len(vmap)}')}[{_norm_expr(st[3], vmap, norm_consts)}]"
+    if k == "reg_array": return f"{st[1]} {st[2]} {vmap.setdefault(st[3], f'${len(vmap)}')}[{_norm_expr(st[4], vmap, norm_consts)}]"
     if k == "decl":
-        init = _norm_expr(st[4], vmap) if st[4] is not None else ""
+        init = _norm_expr(st[4], vmap, norm_consts) if st[4] is not None else ""
         return f"{st[1]} {st[2]} {vmap.setdefault(st[3], f'${len(vmap)}')}={init}"
     if k == "return": return "ret"
-    if k == "assign": return f"{_norm_expr(st[2], vmap)}{st[1]}{_norm_expr(st[3], vmap)}"
-    if k == "expr": return _norm_expr(st[1], vmap)
+    if k == "assign": return f"{_norm_expr(st[2], vmap, norm_consts)}{st[1]}{_norm_expr(st[3], vmap, norm_consts)}"
+    if k == "expr": return _norm_expr(st[1], vmap, norm_consts)
     if k in ("if", "if_constexpr"):
-        return f"{k}({_norm_expr(st[1], vmap)}){{{';'.join(_norm_stmt(x, vmap) for x in st[2])}}}else{{{';'.join(_norm_stmt(x, vmap) for x in st[3])}}}"
+        return f"{k}({_norm_expr(st[1], vmap, norm_consts)}){{{';'.join(_norm_stmt(x, vmap, norm_consts) for x in st[2])}}}else{{{';'.join(_norm_stmt(x, vmap, norm_consts) for x in st[3])}}}"
     if k == "unroll":
         v = vmap.setdefault(st[1], f"${len(vmap)}")
-        return f"unroll({v}={_norm_expr(st[2], vmap)}..{_norm_expr(st[3], vmap)}){{{';'.join(_norm_stmt(x, vmap) for x in st[4])}}}"
+        return f"unroll({v}={_norm_expr(st[2], vmap, norm_consts)}..{_norm_expr(st[3], vmap, norm_consts)}){{{';'.join(_norm_stmt(x, vmap, norm_consts) for x in st[4])}}}"
     if k in ("for", "pipeline_for"):
         v = vmap.setdefault(st[3], f"${len(vmap)}")
-        return f"{k}({st[2]} {v}={_norm_expr(st[4], vmap)};{_norm_expr(st[5], vmap)};{_norm_stmt(st[6], vmap)}){{{';'.join(_norm_stmt(x, vmap) for x in st[7])}}}"
+        return f"{k}({st[2]} {v}={_norm_expr(st[4], vmap, norm_consts)};{_norm_expr(st[5], vmap, norm_consts)};{_norm_stmt(st[6], vmap, norm_consts)}){{{';'.join(_norm_stmt(x, vmap, norm_consts) for x in st[7])}}}"
     return repr(st)
 
 
@@ -103,19 +105,51 @@ def _flat_stmts(stmts):
     return out
 
 
-def _check_dup_subtrees(items):
+def _check_dup_subtrees(items, window=DUP_WINDOW, norm_consts=False):
     seen = {}
     for owner, file, stmts in items:
         flat = _flat_stmts(stmts)
-        for i in range(max(0, len(flat) - DUP_WINDOW + 1)):
-            win, vmap = flat[i:i + DUP_WINDOW], {}
-            digest = hashlib.sha256("\n".join(_norm_stmt(s, vmap) for s in win).encode("utf-8")).hexdigest()[:16]
+        for i in range(max(0, len(flat) - window + 1)):
+            win, vmap = flat[i:i + window], {}
+            digest = hashlib.sha256("\n".join(_norm_stmt(s, vmap, norm_consts) for s in win).encode("utf-8")).hexdigest()[:16]
             if digest in seen:
                 po, pf, pl, pi = seen[digest]
-                if po != owner or abs(i - pi) >= DUP_WINDOW:
-                    raise Skl2CompileError("E_DUP_SUBTREE", f"duplicated {DUP_WINDOW}-statement subtree in {owner} matches {po} at {pf}:{pl}; extract a macro or template", file, win[0][-1])
+                if po != owner or abs(i - pi) >= window:
+                    raise Skl2CompileError("E_DUP_SUBTREE", f"duplicated {window}-statement subtree in {owner} matches {po} at {pf}:{pl}; extract a macro or template", file, win[0][-1])
             else:
                 seen[digest] = (owner, file, win[0][-1], i)
+
+
+def audit_repo(root_dir, window=REPO_DUP_WINDOW):
+    paths, items, total_lines, model_files = [], [], 0, []
+    for dirpath, _, fnames in os.walk(root_dir):
+        for fn in sorted(fnames):
+            if fn.endswith(".skl2"): paths.append(os.path.join(dirpath, fn))
+    paths.sort()
+    for p in paths:
+        txt = open(p, "r", encoding="utf-8").read()
+        total_lines += txt.count("\n") + (1 if txt and not txt.endswith("\n") else 0)
+        rel = os.path.relpath(p, root_dir)
+        if os.path.basename(p).startswith(MODEL_PREFIXES): model_files.append(rel)
+        u = Parser(tokenize(txt, p), p).parse_file()
+        for mname, m in u["macros"].items(): items.append((f"macro {mname}", rel, m["body"]))
+        for k in list(u["templates"].values()) + list(u["kernels"]): items.append((f"kernel {k['name']}", rel, k["body"]))
+    seen, dup_total, dup_cross, dup_pairs = {}, 0, 0, {}
+    for owner, rel, body in items:
+        flat = _flat_stmts(body)
+        for i in range(max(0, len(flat) - window + 1)):
+            win, vmap = flat[i:i + window], {}
+            d = hashlib.sha256("\n".join(_norm_stmt(s, vmap, True) for s in win).encode("utf-8")).hexdigest()[:16]
+            if d in seen:
+                po, pf, pi = seen[d]
+                if po != owner or abs(i - pi) >= window:
+                    dup_total += 1
+                    if pf != rel: dup_cross += 1
+                    pair = f"{min(pf, rel)} <-> {max(pf, rel)}"
+                    dup_pairs[pair] = dup_pairs.get(pair, 0) + 1
+            else:
+                seen[d] = (owner, rel, i)
+    return {"files": len(paths), "total_lines": total_lines, "dup_total": dup_total, "dup_cross": dup_cross, "model_files": sorted(model_files), "top_dup_pairs": sorted(dup_pairs.items(), key=lambda kv: -kv[1])[:12]}
 
 
 def _walk_expr(e, refs=None, calls=None):

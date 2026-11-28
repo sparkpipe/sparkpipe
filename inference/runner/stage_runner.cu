@@ -35,9 +35,9 @@
 #define STAGE_RUNNER_GRAPH_VERIFY_LANES 16u
 #define STAGE_RUNNER_GRAPH_KEYS (2u + STAGE_RUNNER_GRAPH_VERIFY_LANES)
 #define STAGE_RUNNER_GRAPH_SLOTS (4u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
-#define STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT 24u
-#define STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT (640ull << 20)
-#define STAGE_RUNNER_GRAPH_MEM_FLOOR_DIV 14u
+#define STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT SKL2_ALLREDUCE_GRAPH_MAX_ACTIVE
+#define STAGE_RUNNER_GRAPH_MAX_BYTES_DEFAULT SKL2_ALLREDUCE_GRAPH_MAX_BYTES
+#define STAGE_RUNNER_GRAPH_MEM_FLOOR_DIV SKL2_ALLREDUCE_GRAPH_MEM_FLOOR_DIV
 #define STAGE_RUNNER_KEEP_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_KEEP_GRAPH_MAX_ACTIVE 8u
 #define STAGE_RUNNER_WIDE_ROWS STAGE_RUNNER_GRAPH_ROWS
@@ -2597,7 +2597,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		return;
 	}
 	{
-		const uint64_t avail_after = StageRunnerMemInfo(0), est = (uint64_t)info.nodes * 16384ull;
+		const uint64_t avail_after = StageRunnerMemInfo(0), est = (uint64_t)info.nodes * SKL2_ALLREDUCE_GRAPH_BYTES_NODE_FLOOR;
 		const uint64_t delta = avail_before > avail_after ? avail_before - avail_after : 0u, graph_bytes = delta > est ? delta : est;
 		state->graph_program[slot] = program;
 		state->graph_active_count++;
@@ -3767,7 +3767,7 @@ static SparkStatus StageRunnerKeepRun(SparkStageRunnerState *state, const SparkS
 					state->keep_graph_noop[slot] = 1u; state->keep_graph_input[slot] = identity;
 					return SPARK_STATUS_OK;
 				}
-				const uint64_t avail_after = StageRunnerMemInfo(0), est = (uint64_t)info.nodes * 16384ull;
+				const uint64_t avail_after = StageRunnerMemInfo(0), est = (uint64_t)info.nodes * SKL2_ALLREDUCE_GRAPH_BYTES_NODE_FLOOR;
 				const uint64_t delta = avail_before > avail_after ? avail_before - avail_after : 0u, kb = delta > est ? delta : est;
 				state->keep_graph_program[slot] = program; state->keep_graph_active_count++;
 				state->keep_graph_bytes[slot] = kb; state->keep_graph_total_bytes += kb;

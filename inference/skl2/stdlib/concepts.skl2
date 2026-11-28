@@ -5,12 +5,14 @@ primitive std.linear @v1 {
     concept = linear;
     arch = sm_121a;
     variant skinny_gemv {
+        kernel = skinny_bf16_b1;
         load_w = ldg256_stream;
         load_a = ldg256_persist;
         max_batch = 8;
         codecs = [BF16, FP8_E4M3, MXFP4_UE8M0, NVFP4_UE4M3];
     }
     variant mma_gemm {
+        kernel = mma_bf16_gemm_bf16;
         mma_isa = hmma16816_bf16;
         stage_isa = ldgsts128;
         min_batch = 16;
@@ -50,15 +52,18 @@ primitive std.attention @v1 {
     concept = attention;
     arch = sm_121a;
     variant gqa_flash {
+        kernel = gqa_split_reduce_sigmoid_gate_pdl_exact_bf16;
         online_softmax = true;
         load_kv = ldg256_stream;
     }
     variant mla_latent {
+        kernel = latent_attn_decode_512_64;
         latent_dim = 512;
         rope_dim = 64;
         online_softmax = true;
     }
     variant mla_sparse_csa2 {
+        kernel = latent_attn_decode_512_64;
         latent_dim = 512;
         indexer = std.route_topk;
         online_softmax = true;
@@ -74,11 +79,13 @@ primitive std.recurrent @v1 {
     concept = recurrent;
     arch = sm_121a;
     variant gdn_decode {
+        kernels = [delta_rule_decode1_256_128_128_4_pdl, causal_conv_serial_256_4_swish_bf16_pdl];
         state_dtype = f32;
         conv_kernel = 4;
         swish = true;
     }
     variant kda_decode {
+        kernels = [delta_rule_decode1_256_128_128_4_pdl, causal_conv_serial_256_4_swish_bf16_pdl];
         state_dtype = f32;
         conv_kernel = 4;
         qk_l2norm = true;
@@ -93,14 +100,17 @@ primitive std.norm_rope @v1 {
     concept = norm_rope;
     arch = sm_121a;
     variant rmsnorm_vec16 {
+        kernel = rmsnorm_bf16_vec16;
         load_isa = ldg256_persist;
         single_pass = true;
     }
     variant fused_residual_rmsnorm {
+        kernel = fused_residual_rmsnorm_bf16x8;
         load_isa = ldg256_stream;
         single_pass = true;
     }
     variant rmsnorm_rope_fp8 {
+        kernel = rmsnorm_rope_fp8_bf16;
         load_isa = ldg256_persist;
         rope = neox;
         quant_out = FP8_E4M3;
@@ -119,6 +129,7 @@ primitive std.route_topk @v1 {
     concept = route_topk;
     arch = sm_121a;
     variant warp_exact_topk {
+        kernel = router_softmax_256;
         tie_break = lowest_index;
         histogram = warp_ballot;
     }
@@ -131,11 +142,13 @@ primitive std.head @v1 {
     concept = head;
     arch = sm_121a;
     variant certified_fp8_rescore {
+        kernel = head_certified_fp8_score_1024;
         screen_codec = FP8_E4M3;
         rescore_codec = BF16;
         exact_argmax = true;
     }
     variant certified_bf16 {
+        kernel = head_certified_rescore_batched_f32_bf16;
         rescore_codec = BF16;
         exact_argmax = true;
     }

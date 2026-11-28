@@ -113,7 +113,7 @@ compile_cuda()
 	fi
 }
 
-make -C "${repository_root}" build/skl2_k3_embedded.h build/skl2_glm5next_embedded.h NVCC="${nvcc_binary}" CUDA_ARCH="${cuda_architecture}" CUDA_HOME="${cuda_home}" >/dev/null
+make -C "${repository_root}" build/skl2_allreduce_policy.h build/skl2_k3_embedded.h build/skl2_glm5next_embedded.h NVCC="${nvcc_binary}" CUDA_ARCH="${cuda_architecture}" CUDA_HOME="${cuda_home}" >/dev/null
 compile_pids=()
 compile_cuda "${output_directory}/probe.cu" probe &
 compile_pids+=("$!")
