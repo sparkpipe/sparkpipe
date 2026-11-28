@@ -69,7 +69,7 @@ def check_detects_missing():
     assert not os.path.exists(os.path.join(ROOT, found[0]))
     assert HEADING.findall("### gone_tool.cu\n\n## Section\n") == ["gone_tool.cu"]
     assert not tool_exists("gone_tool.cu")
-    assert tool_exists("sparkpipe_cli.py")
+    assert tool_exists("dsv41_flash_decode_replay.cu")
 
 
 def main():
