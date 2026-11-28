@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ALLOWED_DIRS = {"tests", "tools", "docs", "examples"}
+ALLOWED_DIRS = {"tests", "tools", "docs", "examples", "skl2"}
 # generated or local-only directories, not production
 SKIP_DIRS = {".git", ".audit", "build", "__pycache__", ".pytest_cache",
              "diagnostics"}

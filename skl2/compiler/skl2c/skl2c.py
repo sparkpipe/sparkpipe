@@ -46,7 +46,7 @@ def main(argv=None):
         src, dst = spec.split("=", 1)
         renames[src] = dst
 
-    search_roots = [os.path.join(os.path.dirname(os.path.dirname(SCRIPT_DIR)), "inference", "skl2")]
+    search_roots = [os.path.dirname(os.path.dirname(SCRIPT_DIR))]
     model_plan = None
     try:
         unit = load_unit(args.inputs, search_roots=search_roots)

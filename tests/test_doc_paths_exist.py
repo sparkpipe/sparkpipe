@@ -30,8 +30,7 @@ def top_directories():
 
 
 def tool_exists(name):
-    pattern = os.path.join(ROOT, "tools", "**", name)
-    return bool(glob.glob(pattern, recursive=True))
+    return any(glob.glob(os.path.join(ROOT, d, "**", name), recursive=True) for d in ("tools", "skl2"))
 
 
 def candidates(text, roots):

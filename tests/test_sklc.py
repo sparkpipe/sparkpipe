@@ -7,8 +7,8 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKLC = ROOT / "tools" / "sklc" / "sklc.py"
-SKL2_DIR = ROOT / "inference" / "skl2" / "kernels"
+SKLC = ROOT / "skl2" / "compiler" / "sklc" / "sklc.py"
+SKL2_DIR = ROOT / "skl2" / "kernels"
 SUITES = [
     SKL2_DIR / "linear.skl2",
     SKL2_DIR / "recurrent.skl2",
@@ -171,8 +171,8 @@ def verify_long_name_manifest():
 
 
 def verify_codegen_invariants():
-    sys.path.insert(0, str(ROOT / "tools" / "sklc"))
-    sys.path.append(str(ROOT / "tools" / "skl2c"))
+    sys.path.insert(0, str(ROOT / "skl2" / "compiler" / "sklc"))
+    sys.path.append(str(ROOT / "skl2" / "compiler" / "skl2c"))
     import isa_sm121 as isa
     from codegen import compile_program
     from skl2_frontend import load_unit
@@ -185,7 +185,7 @@ def verify_codegen_invariants():
         pass
 
     assert not list((ROOT / "inference" / "kernels" / "skl").glob("*.skl")), "legacy .skl v1 files must be retired"
-    unit = load_unit([str(s) for s in SUITES], search_roots=[str(ROOT / "inference" / "skl2")])
+    unit = load_unit([str(s) for s in SUITES], search_roots=[str(ROOT / "skl2")])
     kernels = compile_program(lower_unit(unit), strict_reg_budget=True)
     for k in kernels:
         assert k.stack_bytes == 0, f"unexpected stack usage in {k.name}: {k.stack_bytes}"
@@ -360,8 +360,8 @@ def verify_rename_and_only():
 
 
 def verify_guarded_store_load_branches():
-    sys.path.insert(0, str(ROOT / "tools" / "sklc"))
-    sys.path.insert(0, str(ROOT / "tools" / "skl2c"))
+    sys.path.insert(0, str(ROOT / "skl2" / "compiler" / "sklc"))
+    sys.path.insert(0, str(ROOT / "skl2" / "compiler" / "skl2c"))
     import isa_sm121 as isa
     from codegen import compile_program
     from skl2_frontend import load_unit
@@ -381,7 +381,7 @@ def verify_guarded_store_load_branches():
     with tempfile.TemporaryDirectory() as tmp:
         p = pathlib.Path(tmp) / "guarded.skl2"
         p.write_text(src, encoding="utf-8")
-        k = compile_program(lower_unit(load_unit([str(p)], search_roots=[str(ROOT / "inference" / "skl2")])), strict_reg_budget=True)[0]
+        k = compile_program(lower_unit(load_unit([str(p)], search_roots=[str(ROOT / "skl2")])), strict_reg_budget=True)[0]
         bra_op = isa.encode_bra(0)[0] & 0xFFF
         ldg_op = isa.encode_ldg(0, 0, 0)[0] & 0xFFF
         bra_idx = [i for i, (lo, _) in enumerate(k.insns) if (lo & 0xFFF) == bra_op]

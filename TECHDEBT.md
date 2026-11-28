@@ -270,7 +270,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 ## Steady-state decode hot path
 
 - The attention kernels keep the stack frames recorded in `PENDING`
-  (`tools/kernel_spill_audit.py`, 27 instantiations under CUDA 13.0).
+  (`skl2/tools/kernel_spill_audit.py`, 27 instantiations under CUDA 13.0).
   `D41AttendKernel` at two query tiles (DSV4.1's row-parallel attention)
   keeps its 168-byte spill on purpose. Its ten warps (eight consumers, a
   planner and an issuer) cap ptxas at 168 registers, against the 242 it

@@ -6,8 +6,8 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKLC = ROOT / "tools" / "sklc" / "sklc.py"
-SKL2_KDIR = ROOT / "inference" / "skl2" / "kernels"
+SKLC = ROOT / "skl2" / "compiler" / "sklc" / "sklc.py"
+SKL2_KDIR = ROOT / "skl2" / "kernels"
 OVERLAY_SKL2_SUITES = (
     SKL2_KDIR / "linear.skl2",
     SKL2_KDIR / "mma_gemm.skl2",

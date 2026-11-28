@@ -197,7 +197,7 @@ for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
 		audited+=("${repository_root}/${artifact}")
 	fi
 done
-if ! python3 -I "${repository_root}/tools/dependent_wait_audit.py" "${audited[@]}" > "${output_directory}/logs/dependent_wait_audit.txt" 2>&1; then
+if ! python3 -I "${repository_root}/skl2/tools/dependent_wait_audit.py" "${audited[@]}" > "${output_directory}/logs/dependent_wait_audit.txt" 2>&1; then
 	grep -E '^(REFUSED|dependent)' "${output_directory}/logs/dependent_wait_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/dependent_wait_audit.txt" >&2
 	echo "a kernel stores to global memory before it waits for the kernel it depends on; see logs/dependent_wait_audit.txt" >&2
 	exit 9
@@ -240,10 +240,10 @@ for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
 		spill_audited+=("${repository_root}/${artifact}")
 	fi
 done
-if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" "${spill_audited[@]}" \
+if ! python3 -I "${repository_root}/skl2/tools/kernel_spill_audit.py" "${spill_audited[@]}" \
 	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
 	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
-	echo "a skinny, cell, stream GEMM or attention kernel keeps a stack frame or local memory, or the attention PENDING list in tools/kernel_spill_audit.py does not match; see logs/kernel_spill_audit.txt" >&2
+	echo "a skinny, cell, stream GEMM or attention kernel keeps a stack frame or local memory, or the attention PENDING list in skl2/tools/kernel_spill_audit.py does not match; see logs/kernel_spill_audit.txt" >&2
 	exit 10
 fi
 grep -E '^kernel spill audit' "${output_directory}/logs/kernel_spill_audit.txt"

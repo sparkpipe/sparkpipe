@@ -41,6 +41,7 @@ def check_classification(failures):
         (["tools/ci_lanes.py", "inference/kernels/x.cu"], True),
         (["tools/serving/chat_frontend.py"], True),
         (["model-families/k3/README.md"], False),
+        (["skl2/kernels/linear.skl2"], True),
         (["newdir/x.c"], True),
         ([".github/workflows/cuda13-sm121a-compile.yml"], True),
         (["website/site/x.html"], True),
@@ -197,7 +198,7 @@ def check_lane_memory_plan(failures):
 
     lanes_doc = json.loads((ROOT / "deployment" / "lanes.json").read_text(encoding="utf-8"))
     runner_src = (ROOT / "inference" / "runner" / "stage_runner.cu").read_text(encoding="utf-8")
-    ar_src = (ROOT / "inference" / "skl2" / "stdlib" / "allreduce.skl2").read_text(encoding="utf-8")
+    ar_src = (ROOT / "skl2" / "stdlib" / "allreduce.skl2").read_text(encoding="utf-8")
     m_max = re.search(r"#define\s+STAGE_RUNNER_GRAPH_MAX_ACTIVE_DEFAULT\s+(\d+)u", runner_src)
     if not m_max and "SKL2_ALLREDUCE_GRAPH_MAX_ACTIVE" in runner_src:
         m_max = re.search(r"graph_max_active\s*=\s*(\d+)\s*;", ar_src)

@@ -1,4 +1,4 @@
-"""Host checks of tools/kernel_spill_audit.py on cuobjdump resource listings.
+"""Host checks of skl2/tools/kernel_spill_audit.py on cuobjdump resource listings.
 
 A kernel of the skinny, cell, stream GEMM or attention family that keeps a
 stack frame or local memory must be refused, except an attention kernel whose
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = importlib.util.spec_from_file_location("kernel_spill_audit", ROOT / "tools" / "kernel_spill_audit.py")
+SPEC = importlib.util.spec_from_file_location("kernel_spill_audit", ROOT / "skl2" / "tools" / "kernel_spill_audit.py")
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
 
@@ -113,7 +113,7 @@ def main():
         if audit.family(name) != audit.PENDING_FAMILY or size <= 0:
             failures.append("the tool's PENDING entry %s is not an attention kernel with a frame" % name)
     gate = (ROOT / "tools" / "cuda13_sm121a_compile_gate.sh").read_text()
-    if 'tools/kernel_spill_audit.py" "${spill_audited[@]}"' not in gate or '"${adapters[@]}" "${cuda_programs[@]}"' not in gate:
+    if 'skl2/tools/kernel_spill_audit.py" "${spill_audited[@]}"' not in gate or '"${adapters[@]}" "${cuda_programs[@]}"' not in gate:
         failures.append("the sm_121a compile gate does not run the spill audit on every serving adapter and CUDA program")
     for failure in failures:
         print("FAIL " + failure)
