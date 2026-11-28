@@ -2108,7 +2108,7 @@ build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEV
 
 DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner/device_stage_model.c inference/runner/device_layers.c inference/runner/device_collective.c inference/runner/device_collective_tcp.c $(DEVICE_OPS_SOURCES) runtime/named_pack.c runtime/json.c runtime/filesystem.c src/spark_sha256.c
 DEVICE_RUNNER_INCLUDE_FLAGS := -Imodel-families/common/include
-DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h model-families/common/include/sparkpipe/spark_rope_plan.h
+DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_stage_cxx.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h model-families/common/include/sparkpipe/spark_rope_plan.h
 DEVICE_SERVING_SOURCES := inference/runner/stage_serving_adapter.c inference/runner/device_serving_runner.c runtime/stage_kv_binding.c runtime/kv_device_copy.c \
 	runtime/stage_module_claims.c runtime/model_serving_adapter.c runtime/spark_weightd_memory.c runtime/spark_weightd_absent.c \
 	ring/transport/tp_device_collective_absent.c cache/kv_ledger.c cache/kv_snapshot_purge.c $(SPARKPIPE_CACHE_SOURCES)

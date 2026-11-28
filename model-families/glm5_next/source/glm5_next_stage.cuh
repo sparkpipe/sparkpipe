@@ -855,14 +855,10 @@ static int32_t Glm5NextPoolScoreMmaLaunch(const uint16_t *query_bf16, const uint
 	const uint32_t *row_positions, uint32_t pools, uint32_t owner_rank, uint32_t owner_degree, uint32_t local_stride,
 	float softmax_scale, float head_scale, float *pool_scores, uint32_t rows, SparkGpuStream stream)
 {
-	static std::atomic<bool> configured(false);
+	static CudaStageSmemGrant grant;
 	constexpr uint32_t sh = (uint32_t)sizeof(Glm5NextPoolScoreMmaShared);
-	if ( !configured.load(std::memory_order_acquire) )
-	{
-		if ( SparkGpuFuncSetAttribute((const void *)Glm5NextPoolScoreMmaKernel, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		configured.store(true, std::memory_order_release);
-	}
+	if ( !grant.Grant((const void *)Glm5NextPoolScoreMmaKernel, sh) )
+		SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 	LM_LAUNCH_DEPENDENT((Glm5NextPoolScoreMmaKernel), dim3((local_stride + 63u) / 64u, (rows + 15u) / 16u), 256u, sh, stream,
 		query_bf16, head_weight_bf16, pool_keys_in, pool_ready_in, sequence_of_row, context_length, row_positions,
 		pools, owner_rank, owner_degree, local_stride, softmax_scale, head_scale, pool_scores, rows);
@@ -1701,16 +1697,12 @@ static void Glm5NextKdaWyStateKernel(uint8_t *__restrict__ state_pool, uint32_t 
 
 static int32_t Glm5NextKdaWyLaunch(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t commit, SparkGpuStream stream)
 {
-	static std::atomic<bool> configured(false);
+	static CudaStageSmemGrant prep_grant, state_grant;
 	constexpr uint32_t prep_sh = (uint32_t)sizeof(Glm5NextKdaWyPrepShared);
 	constexpr uint32_t state_sh = (uint32_t)sizeof(Glm5NextKdaWyStateShared);
-	if ( !configured.load(std::memory_order_acquire) )
-	{
-		if ( SparkGpuFuncSetAttribute((const void *)Glm5NextKdaWyPrepareKernel, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)prep_sh) != SPARK_GPU_SUCCESS ||
-			SparkGpuFuncSetAttribute((const void *)Glm5NextKdaWyStateKernel, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)state_sh) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		configured.store(true, std::memory_order_release);
-	}
+	if ( !prep_grant.Grant((const void *)Glm5NextKdaWyPrepareKernel, prep_sh) ||
+		!state_grant.Grant((const void *)Glm5NextKdaWyStateKernel, state_sh) )
+		SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 	const uint32_t num_chunks = (rows + G5N_KDA_WY_C - 1u) / G5N_KDA_WY_C;
 	float *workspace = (float *)b->expert_out_bf16;
 	LM_LAUNCH_DEPENDENT((Glm5NextKdaWyPrepareKernel), dim3(num_chunks, b->kda_heads), 256u, prep_sh, stream,
@@ -1896,30 +1888,20 @@ static int32_t Glm5NextKdaProjMmaLaunch(const Glm5NextLayerBuffers *b, uint16_t 
 {
 	if ( rows >= 128u )
 	{
-		static std::atomic<bool> cfg_wide(false);
+		static CudaStageSmemGrant grant_wide;
 		constexpr uint32_t sh = 3u * (64u * 128u + 128u * 128u);
-		if ( !cfg_wide.load(std::memory_order_acquire) )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)Glm5NextKdaProjMmaKernel<64u, 4u, 128u, 3u>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			cfg_wide.store(true, std::memory_order_release);
-		}
+		if ( !grant_wide.Grant((const void *)Glm5NextKdaProjMmaKernel<64u, 4u, 128u, 3u>, sh) )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		LM_LAUNCH_DEPENDENT((Glm5NextKdaProjMmaKernel<64u, 4u, 128u, 3u>), dim3(15u, (rows + 63u) / 64u), 256u, sh, stream,
 			(const uint16_t *)b->w->kda_qkv_beta, (const uint16_t *)b->w->kda_decay_gate_down, b->normed_bf16,
 			out_q, out_k, out_v, out_beta, b->fused_decay_gate_bf16, rows);
 	}
 	else
 	{
-		static std::atomic<bool> cfg_med(false);
+		static CudaStageSmemGrant grant_med;
 		constexpr uint32_t sh = 3u * (32u * 128u + 64u * 128u);
-		if ( !cfg_med.load(std::memory_order_acquire) )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)Glm5NextKdaProjMmaKernel<32u, 2u, 64u, 3u>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			cfg_med.store(true, std::memory_order_release);
-		}
+		if ( !grant_med.Grant((const void *)Glm5NextKdaProjMmaKernel<32u, 2u, 64u, 3u>, sh) )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		LM_LAUNCH_DEPENDENT((Glm5NextKdaProjMmaKernel<32u, 2u, 64u, 3u>), dim3(29u, (rows + 31u) / 32u), 256u, sh, stream,
 			(const uint16_t *)b->w->kda_qkv_beta, (const uint16_t *)b->w->kda_decay_gate_down, b->normed_bf16,
 			out_q, out_k, out_v, out_beta, b->fused_decay_gate_bf16, rows);
@@ -2775,15 +2757,10 @@ static void Glm5NextDsaIndexProjMmaKernel(const uint16_t *__restrict__ w_k, cons
 
 static int32_t Glm5NextDsaIndexProjMmaLaunch(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t emit_head, SparkGpuStream stream)
 {
-	static std::atomic<bool> configured(false);
+	static CudaStageSmemGrant grant;
 	constexpr uint32_t sh = 4u * (64u * 128u + 64u * 128u);
-	if ( !configured.load(std::memory_order_acquire) )
-	{
-		if ( SparkGpuFuncSetAttribute((const void *)Glm5NextDsaIndexProjMmaKernel,
-				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		configured.store(true, std::memory_order_release);
-	}
+	if ( !grant.Grant((const void *)Glm5NextDsaIndexProjMmaKernel, sh) )
+		SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 	LM_LAUNCH_DEPENDENT((Glm5NextDsaIndexProjMmaKernel), dim3(emit_head != 0u ? 5u : 4u, (rows + 63u) / 64u), 256u, sh, stream,
 		(const uint16_t *)b->w->index_k, (const uint16_t *)b->w->index_compress_gate, (const uint16_t *)b->w->index_head,
 		b->normed_bf16, b->index_key_bf16, b->index_gate_bf16, b->index_head_weight_bf16, rows, emit_head);
@@ -2965,15 +2942,10 @@ static int32_t Glm5NextDsaHeadProjMmaLaunch(const Glm5NextLayerBuffers *b, uint3
 {
 	if ( rows >= 128u )
 	{
-		static std::atomic<bool> cfg_wide(false);
+		static CudaStageSmemGrant grant_wide;
 		constexpr uint32_t sh = 3u * (64u * 128u + 128u * 128u);
-		if ( !cfg_wide.load(std::memory_order_acquire) )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)Glm5NextDsaHeadProjMmaKernel<64u, 4u, 128u, 3u>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			cfg_wide.store(true, std::memory_order_release);
-		}
+		if ( !grant_wide.Grant((const void *)Glm5NextDsaHeadProjMmaKernel<64u, 4u, 128u, 3u>, sh) )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		LM_LAUNCH_DEPENDENT((Glm5NextDsaHeadProjMmaKernel<64u, 4u, 128u, 3u>), dim3(emit_head != 0u ? 19u : 18u, (rows + 63u) / 64u), 256u, sh, stream,
 			(const uint16_t *)b->w->q_a, (const uint16_t *)b->w->kv_a, (const uint16_t *)b->w->index_k,
 			(const uint16_t *)b->w->index_compress_gate, (const uint16_t *)b->w->index_head, b->normed_bf16,
@@ -2981,15 +2953,10 @@ static int32_t Glm5NextDsaHeadProjMmaLaunch(const Glm5NextLayerBuffers *b, uint3
 	}
 	else
 	{
-		static std::atomic<bool> cfg_med(false);
+		static CudaStageSmemGrant grant_med;
 		constexpr uint32_t sh = 3u * (32u * 128u + 64u * 128u);
-		if ( !cfg_med.load(std::memory_order_acquire) )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)Glm5NextDsaHeadProjMmaKernel<32u, 2u, 64u, 3u>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			cfg_med.store(true, std::memory_order_release);
-		}
+		if ( !grant_med.Grant((const void *)Glm5NextDsaHeadProjMmaKernel<32u, 2u, 64u, 3u>, sh) )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		LM_LAUNCH_DEPENDENT((Glm5NextDsaHeadProjMmaKernel<32u, 2u, 64u, 3u>), dim3(emit_head != 0u ? 37u : 36u, (rows + 31u) / 32u), 256u, sh, stream,
 			(const uint16_t *)b->w->q_a, (const uint16_t *)b->w->kv_a, (const uint16_t *)b->w->index_k,
 			(const uint16_t *)b->w->index_compress_gate, (const uint16_t *)b->w->index_head, b->normed_bf16,
@@ -3256,15 +3223,10 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 				b->sequence_of_row, b->context_length, b->positions, rows, dense_limit);
 		else if ( rows > 64u )
 		{
-			static std::atomic<bool> configured_iq(false);
+			static CudaStageSmemGrant grant_iq;
 			constexpr uint32_t sh = 3u * (64u * 128u + 128u * 128u);
-			if ( !configured_iq.load(std::memory_order_acquire) )
-			{
-				if ( SparkGpuFuncSetAttribute((const void *)Glm5NextIndexQMmaSkipKernel<64u, 4u, 128u, 3u>,
-						SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)sh) != SPARK_GPU_SUCCESS )
-					SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-				configured_iq.store(true, std::memory_order_release);
-			}
+			if ( !grant_iq.Grant((const void *)Glm5NextIndexQMmaSkipKernel<64u, 4u, 128u, 3u>, sh) )
+				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 			LM_LAUNCH_DEPENDENT((Glm5NextIndexQMmaSkipKernel<64u, 4u, 128u, 3u>), dim3(G5N_INDEX_QUERY / 128u, (rows + 63u) / 64u), 256u, sh, stream,
 				(const uint16_t *)w->index_q, b->q_compressed_bf16, b->index_query_bf16,
 				b->sequence_of_row, b->context_length, b->positions, rows, dense_limit);
@@ -3869,14 +3831,9 @@ static int32_t Glm5NextMlaGatherPrefillLaunch(const Glm5NextLayerBuffers *b, con
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( sparse != 0u )
 	{
-		static std::atomic<bool> configured_sparse(false);
-		if ( !configured_sparse.load(std::memory_order_acquire) )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)Glm5NextMlaGatherPrefillKernel<true, QUERIES>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)SHARED_BYTES) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			configured_sparse.store(true, std::memory_order_release);
-		}
+		static CudaStageSmemGrant grant_sparse;
+		if ( !grant_sparse.Grant((const void *)Glm5NextMlaGatherPrefillKernel<true, QUERIES>, SHARED_BYTES) )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		LM_LAUNCH_DEPENDENT((LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, G5N_INDEX_WIDTH>), blocks, LM_PREFILL_UNION_THREADS, 0, stream,
 			b->selected_positions, b->positions, rows, (const uint32_t *)0, union_capacity, union_positions, union_masks, union_counts);
 		LM_LAUNCH_DEPENDENT((Glm5NextMlaGatherPrefillKernel<true, QUERIES>), blocks, LM_PREFILL_ATTN_THREADS, SHARED_BYTES, stream,
@@ -3885,14 +3842,9 @@ static int32_t Glm5NextMlaGatherPrefillLaunch(const Glm5NextLayerBuffers *b, con
 	}
 	else
 	{
-		static std::atomic<bool> configured_dense(false);
-		if ( !configured_dense.load(std::memory_order_acquire) )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)Glm5NextMlaGatherPrefillKernel<false, QUERIES>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)SHARED_BYTES) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			configured_dense.store(true, std::memory_order_release);
-		}
+		static CudaStageSmemGrant grant_dense;
+		if ( !grant_dense.Grant((const void *)Glm5NextMlaGatherPrefillKernel<false, QUERIES>, SHARED_BYTES) )
+			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
 		LM_LAUNCH_DEPENDENT((Glm5NextMlaGatherPrefillKernel<false, QUERIES>), blocks, LM_PREFILL_ATTN_THREADS, SHARED_BYTES, stream,
 			b->query_latent_bf16, kv_all, b->sequence_of_row, b->context_length, b->positions, G5N_QK_SCALE, b->attention_latent_bf16,
 			rows, total_ctx, (const uint32_t *)0, (const uint8_t *)0, (const uint32_t *)0, 0u);

@@ -2099,10 +2099,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	static const char *ReportTag(void) { return G::ReportTag(); }
 	static const char *WeightdModel(void) { return G::Name(); }
 	static uint32_t RowExact(const SparkStageRunnerStep *step) { return step->commit == 0u ? 1u : 0u; }
-	static bool PrefillUnified(const SparkStageRunnerStep *step)
-	{
-		return step->commit != 0u && step->last_rows_only != 0u && step->sequences == 1u && step->tree == 0u;
-	}
+	static bool PrefillUnified(const SparkStageRunnerStep *step) { return CudaStagePrefillUnified(step); }
 
 	static int32_t Fp8(const MimoScaled &weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
@@ -2322,33 +2319,31 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t routes, uint32_t input_dim, uint32_t output_dim,
 		uint32_t multiprocessors, SparkGpuStream stream)
 	{
-		static std::atomic<uint64_t> granted(0u);
-		static std::atomic<int32_t> resident(0);
+		static CudaStageSmemGrant grant;
 		constexpr uint32_t TILE_M = MAX_M_TILES * 16u;
 		constexpr uint32_t TILE_N = FUSED_GATE_UP ? 64u : 128u;
 		constexpr uint32_t shared = MimoMxfp4SharedBytes<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>(G::kLocalExperts);
-		int device = 0, per_sm = 1;
-		if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_STREAM_MAX_DEVICES )
+		uint32_t blocks = 0u;
+		if ( !grant.GrantBlocks((const void *)MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>,
+				shared, 256u, multiprocessors, &blocks) )
 			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
-		{
-			if ( SparkGpuFuncSetAttribute((const void *)MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>,
-					SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared) != SPARK_GPU_SUCCESS )
-				SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-			if ( SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm,
-					MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>, 256u, (int)shared) != SPARK_GPU_SUCCESS || per_sm < 1 )
-				per_sm = 1;
-			resident.store(per_sm);
-			granted.fetch_or(UINT64_C(1) << (uint32_t)device);
-		}
-		const uint64_t n_tiles = (output_dim + TILE_N - 1u) / TILE_N;
-		const uint64_t tile_bound = ((uint64_t)routes / TILE_M + G::kLocalExperts) * n_tiles;
-		uint64_t blocks = (uint64_t)multiprocessors * (uint64_t)resident.load();
+		const uint64_t tile_bound = ((uint64_t)routes / TILE_M + G::kLocalExperts) * ((output_dim + TILE_N - 1u) / TILE_N);
 		if ( tile_bound < blocks )
-			blocks = tile_bound;
-		(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>), (uint32_t)blocks, 256u, shared, stream,
+			blocks = (uint32_t)tile_bound;
+		(void)LM_LAUNCH_DEPENDENT((MimoMxfp4ExpertsKernel<MAX_M_TILES, STAGES, 8u, ACTIVATION_PACKED, FUSED_GATE_UP>), blocks, 256u, shared, stream,
 			w1, s1, w3, s3, activation, output, group_row_offset, route_source_token, G::kLocalExperts, input_dim, output_dim);
 		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	template<uint32_t MAX_M_TILES>
+	static int32_t Mxfp4Pair(const State *state, const MimoLayer *layer, const uint16_t *normed, uint32_t routes, uint32_t sms, SparkGpuStream stream)
+	{
+		const int32_t st = Mxfp4Launch<MAX_M_TILES, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
+			(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
+			G::kHidden, G::kMoeInter, sms, stream);
+		return st == LM_LAUNCH_OK ? Mxfp4Launch<MAX_M_TILES, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
+			(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
+			routes, G::kMoeInter, G::kHidden, sms, stream) : st;
 	}
 
 	static SparkStatus Dense(State *state, const Frame &frame, const MimoLayer &entry)
@@ -2374,31 +2369,24 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		uint16_t *partial_out = state->partial + (uint64_t)first * G::kHidden;
 		if ( Bf16(layer->router, normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
+		const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
+		const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 		if ( routes <= 32u )
-		{
-			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
-			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			(void)LM_LAUNCH_DEPENDENT((MimoSigmoidRouteSmallKernel<G>), 1u, MM_THREADS, 0, stream, state->router_logits, layer->router_bias, rows,
 				state->expert_first, step->route_fault, state->route_expert, state->route_weight, state->route_global, state->group_row_offset,
 				state->route_packed_row, state->route_source_token, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		}
 		else
 		{
 			constexpr uint32_t WARPS = MM_THREADS / LM_WARP_LANES;
-			const uint32_t tile_m = LmLaunchGroupedTileM(rows, G::kTopK, G::kLocalExperts + 1u);
-			const uint32_t n_up = (G::kMoeInter + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
-			const uint32_t n_down = (G::kHidden + LM_MOE_GEMM_TILE_N - 1u) / LM_MOE_GEMM_TILE_N;
 			(void)LM_LAUNCH_DEPENDENT((MimoSigmoidTopkLocalKernel<G>), (rows + WARPS - 1u) / WARPS, MM_THREADS, 0, stream, state->router_logits,
 				layer->router_bias, rows, state->expert_first, step->route_fault, state->route_expert, state->route_weight);
 			(void)LM_LAUNCH_DEPENDENT((MimoRouteBuildPackedKernel<MM_THREADS, G::kLocalExperts + 1u>), 1u, MM_THREADS, 0, stream,
 				state->route_expert, routes, G::kTopK, state->group_row_offset, state->route_packed_row, state->route_source_token,
 				state->route_global, tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
-			if ( CudaStageLaunched() != SPARK_STATUS_OK )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
+		if ( CudaStageLaunched() != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		const bool prefill_unified = PrefillUnified(step);
 		const uint32_t expected_local = (uint32_t)(((uint64_t)routes * G::kLocalExperts + G::kExperts - 1u) / G::kExperts);
 		if ( !prefill_unified && (exact != 0u || rows <= 64u || expected_local <= 4u * G::kLocalExperts) )
@@ -2433,25 +2421,8 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			if ( exact == 0u && (prefill_unified || rows >= 32u) )
 			{
 				const uint32_t mean_rows = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
-				int32_t st_up, st_dn;
-				if ( mean_rows > 40u )
-				{
-					st_up = Mxfp4Launch<4u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
-						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
-						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
-					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<4u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
-						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
-				}
-				else
-				{
-					st_up = Mxfp4Launch<1u, 2u, false, true>(layer->moe_w1.weight, (const uint8_t *)layer->moe_w1.scale, layer->moe_w3.weight,
-						(const uint8_t *)layer->moe_w3.scale, normed, state->expert_act, state->group_row_offset, state->route_source_token, routes,
-						G::kHidden, G::kMoeInter, step->multiprocessors, stream);
-					st_dn = st_up == LM_LAUNCH_OK ? Mxfp4Launch<1u, 2u, true, false>(layer->moe_w2.weight, (const uint8_t *)layer->moe_w2.scale,
-						(const uint8_t *)0, (const uint8_t *)0, state->expert_act, state->expert_out, state->group_row_offset, (const uint32_t *)0,
-						routes, G::kMoeInter, G::kHidden, step->multiprocessors, stream) : st_up;
-				}
+				const int32_t st_dn = mean_rows > 40u ? Mxfp4Pair<4u>(state, layer, normed, routes, step->multiprocessors, stream) :
+					Mxfp4Pair<1u>(state, layer, normed, routes, step->multiprocessors, stream);
 				if ( st_dn != LM_LAUNCH_OK )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 				(void)LM_LAUNCH_DEPENDENT((MimoMoeWeightedFinalizeKernel), dim3(LmVecBlocks<MM_THREADS>(G::kHidden), rows), MM_THREADS, 0, stream,
@@ -2460,16 +2431,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 				return CudaStageLaunched();
 			}
 		}
-		LmLocalExpertRoutes expert_routes;
-		expert_routes.group_row_offset = state->group_row_offset;
-		expert_routes.route_source_token = state->route_source_token;
-		expert_routes.tile_prefix_up = state->tile_prefix_up;
-		expert_routes.tile_prefix_down = state->tile_prefix_down;
-		expert_routes.rows = rows;
-		expert_routes.routes = routes;
-		expert_routes.top_k = G::kTopK;
-		expert_routes.local_experts = G::kLocalExperts;
-		expert_routes.multiprocessors = step->multiprocessors;
+		const LmLocalExpertRoutes expert_routes = CudaStageBuildExpertRoutes<LmLocalExpertRoutes>(state, rows, G::kTopK, G::kLocalExperts, step->multiprocessors);
 		if ( ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -2490,35 +2452,19 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
 	{
-		if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0) )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		return CudaStage<MimoModel>::Begin(state, step, stream, frame);
+		const SparkStatus status = CudaStageCheckTreeBegin(step);
+		return status != SPARK_STATUS_OK ? status : CudaStage<MimoModel>::Begin(state, step, stream, frame);
 	}
 
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
 		State *state = (State *)model;
 		SparkGpuStream stream = (SparkGpuStream)stream_void;
-		if ( state == 0 || step == 0 || kept == 0 || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->tree == 0u )
-			return SPARK_STATUS_OK;
-		if ( state->kv_attached == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t index = 0u; index < S::kSlidingLayers; ++index )
-		{
-			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			LM_LAUNCH((LmKvShardPathMoveKernel<typename S::SlidingKv,MM_THREADS>), step->rows, MM_THREADS, 0, stream,
-				state->sliding_views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, S::kSlidingKey + S::kSlidingValue);
-			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		}
-		for ( uint32_t index = 0u; index < G::kFullLayers; ++index )
-		{
-			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			LM_LAUNCH((LmKvShardPathMoveKernel<typename S::FullKv,MM_THREADS>), step->rows, MM_THREADS, 0, stream,
-				state->full_views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, S::kFullKey + S::kFullValue);
-			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		}
+		const SparkStatus status = CudaStageKeepRowsCheck(state, step, kept);
+		if ( status != SPARK_STATUS_OK || step->tree == 0u )
+			return status;
+		CudaStageKeepMoveViews<typename S::SlidingKv, MM_THREADS>(state, state->sliding_views, S::kSlidingLayers, S::kSlidingKey + S::kSlidingValue, step->rows, step, kept, stream);
+		CudaStageKeepMoveViews<typename S::FullKv, MM_THREADS>(state, state->full_views, G::kFullLayers, S::kFullKey + S::kFullValue, step->rows, step, kept, stream);
 		return CudaStageLaunched();
 	}
 
@@ -2536,7 +2482,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			frame.step->hidden_bf16, state->partial, weight, state->normed, G::kEpsilon);
 		return CudaStageLaunched();
 	}
-	static SparkStatus AllReduce(State *state, const Frame &frame) { return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial); }
+	static SparkStatus AllReduce(State *state, const Frame &frame) { return CudaStageAllReduceSum(state, frame.stream, state->partial, frame.step->rows); }
 	static SparkStatus AddResidual(State *state, const Frame &frame) { return Residual(state, frame.step->hidden_bf16, frame.step->rows, frame.stream); }
 
 	static uint64_t Plan(State *state, uint8_t *base, uint32_t lane)
@@ -2577,9 +2523,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static SparkStatus Shape(State *state)
 	{
-		const uint64_t row_bytes = G::kHidden * sizeof(uint16_t);
-		state->record_stride = (((uint64_t)state->max_rows * LmGqaShardRecordFloats(G::kHeads, G::kValueDim, state->tp_degree) * sizeof(float) +
-			row_bytes - 1u) / row_bytes) * row_bytes / sizeof(float);
+		state->record_stride = CudaStageRecordStride(state->max_rows, LmGqaShardRecordFloats(G::kHeads, G::kValueDim, state->tp_degree), G::kHidden);
 		return SPARK_STATUS_OK;
 	}
 
@@ -2602,53 +2546,29 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
-		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, window = 0u, full_layers = 0u;
-		uint32_t ffn_rows = 0u, experts = 0u, local = 0u, top_k = 0u;
-		const CudaStagePackValue values[] =
+		const uint32_t expected_first = configuration->tp_rank * G::kLocalExperts;
+		const CudaStagePackCheck checks[] =
 		{
-			{ "tp_degree", &degree }, { "tp_rank", &rank }, { "hidden", &hidden }, { "layers", &layers }, { "full_layers", &full_layers },
-			{ "vocab_rows", &vocab_rows }, { "ffn_rows", &ffn_rows }, { "sliding_window", &window }, { "experts", &experts }, { "local_experts", &local },
-			{ "expert_first", &state->expert_first }, { "top_k", &top_k }
+			{ "tp_degree", configuration->tp_degree }, { "tp_rank", configuration->tp_rank }, { "hidden", G::kHidden }, { "layers", G::kLayers },
+			{ "full_layers", G::kFullLayers }, { "vocab_rows", G::kVocab / configuration->tp_degree }, { "ffn_rows", S::kDenseRows },
+			{ "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "local_experts", G::kLocalExperts }, { "expert_first", expected_first },
+			{ "top_k", G::kTopK }
 		};
-		if ( CudaStagePackValues(&state->pack, values) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( degree != configuration->tp_degree || rank != configuration->tp_rank || hidden != G::kHidden || layers != G::kLayers ||
-			full_layers != G::kFullLayers || vocab_rows * degree != G::kVocab || ffn_rows != S::kDenseRows || window != G::kWindow ||
-			experts != G::kExperts || local != G::kLocalExperts || top_k != G::kTopK || state->expert_first != rank * G::kLocalExperts )
-		{
-			fprintf(stderr, "%s: pack is tp %u rank %u hidden %u layers %u/%u full window %u experts %u/%u first %u top_k %u, the runner is tp %u rank %u\n",
-				G::Tag(), degree, rank, hidden, layers, full_layers, window, experts, local, state->expert_first, top_k, configuration->tp_degree,
-				configuration->tp_rank);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
-		return SPARK_STATUS_OK;
+		const SparkStatus status = CudaStagePackExpect(G::Tag(), &state->pack, checks);
+		if ( status == SPARK_STATUS_OK )
+			state->expert_first = expected_first;
+		return status;
 	}
 
 	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
-		const uint32_t vocab_rows = G::kVocab / state->tp_degree;
 		geometry->tree_verify = 1u;
-		if ( CudaStage<MimoModel>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( geometry->embed_rows != vocab_rows || geometry->head_rows != vocab_rows ||
-			geometry->embed_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) ||
-			geometry->head_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
-		{
-			fprintf(stderr, "%s: embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the pack's %u vocab rows of %u\n",
-				G::Tag(), geometry->embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
-				(unsigned long long)geometry->head_norm_bytes, vocab_rows, G::kHidden);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
-		return SPARK_STATUS_OK;
+		return CudaStage<MimoModel>::HeadCheck(state, geometry, false, false, true);
 	}
-
-	static uint64_t Fp8Bytes(uint32_t rows, uint32_t columns) { return (uint64_t)rows * columns; }
-	static uint64_t Fp8ScaleBytes(uint32_t rows, uint32_t columns) { return (uint64_t)rows * ((columns + MM_FP8_GROUP - 1u) / MM_FP8_GROUP) * sizeof(float); }
 
 	static void AddFp8(CudaStageTensors *tensors, const char *name, uint32_t rows, uint32_t columns, MimoScaled *field)
 	{
-		tensors->Add(name, "fp8_e4m3", Fp8Bytes(rows, columns), &field->weight, rows);
-		tensors->AddScaled(name, ".scale", "f32", Fp8ScaleBytes(rows, columns), &field->scale, rows);
+		tensors->AddFp8Block(name, rows, columns, MM_FP8_GROUP, &field->weight, &field->scale, rows);
 	}
 
 	static void AddExperts(CudaStageTensors *tensors, const char *name, MimoScaled *field, uint32_t rows, uint32_t columns)

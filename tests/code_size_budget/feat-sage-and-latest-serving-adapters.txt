@@ -1,2 +1,0 @@
-+101
-Add TP16 serving adapters for ling-3.1-flash (Ling31FlashGeometry), ling-3.2-air (FP8), hy4-fp8 (Block-128 FP8), and sage-s2.1-flash (Sage21FlashGeometry) in modules/ and Makefile; add --model sage21_flash default revision support in tools/glm5_next_resident_stagepack.py; add sage-s2.1-flash ModelSpec (fleet_weight=0.0) and aliases in tools/rais_score.py.

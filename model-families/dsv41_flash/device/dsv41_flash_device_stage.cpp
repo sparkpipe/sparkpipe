@@ -1,26 +1,26 @@
 #include <fcntl.h>
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include "inference/runner/device_indexer.h"
-#include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_cxx.h"
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_dsv41_flash_device_stage.h"
 #include "sparkpipe/spark_dsv41_flash_family.h"
-#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_rope_plan.h"
 
-#define DD_SLICES 64u
 #define DD_ALIGNMENT 128u
 #define DD_ENGRAM_FILE "dsv41_flash.engram.pack"
 
 template<uint32_t TP>
-struct D41Device
+struct D41Device : SparkDeviceStageModel<D41Device<TP>>
 {
+	static constexpr bool kHasCustomClose = true;
+	static constexpr uint32_t kMaxSlices = 64u;
+	static constexpr const char *Tag(void) { return "sparkpipe_dsv41_flash_device"; }
+	static constexpr const char *Name(void) { return "deepseek-v4.1-flash"; }
+
 	static constexpr uint32_t kHidden = SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION;
 	static constexpr uint32_t kLayers = SPARK_DSV41_FLASH_MODEL_LAYER_COUNT;
 	static constexpr uint32_t kVocab = SPARK_DSV41_FLASH_MODEL_OUTPUT_VOCAB_COUNT;
@@ -71,16 +71,9 @@ struct D41Device
 	static_assert(kCandidateBlocks <= SPARK_INDEXER_MAX_TOPK && kCandidateBlock != 0u, "the candidate blocks fit the shared top-k");
 	static_assert(kIndexDim > kRope && kIndexDim % 32u == 0u, "an index head ropes its last 64 dimensions and rounds in 32-wide FP4 blocks");
 
-	struct Hyper
-	{
-		SparkTensor fn;
-		SparkTensor base;
-		SparkTensor scale;
-	};
-
 	struct Layer
 	{
-		Hyper hyper[2];
+		SparkDeviceHyper hyper[2];
 		SparkTensor norm[2];
 		SparkDeviceWeight q_a;
 		SparkDeviceWeight q_b;
@@ -190,20 +183,9 @@ struct D41Device
 		SparkDeviceQueue *queue;
 	};
 
-	static uint64_t Max(uint64_t a, uint64_t b)
-	{
-		return a > b ? a : b;
-	}
-
-	static uint32_t RatioSlot(uint32_t ratio)
-	{
-		return ratio == 2u ? 0u : 1u;
-	}
-
-	static uint32_t EngramLayer(uint32_t which)
-	{
-		return which == 0u ? SPARK_DSV41_FLASH_MODEL_ENGRAM_LAYER_0 : SPARK_DSV41_FLASH_MODEL_ENGRAM_LAYER_1;
-	}
+	static void PreInit(State *state) { state->engram_fd = -1; }
+	static uint32_t RatioSlot(uint32_t ratio) { return ratio == 2u ? 0u : 1u; }
+	static uint32_t EngramLayer(uint32_t which) { return which == 0u ? SPARK_DSV41_FLASH_MODEL_ENGRAM_LAYER_0 : SPARK_DSV41_FLASH_MODEL_ENGRAM_LAYER_1; }
 
 	static void RopeTable(float *table, uint32_t yarn)
 	{
@@ -239,7 +221,7 @@ struct D41Device
 	{
 		SparkDeviceStageShape *shape = &state->shape;
 		memset(shape, 0, sizeof(*shape));
-		shape->tag = "sparkpipe_dsv41_flash_device";
+		shape->tag = Tag();
 		shape->hidden = kHidden;
 		shape->vocab = kVocab;
 		shape->layers = kLayers;
@@ -272,32 +254,30 @@ struct D41Device
 	{
 		const uint32_t positions = state->stage.max_positions < kDenseKeys ? state->stage.max_positions : kDenseKeys;
 		const uint64_t partitions = 2u * (((uint64_t)positions + 127u) / 128u);
-		return Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, positions),
+		return SparkDeviceStageMax(SparkOpsAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, positions),
 			(uint64_t)state->stage.max_rows * kHeads * partitions * (kHeadDim + 2u) * sizeof(float));
 	}
 
-	static uint32_t ScoreStride(const State *state)
-	{
-		return SparkIndexerScoreStride(state->stage.max_positions);
-	}
+	static uint32_t ScoreStride(const State *state) { return SparkIndexerScoreStride(state->stage.max_positions); }
 
 	static uint64_t ScoreFloats(const State *state)
 	{
 		const uint32_t dense = state->stage.max_positions < kCandidateKeys ? state->stage.max_positions : kCandidateKeys;
-		return Max((uint64_t)state->stage.max_rows * SparkIndexerScoreStride(dense), (uint64_t)ScoreStride(state));
+		return SparkDeviceStageMax((uint64_t)state->stage.max_rows * SparkIndexerScoreStride(dense), (uint64_t)ScoreStride(state));
 	}
 
 	static uint64_t BlockFloats(const State *state)
 	{
-		return Max(ScoreFloats(state) / kCandidateBlock + (uint64_t)state->stage.max_rows * SPARK_INDEXER_SCORE_ALIGN,
+		return SparkDeviceStageMax(ScoreFloats(state) / kCandidateBlock + (uint64_t)state->stage.max_rows * SPARK_INDEXER_SCORE_ALIGN,
 			(uint64_t)SparkIndexerBlockStride(ScoreStride(state), kCandidateBlock));
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = kHidden, routes = rows * kTopK, table = rows * sizeof(uint32_t);
-		const uint64_t dequant = Max(Max(Max((uint64_t)kQLora * kHidden, (uint64_t)kQueryWidth * kQLora), (uint64_t)kIndexWidth * kQLora),
-			Max((uint64_t)kHidden * kOutputWidth, Max((uint64_t)2u * kSharedRows * kHidden, (uint64_t)kEngramKvLocal * kEngramEmbed)));
+		const uint64_t dequant = SparkDeviceStageMax(SparkDeviceStageMax(SparkDeviceStageMax((uint64_t)kQLora * kHidden, (uint64_t)kQueryWidth * kQLora),
+			(uint64_t)kIndexWidth * kQLora),
+			SparkDeviceStageMax((uint64_t)kHidden * kOutputWidth, SparkDeviceStageMax((uint64_t)2u * kSharedRows * kHidden, (uint64_t)kEngramKvLocal * kEngramEmbed)));
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * kResidual * 2u, &state->streams },
@@ -340,51 +320,39 @@ struct D41Device
 			{ rows * kEngramKv * 2u, &state->engram_gathered },
 			{ rows * 2u * kSharedRows * 2u, &state->ffn.gate_up },
 			{ rows * kSharedRows * 2u, &state->ffn.act },
-			{ routes * sizeof(uint32_t), &state->experts.experts },
-			{ routes * sizeof(float), &state->experts.weights },
-			{ routes * 2u * kMoeInter * 2u, &state->experts.gate_up },
-			{ routes * kMoeInter * 2u, &state->experts.act },
-			{ routes * hidden * 2u, &state->experts.out },
-			{ (routes + 1u) * hidden * 2u, &state->experts.sorted },
 			{ dequant * 2u, &state->stage.dequant }
 		};
-		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
-		for ( uint32_t index = 0u; index < count; index++ )
-			slices[index] = plan[index];
-		return count;
+		uint32_t count = SparkDeviceStageAppendSlices(slices, 0u, plan);
+		return SparkDeviceStageAppendRoutedScratch(&state->experts, routes, kMoeInter, hidden, slices, count);
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **out, SparkStageRunnerModelGeometry *geometry)
+	static uint32_t RecurrentPools(const State *state, SparkDeviceStageRecurrentPlan *pools)
 	{
-		SparkDeviceStageSlice slices[DD_SLICES];
-		State *state = (State *)calloc(1u, sizeof(State));
-		SparkStatus status;
-		*out = state;
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		state->engram_fd = -1;
-		Shapes(state);
-		const SparkDeviceStageRecurrentPlan pools[] = { { kPairCaches, 2u * kHeadDim * sizeof(float) }, { 1u, kHistory * sizeof(int32_t) } };
+		(void)state;
+		pools[0] = { kPairCaches, 2u * kHeadDim * sizeof(float) };
+		pools[1] = { 1u, kHistory * sizeof(int32_t) };
+		return 2u;
+	}
+
+	static SparkStatus Configure(State *state, const SparkStageRunnerModelOpen *request)
+	{
+		(void)request;
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", kHidden }, { "layers", kLayers }, { "vocab", kVocab }, { "vocab_rows", kVocab / TP }, { "heads", kHeads },
 			{ "experts", kExperts }, { "local_experts", kLocalExperts }, { "top_k", kTopK }, { "shared_rows", kSharedRows }
 		};
-		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
+		SparkStatus status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
 		if ( status == SPARK_STATUS_OK && (SparkNamedPackConfigU32(&state->stage.pack, "engram_pad", &state->engram_pad) != SPARK_STATUS_OK ||
 			SparkNamedPackConfigU32(&state->stage.pack, "engram_rows_0", &state->engram_rows[0]) != SPARK_STATUS_OK ||
 			SparkNamedPackConfigU32(&state->stage.pack, "engram_rows_1", &state->engram_rows[1]) != SPARK_STATUS_OK) )
 			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks the engram pad id or table rows");
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), pools,
-				sizeof(pools) / sizeof(pools[0]), request->configuration->state_budget_bytes);
-		if ( status == SPARK_STATUS_OK )
-			status = OpenEngram(state, request->configuration->rank_pack_path);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		return status;
+	}
+
+	static SparkStatus AfterReserve(State *state, const SparkStageRunnerModelOpen *request)
+	{
+		return OpenEngram(state, request->configuration->rank_pack_path);
 	}
 
 	static SparkStatus OpenEngram(State *state, const char *rank_pack_path)
@@ -444,49 +412,12 @@ struct D41Device
 			close(state->engram_fd);
 		if ( state->engram_open != 0u )
 			SparkNamedPackClose(&state->engram_pack);
-		if ( state->engram_ids.handle != 0u )
-			(void)SparkDeviceFree(&state->engram_ids);
-		if ( state->engram_payload.handle != 0u )
-			(void)SparkDeviceFree(&state->engram_payload);
-		if ( state->engram_scale.handle != 0u )
-			(void)SparkDeviceFree(&state->engram_scale);
-		if ( state->engram_local_ids.handle != 0u )
-			(void)SparkDeviceFree(&state->engram_local_ids);
-		if ( state->pre_init.handle != 0u )
-			(void)SparkDeviceFree(&state->pre_init);
+		SparkDeviceBuffer *buffers[] = { &state->engram_ids, &state->engram_payload, &state->engram_scale, &state->engram_local_ids, &state->pre_init };
+		for ( uint32_t index = 0u; index < (uint32_t)(sizeof(buffers) / sizeof(buffers[0])); index++ )
+			if ( buffers[index]->handle != 0u )
+				(void)SparkDeviceFree(buffers[index]);
 		free(state->host_last);
 		SparkDeviceStageClose(model);
-	}
-
-	static SparkStatus BindHyper(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *prefix, Hyper *hyper)
-	{
-		char name[48];
-		snprintf(name, sizeof(name), "%s_fn", prefix);
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "f32",
-			(uint64_t)SPARK_HC_COMB_MIXES * kResidual * sizeof(float), &hyper->fn);
-		snprintf(name, sizeof(name), "%s_base", prefix);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "f32", SPARK_HC_COMB_MIXES * sizeof(float), &hyper->base);
-		snprintf(name, sizeof(name), "%s_scale", prefix);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "f32", 3u * sizeof(float), &hyper->scale);
-		return status;
-	}
-
-	static SparkStatus BindExpert(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows,
-		uint64_t columns, SparkDeviceExpertMatrix *matrix)
-	{
-		char scale_name[48];
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", kLocalExperts * rows * (columns / 2u),
-			&matrix->values);
-		matrix->codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
-		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", kLocalExperts * rows * (columns / SPARK_MXFP4_GROUP),
-				&matrix->scale);
-		if ( status == SPARK_STATUS_OK )
-			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, kLocalExperts, kTopK);
-		return status;
 	}
 
 	static SparkStatus BindVector(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t count,
@@ -539,9 +470,11 @@ struct D41Device
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
 	{
 		Layer *layer = &state->layers[index];
-		SparkStatus status = BindHyper(state, weights, index, "attn_hc", &layer->hyper[D41_ATTENTION_PART]);
+		SparkStatus status = SparkDeviceStageBindLayerHyper(&state->stage, weights, index, "attn_hc", "_", SPARK_HC_COMB_MIXES, kResidual, 3u,
+			&layer->hyper[D41_ATTENTION_PART]);
 		if ( status == SPARK_STATUS_OK )
-			status = BindHyper(state, weights, index, "ffn_hc", &layer->hyper[D41_FFN_PART]);
+			status = SparkDeviceStageBindLayerHyper(&state->stage, weights, index, "ffn_hc", "_", SPARK_HC_COMB_MIXES, kResidual, 3u,
+				&layer->hyper[D41_FFN_PART]);
 		if ( status == SPARK_STATUS_OK )
 			status = BindVector(state, weights, index, "attn_norm", kHidden, &layer->norm[D41_ATTENTION_PART]);
 		if ( status == SPARK_STATUS_OK )
@@ -553,11 +486,11 @@ struct D41Device
 		if ( status == SPARK_STATUS_OK )
 			status = BindVector(state, weights, index, "router_bias", kExperts, &layer->router_bias);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w1", kMoeInter, kHidden, &layer->gate);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w1", ".", kLocalExperts, kTopK, kMoeInter, kHidden, SPARK_MXFP4_GROUP, &layer->gate);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w3", kMoeInter, kHidden, &layer->up);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w3", ".", kLocalExperts, kTopK, kMoeInter, kHidden, SPARK_MXFP4_GROUP, &layer->up);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w2", kHidden, kMoeInter, &layer->down);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w2", ".", kLocalExperts, kTopK, kHidden, kMoeInter, SPARK_MXFP4_GROUP, &layer->down);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "shared_gate_up", 2u * kSharedRows, kHidden, &layer->shared_gate_up);
 		if ( status == SPARK_STATUS_OK )
@@ -604,15 +537,9 @@ struct D41Device
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus BindWeights(State *state, const SparkStageRunnerDeviceWeights *weights)
 	{
-		State *state = (State *)model;
-		SparkDeviceStageSlice slices[DD_SLICES];
-		SparkStatus status;
-		(void)geometry;
-		if ( weights == 0 || weights->pack_address == 0u || weights->pack_bytes != state->stage.pack_bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "bind_device needs the device mapping of the whole rank pack");
-		status = SparkDeviceStageTensor(&state->stage, weights, "final_norm", "f32", kHidden * sizeof(float), &state->final_norm);
+		SparkStatus status = SparkDeviceStageTensor(&state->stage, weights, "final_norm", "f32", kHidden * sizeof(float), &state->final_norm);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageTensor(&state->stage, weights, "engram.token_map", "i32", (uint64_t)kVocab * sizeof(int32_t), &state->token_map);
 		if ( status == SPARK_STATUS_OK )
@@ -627,9 +554,7 @@ struct D41Device
 			status = BindLayer(state, weights, index);
 		if ( status == SPARK_STATUS_OK )
 			status = AllocateHost(state);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
+		return status;
 	}
 
 	static SparkHcParams HcParams(const Frame &frame)
@@ -655,24 +580,12 @@ struct D41Device
 
 	static SparkStatus LinearF32(State *state, const Frame &frame, SparkTensor x, SparkTensor w, SparkTensor y, uint32_t output, uint32_t output_f32 = 1u)
 	{
-		SparkGemvParams params;
-		memset(&params, 0, sizeof(params));
-		params.rows = frame.t.rows;
-		params.input_dimension = params.input_stride = kHidden;
-		params.output_dimension = params.output_stride = output;
-		params.output_f32 = output_f32;
-		params.projection = state->stage.shape->projection;
-		params.row_exact = state->stage.step_exact;
-		return SparkOpsLinear(state->stage.ops, frame.queue, x, w, y, &params);
+		return SparkDeviceStageLinearF32(&state->stage, frame.queue, x, w, y, frame.t.rows, kHidden, output, output_f32);
 	}
 
 	static SparkStatus Norm(State *state, const Frame &frame, SparkTensor input, SparkTensor weight, SparkTensor output, uint32_t width)
 	{
-		SparkNormParams params;
-		memset(&params, 0, sizeof(params));
-		params.rows = frame.t.rows;
-		params.dimension = params.input_stride = params.output_stride = width;
-		params.epsilon = kEpsilon;
+		const SparkNormParams params = SparkDeviceStageNormParams(frame.t.rows, width, kEpsilon);
 		return SparkOpsRmsNormResidual(state->stage.ops, frame.queue, input, 0, weight, output, &params);
 	}
 
@@ -777,12 +690,7 @@ struct D41Device
 			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the engram hash needs the step's token ids");
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		SparkHyperParams expand;
-		memset(&expand, 0, sizeof(expand));
-		expand.rows = frame->t.rows;
-		expand.streams = kStreams;
-		expand.width = kHidden;
-		status = SparkOpsHyperExpand(state->stage.ops, frame->queue, frame->t.hidden, state->streams, &expand);
+		status = SparkDeviceStageHyperExpand(&state->stage, frame->queue, frame->t.hidden, state->streams, frame->t.rows, kStreams, kHidden);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceCopy(frame->queue, state->pre.range, SparkTensorAt(&state->pre_init, 0u, 0u).range,
 				(uint64_t)frame->t.rows * kStreams * sizeof(float));
@@ -800,18 +708,8 @@ struct D41Device
 		return status;
 	}
 
-	static SparkStatus LayerRows(State *state, Frame &frame, uint32_t index)
-	{
-		(void)state;
-		(void)frame;
-		(void)index;
-		return SPARK_STATUS_OK;
-	}
-
-	static bool HasRows(const Frame &frame)
-	{
-		return frame.t.rows != 0u;
-	}
+	static SparkStatus LayerRows(State *state, Frame &frame, uint32_t index) { (void)state; (void)frame; (void)index; return SPARK_STATUS_OK; }
+	static bool HasRows(const Frame &frame) { return frame.t.rows != 0u; }
 
 	static void LayerEnd(State *state, Frame &frame, uint32_t index, SparkStatus status)
 	{
@@ -853,7 +751,7 @@ struct D41Device
 
 	static SparkStatus HyperMix(State *state, Frame &frame, uint32_t index, D41Part part)
 	{
-		const Hyper &hyper = state->layers[index].hyper[part];
+		const SparkDeviceHyper &hyper = state->layers[index].hyper[part];
 		const SparkHcParams params = HcParams(frame);
 		return SparkOpsHcSiteLagged(state->stage.ops, frame.queue, state->streams, hyper.fn, hyper.base, hyper.scale, state->pre, state->post, state->comb,
 			state->mixed, &params);
@@ -1186,23 +1084,9 @@ struct D41Device
 		const uint32_t rows = frame.t.rows;
 		const SparkDeviceRoutedFfnShape ffn = { kLocalExperts, kTopK, kMoeInter, SPARK_GATED_SILU_GATE_LIMIT, 1u, SPARK_DSV41_FLASH_MODEL_SWIGLU_LIMIT, 0.0f, 0u };
 		SparkRouteParams route;
-		SparkStatus status = LinearF32(state, frame, state->normed, layer.router, state->router_logits, kExperts);
-		memset(&route, 0, sizeof(route));
-		route.rows = rows;
-		route.experts = kExperts;
-		route.top_k = kTopK;
-		route.width = kHidden;
-		route.logit_stride = kExperts;
-		route.scale = SPARK_DSV41_FLASH_MODEL_MOE_ROUTED_SCALING_FACTOR;
-		route.tree_sum = 1u;
-		route.score = SPARK_ROUTE_SCORE_SQRT_SOFTPLUS;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteSigmoid(state->stage.ops, frame.queue, state->router_logits, layer.router_bias, state->experts.experts, state->experts.weights,
-				&route);
-		route.local_experts = kLocalExperts;
-		route.first_expert = state->stage.tp_rank * kLocalExperts;
-		if ( status == SPARK_STATUS_OK && TP > 1u )
-			status = SparkOpsRouteLocal(state->stage.ops, frame.queue, state->experts.experts, &route);
+		SparkStatus status = SparkDeviceStageRouteSigmoid(&state->stage, frame.queue, state->normed, layer.router, layer.router_bias, state->router_logits,
+			&state->experts, rows, kHidden, kExperts, kLocalExperts, kTopK, TP, SPARK_DSV41_FLASH_MODEL_MOE_ROUTED_SCALING_FACTOR, 1u, 0u, 0u,
+			SPARK_ROUTE_SCORE_SQRT_SOFTPLUS, kHidden, &route);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceRoutedFfnQdq(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->quantized);
 		if ( status == SPARK_STATUS_OK )
@@ -1214,13 +1098,7 @@ struct D41Device
 		return status;
 	}
 
-	static SparkStatus Tap(State *state, Frame &frame, uint32_t index)
-	{
-		(void)state;
-		(void)frame;
-		(void)index;
-		return SPARK_STATUS_OK;
-	}
+	static SparkStatus Tap(State *state, Frame &frame, uint32_t index) { (void)state; (void)frame; (void)index; return SPARK_STATUS_OK; }
 
 	static SparkStatus Finish(State *state, Frame &frame, uint32_t index)
 	{
@@ -1249,59 +1127,9 @@ struct D41Device
 	{
 		return D41Schedule<D41Device>::Step((State *)model, step, queue);
 	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			"sparkpipe_dsv41_flash_device",
-			"deepseek-v4.1-flash",
-			"official",
-			Open,
-			SparkDeviceStageManifestCheck,
-			SparkDeviceStageBindWeightd,
-			Close,
-			Step,
-			SparkDeviceStageSideband,
-			SparkDeviceStageAttachKv,
-			SparkDeviceStageRecurrentCopy,
-			SparkDeviceStageResetSlot,
-			SparkDeviceStageProbeBuffers,
-			SparkDeviceStageReport,
-			0,
-			SparkDeviceStageLane,
-			0,
-			0,
-			BindDevice,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0u,
-			0u,
-			0
-		};
-		return &interface_table;
-	}
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashDeviceStageModelAt(uint32_t tp_degree)
 {
-	switch ( tp_degree )
-	{
-	case 1u:
-		return D41Device<1u>::Interface();
-	case 2u:
-		return D41Device<2u>::Interface();
-	case 4u:
-		return D41Device<4u>::Interface();
-	case 8u:
-		return D41Device<8u>::Interface();
-	default:
-		return 0;
-	}
+	return SparkDeviceStageTpAt<D41Device>(tp_degree);
 }

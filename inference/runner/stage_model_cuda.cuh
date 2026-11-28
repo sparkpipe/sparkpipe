@@ -1,18 +1,20 @@
 #pragma once
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
 
 #include "sparkpipe/spark_error_site.h"
+#include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_named_pack.h"
 #include "sparkpipe/spark_named_pack_bind.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_manifest.h"
-#include "inference/kernels/kv_shard.cuh"
 #include "sparkpipe/spark_gpu.h"
+#include "inference/kernels/kv_shard.cuh"
 
 #define CUDA_STAGE_SLICE_ALIGNMENT 256u
 #define CUDA_STAGE_MAX_TENSORS 48u
@@ -20,6 +22,7 @@
 #define CUDA_STAGE_MAX_REPORT 12u
 #define CUDA_STAGE_MAX_COUNTERS 4u
 #define CUDA_STAGE_REPORT_BYTES 512u
+#define CUDA_STAGE_MAX_DEVICES 64u
 
 struct CudaStageState
 {
@@ -102,6 +105,42 @@ struct CudaStageTensors
 		snprintf(scaled, sizeof(scaled), "%s%s", name, suffix);
 		Add(scaled, kind, bytes, field, rows);
 	}
+
+	template<class T>
+	void AddElements(const char *name, const char *kind, uint64_t elements, T **field, uint32_t rows = 0u)
+	{
+		Add(name, kind, elements * sizeof(T), field, rows);
+	}
+
+	template<class T>
+	void AddBf16(const char *name, uint64_t elements, T **field, uint32_t rows = 0u)
+	{
+		Add(name, "bf16", elements * sizeof(uint16_t), field, rows);
+	}
+
+	void AddF32(const char *name, uint64_t elements, const float **field, uint32_t rows = 0u)
+	{
+		Add(name, "f32", elements * sizeof(float), field, rows);
+	}
+
+	template<class W, class S>
+	void AddFp8Block(const char *name, uint64_t rows, uint32_t columns, uint32_t block, W **weight, S **scale, uint32_t check_rows = 0u)
+	{
+		Add(name, "fp8_e4m3", rows * columns, weight, check_rows);
+		AddScaled(name, ".scale", "f32", rows * ((columns + block - 1u) / block) * sizeof(float), scale, check_rows);
+	}
+
+	template<class W, class S>
+	SparkStatus AddFp8Block(const char *tag, uint32_t layer, const char *name, uint64_t rows, uint32_t columns, uint32_t block, W **weight, S **scale)
+	{
+		if ( columns % block != 0u )
+		{
+			fprintf(stderr, "%s: layer %u %s has %u columns, not whole %u-column fp8 blocks\n", tag, layer, name, columns, block);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		AddFp8Block(name, rows, columns, block, weight, scale);
+		return SPARK_STATUS_OK;
+	}
 };
 
 typedef struct CudaStagePackValue
@@ -110,6 +149,12 @@ typedef struct CudaStagePackValue
 	uint32_t *value;
 } CudaStagePackValue;
 
+typedef struct CudaStagePackCheck
+{
+	const char *key;
+	uint32_t expected;
+} CudaStagePackCheck;
+
 template<size_t N>
 static inline SparkStatus CudaStagePackValues(const SparkNamedPack *pack, const CudaStagePackValue (&values)[N])
 {
@@ -117,6 +162,208 @@ static inline SparkStatus CudaStagePackValues(const SparkNamedPack *pack, const 
 		if ( SparkNamedPackConfigU32(pack, values[index].key, values[index].value) != SPARK_STATUS_OK )
 			return SPARK_STATUS_PARSE_ERROR;
 	return SPARK_STATUS_OK;
+}
+
+template<size_t N>
+static inline SparkStatus CudaStagePackExpect(const char *tag, const SparkNamedPack *pack, const CudaStagePackCheck (&checks)[N])
+{
+	for ( size_t index = 0u; index < N; ++index )
+	{
+		uint32_t got = 0u;
+		if ( SparkNamedPackConfigU32(pack, checks[index].key, &got) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( got != checks[index].expected )
+		{
+			fprintf(stderr, "%s: pack %s=%u, expected %u\n", tag, checks[index].key, got, checks[index].expected);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+	}
+	return SPARK_STATUS_OK;
+}
+
+static inline bool CudaStagePrefillWave(const SparkStageRunnerStep *step)
+{
+	return step->commit != 0u && step->last_rows_only != 0u && step->tree == 0u;
+}
+
+static inline bool CudaStagePrefillUnified(const SparkStageRunnerStep *step)
+{
+	return CudaStagePrefillWave(step) && step->sequences == 1u;
+}
+
+struct CudaStageSmemGrant
+{
+	std::atomic<uint64_t> granted{0u};
+	std::atomic<int32_t> resident{0};
+
+	bool Grant(const void *function, uint32_t shared_bytes, uint32_t threshold = 0u)
+	{
+		int device = 0;
+		if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= CUDA_STAGE_MAX_DEVICES )
+			return false;
+		const uint64_t bit = UINT64_C(1) << (uint32_t)device;
+		if ( (granted.load() & bit) == 0u )
+		{
+			if ( shared_bytes > threshold &&
+				SparkGpuFuncSetAttribute(function, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
+				return false;
+			granted.fetch_or(bit);
+		}
+		return true;
+	}
+
+	bool GrantBlocks(const void *function, uint32_t shared_bytes, uint32_t threads, uint32_t sms, uint32_t *blocks_out, uint32_t threshold = 0u)
+	{
+		int device = 0, per_sm = 1;
+		if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= CUDA_STAGE_MAX_DEVICES )
+			return false;
+		const uint64_t bit = UINT64_C(1) << (uint32_t)device;
+		if ( (granted.load() & bit) == 0u )
+		{
+			if ( shared_bytes > threshold &&
+				SparkGpuFuncSetAttribute(function, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
+				return false;
+			if ( SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, function, (int)threads, (size_t)shared_bytes) != SPARK_GPU_SUCCESS || per_sm < 1 )
+				per_sm = 1;
+			resident.store(per_sm);
+			granted.fetch_or(bit);
+		}
+		if ( blocks_out != 0 )
+			*blocks_out = sms * (uint32_t)resident.load();
+		return true;
+	}
+};
+
+static inline SparkStatus CudaStageCheckTreeBegin(const SparkStageRunnerStep *step, bool needs_recurrent = false, const void *snapshots = 0)
+{
+	if ( step->tree == 0u )
+		return SPARK_STATUS_OK;
+	if ( step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0 ||
+		(needs_recurrent && (step->parent_rows == 0 || step->state_loads == 0 || step->state_saves == 0 || snapshots == 0)) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	return SPARK_STATUS_OK;
+}
+
+static inline SparkStatus CudaStageKeepRowsCheck(const CudaStageState *state, const SparkStageRunnerStep *step, const uint32_t *kept)
+{
+	if ( state == 0 || step == 0 || kept == 0 || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( step->tree == 0u )
+		return SPARK_STATUS_OK;
+	if ( state->kv_attached == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return SPARK_STATUS_OK;
+}
+
+static inline SparkStatus CudaStageTapPlanApply(const char *tag, const char *detail, const SparkStageRunnerTapPlan *plan, int16_t *tap_output,
+	uint32_t layers, uint16_t **tap_slab, uint64_t *tap_stride, uint32_t *has_output = 0)
+{
+	uint32_t active = 0u;
+	if ( plan == 0 || plan->entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for ( uint32_t index = 0u; index < plan->entry_count; ++index )
+		if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_FINAL &&
+			(plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= layers) )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	for ( uint32_t layer = 0u; layer < layers; ++layer )
+		tap_output[layer] = -1;
+	for ( uint32_t index = 0u; index < plan->entry_count; ++index )
+	{
+		if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+			continue;
+		tap_output[plan->entries[index].layer] = (int16_t)index;
+		active = 1u;
+	}
+	*tap_slab = plan->capture != 0u ? plan->slab : 0;
+	*tap_stride = plan->row_stride_elements;
+	if ( has_output != 0 )
+		*has_output = active;
+	if ( detail != 0 && detail[0] != '\0' )
+		fprintf(stderr, "%s: taps entries=%u capture=%u; %s\n", tag, plan->entry_count, plan->capture, detail);
+	else
+		fprintf(stderr, "%s: taps entries=%u capture=%u\n", tag, plan->entry_count, plan->capture);
+	return SPARK_STATUS_OK;
+}
+
+template<class Routes, class State>
+static inline Routes CudaStageBuildExpertRoutes(const State *state, uint32_t rows, uint32_t top_k, uint32_t local_experts, uint32_t sms)
+{
+	Routes routes;
+	routes.group_row_offset = state->group_row_offset;
+	routes.route_source_token = state->route_source_token;
+	routes.tile_prefix_up = state->tile_prefix_up;
+	routes.tile_prefix_down = state->tile_prefix_down;
+	routes.rows = rows;
+	routes.routes = rows * top_k;
+	routes.top_k = top_k;
+	routes.local_experts = local_experts;
+	routes.multiprocessors = sms;
+	return routes;
+}
+
+template<class OnRun>
+static inline bool CudaStageScanPrefillRuns(const SparkStageRunnerStep *step, uint32_t max_seqs, uint32_t *count_out, OnRun on_run)
+{
+	const uint32_t rows = step->rows;
+	if ( step->sequences == 0u || step->sequences > max_seqs )
+		return false;
+	if ( step->sequences == 1u )
+	{
+		const uint32_t total_ctx = step->gather_context;
+		if ( total_ctx < rows )
+			return false;
+		on_run(0u, 0u, 0u, rows, total_ctx - rows);
+		*count_out = 1u;
+		return true;
+	}
+	if ( step->host_positions == 0 || step->host_sequence_of_row == 0 )
+		return false;
+	uint32_t r = 0u, s = 0u;
+	while ( r < rows && s < step->sequences )
+	{
+		const uint32_t seq_id = step->host_sequence_of_row[r];
+		const uint32_t old_ctx = step->host_positions[r];
+		const uint32_t r0 = r++;
+		while ( r < rows && step->host_sequence_of_row[r] == seq_id && step->host_positions[r] == old_ctx + (r - r0) )
+			++r;
+		on_run(s, seq_id, r0, r - r0, old_ctx);
+		++s;
+	}
+	*count_out = s;
+	return r == rows && s == step->sequences;
+}
+
+template<class Entry>
+static inline SparkStatus CudaStageExpertManifestCheck(const char *tag, const struct SparkWeightdManifest *manifest, const Entry *entries,
+	uint32_t entry_count, uint32_t kind_up, uint32_t kind_down)
+{
+	uint64_t covered = 0u;
+	for ( uint32_t index = 0u; index < entry_count; ++index )
+	{
+		const Entry *entry = &entries[index];
+		if ( entry->tensor_kind != kind_up && entry->tensor_kind != kind_down )
+			continue;
+		const SparkStatus status = SparkExpertPlanesCovered(manifest, entry->tensor_kind, entry->layer_index, entry->weight_codec,
+			entry->scale_encoding, entry->group_count, entry->payload_offset, entry->payload_bytes, entry->scale_offset, entry->scale_bytes, &covered);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr, "%s: the .experts manifest does not cover kind %u layer %u of the pack\n", tag, entry->tensor_kind, entry->layer_index);
+			return status;
+		}
+	}
+	if ( covered != manifest->range_count )
+	{
+		fprintf(stderr, "%s: the .experts manifest holds %u ranges, the pack's experts cover %llu\n", tag, manifest->range_count,
+			(unsigned long long)covered);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return SPARK_STATUS_OK;
+}
+
+static inline uint64_t CudaStageRecordStride(uint32_t max_rows, uint64_t record_floats, uint32_t hidden)
+{
+	const uint64_t unit = (uint64_t)hidden * sizeof(uint16_t) / sizeof(float);
+	return ((uint64_t)max_rows * record_floats + unit - 1u) / unit * unit;
 }
 
 template<size_t N>
@@ -147,6 +394,21 @@ static inline SparkStatus CudaStageRound(const CudaStageState *state, SparkGpuSt
 	return state->services->round(state->services->context, (void *)stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, row_elements, local, full);
 }
 
+static inline SparkStatus CudaStageAllReduceSum(const CudaStageState *state, SparkGpuStream stream, uint16_t *rows_ptr, uint32_t rows)
+{
+	return CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, rows_ptr, rows_ptr);
+}
+
+static inline uint32_t CudaStageStandardReport(const CudaStageState *state, CudaStageReportField *fields, uint32_t ffn_rows, uint32_t expert_first)
+{
+	const CudaStageReportField report[] =
+	{
+		{ "arena_bytes", state->arena_bytes }, { "slots", state->slots }, { "rows", state->max_rows }, { "ffn_rows", ffn_rows },
+		{ "expert_first", expert_first }
+	};
+	return CudaStageReportOut(fields, report);
+}
+
 static inline SparkStatus CudaStageLaunched(void)
 {
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
@@ -156,6 +418,21 @@ static inline void CudaStageRowState(const CudaStageState *state, uint32_t layer
 {
 	if ( state->services->row_state != 0 )
 		state->services->row_state(state->services->context, layer, phase);
+}
+
+template<class Kv, uint32_t THREADS>
+static inline void CudaStageKeepMoveViews(const CudaStageState *state, const LmKvShardView *views, uint32_t count, uint32_t slot_elements,
+	uint32_t rows, const SparkStageRunnerStep *step, const uint32_t *kept, SparkGpuStream stream, bool track_row_state = true)
+{
+	for ( uint32_t index = 0u; index < count; ++index )
+	{
+		if ( track_row_state )
+			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		LM_LAUNCH((LmKvShardPathMoveKernel<Kv, THREADS>), rows, THREADS, 0, stream,
+			views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, slot_elements);
+		if ( track_row_state )
+			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+	}
 }
 
 static inline void CudaStageLayerDone(const CudaStageState *state, uint32_t layer)
@@ -579,6 +856,25 @@ struct CudaStage
 		else if ( SparkNamedPackTensorRange(&state->pack, F::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) !=
 			SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		return SPARK_STATUS_OK;
+	}
+
+	template<class S>
+	static SparkStatus HeadCheck(S *state, SparkStageRunnerModelGeometry *geometry, bool tied, bool prenormed, bool check_vocab_rows)
+	{
+		if ( HeadRanges(state, geometry, tied, prenormed) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		const uint32_t vocab_rows = F::kVocab / state->tp_degree;
+		if ( (check_vocab_rows && (geometry->embed_rows != vocab_rows || geometry->head_rows != vocab_rows)) ||
+			geometry->embed_bytes != (uint64_t)geometry->embed_rows * F::kHidden * sizeof(uint16_t) ||
+			geometry->head_bytes != (uint64_t)geometry->head_rows * F::kHidden * sizeof(uint16_t) ||
+			(!prenormed && geometry->head_norm_bytes != (uint64_t)F::kHidden * sizeof(float)) )
+		{
+			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the stage geometry\n", F::Tag(),
+				geometry->embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
+				(unsigned long long)geometry->head_norm_bytes);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
 		return SPARK_STATUS_OK;
 	}
 

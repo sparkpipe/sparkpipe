@@ -1,7 +1,4 @@
 #include "sparkpipe/spark_ling3_stage_model.h"
-#include "sparkpipe/spark_kv_cache.h"
-#include "sparkpipe/spark_kv_shard.h"
-#include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef LING3_CONTRACT_SHA256
@@ -37,26 +34,13 @@
 #define SPARK_LING3_TP16_MODULE_TAG "ling3_stage"
 #define SPARK_LING3_TP16_WEIGHT_CODEC SPARK_WEIGHT_CODEC_BF16
 #endif
-#define SPARK_LING3_TP16_MAX_ROWS 2048u
-#define SPARK_LING3_TP16_CHECKPOINT_TOKENS 16384u
 
 static void Ling3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
-	kv->regions[0].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
-	kv->regions[0].layer_page_bytes = (uint64_t)SPARK_LING3_STAGE_PAGE_SLOTS * SPARK_LING3_STAGE_KV_SLOT_BYTES;
-	kv->arena_kv_head_count = 1u;
-	kv->arena_head_dim = SPARK_LING3_STAGE_LATENT + SPARK_LING3_STAGE_ROPE;
-	kv->arena_bytes_per_scalar = sizeof(uint16_t);
-	kv->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
-	kv->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
-	kv->capacity_request.layout = SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE;
-	kv->capacity_request.layer_count = SPARK_LING3_STAGE_MLA_LAYERS;
-	kv->capacity_request.compressed_dimension = SPARK_LING3_STAGE_LATENT;
-	kv->capacity_request.position_dimension = SPARK_LING3_STAGE_ROPE;
-	kv->capacity_request.bytes_per_scalar = sizeof(uint16_t);
-	kv->context_shard.degree = tp_degree;
-	kv->context_shard.rank = tp_rank;
-	kv->context_shard.grain = 1u;
+	SparkStageKvInitCompressed(kv, tp_rank, tp_degree, SPARK_STAGE_KV_REGION_LAYER_MAJOR,
+		(uint64_t)SPARK_LING3_STAGE_PAGE_SLOTS * SPARK_LING3_STAGE_KV_SLOT_BYTES,
+		SPARK_LING3_STAGE_LATENT + SPARK_LING3_STAGE_ROPE, SPARK_LING3_STAGE_MLA_LAYERS,
+		SPARK_LING3_STAGE_LATENT, SPARK_LING3_STAGE_ROPE, 0u);
 }
 
 static uint32_t Ling3ServingCollectiveSequences(uint32_t rows, uint32_t tp_degree)
@@ -81,16 +65,13 @@ static const SparkStageServingModel Ling3StageServing =
 	.hidden = SPARK_LING3_STAGE_HIDDEN,
 	.linear_weight_codec = SPARK_LING3_TP16_WEIGHT_CODEC,
 	.expert_weight_codec = SPARK_LING3_TP16_WEIGHT_CODEC,
-	.max_rows = SPARK_LING3_TP16_MAX_ROWS,
+	.max_rows = 2048u,
 	.verify_rows = SPARK_LING3_STAGE_VERIFY_ROWS,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_LING3_STAGE_PAGE_SLOTS,
-	.cache_checkpoint_token_count = SPARK_LING3_TP16_CHECKPOINT_TOKENS,
+	.cache_checkpoint_token_count = 16384u,
 	.kv_layout = Ling3ServingKvLayout,
 	.collective_sequences = Ling3ServingCollectiveSequences,
 };
 
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return SparkStageServingAdapterInterface(&Ling3StageServing);
-}
+SPARK_STAGE_SERVING_EXPORT(Ling3StageServing)

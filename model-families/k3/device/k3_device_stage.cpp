@@ -1,23 +1,22 @@
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "inference/runner/device_indexer.h"
-#include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_cxx.h"
 #include "inference/runner/device_stage_runner.h"
-#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_k3_device_stage.h"
 #include "sparkpipe/spark_k3_family.h"
 
-#define KD_SLICES 48u
 #define KD_ALIGNMENT 128u
 #define KD_SCORE_BUDGET (256ull << 20)
 
 template<uint32_t TP, bool kIndexer>
-struct K3Device
+struct K3Device : SparkDeviceStageModel<K3Device<TP, kIndexer>>
 {
 	using L = K3Layout;
+
+	static constexpr uint32_t kMaxSlices = 48u;
+	static constexpr const char *Tag(void) { return kIndexer ? "sparkpipe_k31_pro_device" : "sparkpipe_k3_device"; }
+	static constexpr const char *Name(void) { return kIndexer ? "kimi-k3.1-pro" : "kimi-k3"; }
 
 	static constexpr int32_t kOk = SPARK_STATUS_OK;
 	static constexpr int32_t kShapeError = SPARK_STATUS_INVALID_ARGUMENT;
@@ -120,9 +119,21 @@ struct K3Device
 		int32_t status;
 	};
 
-	static uint64_t Max(uint64_t a, uint64_t b)
+	static void IndexShape(SparkIndexerShape *index)
 	{
-		return a > b ? a : b;
+		memset(index, 0, sizeof(*index));
+		if ( !kIndexer )
+			return;
+		index->heads = kIndexHeads;
+		index->head_dimension = kIndexDim;
+		index->key_norm = SPARK_INDEXER_NORM_LAYER;
+		index->key_norm_epsilon = K3_INDEX_EPSILON;
+		index->score_scale = K3_INDEX_SCALE * (float)(1.0 / sqrt((double)kIndexHeads));
+		index->topk = kIndexTopk;
+		index->key_ratio = 1u;
+		index->query_stride = kIndexQuery;
+		index->weight_stride = kIndexHeads;
+		index->key_stride = kIndexDim;
 	}
 
 	static void Shapes(State *state)
@@ -131,7 +142,7 @@ struct K3Device
 		SparkDeviceChannelDeltaShape *delta = &state->delta_shape;
 		SparkDeviceLatentAttentionShape *attention = &state->attention_shape;
 		memset(shape, 0, sizeof(*shape));
-		shape->tag = kIndexer ? "sparkpipe_k31_pro_device" : "sparkpipe_k3_device";
+		shape->tag = Tag();
 		shape->hidden = kHidden;
 		shape->vocab = K3_VOCAB;
 		shape->layers = K3_LAYERS;
@@ -174,27 +185,10 @@ struct K3Device
 		shape->index_page_bytes = kIndexer ? SparkIndexerCacheBytes(&state->index_shape, 1u, SPARK_DEVICE_RUNNER_PAGE_SLOTS) : 0u;
 	}
 
-	static void IndexShape(SparkIndexerShape *index)
-	{
-		memset(index, 0, sizeof(*index));
-		if ( !kIndexer )
-			return;
-		index->heads = kIndexHeads;
-		index->head_dimension = kIndexDim;
-		index->key_norm = SPARK_INDEXER_NORM_LAYER;
-		index->key_norm_epsilon = K3_INDEX_EPSILON;
-		index->score_scale = K3_INDEX_SCALE * (float)(1.0 / sqrt((double)kIndexHeads));
-		index->topk = kIndexTopk;
-		index->key_ratio = 1u;
-		index->query_stride = kIndexQuery;
-		index->weight_stride = kIndexHeads;
-		index->key_stride = kIndexDim;
-	}
-
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = kHidden, routes = rows * K3_TOP_K, heads = kMlaHeads, width = kKdaWidth;
-		const uint64_t ffn = Max(kDenseRows, kSharedRows);
+		const uint64_t ffn = SparkDeviceStageMax(kDenseRows, kSharedRows);
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ (uint64_t)kBanks * rows * hidden * 2u, &state->bank },
@@ -209,36 +203,22 @@ struct K3Device
 			{ (uint64_t)TP * rows * kLatentSlice * 2u, &state->latent_lanes },
 			{ rows * kLatent * 2u, &state->latent_out },
 			{ rows * kLatent * 2u, &state->latent_normed },
-			{ rows * 3u * width * 2u, &state->delta.qkv },
-			{ rows * kKdaHeads * 2u, &state->delta.beta },
-			{ rows * kDecayRank * 2u, &state->delta.low },
-			{ rows * width * 2u, &state->delta.decay },
-			{ rows * width * 2u, &state->delta.gate },
-			{ SparkOpsChannelDeltaScratchBytes(state->stage.max_rows, kKdaHeads, K3_KDA_KEY_DIM), &state->delta.delta },
-			{ rows * width * 2u, &state->delta.core },
-			{ rows * width * 2u, &state->delta.gated },
 			{ rows * K3_Q_LORA_RANK * 2u, &state->attention.query_lora },
 			{ rows * heads * kQkDim * 2u, &state->attention.query },
 			{ rows * kSlot * 2u, &state->attention.kv },
 			{ rows * heads * K3_V_HEAD_DIM * 2u, &state->attention.gate },
 			{ rows * heads * kSlot * 2u, &state->attention.packed },
-			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, kMlaHeads, K3_KV_LORA_RANK, state->stage.max_positions),
+			{ SparkDeviceStageMax(SparkOpsAttentionScratchBytes(state->stage.max_rows, kMlaHeads, K3_KV_LORA_RANK, state->stage.max_positions),
 				kIndexer ? SparkIndexerAttentionScratchBytes(state->stage.max_rows, kMlaHeads, K3_KV_LORA_RANK, kIndexTopk) : 0u), &state->attention.records },
 			{ rows * heads * K3_KV_LORA_RANK * 2u, &state->attention.latent },
 			{ rows * heads * K3_V_HEAD_DIM * 2u, &state->attention.value },
 			{ rows * 2u * ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * ffn * 2u, &state->ffn_scratch.act },
-			{ routes * sizeof(uint32_t), &state->experts.experts },
-			{ routes * sizeof(float), &state->experts.weights },
-			{ routes * 2u * kMoeRows * 2u, &state->experts.gate_up },
-			{ routes * kMoeRows * 2u, &state->experts.act },
-			{ routes * kLatent * 2u, &state->experts.out },
-			{ (routes + 1u) * kLatent * 2u, &state->experts.sorted },
-			{ Max(2u * ffn, Max(3u * width, hidden)) * hidden * 2u, &state->stage.dequant }
+			{ SparkDeviceStageMax(2u * ffn, SparkDeviceStageMax(3u * width, hidden)) * hidden * 2u, &state->stage.dequant }
 		};
-		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
-		for ( uint32_t index = 0u; index < count; index++ )
-			slices[index] = plan[index];
+		uint32_t count = SparkDeviceStageAppendSlices(slices, 0u, plan);
+		count = SparkDeviceStageAppendChannelDeltaScratch(&state->stage, width, kKdaHeads, K3_KDA_KEY_DIM, kDecayRank, &state->delta, slices, count);
+		count = SparkDeviceStageAppendRoutedScratch(&state->experts, routes, kMoeRows, kLatent, slices, count);
 		if constexpr ( !kIndexer )
 			return count;
 		else
@@ -251,11 +231,15 @@ struct K3Device
 				{ SparkIndexerScoreBytes(state->score_rows, state->score_stride), &state->index_scores },
 				{ SparkIndexerSelectedBytes(state->stage.max_rows, kIndexTopk), &state->index_selected }
 			};
-			const uint32_t extra = sizeof(index_plan) / sizeof(index_plan[0]);
-			for ( uint32_t index = 0u; index < extra; index++ )
-				slices[count + index] = index_plan[index];
-			return count + extra;
+			return SparkDeviceStageAppendSlices(slices, count, index_plan);
 		}
+	}
+
+	static uint32_t RecurrentPools(const State *state, SparkDeviceStageRecurrentPlan *pools)
+	{
+		pools[0] = { K3_KDA_LAYER_COUNT, SparkDeviceChannelDeltaStateBytes(&state->delta_shape) };
+		pools[1] = { K3_KDA_LAYER_COUNT, SparkDeviceChannelDeltaWindowBytes(&state->delta_shape) };
+		return SPARK_DEVICE_GATED_DELTA_POOLS;
 	}
 
 	static void ScoreRows(State *state)
@@ -277,26 +261,16 @@ struct K3Device
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **out, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus Configure(State *state, const SparkStageRunnerModelOpen *request)
 	{
-		SparkDeviceStageSlice slices[KD_SLICES];
-		State *state = (State *)calloc(1u, sizeof(State));
-		SparkStatus status;
-		*out = state;
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		Shapes(state);
-		const SparkDeviceStageRecurrentPlan pools[] = { { K3_KDA_LAYER_COUNT, SparkDeviceChannelDeltaStateBytes(&state->delta_shape) },
-			{ K3_KDA_LAYER_COUNT, SparkDeviceChannelDeltaWindowBytes(&state->delta_shape) } };
+		(void)request;
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", kHidden }, { "layers", K3_LAYERS }, { "vocab", K3_VOCAB }, { "vocab_rows", K3_VOCAB / TP }, { "experts", K3_EXPERTS },
 			{ "local_experts", K3_EXPERTS }, { "top_k", K3_TOP_K }, { "ffn_rows", kDenseRows }, { "shared_rows", kSharedRows }, { "moe_rows", kMoeRows },
 			{ "latent_rows", kLatentSlice }
 		};
-		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
+		SparkStatus status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
 		if ( status == SPARK_STATUS_OK )
 			status = ExpectIndexer(state);
 		if ( status == SPARK_STATUS_OK && kIndexer )
@@ -304,28 +278,14 @@ struct K3Device
 			state->score_stride = SparkIndexerScoreStride(state->stage.max_positions);
 			ScoreRows(state);
 		}
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), pools,
-				SPARK_DEVICE_GATED_DELTA_POOLS, request->configuration->state_budget_bytes);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, kMlaHeads, &state->rope);
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		return status;
 	}
 
-	static SparkStatus BindExpert(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows,
-		uint64_t columns, SparkDeviceExpertMatrix *matrix)
+	static SparkStatus AfterReserve(State *state, const SparkStageRunnerModelOpen *request)
 	{
-		char scale_name[48];
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", K3_EXPERTS * rows * columns / 2u, &matrix->values);
-		matrix->codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
-		snprintf(scale_name, sizeof(scale_name), "%s_scale", name);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", K3_EXPERTS * rows * (columns / K3_MXFP4_GROUP),
-				&matrix->scale);
-		if ( status == SPARK_STATUS_OK )
-			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, K3_EXPERTS, K3_TOP_K);
-		return status;
+		(void)request;
+		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, kMlaHeads, &state->rope);
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus BindIndexer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Indexer *indexer)
@@ -380,31 +340,23 @@ struct K3Device
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "routed_up", kHidden, kLatentSlice, &layer->routed_up);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w1", kMoeRows, kLatent, &layer->gate);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w1", "_", K3_EXPERTS, K3_TOP_K, kMoeRows, kLatent, K3_MXFP4_GROUP, &layer->gate);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w3", kMoeRows, kLatent, &layer->up);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w3", "_", K3_EXPERTS, K3_TOP_K, kMoeRows, kLatent, K3_MXFP4_GROUP, &layer->up);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w2", kLatent, kMoeRows, &layer->down);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w2", "_", K3_EXPERTS, K3_TOP_K, kLatent, kMoeRows, K3_MXFP4_GROUP, &layer->down);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceFfnBindNamed(&state->stage, weights, index, "shared_gate_up", "shared_down", kSharedRows, &layer->shared);
 		return status;
 	}
 
-	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus BindWeights(State *state, const SparkStageRunnerDeviceWeights *weights)
 	{
-		State *state = (State *)model;
-		SparkDeviceStageSlice slices[KD_SLICES];
 		uint32_t recurrent = 0u, kv = 0u;
-		SparkStatus status;
-		(void)geometry;
-		if ( weights == 0 || weights->pack_address == 0u || weights->pack_bytes != state->stage.pack_bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "bind_device needs the device mapping of the whole rank pack");
-		status = SparkDeviceStageTensor(&state->stage, weights, "attnres_out", "bf16", kHidden * 2u, &state->attnres_out);
+		SparkStatus status = SparkDeviceStageTensor(&state->stage, weights, "attnres_out", "bf16", kHidden * 2u, &state->attnres_out);
 		for ( uint32_t index = 0u; index < K3_LAYERS && status == SPARK_STATUS_OK; index++ )
 			status = BindLayer(state, weights, index, &recurrent, &kv);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
+		return status;
 	}
 
 	static int32_t Note(Context &c, SparkStatus status)
@@ -427,12 +379,7 @@ struct K3Device
 
 	static SparkStatus Norm(Context &c, SparkTensor weight, uint32_t width, float epsilon, SparkTensor input, SparkTensor output)
 	{
-		SparkNormParams norm;
-		memset(&norm, 0, sizeof(norm));
-		norm.rows = c.t.rows;
-		norm.dimension = norm.input_stride = norm.output_stride = width;
-		norm.epsilon = epsilon;
-		norm.round_first = c.state->stage.shape->norm_round_first;
+		const SparkNormParams norm = SparkDeviceStageNormParams(c.t.rows, width, epsilon, c.state->stage.shape->norm_round_first);
 		return SparkOpsRmsNormResidual(c.state->stage.ops, c.queue, input, 0, weight, output, &norm);
 	}
 
@@ -451,12 +398,7 @@ struct K3Device
 		SPARK_FAIL(status);
 	}
 
-	static void Bind(Context &c, uint32_t lane, uint32_t offset, uint32_t layer)
-	{
-		(void)lane;
-		(void)offset;
-		c.layer = &c.state->layers[layer];
-	}
+	static void Bind(Context &c, uint32_t lane, uint32_t offset, uint32_t layer) { (void)lane; (void)offset; c.layer = &c.state->layers[layer]; }
 
 	static void AttnRes(Context &c, uint32_t lane, uint32_t site, uint32_t sources, uint32_t stream)
 	{
@@ -485,12 +427,7 @@ struct K3Device
 			Note(c, Copy(c, c.t.hidden, c.state->partial));
 	}
 
-	static void PartialSetUnsharded(Context &c, uint32_t lane, uint32_t stream)
-	{
-		(void)c;
-		(void)lane;
-		(void)stream;
-	}
+	static void PartialSetUnsharded(Context &c, uint32_t lane, uint32_t stream) { (void)c; (void)lane; (void)stream; }
 
 	static void BankStore(Context &c, uint32_t lane, uint32_t bank, uint32_t stream)
 	{
@@ -608,29 +545,10 @@ struct K3Device
 	{
 		State *state = c.state;
 		const Layer &layer = *c.layer;
-		SparkGemvParams router;
-		SparkRouteParams route;
 		SparkStatus status = SparkDeviceResidualNorm(&state->stage, c.queue, &c.t, 0, layer.mlp_norm, state->normed);
-		memset(&router, 0, sizeof(router));
-		router.rows = c.t.rows;
-		router.input_dimension = router.input_stride = kHidden;
-		router.output_dimension = router.output_stride = K3_EXPERTS;
-		router.output_f32 = 1u;
-		router.projection = state->stage.shape->projection;
-		router.row_exact = state->stage.step_exact;
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinear(state->stage.ops, c.queue, state->normed, layer.router, state->router_logits, &router);
-		memset(&route, 0, sizeof(route));
-		route.rows = c.t.rows;
-		route.experts = K3_EXPERTS;
-		route.top_k = K3_TOP_K;
-		route.width = kLatent;
-		route.logit_stride = K3_EXPERTS;
-		route.scale = K3_ROUTED_SCALE;
-		route.tree_sum = 1u;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteSigmoid(state->stage.ops, c.queue, state->router_logits, layer.router_bias, state->experts.experts, state->experts.weights,
-				&route);
+			status = SparkDeviceStageRouteSigmoid(&state->stage, c.queue, state->normed, layer.router, layer.router_bias, state->router_logits,
+				&state->experts, c.t.rows, kHidden, K3_EXPERTS, K3_EXPERTS, K3_TOP_K, TP, K3_ROUTED_SCALE, 1u, 0u, 0u, 0u, kLatent, 0);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceLinearWeight(&state->stage, c.queue, state->normed, kHidden, &layer.routed_down, TP > 1u ? state->latent_local : state->latent,
 				kLatentSlice, c.t.rows, kHidden, kLatentSlice);
@@ -767,70 +685,20 @@ struct K3Device
 			SPARK_FAIL((SparkStatus)result);
 		return SPARK_STATUS_OK;
 	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			kIndexer ? "sparkpipe_k31_pro_device" : "sparkpipe_k3_device",
-			kIndexer ? "kimi-k3.1-pro" : "kimi-k3",
-			"official",
-			Open,
-			SparkDeviceStageManifestCheck,
-			SparkDeviceStageBindWeightd,
-			SparkDeviceStageClose,
-			Step,
-			SparkDeviceStageSideband,
-			SparkDeviceStageAttachKv,
-			SparkDeviceStageRecurrentCopy,
-			SparkDeviceStageResetSlot,
-			SparkDeviceStageProbeBuffers,
-			SparkDeviceStageReport,
-			0,
-			SparkDeviceStageLane,
-			0,
-			0,
-			BindDevice,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0u,
-			0u,
-			0
-		};
-		return &interface_table;
-	}
 };
 
-template<bool kIndexer>
-static const SparkStageRunnerModelInterface *K3DeviceAt(uint32_t tp_degree)
-{
-	switch ( tp_degree )
-	{
-	case 1u:
-		return K3Device<1u, kIndexer>::Interface();
-	case 2u:
-		return K3Device<2u, kIndexer>::Interface();
-	case 4u:
-		return K3Device<4u, kIndexer>::Interface();
-	case 8u:
-		return K3Device<8u, kIndexer>::Interface();
-	default:
-		return 0;
-	}
-}
+template<uint32_t TP>
+using K3BaseDevice = K3Device<TP, false>;
+
+template<uint32_t TP>
+using K31ProDevice = K3Device<TP, true>;
 
 const SparkStageRunnerModelInterface *SparkK3DeviceStageModelAt(uint32_t tp_degree)
 {
-	return K3DeviceAt<false>(tp_degree);
+	return SparkDeviceStageTpAt<K3BaseDevice>(tp_degree);
 }
 
 const SparkStageRunnerModelInterface *SparkK31ProDeviceStageModelAt(uint32_t tp_degree)
 {
-	return K3DeviceAt<true>(tp_degree);
+	return SparkDeviceStageTpAt<K31ProDevice>(tp_degree);
 }

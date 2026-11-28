@@ -1,32 +1,26 @@
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "inference/runner/device_indexer.h"
-#include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_cxx.h"
 #include "inference/runner/device_stage_runner.h"
-#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_hy4_device_stage.h"
 #include "sparkpipe/spark_hy4_family.h"
 #include "sparkpipe/spark_hy4_tp16_stage_model.h"
 
-#define HD_SLICES 32u
 #define HD_MIXES 8u
 #define HD_SELECT_ROWS 64u
 
 template<class P>
-struct HyDevice
+struct HyDevice : SparkDeviceStageModel<HyDevice<P>>
 {
 	using G = typename P::Geometry;
 	using L = HyLayout<G>;
 
-	struct Hyper
-	{
-		SparkTensor fn;
-		SparkTensor base;
-		SparkTensor scale;
-	};
+	static constexpr bool kHasKeepRows = true;
+	static constexpr bool kTreeVerify = true;
+	static constexpr uint32_t kMaxSlices = 32u;
+	static constexpr const char *Tag(void) { return P::kTag; }
+	static constexpr const char *Name(void) { return P::kName; }
 
 	struct Indexer
 	{
@@ -39,7 +33,7 @@ struct HyDevice
 
 	struct Layer
 	{
-		Hyper hyper[2];
+		SparkDeviceHyper hyper[2];
 		SparkTensor input_norm;
 		SparkTensor post_norm;
 		SparkDeviceLatentAttentionWeights attention;
@@ -66,7 +60,7 @@ struct HyDevice
 		SparkHeadRopeParams index_key_rope;
 		uint32_t score_stride;
 		Layer layers[G::kLayers];
-		Hyper head;
+		SparkDeviceHyper head;
 		uint32_t ffn_rows;
 		uint32_t shared_rows;
 		SparkTensor streams;
@@ -99,11 +93,6 @@ struct HyDevice
 		const Frame *frame;
 		const Layer *layer;
 	};
-
-	static uint64_t Max(uint64_t a, uint64_t b)
-	{
-		return a > b ? a : b;
-	}
 
 	static void Shapes(State *state)
 	{
@@ -174,7 +163,7 @@ struct HyDevice
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = G::kHidden, routes = rows * G::kTopK, heads = L::kRankHeads;
-		const uint64_t ffn = Max(state->ffn_rows, state->shared_rows);
+		const uint64_t ffn = SparkDeviceStageMax(state->ffn_rows, state->shared_rows);
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * L::kResidual * 2u, &state->streams },
@@ -189,94 +178,46 @@ struct HyDevice
 			{ rows * L::kSlot * 2u, &state->attention.kv },
 			{ rows * heads * G::kValueDim * 2u, &state->attention.gate },
 			{ rows * heads * L::kSlot * 2u, &state->attention.packed },
-			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, (uint32_t)heads, G::kLatent, state->stage.max_positions),
+			{ SparkDeviceStageMax(SparkOpsAttentionScratchBytes(state->stage.max_rows, (uint32_t)heads, G::kLatent, state->stage.max_positions),
 				SparkIndexerAttentionScratchBytes(state->stage.max_rows, (uint32_t)heads, G::kLatent, G::kIndexTopk)), &state->attention.records },
 			{ rows * heads * G::kLatent * 2u, &state->attention.latent },
 			{ rows * heads * G::kValueDim * 2u, &state->attention.value },
 			{ rows * 2u * ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * ffn * 2u, &state->ffn_scratch.act },
-			{ routes * sizeof(uint32_t), &state->experts.experts },
-			{ routes * sizeof(float), &state->experts.weights },
-			{ routes * 2u * G::kMoeInter * 2u, &state->experts.gate_up },
-			{ routes * G::kMoeInter * 2u, &state->experts.act },
-			{ routes * hidden * 2u, &state->experts.out },
-			{ (routes + 1u) * hidden * 2u, &state->experts.sorted },
 			{ rows * L::kIndexWidth * 2u, &state->index_query },
 			{ rows * G::kIndexDim * 2u, &state->index_key },
 			{ rows * G::kIndexHeads * sizeof(float), &state->index_weights },
 			{ SparkIndexerScoreBytes(SelectRows(state), state->score_stride), &state->index_scores },
 			{ SparkIndexerSelectedBytes(state->stage.max_rows, G::kIndexTopk), &state->selected },
-			{ Max(Max(Max(2u * ffn, (uint64_t)G::kQLora), Max((uint64_t)heads * L::kQkDim, Max((uint64_t)L::kSlot, hidden))), (uint64_t)L::kIndexWidth) *
-				Max(hidden, (uint64_t)G::kQLora) * 2u, &state->stage.dequant }
+			{ SparkDeviceStageMax(SparkDeviceStageMax(SparkDeviceStageMax(2u * ffn, (uint64_t)G::kQLora),
+				SparkDeviceStageMax((uint64_t)heads * L::kQkDim, SparkDeviceStageMax((uint64_t)L::kSlot, hidden))), (uint64_t)L::kIndexWidth) *
+				SparkDeviceStageMax(hidden, (uint64_t)G::kQLora) * 2u, &state->stage.dequant }
 		};
-		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
-		for ( uint32_t index = 0u; index < count; index++ )
-			slices[index] = plan[index];
-		return count;
+		uint32_t count = SparkDeviceStageAppendSlices(slices, 0u, plan);
+		return SparkDeviceStageAppendRoutedScratch(&state->experts, routes, G::kMoeInter, hidden, slices, count);
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **out, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus Configure(State *state, const SparkStageRunnerModelOpen *request)
 	{
-		SparkDeviceStageSlice slices[HD_SLICES];
-		State *state = (State *)calloc(1u, sizeof(State));
-		SparkStatus status;
-		*out = state;
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		Shapes(state);
-		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
-		if ( status == SPARK_STATUS_OK && (SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->stage.pack, "shared_rows", &state->shared_rows) != SPARK_STATUS_OK) )
-			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows or shared_rows");
-		if ( status == SPARK_STATUS_OK )
-			state->score_stride = SparkIndexerScoreStride(state->stage.max_positions);
+		(void)request;
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
 			{ "experts", G::kExperts }, { "local_experts", G::kLocalExperts }, { "top_k", G::kTopK }
 		};
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
-				request->configuration->state_budget_bytes);
-		if ( status != SPARK_STATUS_OK )
-			return status;
+		if ( SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK ||
+			SparkNamedPackConfigU32(&state->stage.pack, "shared_rows", &state->shared_rows) != SPARK_STATUS_OK )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows or shared_rows");
+		state->score_stride = SparkIndexerScoreStride(state->stage.max_positions);
+		return SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
+	}
+
+	static SparkStatus AfterReserve(State *state, const SparkStageRunnerModelOpen *request)
+	{
+		(void)request;
 		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, L::kRankHeads, &state->rope);
 		IndexRope(state);
-		status = SparkDeviceStageGeometry(&state->stage, geometry);
-		geometry->tree_verify = status == SPARK_STATUS_OK ? 1u : 0u;
-		return status;
-	}
-
-	static SparkStatus BindHyper(State *state, const SparkStageRunnerDeviceWeights *weights, const char *prefix, uint32_t mixes, uint32_t scales, Hyper *hyper)
-	{
-		char name[64];
-		snprintf(name, sizeof(name), "%s_fn", prefix);
-		SparkStatus status = SparkDeviceStageTensor(&state->stage, weights, name, "f32", (uint64_t)mixes * L::kResidual * sizeof(float), &hyper->fn);
-		snprintf(name, sizeof(name), "%s_base", prefix);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageTensor(&state->stage, weights, name, "f32", (uint64_t)mixes * sizeof(float), &hyper->base);
-		snprintf(name, sizeof(name), "%s_scale", prefix);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageTensor(&state->stage, weights, name, "f32", (uint64_t)scales * sizeof(float), &hyper->scale);
-		return status;
-	}
-
-	static SparkStatus BindExpert(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows,
-		uint64_t columns, SparkDeviceExpertMatrix *matrix)
-	{
-		char scale_name[64];
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "fp8", G::kLocalExperts * rows * columns, &matrix->values);
-		matrix->codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
-		matrix->scale_group = SPARK_MXFP8_GROUP;
-		snprintf(scale_name, sizeof(scale_name), "%s_scale", name);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "u8", G::kLocalExperts * rows * (columns / SPARK_MXFP8_GROUP),
-				&matrix->scale);
-		if ( status == SPARK_STATUS_OK )
-			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, G::kLocalExperts, G::kTopK);
-		return status;
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus BindIndexer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Indexer *indexer)
@@ -301,14 +242,11 @@ struct HyDevice
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
 	{
 		Layer *layer = &state->layers[index];
-		char prefix[48];
-		SparkStatus status = SPARK_STATUS_OK;
 		layer->index = index;
-		snprintf(prefix, sizeof(prefix), "layers.%u.attn_hc", index);
-		status = BindHyper(state, weights, prefix, HD_MIXES, 2u, &layer->hyper[HY_ATTENTION_PART]);
-		snprintf(prefix, sizeof(prefix), "layers.%u.mlp_hc", index);
+		SparkStatus status = SparkDeviceStageBindLayerHyper(&state->stage, weights, index, "attn_hc", "_", HD_MIXES, L::kResidual, 2u,
+			&layer->hyper[HY_ATTENTION_PART]);
 		if ( status == SPARK_STATUS_OK )
-			status = BindHyper(state, weights, prefix, HD_MIXES, 2u, &layer->hyper[HY_FFN_PART]);
+			status = SparkDeviceStageBindLayerHyper(&state->stage, weights, index, "mlp_hc", "_", HD_MIXES, L::kResidual, 2u, &layer->hyper[HY_FFN_PART]);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "input_norm", "bf16", G::kHidden * 2u, &layer->input_norm);
 		if ( status == SPARK_STATUS_OK )
@@ -324,11 +262,11 @@ struct HyDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "router_bias", "f32", (uint64_t)G::kExperts * sizeof(float), &layer->router_bias);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w1", G::kMoeInter, G::kHidden, &layer->gate);
+			status = SparkDeviceStageBindExpertMxfp8(&state->stage, weights, index, "moe_w1", G::kLocalExperts, G::kTopK, G::kMoeInter, G::kHidden, SPARK_MXFP8_GROUP, &layer->gate);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w3", G::kMoeInter, G::kHidden, &layer->up);
+			status = SparkDeviceStageBindExpertMxfp8(&state->stage, weights, index, "moe_w3", G::kLocalExperts, G::kTopK, G::kMoeInter, G::kHidden, SPARK_MXFP8_GROUP, &layer->up);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w2", G::kHidden, G::kMoeInter, &layer->down);
+			status = SparkDeviceStageBindExpertMxfp8(&state->stage, weights, index, "moe_w2", G::kLocalExperts, G::kTopK, G::kHidden, G::kMoeInter, SPARK_MXFP8_GROUP, &layer->down);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceFfnBindNamed(&state->stage, weights, index, "shared_gate_up", "shared_down", state->shared_rows, &layer->shared);
 		return status;
@@ -342,27 +280,14 @@ struct HyDevice
 		return indexers;
 	}
 
-	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus BindWeights(State *state, const SparkStageRunnerDeviceWeights *weights)
 	{
-		State *state = (State *)model;
-		SparkDeviceStageSlice slices[HD_SLICES];
-		SparkStatus status;
-		(void)geometry;
-		if ( weights == 0 || weights->pack_address == 0u || weights->pack_bytes != state->stage.pack_bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "bind_device needs the device mapping of the whole rank pack");
-		status = BindHyper(state, weights, "head_hc", G::kStreams, 1u, &state->head);
+		SparkStatus status = SparkDeviceStageBindHyper(&state->stage, weights, "head_hc", "_", G::kStreams, L::kResidual, 1u, &state->head);
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
 			status = BindLayer(state, weights, index);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if ( IndexSlots(state) != G::kIndexLayers || !G::IndexerLayer(0u) )
+		if ( status == SPARK_STATUS_OK && (IndexSlots(state) != G::kIndexLayers || !G::IndexerLayer(0u)) )
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_SCHEMA_ERROR, "the indexer layers must number the model's and include the first layer");
-		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
-	}
-
-	static const Layer &LayerOf(State *state, uint32_t index)
-	{
-		return state->layers[index];
+		return status;
 	}
 
 	static SparkHcParams HcParams(const Frame &frame, uint32_t mixes)
@@ -395,24 +320,15 @@ struct HyDevice
 
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
-		SparkHyperParams params;
-		memset(&params, 0, sizeof(params));
-		params.rows = frame.t.rows;
-		params.streams = G::kStreams;
-		params.width = G::kHidden;
-		return SparkOpsHyperExpand(state->stage.ops, frame.queue, frame.t.hidden, state->streams, &params);
+		return SparkDeviceStageHyperExpand(&state->stage, frame.queue, frame.t.hidden, state->streams, frame.t.rows, G::kStreams, G::kHidden);
 	}
 
 	static SparkStatus HyperNorm(State *state, const Frame &frame, const Layer &layer, HyHyperPart part)
 	{
-		const Hyper &hyper = layer.hyper[part];
+		const SparkDeviceHyper &hyper = layer.hyper[part];
 		const SparkHcParams params = HcParams(frame, HD_MIXES);
-		SparkNormParams norm;
+		const SparkNormParams norm = SparkDeviceStageNormParams(frame.t.rows, G::kHidden, G::kEpsilon);
 		SparkStatus status = SparkOpsHcMix(state->stage.ops, frame.queue, state->streams, hyper.fn, hyper.base, hyper.scale, state->post, state->mixed, &params);
-		memset(&norm, 0, sizeof(norm));
-		norm.rows = frame.t.rows;
-		norm.dimension = norm.input_stride = norm.output_stride = G::kHidden;
-		norm.epsilon = G::kEpsilon;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsRmsNormBf16(state->stage.ops, frame.queue, state->mixed, part == HY_ATTENTION_PART ? layer.input_norm : layer.post_norm,
 				state->normed, &norm);
@@ -450,21 +366,13 @@ struct HyDevice
 		const uint64_t nope_bytes = (uint64_t)(G::kIndexDim - G::kRope) * 2u;
 		const SparkIndexerCache cache = SparkDeviceStageIndexCache(&state->stage, index->layer->index_slot);
 		SparkHeadRopeParams query = state->index_query_rope, key = state->index_key_rope;
-		SparkGemvParams weights;
 		SparkStatus status = SparkDeviceLinearWeight(&state->stage, queue, query_lora, query_lora_stride, &indexer.query, state->index_query, L::kIndexWidth, rows,
 			G::kQLora, L::kIndexWidth);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceLinearWeight(&state->stage, queue, state->normed, G::kHidden, &indexer.key, state->index_key, G::kIndexDim, rows, G::kHidden,
 				G::kIndexDim);
-		memset(&weights, 0, sizeof(weights));
-		weights.rows = rows;
-		weights.input_dimension = weights.input_stride = G::kHidden;
-		weights.output_dimension = weights.output_stride = G::kIndexHeads;
-		weights.output_f32 = 1u;
-		weights.projection = state->stage.shape->projection;
-		weights.row_exact = state->stage.step_exact;
 		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsLinear(state->stage.ops, queue, state->normed, indexer.weights, state->index_weights, &weights);
+			status = SparkDeviceStageLinearF32(&state->stage, queue, state->normed, indexer.weights, state->index_weights, rows, G::kHidden, G::kIndexHeads);
 		query.rows = key.rows = rows;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsHeadRmsNormRope(state->stage.ops, queue, state->index_query, state->index_query, frame.t.positions,
@@ -494,11 +402,6 @@ struct HyDevice
 			&state->attention, &selection, state->normed, state->partial);
 	}
 
-	static SparkStatus AllReduce(State *state, const Frame &frame)
-	{
-		return SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
-	}
-
 	static SparkStatus HyperPost(State *state, const Frame &frame)
 	{
 		const SparkHcParams params = HcParams(frame, HD_MIXES);
@@ -515,31 +418,9 @@ struct HyDevice
 	{
 		const uint32_t rows = frame.t.rows;
 		const SparkDeviceRoutedFfnShape ffn = { G::kLocalExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_GATE_LIMIT, 1u, G::kSwigluLimit, 0.0f, 0u };
-		SparkGemvParams router;
 		SparkRouteParams route;
-		SparkStatus status;
-		memset(&router, 0, sizeof(router));
-		router.rows = rows;
-		router.input_dimension = router.input_stride = G::kHidden;
-		router.output_dimension = router.output_stride = G::kExperts;
-		router.output_f32 = 1u;
-		router.projection = state->stage.shape->projection;
-		router.row_exact = state->stage.step_exact;
-		status = SparkOpsLinear(state->stage.ops, frame.queue, state->normed, layer.router, state->router_logits, &router);
-		memset(&route, 0, sizeof(route));
-		route.rows = rows;
-		route.experts = G::kExperts;
-		route.top_k = G::kTopK;
-		route.width = G::kHidden;
-		route.logit_stride = G::kExperts;
-		route.scale = G::kRouteScale;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteSigmoid(state->stage.ops, frame.queue, state->router_logits, layer.router_bias, state->experts.experts, state->experts.weights,
-				&route);
-		route.local_experts = G::kLocalExperts;
-		route.first_expert = state->stage.tp_rank * G::kLocalExperts;
-		if ( status == SPARK_STATUS_OK && G::kTpDegree > 1u )
-			status = SparkOpsRouteLocal(state->stage.ops, frame.queue, state->experts.experts, &route);
+		SparkStatus status = SparkDeviceStageRouteSigmoid(&state->stage, frame.queue, state->normed, layer.router, layer.router_bias, state->router_logits,
+			&state->experts, rows, G::kHidden, G::kExperts, G::kLocalExperts, G::kTopK, G::kTpDegree, G::kRouteScale, 0u, 0u, 0u, 0u, G::kHidden, &route);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceRoutedFfn(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->normed);
 		if ( status == SPARK_STATUS_OK )
@@ -548,13 +429,6 @@ struct HyDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsRouteCombineShared(state->stage.ops, frame.queue, state->experts.out, state->shared_out, state->partial, &route);
 		return status;
-	}
-
-	static SparkStatus Check(State *state, const Frame &frame)
-	{
-		(void)state;
-		(void)frame;
-		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
@@ -577,62 +451,7 @@ struct HyDevice
 
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *queue)
 	{
-		State *state = (State *)model;
-		SparkDeviceKeepTensors keep;
-		SparkDeviceStepTensors frame;
-		SparkStatus status = SparkDeviceStageKeepTables(&state->stage, step, kept, &keep);
-		if ( status != SPARK_STATUS_OK || step->tree == 0u || keep.moves == 0u )
-			return status;
-		status = SparkDeviceStageKeepRelocate(&state->stage, (SparkDeviceQueue *)queue, step, &keep);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageStepTables(&state->stage, step, &frame);
-		for ( uint32_t index = 0u; index < G::kIndexLayers && status == SPARK_STATUS_OK; index++ )
-		{
-			SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame, 0u);
-			SparkKvParams move = { keep.moves, 1u, G::kIndexDim / 2u, paged.page_slots, paged.pages_per_sequence, 0u, 0u, 0u, paged.pool_pages, G::kIndexDim / 2u, 0u, 0u };
-			paged.pool = SparkDeviceStageIndexCache(&state->stage, index).pool;
-			paged.kv_heads = 1u;
-			status = SparkOpsKvMove(state->stage.ops, (SparkDeviceQueue *)queue, &paged, keep.move_sources, keep.move_destinations, &move);
-		}
-		return status;
-	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			P::kTag,
-			P::kName,
-			"official",
-			Open,
-			SparkDeviceStageManifestCheck,
-			SparkDeviceStageBindWeightd,
-			SparkDeviceStageClose,
-			Step,
-			SparkDeviceStageSideband,
-			SparkDeviceStageAttachKv,
-			SparkDeviceStageRecurrentCopy,
-			SparkDeviceStageResetSlot,
-			SparkDeviceStageProbeBuffers,
-			SparkDeviceStageReport,
-			0,
-			SparkDeviceStageLane,
-			KeepRows,
-			0,
-			BindDevice,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0u,
-			0u,
-			0
-		};
-		return &interface_table;
+		return SparkDeviceStageKeepIndexKv(&((State *)model)->stage, queue, step, kept, G::kIndexLayers, G::kIndexDim);
 	}
 };
 
@@ -645,25 +464,7 @@ struct Hy4Device
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
 };
 
-template<template<uint32_t> class P>
-static const SparkStageRunnerModelInterface *HyDeviceAt(uint32_t tp_degree)
-{
-	switch ( tp_degree )
-	{
-	case 1u:
-		return HyDevice<P<1u>>::Interface();
-	case 2u:
-		return HyDevice<P<2u>>::Interface();
-	case 4u:
-		return HyDevice<P<4u>>::Interface();
-	case 8u:
-		return HyDevice<P<8u>>::Interface();
-	default:
-		return 0;
-	}
-}
-
 const SparkStageRunnerModelInterface *SparkHy4DeviceStageModelAt(uint32_t tp_degree)
 {
-	return HyDeviceAt<Hy4Device>(tp_degree);
+	return SparkDeviceStageAt<HyDevice, Hy4Device>(tp_degree);
 }

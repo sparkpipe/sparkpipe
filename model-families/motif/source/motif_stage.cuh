@@ -757,10 +757,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static uint32_t QuerySequences(uint32_t rows) { return (uint32_t)(((uint64_t)rows * kHeads * MO_SLOT + MO_HIDDEN - 1u) / MO_HIDDEN); }
 	static uint32_t RecordSequences(uint32_t rows) { return (uint32_t)(((uint64_t)rows * kHeads * MO_RECORD * 2u + MO_HIDDEN - 1u) / MO_HIDDEN); }
 
-	static bool PrefillUnified(const SparkStageRunnerStep *step)
-	{
-		return step->commit != 0u && step->last_rows_only != 0u && step->sequences == 1u && step->tree == 0u;
-	}
+	static bool PrefillUnified(const SparkStageRunnerStep *step) { return CudaStagePrefillUnified(step); }
 
 	static SparkStatus Check(int32_t status, const char *site, uint32_t layer)
 	{
@@ -770,24 +767,26 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 
+	static int32_t LinearOut(const uint16_t *weight, const uint16_t *source, uint16_t *dst_bf16, float *dst_f32, uint32_t rows,
+		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
+	{
+		if ( PrefillUnified(step) )
+			return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, dst_bf16, dst_f32, rows, input_dimension, output_dimension,
+				0u, 0u, step->multiprocessors, stream);
+		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, dst_bf16, dst_f32, rows, input_dimension, output_dimension,
+			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
+	}
+
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
-		if ( PrefillUnified(step) )
-			return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
-				0u, 0u, step->multiprocessors, stream);
-		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
-			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
+		return LinearOut(weight, source, destination, (float *)0, rows, input_dimension, output_dimension, step, stream);
 	}
 
 	static int32_t LinearFloat(const uint16_t *weight, const uint16_t *source, float *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
-		if ( PrefillUnified(step) )
-			return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
-				0u, 0u, step->multiprocessors, stream);
-		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
-			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
+		return LinearOut(weight, source, (uint16_t *)0, destination, rows, input_dimension, output_dimension, step, stream);
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
@@ -797,8 +796,9 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			fprintf(stderr, "%s: step refused rows=%u sequences=%u kv_attached=%u\n", G::Tag(), step->rows, step->sequences, state->kv_attached);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0) )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		const SparkStatus status = CudaStageCheckTreeBegin(step);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 		frame->step = step;
 		frame->stream = (SparkGpuStream)stream;
 		frame->layer = 0;
@@ -1000,17 +1000,9 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			constexpr uint32_t shared_bytes = MotifLocalPrefillSharedBytes();
 			if constexpr ( shared_bytes > 48000u )
 			{
-				static std::atomic<uint64_t> lp_granted(0u);
-				int dev = 0;
-				if ( SparkGpuGetDevice(&dev) != SPARK_GPU_SUCCESS || dev < 0 || (uint32_t)dev >= LM_STREAM_MAX_DEVICES )
+				static CudaStageSmemGrant lp_grant;
+				if ( !lp_grant.Grant((const void *)MotifMlaLocalPrefillKernel, shared_bytes) )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				if ( (lp_granted.load() & (UINT64_C(1) << (uint32_t)dev)) == 0u )
-				{
-					if ( SparkGpuFuncSetAttribute((const void *)MotifMlaLocalPrefillKernel,
-							SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-					lp_granted.fetch_or(UINT64_C(1) << (uint32_t)dev);
-				}
 			}
 			const float scale = window ? SPARK_MOTIF_MODEL_WINDOW_SOFTMAX_SCALE : SPARK_MOTIF_MODEL_FULL_SOFTMAX_SCALE;
 			(void)LM_LAUNCH_DEPENDENT((MotifMlaLocalPrefillKernel), dim3(kHeads, (rows + MO_PREFILL_Q_TILE - 1u) / MO_PREFILL_Q_TILE),
@@ -1044,25 +1036,15 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	static SparkStatus FullAttention(State *state, Frame &frame, uint32_t layer) { return Attention(state, frame, layer, false); }
 	static SparkStatus WindowAttention(State *state, Frame &frame, uint32_t layer) { return Attention(state, frame, layer, true); }
-	static SparkStatus AllReduce(State *state, Frame &frame) { return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial); }
+	static SparkStatus AllReduce(State *state, Frame &frame) { return CudaStageAllReduceSum(state, frame.stream, state->partial, frame.step->rows); }
 
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
 		State *state = (State *)model;
-		SparkGpuStream stream = (SparkGpuStream)stream_void;
-		if ( state == 0 || step == 0 || kept == 0 || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->tree == 0u )
-			return SPARK_STATUS_OK;
-		if ( state->kv_attached == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t layer = 0u; layer < MO_LAYERS; ++layer )
-		{
-			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			LM_LAUNCH((LmKvShardPathMoveKernel<MotifKv, MO_THREADS>), step->rows, MO_THREADS, 0, stream, state->views[layer],
-				step->sequence_of_row, step->sequence_row_indices, kept, step->slots, MO_SLOT);
-			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		}
+		const SparkStatus status = CudaStageKeepRowsCheck(state, step, kept);
+		if ( status != SPARK_STATUS_OK || step->tree == 0u )
+			return status;
+		CudaStageKeepMoveViews<MotifKv, MO_THREADS>(state, state->views, MO_LAYERS, MO_SLOT, step->rows, step, kept, (SparkGpuStream)stream_void);
 		return CudaStageLaunched();
 	}
 
@@ -1110,7 +1092,6 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * MO_TOP_K;
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
 		const bool prefill_unified = PrefillUnified(step);
-		LmLocalExpertRoutes expert_routes;
 		SparkStatus status = Check(LinearFloat(w->router, state->normed, state->router_logits, rows, MO_HIDDEN, MO_EXPERTS, step, stream), "router", layer);
 		if ( status == SPARK_STATUS_OK && LmTopkGroupLimitedLaunch<MO_THREADS, MO_EXPERTS, 1u, 1u, MO_TOP_K>(rows, state->router_logits, w->expert_bias,
 				state->route_expert, state->route_weight, SPARK_MOTIF_MODEL_MOE_ROUTED_SCALE, step->route_fault, stream) != SPARK_GPU_SUCCESS )
@@ -1126,15 +1107,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			tile_m, n_up, state->tile_prefix_up, n_down, state->tile_prefix_down);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "route prepare", layer);
-		expert_routes.group_row_offset = state->group_row_offset;
-		expert_routes.route_source_token = state->route_source_token;
-		expert_routes.tile_prefix_up = state->tile_prefix_up;
-		expert_routes.tile_prefix_down = state->tile_prefix_down;
-		expert_routes.rows = rows;
-		expert_routes.routes = routes;
-		expert_routes.top_k = MO_TOP_K;
-		expert_routes.local_experts = kLocalExperts;
-		expert_routes.multiprocessors = sms;
+		const LmLocalExpertRoutes expert_routes = CudaStageBuildExpertRoutes<LmLocalExpertRoutes>(state, rows, MO_TOP_K, kLocalExperts, sms);
 		if ( prefill_unified )
 		{
 			status = Check(LmStreamGemmGrouped<LmBf16Format>(w->moe_w13, LmScaleTensorNone(), state->normed, state->expert_gate_up,
@@ -1240,24 +1213,17 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
-		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, groups = 0u, group_first = 0u, experts = 0u, local = 0u;
-		const CudaStagePackValue values[] =
+		const uint32_t expected_first = configuration->tp_rank * kLocalExperts;
+		const CudaStagePackCheck checks[] =
 		{
-			{ "tp_degree", &degree }, { "tp_rank", &rank }, { "hidden", &hidden }, { "layers", &layers }, { "vocab_rows", &vocab_rows },
-			{ "head_groups", &groups }, { "head_group_first", &group_first }, { "experts", &experts }, { "local_experts", &local },
-			{ "expert_first", &state->expert_first }
+			{ "tp_degree", configuration->tp_degree }, { "tp_rank", configuration->tp_rank }, { "hidden", MO_HIDDEN }, { "layers", MO_LAYERS },
+			{ "vocab_rows", MO_VOCAB / configuration->tp_degree }, { "head_groups", kGroups }, { "head_group_first", configuration->tp_rank * kGroups },
+			{ "experts", MO_EXPERTS }, { "local_experts", kLocalExperts }, { "expert_first", expected_first }
 		};
-		if ( CudaStagePackValues(&state->pack, values) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( degree != configuration->tp_degree || rank != configuration->tp_rank || hidden != MO_HIDDEN || layers != MO_LAYERS ||
-			vocab_rows * degree != MO_VOCAB || groups != kGroups || group_first != rank * kGroups || experts != MO_EXPERTS || local != kLocalExperts ||
-			state->expert_first != rank * kLocalExperts )
-		{
-			fprintf(stderr, "%s: pack is tp %u rank %u hidden %u layers %u groups %u+%u experts %u local %u first %u; the runner is tp %u rank %u\n",
-				G::Tag(), degree, rank, hidden, layers, group_first, groups, experts, local, state->expert_first, configuration->tp_degree,
-				configuration->tp_rank);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
+		const SparkStatus status = CudaStagePackExpect(G::Tag(), &state->pack, checks);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		state->expert_first = expected_first;
 		state->collective_capacity = configuration->device_collective != 0 ? configuration->device_collective->max_active_sequence_count : 0u;
 		if ( state->max_rows > state->collective_capacity || QuerySequences(state->max_rows) > state->collective_capacity ||
 			RecordSequences(state->max_rows) > state->collective_capacity )
@@ -1273,12 +1239,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	{
 		geometry->tree_verify = 1u;
 		geometry->head_norm_round_first = 1u;
-		if ( CudaStage<MotifStage>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( geometry->embed_bytes != (uint64_t)geometry->embed_rows * MO_HIDDEN * sizeof(uint16_t) ||
-			geometry->head_bytes != (uint64_t)geometry->head_rows * MO_HIDDEN * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)MO_HIDDEN * sizeof(float) )
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		return SPARK_STATUS_OK;
+		return CudaStage<MotifStage>::HeadCheck(state, geometry, false, false, false);
 	}
 
 	template<class T>

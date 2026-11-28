@@ -1686,18 +1686,29 @@ struct LingModel : CudaStage<LingModel<G>>
 			output_dimension, exact, step->multiprocessors, stream);
 	}
 
+	template<uint32_t TM, uint32_t TN>
+	static int32_t LaunchMultiDenseTile(const LingMultiDensePlan &plan, const uint16_t *source, uint32_t rows, uint32_t K, uint32_t sms, SparkGpuStream stream)
+	{
+		static CudaStageSmemGrant grant;
+		constexpr uint32_t sh = 4u * (TM + TN) * 128u;
+		uint32_t blocks = sms;
+		if ( !grant.GrantBlocks((const void *)LingMultiDenseMmaKernel<TM, TN, 2u, 4u>, sh, 256u, sms, &blocks, 49152u) )
+			return LM_LAUNCH_ERR_SHAPE;
+		(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<TM, TN, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
+		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
 	static int32_t LaunchMultiDenseBf16(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *source, uint32_t rows,
 		uint32_t K, uint32_t sms, SparkGpuStream stream)
 	{
 		if ( count < 2u || count > 3u || (K & 63u) != 0u )
 			return LM_LAUNCH_ERR_SHAPE;
-		uint32_t n128 = 0u, n64 = 0u;
+		uint32_t n128 = 0u;
 		for ( uint32_t i = 0u; i < count; ++i )
 		{
 			if ( targets[i].output_dimension <= 8u || (targets[i].output_dimension & 1u) != 0u )
 				return LM_LAUNCH_ERR_SHAPE;
 			n128 += (targets[i].output_dimension + 127u) / 128u;
-			n64 += (targets[i].output_dimension + 63u) / 64u;
 		}
 		const bool use_128 = rows >= 256u && ((rows + 63u) / 64u) * n128 >= sms;
 		const uint32_t tile_n = use_128 ? 128u : 64u;
@@ -1712,30 +1723,8 @@ struct LingModel : CudaStage<LingModel<G>>
 			plan.out_dim[i] = targets[i].output_dimension;
 			plan.tile_prefix[i + 1u] = plan.tile_prefix[i] + (targets[i].output_dimension + tile_n - 1u) / tile_n;
 		}
-		uint32_t blocks = sms;
-		if ( use_128 )
-		{
-			constexpr uint32_t sh = 4u * (64u + 128u) * 128u;
-			if ( LingMoeMmaSetup<G, 51u>(LingMultiDenseMmaKernel<64u, 128u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-				return LM_LAUNCH_ERR_SHAPE;
-			(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<64u, 128u, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
-		}
-		else if ( rows <= 32u )
-		{
-			constexpr uint32_t sh = 4u * (32u + 64u) * 128u;
-			if ( LingMoeMmaSetup<G, 52u>(LingMultiDenseMmaKernel<32u, 64u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-				return LM_LAUNCH_ERR_SHAPE;
-			(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<32u, 64u, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
-		}
-		else
-		{
-			constexpr uint32_t sh = 4u * (64u + 64u) * 128u;
-			if ( LingMoeMmaSetup<G, 53u>(LingMultiDenseMmaKernel<64u, 64u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-				return LM_LAUNCH_ERR_SHAPE;
-			(void)LM_LAUNCH_DEPENDENT((LingMultiDenseMmaKernel<64u, 64u, 2u, 4u>), blocks, 256u, sh, stream, plan, source, rows, K);
-		}
-		(void)n64;
-		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		if ( use_128 ) return LaunchMultiDenseTile<64u, 128u>(plan, source, rows, K, sms, stream);
+		return rows <= 32u ? LaunchMultiDenseTile<32u, 64u>(plan, source, rows, K, sms, stream) : LaunchMultiDenseTile<64u, 64u>(plan, source, rows, K, sms, stream);
 	}
 
 	static int32_t LinearMulti(const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *source, uint32_t rows, uint32_t input_dimension,
@@ -1854,25 +1843,24 @@ struct LingModel : CudaStage<LingModel<G>>
 	static float *ReplayRetention(State *state, const LingLayer *layer) { return state->replay_retention + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaWidth; }
 	static float *ReplayWriteGate(State *state, const LingLayer *layer) { return state->replay_write_gate + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaRankHeads; }
 
+	template<class Fn>
+	static void DispatchReplayBeta(bool replay, bool beta_fused, Fn fn)
+	{
+		if ( replay && beta_fused ) fn(std::true_type{}, std::true_type{});
+		else if ( replay ) fn(std::true_type{}, std::false_type{});
+		else if ( beta_fused ) fn(std::false_type{}, std::true_type{});
+		else fn(std::false_type{}, std::false_type{});
+	}
+
 	static void LaunchKdaGates(State *state, const LingLayer *layer, uint32_t rows, bool replay, bool beta_fused, SparkGpuStream stream)
 	{
-		if ( replay )
+		DispatchReplayBeta(replay, beta_fused, [&](auto r_tag, auto b_tag)
 		{
-			if ( beta_fused )
-				(void)LM_LAUNCH_DEPENDENT((LingKdaGatesKernel<G, true, true>), rows, LG_THREADS, 0, stream, state->decay_logit, layer->kda_dt_bias,
-					layer->kda_a_log, state->beta, layer->kda_beta, state->normed, state->retention, state->write_gate,
-					ReplayRetention(state, layer), ReplayWriteGate(state, layer), rows);
-			else
-				(void)LM_LAUNCH_DEPENDENT((LingKdaGatesKernel<G, true, false>), rows, 64u, 0, stream, state->decay_logit, layer->kda_dt_bias,
-					layer->kda_a_log, state->beta, layer->kda_beta, state->normed, state->retention, state->write_gate,
-					ReplayRetention(state, layer), ReplayWriteGate(state, layer), rows);
-		}
-		else if ( beta_fused )
-			(void)LM_LAUNCH_DEPENDENT((LingKdaGatesKernel<G, false, true>), rows, LG_THREADS, 0, stream, state->decay_logit, layer->kda_dt_bias,
-				layer->kda_a_log, state->beta, layer->kda_beta, state->normed, state->retention, state->write_gate, (float *)0, (float *)0, rows);
-		else
-			(void)LM_LAUNCH_DEPENDENT((LingKdaGatesKernel<G, false, false>), rows, 64u, 0, stream, state->decay_logit, layer->kda_dt_bias,
-				layer->kda_a_log, state->beta, layer->kda_beta, state->normed, state->retention, state->write_gate, (float *)0, (float *)0, rows);
+			constexpr bool R = decltype(r_tag)::value, B = decltype(b_tag)::value;
+			(void)LM_LAUNCH_DEPENDENT((LingKdaGatesKernel<G, R, B>), rows, B ? LG_THREADS : 64u, 0, stream, state->decay_logit, layer->kda_dt_bias,
+				layer->kda_a_log, state->beta, layer->kda_beta, state->normed, state->retention, state->write_gate,
+				R ? ReplayRetention(state, layer) : (float *)0, R ? ReplayWriteGate(state, layer) : (float *)0, rows);
+		});
 	}
 
 	static SparkStatus Kda(State *state, const Frame &frame, const LingLayer &entry)
@@ -1955,33 +1943,16 @@ struct LingModel : CudaStage<LingModel<G>>
 		{
 			constexpr uint32_t CONV_BLOCKS = (S::kKdaChannels + LG_THREADS - 1u) / LG_THREADS;
 			constexpr uint32_t DECAY_BLOCKS = (S::kKdaWidth + LG_THREADS - 1u) / LG_THREADS;
-			if ( replay )
+			DispatchReplayBeta(replay, beta_fused, [&](auto r_tag, auto b_tag)
 			{
-				if ( beta_fused )
-					(void)LM_LAUNCH_DEPENDENT((LingKdaPrepSerialKernel<G, true, true>), dim3(sequences, CONV_BLOCKS + DECAY_BLOCKS), LG_THREADS, 0, stream,
-						window, step->recurrent_index, step->sequence_row_begin, step->sequence_row_indices, state->qkv, layer->kda_conv,
-						state->decay_logit, layer->kda_dt_bias, layer->kda_a_log, state->beta, layer->kda_beta, state->normed,
-						state->query, state->key, state->value, state->retention, state->write_gate, ReplayQkv(state, layer),
-						ReplayRetention(state, layer), ReplayWriteGate(state, layer), sequences, rows, step->commit);
-				else
-					(void)LM_LAUNCH_DEPENDENT((LingKdaPrepSerialKernel<G, true, false>), dim3(sequences, CONV_BLOCKS + DECAY_BLOCKS), LG_THREADS, 0, stream,
-						window, step->recurrent_index, step->sequence_row_begin, step->sequence_row_indices, state->qkv, layer->kda_conv,
-						state->decay_logit, layer->kda_dt_bias, layer->kda_a_log, state->beta, layer->kda_beta, state->normed,
-						state->query, state->key, state->value, state->retention, state->write_gate, ReplayQkv(state, layer),
-						ReplayRetention(state, layer), ReplayWriteGate(state, layer), sequences, rows, step->commit);
-			}
-			else if ( beta_fused )
-				(void)LM_LAUNCH_DEPENDENT((LingKdaPrepSerialKernel<G, false, true>), dim3(sequences, CONV_BLOCKS + DECAY_BLOCKS), LG_THREADS, 0, stream,
+				constexpr bool R = decltype(r_tag)::value, B = decltype(b_tag)::value;
+				(void)LM_LAUNCH_DEPENDENT((LingKdaPrepSerialKernel<G, R, B>), dim3(sequences, CONV_BLOCKS + DECAY_BLOCKS), LG_THREADS, 0, stream,
 					window, step->recurrent_index, step->sequence_row_begin, step->sequence_row_indices, state->qkv, layer->kda_conv,
 					state->decay_logit, layer->kda_dt_bias, layer->kda_a_log, state->beta, layer->kda_beta, state->normed,
-					state->query, state->key, state->value, state->retention, state->write_gate, (uint16_t *)0, (float *)0, (float *)0,
-					sequences, rows, step->commit);
-			else
-				(void)LM_LAUNCH_DEPENDENT((LingKdaPrepSerialKernel<G, false, false>), dim3(sequences, CONV_BLOCKS + DECAY_BLOCKS), LG_THREADS, 0, stream,
-					window, step->recurrent_index, step->sequence_row_begin, step->sequence_row_indices, state->qkv, layer->kda_conv,
-					state->decay_logit, layer->kda_dt_bias, layer->kda_a_log, state->beta, layer->kda_beta, state->normed,
-					state->query, state->key, state->value, state->retention, state->write_gate, (uint16_t *)0, (float *)0, (float *)0,
-					sequences, rows, step->commit);
+					state->query, state->key, state->value, state->retention, state->write_gate,
+					R ? ReplayQkv(state, layer) : (uint16_t *)0, R ? ReplayRetention(state, layer) : (float *)0,
+					R ? ReplayWriteGate(state, layer) : (float *)0, sequences, rows, step->commit);
+			});
 		}
 		else if ( prefill_unified && !replay && !beta_fused && step->sequence_row_indices == 0 && rows >= 32u )
 		{
@@ -2117,47 +2088,15 @@ struct LingModel : CudaStage<LingModel<G>>
 		if ( LmPerHeadProjectChainLaunch<LG_THREADS,G::kNope,G::kLatent,S::kQkDim,0u,S::kSlot>(state->mla_q, layer->mla_uk, state->mla_query, S::kMlaRankHeads,
 				rows, stream, exact, force_mma) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		const uint32_t total_ctx = step->gather_context;
 		LingGqaPrefillSeqPlan plan;
 		memset(&plan, 0, sizeof(plan));
 		bool plan_ok = false;
 		uint32_t max_seq_prior = 0u, max_seq_peer = 0u, total_ctx_sum = 0u;
 		if ( prefill_wave )
 		{
-			if ( step->sequences == 1u && total_ctx >= rows )
-			{
-				const uint32_t old_ctx = total_ctx - rows;
-				const uint32_t peer_keys = (degree > 1u && old_ctx != 0u) ? SparkKvShardGatherKeys(view->shard, old_ctx) : 0u;
-				plan.count = 1u;
-				plan.total_prior = old_ctx;
-				plan.total_peer = peer_keys;
-				plan.row_begin[0] = 0u;
-				plan.row_len[0] = rows;
-				plan.old_ctx[0] = old_ctx;
-				plan.prior_off[0] = 0u;
-				plan.peer_off[0] = 0u;
-				plan.peer_keys[0] = peer_keys;
-				plan.ctx_off[0] = 0u;
-				max_seq_prior = old_ctx;
-				max_seq_peer = peer_keys;
-				total_ctx_sum = total_ctx;
-				plan_ok = true;
-			}
-			else if ( step->sequences > 1u && step->sequences <= LG_PREFILL_MAX_SEQS &&
-				step->host_sequence_of_row != 0 && step->host_positions != 0 )
-			{
-				uint32_t r = 0u, s = 0u;
-				bool valid = true;
-				while ( r < rows && s < step->sequences )
+			plan_ok = CudaStageScanPrefillRuns(step, LG_PREFILL_MAX_SEQS, &plan.count,
+				[&](uint32_t s, uint32_t seq_id, uint32_t r0, uint32_t len, uint32_t old_ctx)
 				{
-					const uint32_t seq_id = step->host_sequence_of_row[r];
-					const uint32_t old_ctx = step->host_positions[r];
-					const uint32_t r0 = r;
-					++r;
-					while ( r < rows && step->host_sequence_of_row[r] == seq_id && step->host_positions[r] == old_ctx + (r - r0) )
-						++r;
-					const uint32_t len = r - r0;
-					const uint32_t seq_total = old_ctx + len;
 					const uint32_t peer_keys = (degree > 1u && old_ctx != 0u) ? SparkKvShardGatherKeys(view->shard, old_ctx) : 0u;
 					plan.seq_id[s] = seq_id;
 					plan.row_begin[s] = r0;
@@ -2169,18 +2108,10 @@ struct LingModel : CudaStage<LingModel<G>>
 					plan.ctx_off[s] = total_ctx_sum;
 					plan.total_prior += old_ctx;
 					plan.total_peer += peer_keys;
-					total_ctx_sum += seq_total;
-					if ( old_ctx > max_seq_prior )
-						max_seq_prior = old_ctx;
-					if ( peer_keys > max_seq_peer )
-						max_seq_peer = peer_keys;
-					++s;
-				}
-				if ( r != rows || s != step->sequences )
-					valid = false;
-				plan.count = s;
-				plan_ok = valid;
-			}
+					total_ctx_sum += old_ctx + len;
+					if ( old_ctx > max_seq_prior ) max_seq_prior = old_ctx;
+					if ( peer_keys > max_seq_peer ) max_seq_peer = peer_keys;
+				});
 		}
 		const uint32_t kv_pack_units = (degree > 1u && plan.total_peer != 0u) ?
 			(uint32_t)(((uint64_t)plan.total_peer * S::Kv::kSlotBytes + unit_bytes - 1u) / unit_bytes) : 0u;
@@ -2348,50 +2279,13 @@ struct LingModel : CudaStage<LingModel<G>>
 		memset(&plan, 0, sizeof(plan));
 		bool plan_ok = false;
 		uint32_t max_seq_rows = 0u, max_seq_prior = 0u, max_seq_peer = 0u, max_chunks = 1u;
-		if ( prefill_wave && G::kGqaHeadDim == 128u && (group % rank_heads == 0u || rank_heads % group == 0u) &&
-			step->sequences != 0u && step->sequences <= LG_PREFILL_MAX_SEQS )
+		if ( prefill_wave && G::kGqaHeadDim == 128u && (group % rank_heads == 0u || rank_heads % group == 0u) )
 		{
-			if ( step->sequences == 1u )
-			{
-				const uint32_t total_ctx = step->gather_context;
-				if ( total_ctx >= rows )
+			plan_ok = CudaStageScanPrefillRuns(step, LG_PREFILL_MAX_SEQS, &plan.count,
+				[&](uint32_t s, uint32_t seq_id, uint32_t r0, uint32_t len, uint32_t old_ctx)
 				{
-					const uint32_t old_ctx = total_ctx - rows;
 					const uint32_t peer_keys = (degree > 1u && old_ctx != 0u) ? SparkKvShardGatherKeys(view->shard, old_ctx) : 0u;
-					plan.count = 1u;
-					plan.row_begin[0] = 0u;
-					plan.row_len[0] = rows;
-					plan.old_ctx[0] = old_ctx;
-					plan.prior_off[0] = 0u;
-					plan.peer_off[0] = 0u;
-					plan.peer_keys[0] = peer_keys;
-					plan.total_prior = old_ctx;
-					plan.total_peer = peer_keys;
-					max_seq_rows = rows;
-					max_seq_prior = old_ctx;
-					max_seq_peer = peer_keys;
-					max_chunks = (total_ctx + 511u) / 512u;
-					if ( max_chunks < 1u )
-						max_chunks = 1u;
-					plan_ok = true;
-				}
-			}
-			else if ( step->host_positions != 0 && step->host_sequence_of_row != 0 )
-			{
-				uint32_t r = 0u, s = 0u;
-				bool valid = true;
-				while ( r < rows && s < step->sequences )
-				{
-					const uint32_t seq_id = step->host_sequence_of_row[r];
-					const uint32_t old_ctx = step->host_positions[r];
-					const uint32_t r0 = r;
-					++r;
-					while ( r < rows && step->host_sequence_of_row[r] == seq_id && step->host_positions[r] == old_ctx + (r - r0) )
-						++r;
-					const uint32_t len = r - r0;
-					const uint32_t total_ctx = old_ctx + len;
-					const uint32_t peer_keys = (degree > 1u && old_ctx != 0u) ? SparkKvShardGatherKeys(view->shard, old_ctx) : 0u;
-					const uint32_t nc = (total_ctx + 511u) / 512u;
+					const uint32_t nc = (old_ctx + len + 511u) / 512u;
 					plan.seq_id[s] = seq_id;
 					plan.row_begin[s] = r0;
 					plan.row_len[s] = len;
@@ -2401,21 +2295,11 @@ struct LingModel : CudaStage<LingModel<G>>
 					plan.peer_keys[s] = peer_keys;
 					plan.total_prior += old_ctx;
 					plan.total_peer += peer_keys;
-					if ( len > max_seq_rows )
-						max_seq_rows = len;
-					if ( old_ctx > max_seq_prior )
-						max_seq_prior = old_ctx;
-					if ( peer_keys > max_seq_peer )
-						max_seq_peer = peer_keys;
-					if ( nc > max_chunks )
-						max_chunks = nc;
-					++s;
-				}
-				if ( r != rows || s != step->sequences )
-					valid = false;
-				plan.count = s;
-				plan_ok = valid;
-			}
+					if ( len > max_seq_rows ) max_seq_rows = len;
+					if ( old_ctx > max_seq_prior ) max_seq_prior = old_ctx;
+					if ( peer_keys > max_seq_peer ) max_seq_peer = peer_keys;
+					if ( nc > max_chunks ) max_chunks = nc;
+				});
 		}
 		const uint64_t kv_slot_bytes = (uint64_t)2u * G::kGqaHeadDim * sizeof(uint16_t);
 		const uint32_t a2a_units = (degree > 1u && plan.total_peer != 0u) ?
@@ -2540,132 +2424,117 @@ struct LingModel : CudaStage<LingModel<G>>
 	{
 		const uint32_t max_active = routes < G::kLocalExperts ? routes : G::kLocalExperts;
 		constexpr uint32_t THREADS = G::kMoeInter <= 128u ? 128u : LG_THREADS;
-		constexpr uint32_t BF16_CPG = G::kMoeInter <= 128u ? 1u : 2u;
+		auto launch = [&](auto fmt_tag, auto cpg_tag, const float *s1, const float *s3)
+		{
+			using Format = decltype(fmt_tag);
+			constexpr uint32_t CPG = decltype(cpg_tag)::value;
+			constexpr uint32_t CHUNKS = G::kHidden / (std::is_same<Format, LmFp8>::value ? 16u : 8u);
+			constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+			constexpr uint32_t COLS = (THREADS / LANES) * CPG;
+			(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, Format, THREADS, CPG>),
+				dim3((G::kMoeInter + COLS - 1u) / COLS, max_active), THREADS, 0, stream,
+				layer->moe_w1.weight, s1, layer->moe_w3.weight, s3, normed,
+				state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
+				state->expert_act, rlim);
+		};
 		if ( layer->moe_w1.scale != 0 )
 		{
 			if constexpr ( (G::kHidden % LG_FP8_BLOCK) == 0u )
 			{
-				constexpr uint32_t CHUNKS = G::kHidden / 16u;
-				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-				constexpr uint32_t GROUPS = THREADS / LANES;
-				if constexpr ( G::kMoeInter > 128u )
-				{
-					if ( routes <= 256u )
-						(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, LmFp8, THREADS, 2u>),
-							dim3((G::kMoeInter + 2u * GROUPS - 1u) / (2u * GROUPS), max_active), THREADS, 0, stream,
-							layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed,
-							state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
-							state->expert_act, rlim);
-					else
-						(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, LmFp8, THREADS, 1u>),
-							dim3((G::kMoeInter + GROUPS - 1u) / GROUPS, max_active), THREADS, 0, stream,
-							layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed,
-							state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
-							state->expert_act, rlim);
-				}
+				if ( G::kMoeInter > 128u && routes <= 256u )
+					launch(LmFp8{}, std::integral_constant<uint32_t, 2u>{}, layer->moe_w1.scale, layer->moe_w3.scale);
 				else
-					(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, LmFp8, THREADS, 1u>),
-						dim3((G::kMoeInter + GROUPS - 1u) / GROUPS, max_active), THREADS, 0, stream,
-						layer->moe_w1.weight, layer->moe_w1.scale, layer->moe_w3.weight, layer->moe_w3.scale, normed,
-						state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
-						state->expert_act, rlim);
+					launch(LmFp8{}, std::integral_constant<uint32_t, 1u>{}, layer->moe_w1.scale, layer->moe_w3.scale);
 			}
 		}
 		else
-		{
-			constexpr uint32_t CHUNKS = G::kHidden / 8u;
-			constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-			constexpr uint32_t COLS = (THREADS / LANES) * BF16_CPG;
-			(void)LM_LAUNCH_DEPENDENT((LingMoeExactW1W3SiluKernel<G, LmBf16Format, THREADS, BF16_CPG>),
-				dim3((G::kMoeInter + COLS - 1u) / COLS, max_active), THREADS, 0, stream,
-				layer->moe_w1.weight, (const float *)0, layer->moe_w3.weight, (const float *)0, normed,
-				state->packed_weight, state->active_experts, state->group_row_offset, state->route_source_token,
-				state->expert_act, rlim);
-		}
+			launch(LmBf16Format{}, std::integral_constant<uint32_t, G::kMoeInter <= 128u ? 1u : 2u>{}, (const float *)0, (const float *)0);
 	}
 
 	static void LaunchExactW2(State *state, const LingLayer *layer, uint32_t routes, SparkGpuStream stream)
 	{
 		const uint32_t max_active = routes < G::kLocalExperts ? routes : G::kLocalExperts;
-		constexpr uint32_t BF16_CPG = G::kMoeInter <= 128u ? 1u : 2u;
+		auto launch = [&](auto fmt_tag, auto cpg_tag, const float *s2)
+		{
+			using Format = decltype(fmt_tag);
+			constexpr uint32_t CPG = decltype(cpg_tag)::value;
+			constexpr uint32_t CHUNKS = G::kMoeInter / (std::is_same<Format, LmFp8>::value ? 16u : 8u);
+			constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
+			constexpr uint32_t COLS = (LG_THREADS / LANES) * CPG;
+			(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, Format, CPG>),
+				dim3((G::kHidden + COLS - 1u) / COLS, max_active), LG_THREADS, 0, stream,
+				layer->moe_w2.weight, s2, state->expert_act, state->active_experts,
+				state->group_row_offset, state->expert_out);
+		};
 		if ( layer->moe_w2.scale != 0 )
 		{
 			if constexpr ( (G::kMoeInter % LG_FP8_BLOCK) == 0u )
 			{
-				constexpr uint32_t CHUNKS = G::kMoeInter / 16u;
-				constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-				constexpr uint32_t GROUPS = LG_THREADS / LANES;
-				if constexpr ( G::kMoeInter > 128u )
-				{
-					if ( routes <= 256u )
-						(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, LmFp8, 2u>),
-							dim3((G::kHidden + 2u * GROUPS - 1u) / (2u * GROUPS), max_active), LG_THREADS, 0, stream,
-							layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->active_experts,
-							state->group_row_offset, state->expert_out);
-					else
-						(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, LmFp8, 1u>),
-							dim3((G::kHidden + GROUPS - 1u) / GROUPS, max_active), LG_THREADS, 0, stream,
-							layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->active_experts,
-							state->group_row_offset, state->expert_out);
-				}
+				if ( G::kMoeInter > 128u && routes <= 256u )
+					launch(LmFp8{}, std::integral_constant<uint32_t, 2u>{}, layer->moe_w2.scale);
 				else
-					(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, LmFp8, 1u>),
-						dim3((G::kHidden + GROUPS - 1u) / GROUPS, max_active), LG_THREADS, 0, stream,
-						layer->moe_w2.weight, layer->moe_w2.scale, state->expert_act, state->active_experts,
-						state->group_row_offset, state->expert_out);
+					launch(LmFp8{}, std::integral_constant<uint32_t, 1u>{}, layer->moe_w2.scale);
 			}
 		}
 		else
-		{
-			constexpr uint32_t CHUNKS = G::kMoeInter / 8u;
-			constexpr uint32_t LANES = CHUNKS >= 32u ? 32u : (CHUNKS >= 16u ? 16u : 8u);
-			constexpr uint32_t COLS = (LG_THREADS / LANES) * BF16_CPG;
-			(void)LM_LAUNCH_DEPENDENT((LingMoeExactW2Kernel<G, LmBf16Format, BF16_CPG>),
-				dim3((G::kHidden + COLS - 1u) / COLS, max_active), LG_THREADS, 0, stream,
-				layer->moe_w2.weight, (const float *)0, state->expert_act, state->active_experts,
-				state->group_row_offset, state->expert_out);
-		}
+			launch(LmBf16Format{}, std::integral_constant<uint32_t, G::kMoeInter <= 128u ? 1u : 2u>{}, (const float *)0);
+	}
+
+	template<uint32_t TM, uint32_t WM, uint32_t STAGES>
+	static bool LaunchMmaW1W3Fp8(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t sms, float rlim, SparkGpuStream stream)
+	{
+		static CudaStageSmemGrant grant;
+		constexpr uint32_t sh = STAGES * (TM * 256u + 2u * 64u * 128u);
+		uint32_t blocks = sms;
+		if ( !grant.GrantBlocks((const void *)LingMoeMmaW1W3SiluFp8Kernel<G, TM, WM, STAGES>, sh, 256u, sms, &blocks, 49152u) )
+			return false;
+		LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, TM, WM, STAGES>), blocks, 256u, sh, stream,
+			(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
+			normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+		return true;
+	}
+
+	template<uint32_t TM, uint32_t WM, uint32_t THREADS>
+	static bool LaunchMmaW1W3N80(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t sms, float rlim, SparkGpuStream stream)
+	{
+		static CudaStageSmemGrant grant;
+		constexpr uint32_t sh = 2u * (TM * 128u + 2u * 80u * 128u);
+		uint32_t blocks = sms;
+		if ( !grant.GrantBlocks((const void *)LingMoeMmaW1W3SiluN80Kernel<G, TM, WM, 2u, true>, sh, THREADS, sms, &blocks, 49152u) )
+			return false;
+		LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, TM, WM, 2u, true>), blocks, THREADS, sh, stream,
+			(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+			state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+		return true;
+	}
+
+	template<uint32_t TM, uint32_t WM>
+	static bool LaunchMmaW1W3Bf16(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t sms, float rlim, SparkGpuStream stream)
+	{
+		static CudaStageSmemGrant grant;
+		constexpr uint32_t sh = 4u * (TM * 128u + 2u * 64u * 128u);
+		uint32_t blocks = sms;
+		if ( !grant.GrantBlocks((const void *)LingMoeMmaW1W3SiluBf16Kernel<G, TM, WM, 4u>, sh, 256u, sms, &blocks, 49152u) )
+			return false;
+		LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, TM, WM, 4u>), blocks, 256u, sh, stream,
+			(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
+			state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
+		return true;
 	}
 
 	static bool LaunchMmaW1W3(State *state, const LingLayer *layer, const uint16_t *normed, uint32_t expected_local, uint32_t sms, float rlim, SparkGpuStream stream)
 	{
 		const uint32_t mean = (expected_local + G::kLocalExperts - 1u) / G::kLocalExperts;
 		const uint32_t tile_m = mean > 32u ? 64u : (mean > 16u ? 32u : 16u);
-		uint32_t blocks = sms;
 		if ( layer->moe_w1.scale != 0 )
 		{
 			if constexpr ( (G::kHidden % 128u) == 0u && (G::kMoeInter % 64u) == 0u && G::kMoeInter <= 768u )
 			{
 				LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
 					state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, G::kMoeInter / 64u);
-				if ( tile_m == 64u )
-				{
-					constexpr uint32_t sh = 3u * (64u * 256u + 2u * 64u * 128u);
-					if ( LingMoeMmaSetup<G, 1u>(LingMoeMmaW1W3SiluFp8Kernel<G, 64u, 4u, 3u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-						return false;
-					LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, 64u, 4u, 3u>), blocks, 256u, sh, stream,
-						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
-						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-				}
-				else if ( tile_m == 32u )
-				{
-					constexpr uint32_t sh = 4u * (32u * 256u + 2u * 64u * 128u);
-					if ( LingMoeMmaSetup<G, 2u>(LingMoeMmaW1W3SiluFp8Kernel<G, 32u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-						return false;
-					LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, 32u, 2u, 4u>), blocks, 256u, sh, stream,
-						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
-						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-				}
-				else
-				{
-					constexpr uint32_t sh = 4u * (16u * 256u + 2u * 64u * 128u);
-					if ( LingMoeMmaSetup<G, 3u>(LingMoeMmaW1W3SiluFp8Kernel<G, 16u, 1u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-						return false;
-					LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluFp8Kernel<G, 16u, 1u, 4u>), blocks, 256u, sh, stream,
-						(const uint8_t *)layer->moe_w1.weight, layer->moe_w1.scale, (const uint8_t *)layer->moe_w3.weight, layer->moe_w3.scale,
-						normed, state->packed_weight, state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-				}
-				return true;
+				return tile_m == 64u ? LaunchMmaW1W3Fp8<64u, 4u, 3u>(state, layer, normed, sms, rlim, stream) :
+					tile_m == 32u ? LaunchMmaW1W3Fp8<32u, 2u, 4u>(state, layer, normed, sms, rlim, stream) :
+					LaunchMmaW1W3Fp8<16u, 1u, 4u>(state, layer, normed, sms, rlim, stream);
 			}
 			return false;
 		}
@@ -2673,69 +2542,33 @@ struct LingModel : CudaStage<LingModel<G>>
 		{
 			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
 				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, 1u);
-			if ( tile_m == 64u )
-			{
-				constexpr uint32_t sh = 2u * (64u * 128u + 2u * 80u * 128u);
-				if ( LingMoeMmaSetup<G, 11u>(LingMoeMmaW1W3SiluN80Kernel<G, 64u, 2u, 2u, true>, 320u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, 64u, 2u, 2u, true>), blocks, 320u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			else if ( tile_m == 32u )
-			{
-				constexpr uint32_t sh = 2u * (32u * 128u + 2u * 80u * 128u);
-				if ( LingMoeMmaSetup<G, 12u>(LingMoeMmaW1W3SiluN80Kernel<G, 32u, 1u, 2u, true>, 160u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, 32u, 1u, 2u, true>), blocks, 160u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			else
-			{
-				constexpr uint32_t sh = 2u * (16u * 128u + 2u * 80u * 128u);
-				if ( LingMoeMmaSetup<G, 13u>(LingMoeMmaW1W3SiluN80Kernel<G, 16u, 1u, 2u, true>, 160u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluN80Kernel<G, 16u, 1u, 2u, true>), blocks, 160u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			return true;
+			return tile_m == 64u ? LaunchMmaW1W3N80<64u, 2u, 320u>(state, layer, normed, sms, rlim, stream) :
+				tile_m == 32u ? LaunchMmaW1W3N80<32u, 1u, 160u>(state, layer, normed, sms, rlim, stream) :
+				LaunchMmaW1W3N80<16u, 1u, 160u>(state, layer, normed, sms, rlim, stream);
 		}
 		else if constexpr ( (G::kHidden % 64u) == 0u && (G::kMoeInter % 64u) == 0u )
 		{
 			LM_LAUNCH_DEPENDENT((LingBuildTilePrefixKernel), 1u, 32u, 0, stream,
 				state->group_row_offset, state->tile_prefix_up, G::kLocalExperts, tile_m, G::kMoeInter / 64u);
-			if ( tile_m == 64u )
-			{
-				constexpr uint32_t sh = 4u * (64u * 128u + 2u * 64u * 128u);
-				if ( LingMoeMmaSetup<G, 21u>(LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 64u, 4u, 4u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			else if ( tile_m == 32u )
-			{
-				constexpr uint32_t sh = 4u * (32u * 128u + 2u * 64u * 128u);
-				if ( LingMoeMmaSetup<G, 22u>(LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 32u, 2u, 4u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			else
-			{
-				constexpr uint32_t sh = 4u * (16u * 128u + 2u * 64u * 128u);
-				if ( LingMoeMmaSetup<G, 23u>(LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-					return false;
-				LM_LAUNCH_DEPENDENT((LingMoeMmaW1W3SiluBf16Kernel<G, 16u, 1u, 4u>), blocks, 256u, sh, stream,
-					(const uint16_t *)layer->moe_w1.weight, (const uint16_t *)layer->moe_w3.weight, normed, state->packed_weight,
-					state->group_row_offset, state->tile_prefix_up, state->route_source_token, state->expert_act, rlim);
-			}
-			return true;
+			return tile_m == 64u ? LaunchMmaW1W3Bf16<64u, 4u>(state, layer, normed, sms, rlim, stream) :
+				tile_m == 32u ? LaunchMmaW1W3Bf16<32u, 2u>(state, layer, normed, sms, rlim, stream) :
+				LaunchMmaW1W3Bf16<16u, 1u>(state, layer, normed, sms, rlim, stream);
 		}
 		return false;
+	}
+
+	template<uint32_t TM, uint32_t WM>
+	static bool LaunchSolarW2Slice(State *state, const LingLayer *layer, uint32_t col_begin, uint32_t cur_cols, uint32_t sms, SparkGpuStream stream)
+	{
+		static CudaStageSmemGrant grant;
+		constexpr uint32_t sh = 2u * ((TM + 64u) * 160u);
+		uint32_t blocks = sms;
+		if ( !grant.GrantBlocks((const void *)LingMoeMmaW2K80SliceKernel<G, TM, WM, 2u, true>, sh, 256u, sms, &blocks, 49152u) )
+			return false;
+		LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, TM, WM, 2u, true>), blocks, 256u, sh, stream,
+			(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
+			state->expert_out, col_begin, cur_cols);
+		return true;
 	}
 
 	static bool LaunchSolarW2AndFinalize(State *state, const LingLayer *layer, uint32_t rows, uint32_t routes, uint32_t sms, SparkGpuStream stream)
@@ -2748,16 +2581,9 @@ struct LingModel : CudaStage<LingModel<G>>
 			uint32_t slice_cols = G::kHidden;
 			if ( full_bytes > 16u * 1024u * 1024u )
 			{
-				const uint64_t target_bytes = 10u * 1024u * 1024u;
-				uint32_t raw_cols = (uint32_t)(target_bytes / ((uint64_t)routes * sizeof(uint16_t)));
-				raw_cols = (raw_cols / 256u) * 256u;
-				if ( raw_cols < 256u )
-					raw_cols = 256u;
-				if ( raw_cols > G::kHidden )
-					raw_cols = G::kHidden;
-				slice_cols = raw_cols;
+				uint32_t raw_cols = ((uint32_t)((10u * 1024u * 1024u) / ((uint64_t)routes * sizeof(uint16_t))) / 256u) * 256u;
+				slice_cols = raw_cols < 256u ? 256u : (raw_cols > G::kHidden ? G::kHidden : raw_cols);
 			}
-			uint32_t blocks = sms;
 			uint32_t prev_cur_cols = 0u;
 			for ( uint32_t col_begin = 0u; col_begin < G::kHidden; col_begin += slice_cols )
 			{
@@ -2768,33 +2594,11 @@ struct LingModel : CudaStage<LingModel<G>>
 						state->group_row_offset, state->tile_prefix_down, G::kLocalExperts, tile_m, cur_cols / 64u);
 					prev_cur_cols = cur_cols;
 				}
-				if ( tile_m == 64u )
-				{
-					constexpr uint32_t sh = 2u * ((64u + 64u) * 160u);
-					if ( LingMoeMmaSetup<G, 31u>(LingMoeMmaW2K80SliceKernel<G, 64u, 4u, 2u, true>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-						return false;
-					LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, 64u, 4u, 2u, true>), blocks, 256u, sh, stream,
-						(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
-						state->expert_out, col_begin, cur_cols);
-				}
-				else if ( tile_m == 32u )
-				{
-					constexpr uint32_t sh = 2u * ((32u + 64u) * 160u);
-					if ( LingMoeMmaSetup<G, 32u>(LingMoeMmaW2K80SliceKernel<G, 32u, 2u, 2u, true>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-						return false;
-					LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, 32u, 2u, 2u, true>), blocks, 256u, sh, stream,
-						(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
-						state->expert_out, col_begin, cur_cols);
-				}
-				else
-				{
-					constexpr uint32_t sh = 2u * ((16u + 64u) * 160u);
-					if ( LingMoeMmaSetup<G, 33u>(LingMoeMmaW2K80SliceKernel<G, 16u, 1u, 2u, true>, 256u, sh, sms, &blocks) != LM_LAUNCH_OK )
-						return false;
-					LM_LAUNCH_DEPENDENT((LingMoeMmaW2K80SliceKernel<G, 16u, 1u, 2u, true>), blocks, 256u, sh, stream,
-						(const uint16_t *)layer->moe_w2.weight, state->expert_act, state->group_row_offset, state->tile_prefix_down,
-						state->expert_out, col_begin, cur_cols);
-				}
+				const bool ok = tile_m == 64u ? LaunchSolarW2Slice<64u, 4u>(state, layer, col_begin, cur_cols, sms, stream) :
+					tile_m == 32u ? LaunchSolarW2Slice<32u, 2u>(state, layer, col_begin, cur_cols, sms, stream) :
+					LaunchSolarW2Slice<16u, 1u>(state, layer, col_begin, cur_cols, sms, stream);
+				if ( !ok )
+					return false;
 				(void)LM_LAUNCH_DEPENDENT((LingMoeFinalizeWarpSliceKernel<G::kExpertWeightAfterDown, G::kTopK>),
 					(rows + 3u) / 4u, 128u, 0, stream, state->expert_out, state->route_packed_row, state->route_expert,
 					state->route_weight, state->shared_out, state->partial, rows, G::kLocalExperts, col_begin, cur_cols, G::kHidden);
@@ -2891,16 +2695,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmLocalExpertRoutes expert_routes;
-		expert_routes.group_row_offset = state->group_row_offset;
-		expert_routes.route_source_token = state->route_source_token;
-		expert_routes.tile_prefix_up = state->tile_prefix_up;
-		expert_routes.tile_prefix_down = state->tile_prefix_down;
-		expert_routes.rows = rows;
-		expert_routes.routes = routes;
-		expert_routes.top_k = G::kTopK;
-		expert_routes.local_experts = G::kLocalExperts;
-		expert_routes.multiprocessors = step->multiprocessors;
+		const LmLocalExpertRoutes expert_routes = CudaStageBuildExpertRoutes<LmLocalExpertRoutes>(state, rows, G::kTopK, G::kLocalExperts, step->multiprocessors);
 		const uint32_t expected_local = (uint32_t)(((uint64_t)routes * G::kLocalExperts + G::kExperts - 1u) / G::kExperts);
 		const bool use_exact_moe = !prefill_wave && (exact != 0u || (G::kLocalExperts == G::kExperts ? (rows <= 64u) : (expected_local <= G::kLocalExperts)));
 		const bool use_solar_mma = exact == 0u && G::kMoeInter == 80u && (prefill_wave || rows >= 256u);
@@ -2946,15 +2741,10 @@ struct LingModel : CudaStage<LingModel<G>>
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
 	{
-		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( step->tree != 0u && (G::kVerifyRows == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 ||
-			step->fork_positions == 0 || step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 ||
-			step->state_saves == 0 || state->kda_snapshots == 0) )
+		if ( step->tree != 0u && G::kVerifyRows == 0u )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		frame->step = step;
-		frame->stream = (SparkGpuStream)stream;
-		return SPARK_STATUS_OK;
+		const SparkStatus status = CudaStageCheckTreeBegin(step, true, state->kda_snapshots);
+		return status != SPARK_STATUS_OK ? status : CudaStage<LingModel>::Begin(state, step, stream, frame);
 	}
 
 	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
@@ -2971,10 +2761,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus AllReduce(State *state, const Frame &frame)
-	{
-		return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
-	}
+	static SparkStatus AllReduce(State *state, const Frame &frame) { return CudaStageAllReduceSum(state, frame.stream, state->partial, frame.step->rows); }
 
 	static SparkStatus AddRows(State *state, const Frame &frame)
 	{
@@ -3015,16 +2802,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		{
 			if ( sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			for ( uint32_t index = 0u; index < G::kLayers; ++index )
-			{
-				const LingLayer *layer = &state->layers[index];
-				if ( index % G::kPeriod != G::kPhase )
-					continue;
-				CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-				LM_LAUNCH((LmKvShardPathMoveKernel<typename S::Kv,LG_THREADS>), G::kVerifyRows, LG_THREADS, 0, stream, state->kv_views[layer->kv_index],
-					step->sequence_of_row, step->sequence_row_indices, kept, step->slots, S::kSlot);
-				CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-			}
+			CudaStageKeepMoveViews<typename S::Kv, LG_THREADS>(state, state->kv_views, S::kAttnLayers, S::kSlot, G::kVerifyRows, step, kept, stream);
 		}
 		return CudaStageLaunched();
 	}
@@ -3105,11 +2883,10 @@ struct LingModel : CudaStage<LingModel<G>>
 
 	static SparkStatus Shape(State *state)
 	{
-		const uint64_t record_unit = G::kHidden * sizeof(uint16_t) / sizeof(float);
 		state->kda_state_bytes = (uint64_t)S::kKdaRankHeads * G::kKdaDim * G::kKdaDim * sizeof(float);
 		state->kda_window_bytes = (uint64_t)S::kKdaChannels * G::kConv * sizeof(uint16_t);
-		state->partial_stride = ((uint64_t)state->max_rows * (S::kGqa ? LmGqaShardRecordFloats(G::kGqaHeads, G::kGqaHeadDim, state->tp_degree) :
-			S::kMlaRankHeads * S::kRecord) + record_unit - 1u) / record_unit * record_unit;
+		state->partial_stride = CudaStageRecordStride(state->max_rows, S::kGqa ?
+			LmGqaShardRecordFloats(G::kGqaHeads, G::kGqaHeadDim, state->tp_degree) : S::kMlaRankHeads * S::kRecord, G::kHidden);
 		return SPARK_STATUS_OK;
 	}
 
@@ -3121,23 +2898,21 @@ struct LingModel : CudaStage<LingModel<G>>
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
-		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, experts = 0u, local = 0u, top_k = 0u;
-		const CudaStagePackValue values[] =
+		const uint32_t expected_first = G::kLocalExperts == G::kExperts ? 0u : configuration->tp_rank * G::kLocalExperts;
+		const CudaStagePackCheck checks[] =
 		{
-			{ "tp_degree", &degree }, { "tp_rank", &rank }, { "hidden", &hidden }, { "layers", &layers }, { "vocab_rows", &vocab_rows },
-			{ "ffn_rows", &state->ffn_rows }, { "experts", &experts }, { "local_experts", &local }, { "expert_first", &state->expert_first },
-			{ "top_k", &top_k }
+			{ "tp_degree", configuration->tp_degree }, { "tp_rank", configuration->tp_rank }, { "hidden", G::kHidden }, { "layers", G::kLayers },
+			{ "vocab_rows", G::kVocab / configuration->tp_degree }, { "experts", G::kExperts }, { "local_experts", G::kLocalExperts },
+			{ "expert_first", expected_first }, { "top_k", G::kTopK }
 		};
-		if ( CudaStagePackValues(&state->pack, values) != SPARK_STATUS_OK )
+		const SparkStatus status = CudaStagePackExpect(G::Tag(), &state->pack, checks);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( SparkNamedPackConfigU32(&state->pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( degree != configuration->tp_degree || rank != configuration->tp_rank || hidden != G::kHidden || layers != G::kLayers ||
-			vocab_rows * degree != G::kVocab || (G::kDenseLayers != 0u && (state->ffn_rows == 0u || state->ffn_rows % 64u != 0u)) || experts != G::kExperts ||
-			local != G::kLocalExperts || top_k != G::kTopK || state->expert_first != (G::kLocalExperts == G::kExperts ? 0u : rank * G::kLocalExperts) )
-		{
-			fprintf(stderr, "%s: pack is tp %u rank %u hidden %u layers %u experts %u/%u first %u top_k %u, the runner is tp %u rank %u\n",
-				G::Tag(), degree, rank, hidden, layers, experts, local, state->expert_first, top_k, configuration->tp_degree, configuration->tp_rank);
+		if ( G::kDenseLayers != 0u && (state->ffn_rows == 0u || state->ffn_rows % 64u != 0u) )
 			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
+		state->expert_first = expected_first;
 		if ( S::kGqa && LmGqaShardGeometryValid(G::kGqaHeads, G::kGqaKvHeads, G::kGqaHeadDim, state->tp_degree) == 0u )
 		{
 			fprintf(stderr, "%s: %u query heads over %u KV heads do not shard over %u ranks\n", G::Tag(), G::kGqaHeads, G::kGqaKvHeads, state->tp_degree);
@@ -3150,18 +2925,7 @@ struct LingModel : CudaStage<LingModel<G>>
 	{
 		geometry->tree_verify = G::kVerifyRows != 0u ? 1u : 0u;
 		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
-		if ( CudaStage<LingModel>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( geometry->embed_rows * state->tp_degree != G::kVocab || geometry->head_rows * state->tp_degree != G::kVocab ||
-			geometry->embed_bytes != (uint64_t)geometry->embed_rows * G::kHidden * sizeof(uint16_t) ||
-			geometry->head_bytes != (uint64_t)geometry->head_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
-		{
-			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the stage geometry\n", G::Tag(),
-				geometry->embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
-				(unsigned long long)geometry->head_norm_bytes);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
-		return SPARK_STATUS_OK;
+		return CudaStage<LingModel>::HeadCheck(state, geometry, false, false, true);
 	}
 
 	template<class T>
@@ -3174,16 +2938,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		SparkNamedPackEntry entry;
 		snprintf(full_name, sizeof(full_name), "layers.%u.%s", index, name);
 		if ( SparkNamedPackEntryLoad(&state->pack, full_name, &entry) == SPARK_STATUS_OK && strcmp(entry.kind, "fp8_e4m3") == 0 )
-		{
-			if ( columns % LG_FP8_BLOCK != 0u )
-			{
-				fprintf(stderr, "%s: layer %u %s has %u columns, not whole %u-column fp8 blocks\n", G::Tag(), index, name, columns, LG_FP8_BLOCK);
-				SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-			}
-			tensors->Add(name, "fp8_e4m3", rows * columns, &field->weight);
-			tensors->AddScaled(name, ".scale", "f32", rows * (columns / LG_FP8_BLOCK) * sizeof(float), &field->scale);
-			return SPARK_STATUS_OK;
-		}
+			return tensors->AddFp8Block(G::Tag(), index, name, rows, columns, LG_FP8_BLOCK, &field->weight, &field->scale);
 		field->scale = 0;
 		tensors->Add(name, "bf16", rows * columns * sizeof(uint16_t), &field->weight);
 		return SPARK_STATUS_OK;
@@ -3279,11 +3034,6 @@ struct LingModel : CudaStage<LingModel<G>>
 
 	static uint32_t ReportFields(const State *state, CudaStageReportField *fields)
 	{
-		const CudaStageReportField report[] =
-		{
-			{ "arena_bytes", state->arena_bytes }, { "slots", state->slots }, { "rows", state->max_rows }, { "ffn_rows", state->ffn_rows },
-			{ "expert_first", state->expert_first }
-		};
-		return CudaStageReportOut(fields, report);
+		return CudaStageStandardReport(state, fields, state->ffn_rows, state->expert_first);
 	}
 };

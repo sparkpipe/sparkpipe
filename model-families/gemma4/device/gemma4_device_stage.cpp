@@ -1,9 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include "inference/runner/device_layers.h"
-#include "sparkpipe/spark_error_site.h"
+#include "inference/runner/device_stage_cxx.h"
 #include "sparkpipe/spark_gemma4_26b_stage_model.h"
 #include "sparkpipe/spark_gemma4_31b_stage_model.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
@@ -12,14 +7,17 @@
 #include "sparkpipe/spark_laguna_tp16_stage_model.h"
 #include "sparkpipe/spark_muse_tp16_stage_model.h"
 
-#define GD_SLICES 24u
-
 template<class P>
-struct GemmaDevice
+struct GemmaDevice : SparkDeviceStageModel<GemmaDevice<P>>
 {
 	using G = typename P::Geometry;
 	using L = GemmaLayout<G>;
 
+	static constexpr bool kHasKeepRows = true;
+	static constexpr bool kTreeVerify = true;
+	static constexpr uint32_t kMaxSlices = 24u;
+	static constexpr const char *Tag(void) { return P::kTag; }
+	static constexpr const char *Name(void) { return P::kName; }
 	static_assert(!G::kEmbedNorm || G::kEmbedScale == 1.0f, "the device layers do not cover this Gemma variant yet");
 
 	struct Layer
@@ -64,11 +62,6 @@ struct GemmaDevice
 		SparkDeviceStepTensors t;
 		SparkDeviceQueue *queue;
 	};
-
-	static uint64_t Max(uint64_t a, uint64_t b)
-	{
-		return a > b ? a : b;
-	}
 
 	static void Shapes(State *state)
 	{
@@ -168,11 +161,9 @@ struct GemmaDevice
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = G::kHidden;
-		const uint64_t fused = Max(SparkDeviceAttentionFusedWidth(&state->sliding), SparkDeviceAttentionFusedWidth(&state->full));
-		const uint64_t query = Max(SparkDeviceAttentionQueryWidth(&state->sliding), SparkDeviceAttentionQueryWidth(&state->full));
-		const uint64_t kv = Max(SparkDeviceAttentionKvWidth(&state->sliding), SparkDeviceAttentionKvWidth(&state->full));
-		SparkTensor *experts[] = { &state->experts.routed, &state->experts.logits, &state->experts.experts, &state->experts.weights,
-			&state->experts.normed, &state->experts.gate_up, &state->experts.act, &state->experts.out, &state->experts.sorted };
+		const uint64_t fused = SparkDeviceStageMax(SparkDeviceAttentionFusedWidth(&state->sliding), SparkDeviceAttentionFusedWidth(&state->full));
+		const uint64_t query = SparkDeviceStageMax(SparkDeviceAttentionQueryWidth(&state->sliding), SparkDeviceAttentionQueryWidth(&state->full));
+		const uint64_t kv = SparkDeviceStageMax(SparkDeviceAttentionKvWidth(&state->sliding), SparkDeviceAttentionKvWidth(&state->full));
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * hidden * 2u, &state->normed },
@@ -182,11 +173,11 @@ struct GemmaDevice
 			{ rows * query * 2u, &state->attention.query },
 			{ rows * kv * 2u, &state->attention.key },
 			{ rows * kv * 2u, &state->attention.value },
-			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, state->full.heads, state->full.head_dimension, state->stage.max_positions),
+			{ SparkDeviceStageMax(SparkOpsAttentionScratchBytes(state->stage.max_rows, state->full.heads, state->full.head_dimension, state->stage.max_positions),
 				SparkOpsAttentionScratchBytes(state->stage.max_rows, state->sliding.heads, state->sliding.head_dimension, state->stage.max_positions)),
 				&state->attention.records },
-			{ rows * Max(query, Max(SparkDeviceAttentionHeadGateRows(&state->sliding, G::kTpDegree), SparkDeviceAttentionHeadGateRows(&state->full,
-				G::kTpDegree))) * 2u, &state->attention.gate },
+			{ rows * SparkDeviceStageMax(query, SparkDeviceStageMax(SparkDeviceAttentionHeadGateRows(&state->sliding, G::kTpDegree),
+				SparkDeviceAttentionHeadGateRows(&state->full, G::kTpDegree))) * 2u, &state->attention.gate },
 			{ rows * query * 2u, &state->attention.gated },
 			{ rows * fused / G::kTpDegree * 2u, &state->attention.qkv_local },
 			{ rows * fused * 2u, &state->attention.qkv_gathered },
@@ -199,45 +190,32 @@ struct GemmaDevice
 				(G::kTpDegree > 1u || (plan[index].target != &state->attention.qkv_local && plan[index].target != &state->attention.qkv_gathered)) )
 				slices[count++] = plan[index];
 		if constexpr ( G::kMoe )
-			for ( uint32_t index = 0u; index < sizeof(experts) / sizeof(experts[0]); index++ )
-			{
-				slices[count].bytes = SparkDeviceExpertsScratchBytes(&state->stage, &state->experts_shape, index);
-				slices[count++].target = experts[index];
-			}
+			count = SparkDeviceStageAppendExpertsScratch(&state->stage, &state->experts_shape, &state->experts, slices, count);
 		return count;
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **out, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus Configure(State *state, const SparkStageRunnerModelOpen *request)
 	{
-		SparkDeviceStageSlice slices[GD_SLICES];
-		State *state = (State *)calloc(1u, sizeof(State));
-		SparkStatus status;
-		*out = state;
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		Shapes(state);
-		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
-		if ( status == SPARK_STATUS_OK && SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn) != SPARK_STATUS_OK )
-			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows");
+		(void)request;
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
 			{ "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "top_k", G::kTopK }, { "full_period", G::kPeriod }
 		};
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 7u : 5u);
+		if ( SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn) != SPARK_STATUS_OK )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows");
+		SparkStatus status = SparkDeviceStageExpectConfig(&state->stage, config, G::kMoe ? 7u : 5u);
 		if ( status == SPARK_STATUS_OK && !G::kLayerTable )
 			status = SparkDeviceStageExpectConfig(&state->stage, &config[7], 1u);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
-				request->configuration->state_budget_bytes);
-		if ( status != SPARK_STATUS_OK )
-			return status;
+		return status;
+	}
+
+	static SparkStatus AfterReserve(State *state, const SparkStageRunnerModelOpen *request)
+	{
+		(void)request;
 		SparkDeviceAttentionRopePrepare(&state->sliding, &state->sliding_rope);
 		SparkDeviceAttentionRopePrepare(&state->full, &state->full_rope);
-		status = SparkDeviceStageGeometry(&state->stage, geometry);
-		geometry->tree_verify = status == SPARK_STATUS_OK ? 1u : 0u;
-		return status;
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
@@ -276,51 +254,23 @@ struct GemmaDevice
 		return status;
 	}
 
-	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus BindWeights(State *state, const SparkStageRunnerDeviceWeights *weights)
 	{
-		State *state = (State *)model;
-		SparkDeviceStageSlice slices[GD_SLICES];
 		SparkStatus status = SPARK_STATUS_OK;
-		(void)geometry;
-		if ( weights == 0 || weights->pack_address == 0u || weights->pack_bytes != state->stage.pack_bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "bind_device needs the device mapping of the whole rank pack");
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
 			status = BindLayer(state, weights, index);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
-	}
-
-	static const Layer &LayerOf(State *state, uint32_t index)
-	{
-		return state->layers[index];
-	}
-
-	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
-	{
-		frame->queue = (SparkDeviceQueue *)queue;
-		return SparkDeviceStageStepTables(&state->stage, step, &frame->t);
+		return status;
 	}
 
 	static SparkStatus EmbedNorm(State *state, const Frame &frame)
 	{
-		SparkNormParams params;
-		memset(&params, 0, sizeof(params));
-		params.rows = frame.t.rows;
-		params.dimension = params.input_stride = params.output_stride = G::kHidden;
-		params.epsilon = G::kNormEpsilon;
-		params.weightless = 1u;
+		const SparkNormParams params = SparkDeviceStageNormParams(frame.t.rows, G::kHidden, G::kNormEpsilon, 0u, 0u, 1u);
 		return SparkOpsRmsNormResidual(state->stage.ops, frame.queue, frame.t.hidden, 0, frame.t.hidden, frame.t.hidden, &params);
 	}
 
 	static SparkStatus EmbedScale(State *state, const Frame &frame, float scale)
 	{
 		return SparkOpsScaleRows(state->stage.ops, frame.queue, frame.t.hidden, (uint64_t)frame.t.rows * G::kHidden, scale);
-	}
-
-	static SparkStatus RmsNorm(State *state, const Frame &frame, SparkTensor weight)
-	{
-		return SparkDeviceResidualNorm(&state->stage, frame.queue, &frame.t, 0, weight, state->normed);
 	}
 
 	static SparkStatus NormAdd(State *state, const Frame &frame, SparkTensor weight)
@@ -390,19 +340,6 @@ struct GemmaDevice
 		return status;
 	}
 
-	static SparkStatus Check(State *state, const Frame &frame)
-	{
-		(void)state;
-		(void)frame;
-		return SPARK_STATUS_OK;
-	}
-
-	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
-	{
-		SparkDeviceStageLayerDone(&state->stage, index);
-		return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, frame.t.hidden, G::kHidden, index);
-	}
-
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *queue)
 	{
 		return GemmaSchedule<G, GemmaDevice>::Step((State *)model, step, queue);
@@ -411,59 +348,8 @@ struct GemmaDevice
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *queue)
 	{
 		State *state = (State *)model;
-		SparkDeviceKeepTensors keep;
-		SparkDeviceStepTensors frame;
-		SparkStatus status = SparkDeviceStageKeepTables(&state->stage, step, kept, &keep);
-		if ( status != SPARK_STATUS_OK || step->tree == 0u || keep.moves == 0u )
-			return status;
-		status = SparkDeviceStageStepTables(&state->stage, step, &frame);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
-		{
-			const SparkDeviceAttentionShape &a = L::Full(index) ? state->full : state->sliding;
-			SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame, index);
-			SparkKvParams move = { keep.moves, a.kv_heads, a.head_dimension, paged.page_slots, paged.pages_per_sequence, 0u, 0u, 0u, paged.pool_pages, a.value_dimension, 0u, 0u };
-			paged.kv_heads = a.kv_heads;
-			status = SparkOpsKvMove(state->stage.ops, (SparkDeviceQueue *)queue, &paged, keep.move_sources, keep.move_destinations, &move);
-		}
-		return status;
-	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			P::kTag,
-			P::kName,
-			"official",
-			Open,
-			SparkDeviceStageManifestCheck,
-			SparkDeviceStageBindWeightd,
-			SparkDeviceStageClose,
-			Step,
-			SparkDeviceStageSideband,
-			SparkDeviceStageAttachKv,
-			SparkDeviceStageRecurrentCopy,
-			SparkDeviceStageResetSlot,
-			SparkDeviceStageProbeBuffers,
-			SparkDeviceStageReport,
-			0,
-			SparkDeviceStageLane,
-			KeepRows,
-			0,
-			BindDevice,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0u,
-			0u,
-			0
-		};
-		return &interface_table;
+		return SparkDeviceStageKeepAttentionKv(&state->stage, queue, step, kept, G::kLayers,
+			[state](uint32_t index) -> const SparkDeviceAttentionShape & { return L::Full(index) ? state->full : state->sliding; });
 	}
 };
 
@@ -512,60 +398,11 @@ struct Kexaone2Device
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;
 };
 
-template<template<uint32_t> class P>
-static const SparkStageRunnerModelInterface *GemmaDeviceAt(uint32_t tp_degree)
-{
-	switch ( tp_degree )
-	{
-	case 1u:
-		return GemmaDevice<P<1u>>::Interface();
-	case 2u:
-		return GemmaDevice<P<2u>>::Interface();
-	case 4u:
-		return GemmaDevice<P<4u>>::Interface();
-	case 8u:
-		return GemmaDevice<P<8u>>::Interface();
-	default:
-		return 0;
-	}
-}
-
-const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void)
-{
-	return GemmaDeviceAt<Gemma4_26bDevice>(1u);
-}
-
-const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void)
-{
-	return GemmaDeviceAt<Gemma4_31bDevice>(1u);
-}
-
-const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModel(void)
-{
-	return GemmaDeviceAt<MuseGlimmerDevice>(1u);
-}
-
-const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModelAt(uint32_t tp_degree)
-{
-	return GemmaDeviceAt<Gemma4_26bDevice>(tp_degree);
-}
-
-const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModelAt(uint32_t tp_degree)
-{
-	return GemmaDeviceAt<Gemma4_31bDevice>(tp_degree);
-}
-
-const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModelAt(uint32_t tp_degree)
-{
-	return GemmaDeviceAt<MuseGlimmerDevice>(tp_degree);
-}
-
-const SparkStageRunnerModelInterface *SparkLagunaDeviceStageModelAt(uint32_t tp_degree)
-{
-	return GemmaDeviceAt<LagunaDevice>(tp_degree);
-}
-
-const SparkStageRunnerModelInterface *SparkKexaone2DeviceStageModelAt(uint32_t tp_degree)
-{
-	return GemmaDeviceAt<Kexaone2Device>(tp_degree);
-}
+const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModel(void) { return SparkDeviceStageAt<GemmaDevice, Gemma4_26bDevice>(1u); }
+const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModel(void) { return SparkDeviceStageAt<GemmaDevice, Gemma4_31bDevice>(1u); }
+const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModel(void) { return SparkDeviceStageAt<GemmaDevice, MuseGlimmerDevice>(1u); }
+const SparkStageRunnerModelInterface *SparkGemma4_26bDeviceStageModelAt(uint32_t tp_degree) { return SparkDeviceStageAt<GemmaDevice, Gemma4_26bDevice>(tp_degree); }
+const SparkStageRunnerModelInterface *SparkGemma4_31bDeviceStageModelAt(uint32_t tp_degree) { return SparkDeviceStageAt<GemmaDevice, Gemma4_31bDevice>(tp_degree); }
+const SparkStageRunnerModelInterface *SparkMuseGlimmerDeviceStageModelAt(uint32_t tp_degree) { return SparkDeviceStageAt<GemmaDevice, MuseGlimmerDevice>(tp_degree); }
+const SparkStageRunnerModelInterface *SparkLagunaDeviceStageModelAt(uint32_t tp_degree) { return SparkDeviceStageAt<GemmaDevice, LagunaDevice>(tp_degree); }
+const SparkStageRunnerModelInterface *SparkKexaone2DeviceStageModelAt(uint32_t tp_degree) { return SparkDeviceStageAt<GemmaDevice, Kexaone2Device>(tp_degree); }
