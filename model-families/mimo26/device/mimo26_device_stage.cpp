@@ -1,21 +1,21 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include "inference/runner/device_layers.h"
-#include "sparkpipe/spark_error_site.h"
+#include "inference/runner/device_stage_cxx.h"
 #include "sparkpipe/spark_mimo26_device_stage.h"
 #include "sparkpipe/spark_mimo26_family.h"
 #include "sparkpipe/spark_mimo26_flash_tp16_stage_model.h"
 #include "sparkpipe/spark_mimo26_pro_tp16_stage_model.h"
 
-#define MD_SLICES 24u
-
 template<class P>
-struct MimoDevice
+struct MimoDevice : SparkDeviceStageModel<MimoDevice<P>>
 {
+	using Base = SparkDeviceStageModel<MimoDevice<P>>;
 	using G = typename P::Geometry;
 	using L = MimoLayout<G>;
+
+	static constexpr bool kHasKeepRows = true;
+	static constexpr bool kTreeVerify = true;
+	static constexpr uint32_t kMaxSlices = 24u;
+	static constexpr const char *Tag(void) { return P::kTag; }
+	static constexpr const char *Name(void) { return P::kName; }
 
 	struct Layer
 	{
@@ -53,11 +53,6 @@ struct MimoDevice
 		SparkDeviceStepTensors t;
 		SparkDeviceQueue *queue;
 	};
-
-	static uint64_t Max(uint64_t a, uint64_t b)
-	{
-		return a > b ? a : b;
-	}
 
 	static void AttentionShape(SparkDeviceAttentionShape *attention, bool full)
 	{
@@ -100,9 +95,9 @@ struct MimoDevice
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = G::kHidden, routes = rows * G::kTopK;
-		const uint64_t fused = Max(SparkDeviceAttentionFusedWidth(&state->sliding), SparkDeviceAttentionFusedWidth(&state->full));
-		const uint64_t key = Max(SparkDeviceAttentionKvWidth(&state->sliding), SparkDeviceAttentionKvWidth(&state->full));
-		const uint64_t value = Max(SparkDeviceAttentionValueWidth(&state->sliding), SparkDeviceAttentionValueWidth(&state->full));
+		const uint64_t fused = SparkDeviceStageMax(SparkDeviceAttentionFusedWidth(&state->sliding), SparkDeviceAttentionFusedWidth(&state->full));
+		const uint64_t key = SparkDeviceStageMax(SparkDeviceAttentionKvWidth(&state->sliding), SparkDeviceAttentionKvWidth(&state->full));
+		const uint64_t value = SparkDeviceStageMax(SparkDeviceAttentionValueWidth(&state->sliding), SparkDeviceAttentionValueWidth(&state->full));
 		const uint64_t output = SparkDeviceAttentionOutputWidth(&state->full);
 		const SparkDeviceStageSlice plan[] =
 		{
@@ -119,72 +114,37 @@ struct MimoDevice
 			{ rows * 2u * L::kDenseRows * 2u, &state->ffn_scratch.gate_up },
 			{ rows * L::kDenseRows * 2u, &state->ffn_scratch.act },
 			{ rows * G::kExperts * sizeof(float), &state->router_logits },
-			{ routes * sizeof(uint32_t), &state->experts.experts },
-			{ routes * sizeof(float), &state->experts.weights },
-			{ routes * 2u * G::kMoeInter * 2u, &state->experts.gate_up },
-			{ routes * G::kMoeInter * 2u, &state->experts.act },
-			{ routes * hidden * 2u, &state->experts.out },
-			{ (routes + 1u) * hidden * 2u, &state->experts.sorted },
-			{ Max(fused, 2u * L::kDenseRows) * hidden * 2u, &state->stage.dequant }
+			{ SparkDeviceStageMax(fused, 2u * L::kDenseRows) * hidden * 2u, &state->stage.dequant }
 		};
-		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
-		for ( uint32_t index = 0u; index < count; index++ )
-			slices[index] = plan[index];
-		return count;
+		uint32_t count = SparkDeviceStageAppendSlices(slices, 0u, plan);
+		return SparkDeviceStageAppendRoutedScratch(&state->experts, routes, G::kMoeInter, hidden, slices, count);
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **out, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus Configure(State *state, const SparkStageRunnerModelOpen *request)
 	{
-		SparkDeviceStageSlice slices[MD_SLICES];
-		State *state = (State *)calloc(1u, sizeof(State));
-		SparkStatus status;
-		*out = state;
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		Shapes(state);
+		(void)request;
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
 			{ "ffn_rows", L::kDenseRows }, { "sliding_window", G::kWindow }, { "experts", G::kExperts }, { "local_experts", G::kLocalExperts },
 			{ "top_k", G::kTopK }
 		};
-		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), 0, 0u,
-				request->configuration->state_budget_bytes);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		SparkDeviceAttentionRopePrepare(&state->sliding, &state->sliding_rope);
-		SparkDeviceAttentionRopePrepare(&state->full, &state->full_rope);
-		status = SparkDeviceStageGeometry(&state->stage, geometry);
-		geometry->tree_verify = status == SPARK_STATUS_OK ? 1u : 0u;
-		return status;
+		return SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
 	}
 
-	static SparkStatus BindExpert(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows,
-		uint64_t columns, SparkDeviceExpertMatrix *matrix)
+	static SparkStatus AfterReserve(State *state, const SparkStageRunnerModelOpen *request)
 	{
-		char scale_name[64];
-		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "mxfp4_e2m1", G::kLocalExperts * rows * (columns / 2u),
-			&matrix->values);
-		matrix->codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
-		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, scale_name, "e8m0", G::kLocalExperts * rows * (columns / SPARK_MXFP4_GROUP),
-				&matrix->scale);
-		if ( status == SPARK_STATUS_OK )
-			SparkDeviceStageNoteRouted(&state->stage, matrix->values.bytes + matrix->scale.bytes, G::kLocalExperts, G::kTopK);
-		return status;
+		(void)request;
+		SparkDeviceAttentionRopePrepare(&state->sliding, &state->sliding_rope);
+		SparkDeviceAttentionRopePrepare(&state->full, &state->full_rope);
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
 	{
 		Layer *layer = &state->layers[index];
-		SparkStatus status;
 		layer->index = index;
-		status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "input_norm", "bf16", G::kHidden * 2u, &layer->input_norm);
+		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "input_norm", "bf16", G::kHidden * 2u, &layer->input_norm);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "post_attn_norm", "bf16", G::kHidden * 2u, &layer->post_attn_norm);
 		if ( status == SPARK_STATUS_OK )
@@ -196,47 +156,25 @@ struct MimoDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "router_bias", "f32", (uint64_t)G::kExperts * sizeof(float), &layer->router_bias);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w1", G::kMoeInter, G::kHidden, &layer->gate);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w1", ".", G::kLocalExperts, G::kTopK, G::kMoeInter, G::kHidden, SPARK_MXFP4_GROUP, &layer->gate);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w3", G::kMoeInter, G::kHidden, &layer->up);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w3", ".", G::kLocalExperts, G::kTopK, G::kMoeInter, G::kHidden, SPARK_MXFP4_GROUP, &layer->up);
 		if ( status == SPARK_STATUS_OK )
-			status = BindExpert(state, weights, index, "moe_w2", G::kHidden, G::kMoeInter, &layer->down);
+			status = SparkDeviceStageBindExpertMxfp4(&state->stage, weights, index, "moe_w2", ".", G::kLocalExperts, G::kTopK, G::kHidden, G::kMoeInter, SPARK_MXFP4_GROUP, &layer->down);
 		return status;
 	}
 
-	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus BindWeights(State *state, const SparkStageRunnerDeviceWeights *weights)
 	{
-		State *state = (State *)model;
-		SparkDeviceStageSlice slices[MD_SLICES];
 		SparkStatus status = SPARK_STATUS_OK;
-		(void)geometry;
-		if ( weights == 0 || weights->pack_address == 0u || weights->pack_bytes != state->stage.pack_bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "bind_device needs the device mapping of the whole rank pack");
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
 			status = BindLayer(state, weights, index);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
-	}
-
-	static const Layer &LayerOf(State *state, uint32_t index)
-	{
-		return state->layers[index];
-	}
-
-	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
-	{
-		frame->queue = (SparkDeviceQueue *)queue;
-		return SparkDeviceStageStepTables(&state->stage, step, &frame->t);
+		return status;
 	}
 
 	static SparkStatus RmsNorm(State *state, const Frame &frame, SparkTensor weight)
 	{
-		SparkNormParams params;
-		memset(&params, 0, sizeof(params));
-		params.rows = frame.t.rows;
-		params.dimension = params.input_stride = params.output_stride = G::kHidden;
-		params.epsilon = G::kEpsilon;
+		const SparkNormParams params = SparkDeviceStageNormParams(frame.t.rows, G::kHidden, G::kEpsilon);
 		return SparkOpsRmsNormBf16(state->stage.ops, frame.queue, frame.t.hidden, weight, state->normed, &params);
 	}
 
@@ -247,14 +185,9 @@ struct MimoDevice
 			&frame.t, &layer.attention, layer.index, &state->attention, state->normed, state->partial);
 	}
 
-	static SparkStatus AllReduce(State *state, const Frame &frame)
-	{
-		return SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
-	}
-
 	static SparkStatus AddResidual(State *state, const Frame &frame)
 	{
-		return SparkOpsAddRows(state->stage.ops, frame.queue, frame.t.hidden, state->partial, frame.t.rows, G::kHidden, G::kHidden, G::kHidden);
+		return Base::AddRows(state, frame);
 	}
 
 	static SparkStatus Dense(State *state, const Frame &frame, const Layer &layer)
@@ -267,41 +200,14 @@ struct MimoDevice
 	{
 		const uint32_t rows = frame.t.rows;
 		const SparkDeviceRoutedFfnShape ffn = { G::kLocalExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU_ROUNDED, 0u, 0.0f, 0.0f, 0u };
-		SparkGemvParams router;
 		SparkRouteParams route;
-		SparkStatus status;
-		memset(&router, 0, sizeof(router));
-		router.rows = rows;
-		router.input_dimension = router.input_stride = G::kHidden;
-		router.output_dimension = router.output_stride = G::kExperts;
-		router.output_f32 = 1u;
-		router.projection = state->stage.shape->projection;
-		router.row_exact = state->stage.step_exact;
-		status = SparkOpsLinear(state->stage.ops, frame.queue, state->normed, layer.router, state->router_logits, &router);
-		memset(&route, 0, sizeof(route));
-		route.rows = rows;
-		route.experts = G::kExperts;
-		route.top_k = G::kTopK;
-		route.width = G::kHidden;
-		route.logit_stride = G::kExperts;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkOpsRouteSigmoid(state->stage.ops, frame.queue, state->router_logits, layer.router_bias, state->experts.experts,
-				state->experts.weights, &route);
-		route.local_experts = G::kLocalExperts;
-		route.first_expert = state->stage.tp_rank * G::kLocalExperts;
-		if ( status == SPARK_STATUS_OK && G::kTpDegree > 1u )
-			status = SparkOpsRouteLocal(state->stage.ops, frame.queue, state->experts.experts, &route);
+		SparkStatus status = SparkDeviceStageRouteSigmoid(&state->stage, frame.queue, state->normed, layer.router, layer.router_bias, state->router_logits,
+			&state->experts, rows, G::kHidden, G::kExperts, G::kLocalExperts, G::kTopK, G::kTpDegree, 0.0f, 0u, 0u, 0u, 0u, G::kHidden, &route);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceRoutedFfn(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->normed);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsRouteCombineWeighted(state->stage.ops, frame.queue, state->experts.out, state->experts.weights, state->partial, &route);
 		return status;
-	}
-
-	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
-	{
-		SparkDeviceStageLayerDone(&state->stage, index);
-		return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, frame.t.hidden, G::kHidden, index);
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *queue)
@@ -312,59 +218,8 @@ struct MimoDevice
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *queue)
 	{
 		State *state = (State *)model;
-		SparkDeviceKeepTensors keep;
-		SparkDeviceStepTensors frame;
-		SparkStatus status = SparkDeviceStageKeepTables(&state->stage, step, kept, &keep);
-		if ( status != SPARK_STATUS_OK || step->tree == 0u || keep.moves == 0u )
-			return status;
-		status = SparkDeviceStageStepTables(&state->stage, step, &frame);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
-		{
-			const SparkDeviceAttentionShape &a = L::Full(index) ? state->full : state->sliding;
-			SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame, index);
-			SparkKvParams move = { keep.moves, a.kv_heads, a.head_dimension, paged.page_slots, paged.pages_per_sequence, 0u, 0u, 0u, paged.pool_pages, a.value_dimension, 0u, 0u };
-			paged.kv_heads = a.kv_heads;
-			status = SparkOpsKvMove(state->stage.ops, (SparkDeviceQueue *)queue, &paged, keep.move_sources, keep.move_destinations, &move);
-		}
-		return status;
-	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			P::kTag,
-			P::kName,
-			"official",
-			Open,
-			SparkDeviceStageManifestCheck,
-			SparkDeviceStageBindWeightd,
-			SparkDeviceStageClose,
-			Step,
-			SparkDeviceStageSideband,
-			SparkDeviceStageAttachKv,
-			SparkDeviceStageRecurrentCopy,
-			SparkDeviceStageResetSlot,
-			SparkDeviceStageProbeBuffers,
-			SparkDeviceStageReport,
-			0,
-			SparkDeviceStageLane,
-			KeepRows,
-			0,
-			BindDevice,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0u,
-			0u,
-			0
-		};
-		return &interface_table;
+		return SparkDeviceStageKeepAttentionKv(&state->stage, queue, step, kept, G::kLayers,
+			[state](uint32_t index) -> const SparkDeviceAttentionShape & { return L::Full(index) ? state->full : state->sliding; });
 	}
 };
 
@@ -386,30 +241,12 @@ struct Mimo26ProDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
-template<template<uint32_t> class P>
-static const SparkStageRunnerModelInterface *MimoDeviceAt(uint32_t tp_degree)
-{
-	switch ( tp_degree )
-	{
-	case 1u:
-		return MimoDevice<P<1u>>::Interface();
-	case 2u:
-		return MimoDevice<P<2u>>::Interface();
-	case 4u:
-		return MimoDevice<P<4u>>::Interface();
-	case 8u:
-		return MimoDevice<P<8u>>::Interface();
-	default:
-		return 0;
-	}
-}
-
 const SparkStageRunnerModelInterface *SparkMimo26FlashDeviceStageModelAt(uint32_t tp_degree)
 {
-	return MimoDeviceAt<Mimo26FlashDevice>(tp_degree);
+	return SparkDeviceStageAt<MimoDevice, Mimo26FlashDevice>(tp_degree);
 }
 
 const SparkStageRunnerModelInterface *SparkMimo26ProDeviceStageModelAt(uint32_t tp_degree)
 {
-	return MimoDeviceAt<Mimo26ProDevice>(tp_degree);
+	return SparkDeviceStageAt<MimoDevice, Mimo26ProDevice>(tp_degree);
 }

@@ -1,7 +1,4 @@
 #include "sparkpipe/spark_hy4_tp16_stage_model.h"
-#include "sparkpipe/spark_kv_cache.h"
-#include "sparkpipe/spark_kv_shard.h"
-#include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef HY4_TP16_CONTRACT_SHA256
@@ -21,38 +18,15 @@
 #define SPARK_HY4_TP16_PROGRAM "hy4"
 #define SPARK_HY4_TP16_MODULE_TAG "hy4_tp16_stage"
 #endif
-#define SPARK_HY4_TP16_MAX_ROWS 2048u
-#define SPARK_HY4_TP16_CHECKPOINT_TOKENS 16384u
 
 static void Hy4Tp16ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
-	kv->region_count = SPARK_STAGE_KV_MAX_REGIONS;
-	kv->regions[0].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
-	kv->regions[0].layer_page_bytes = (uint64_t)SPARK_HY4_TP16_STAGE_PAGE_SLOTS * SPARK_HY4_TP16_STAGE_KV_SLOT_BYTES;
-	kv->regions[1].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
-	kv->regions[1].layer_page_bytes = (uint64_t)SPARK_HY4_TP16_STAGE_PAGE_SLOTS * SPARK_HY4_TP16_STAGE_INDEX_SLOT_BYTES;
-	kv->regions[1].layer_count = SPARK_HY4_TP16_STAGE_INDEX_LAYERS;
-	kv->arena_kv_head_count = 1u;
-	kv->arena_head_dim = SPARK_HY4_TP16_STAGE_LATENT + SPARK_HY4_TP16_STAGE_ROPE;
-	kv->arena_bytes_per_scalar = sizeof(uint16_t);
-	kv->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
-	kv->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
-	kv->capacity_request.layout = SPARK_KV_CACHE_LAYOUT_COMPRESSED_KEY_VALUE;
-	kv->capacity_request.layer_count = SPARK_HY4_TP16_STAGE_LAYERS;
-	kv->capacity_request.compressed_dimension = SPARK_HY4_TP16_STAGE_LATENT;
-	kv->capacity_request.position_dimension = SPARK_HY4_TP16_STAGE_ROPE;
-	kv->capacity_request.bytes_per_scalar = sizeof(uint16_t);
-	kv->capacity_request.index_key_layer_count = SPARK_HY4_TP16_STAGE_INDEX_LAYERS;
-	kv->capacity_request.index_key_dimension = SPARK_HY4_TP16_STAGE_INDEX_DIM;
-	kv->context_shard.degree = tp_degree;
-	kv->context_shard.rank = tp_rank;
-	kv->context_shard.grain = 1u;
-}
-
-static uint32_t Hy4Tp16ServingCollectiveSequences(uint32_t rows, uint32_t tp_degree)
-{
-	(void)tp_degree;
-	return 2u * rows + 1u;
+	SparkStageKvInitCompressed(kv, tp_rank, tp_degree, SPARK_STAGE_KV_REGION_LAYER_MAJOR,
+		(uint64_t)SPARK_HY4_TP16_STAGE_PAGE_SLOTS * SPARK_HY4_TP16_STAGE_KV_SLOT_BYTES,
+		SPARK_HY4_TP16_STAGE_LATENT + SPARK_HY4_TP16_STAGE_ROPE, SPARK_HY4_TP16_STAGE_LAYERS,
+		SPARK_HY4_TP16_STAGE_LATENT, SPARK_HY4_TP16_STAGE_ROPE, 0u);
+	SparkStageKvSetIndex(kv, (uint64_t)SPARK_HY4_TP16_STAGE_PAGE_SLOTS * SPARK_HY4_TP16_STAGE_INDEX_SLOT_BYTES,
+		SPARK_HY4_TP16_STAGE_INDEX_LAYERS, SPARK_HY4_TP16_STAGE_INDEX_DIM, 0u);
 }
 
 static const SparkStageServingModel Hy4Tp16StageServing =
@@ -69,17 +43,14 @@ static const SparkStageServingModel Hy4Tp16StageServing =
 	.hidden = SPARK_HY4_TP16_STAGE_HIDDEN,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
-	.max_rows = SPARK_HY4_TP16_MAX_ROWS,
+	.max_rows = 2048u,
 	.verify_rows = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.tree_slot_grain = SPARK_HY4_TP16_STAGE_TP_DEGREE,
 	.cache_block_token_count = SPARK_HY4_TP16_STAGE_PAGE_SLOTS,
-	.cache_checkpoint_token_count = SPARK_HY4_TP16_CHECKPOINT_TOKENS,
+	.cache_checkpoint_token_count = 16384u,
 	.kv_layout = Hy4Tp16ServingKvLayout,
-	.collective_sequences = Hy4Tp16ServingCollectiveSequences,
+	.collective_sequences = SparkStageCollectiveDoubleRows,
 };
 
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return SparkStageServingAdapterInterface(&Hy4Tp16StageServing);
-}
+SPARK_STAGE_SERVING_EXPORT(Hy4Tp16StageServing)

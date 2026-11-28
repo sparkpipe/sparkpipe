@@ -122,29 +122,6 @@ static void GemmaBuildTilePrefixKernel(const uint32_t *__restrict__ group_row_of
 		prefix[groups] = running;
 }
 
-template<uint32_t TAG, class Kernel>
-static int32_t GemmaDynSmemSetup(Kernel kernel, uint32_t shared_bytes, uint32_t threads, uint32_t sms, uint32_t *blocks_out)
-{
-	static std::atomic<uint64_t> granted(0u);
-	static std::atomic<int32_t> resident(0);
-	int device = 0, per_sm = 1;
-	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_STREAM_MAX_DEVICES )
-		SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-	if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
-	{
-		if ( shared_bytes > 48000u &&
-			SparkGpuFuncSetAttribute((const void *)kernel, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared_bytes) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(LM_LAUNCH_ERR_ATTRIBUTE);
-		if ( SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, (int)threads, (size_t)shared_bytes) != SPARK_GPU_SUCCESS || per_sm < 1 )
-			per_sm = 1;
-		resident.store(per_sm);
-		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
-	}
-	if ( blocks_out != 0 )
-		*blocks_out = sms * (uint32_t)resident.load();
-	return LM_LAUNCH_OK;
-}
-
 template<uint32_t WARPS_M, uint32_t WARPS_N, uint32_t RPG, uint32_t NPG, bool USE_SW, uint32_t MIN_BLK>
 __global__ __launch_bounds__(WARPS_M * WARPS_N * 32u, MIN_BLK)
 static void GemmaExactDenseTileKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ act,

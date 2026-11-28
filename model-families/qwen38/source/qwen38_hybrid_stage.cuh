@@ -204,30 +204,11 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		SparkGpuStream stream;
 	};
 
-	static const char *Tag(void)
-	{
-		return G::Tag();
-	}
-
-	static const char *ReportTag(void)
-	{
-		return G::ReportTag();
-	}
-
-	static const char *WeightdModel(void)
-	{
-		return G::Name();
-	}
-
-	static bool PrefillWave(const SparkStageRunnerStep *step)
-	{
-		return step->commit != 0u && step->last_rows_only != 0u && step->tree == 0u;
-	}
-
-	static bool PrefillUnified(const SparkStageRunnerStep *step)
-	{
-		return PrefillWave(step) && step->sequences == 1u;
-	}
+	static const char *Tag(void) { return G::Tag(); }
+	static const char *ReportTag(void) { return G::ReportTag(); }
+	static const char *WeightdModel(void) { return G::Name(); }
+	static bool PrefillWave(const SparkStageRunnerStep *step) { return CudaStagePrefillWave(step); }
+	static bool PrefillUnified(const SparkStageRunnerStep *step) { return CudaStagePrefillUnified(step); }
 
 	static int32_t LaunchExactBf16Multi(QwenBf16MultiArgs args, SparkGpuStream stream)
 	{
@@ -240,16 +221,32 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			blk += (args.part[i].out_dim + tile_n - 1u) / tile_n;
 		}
 		args.total_blocks = blk;
-		SparkGpuError err;
-		if ( rows <= 4u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_multi_w1x4_r4_n4, dim3(blk, 1u), 128u, 0, stream, args);
-		else if ( rows <= 8u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_multi_w2x4_r4_n4, dim3(blk, 1u), 256u, 0, stream, args);
-		else if ( rows <= 16u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_multi_w4x2_r4_n4, dim3(blk, 1u), 256u, 0, stream, args);
-		else
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_multi_w4x2_r8_n2, dim3(blk, (rows + 31u) / 32u), 256u, 0, stream, args);
-		return err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		const uint32_t kid = rows <= 4u ? QWENSKL2_qwen_exact_bf16_multi_w1x4_r4_n4 :
+			rows <= 8u ? QWENSKL2_qwen_exact_bf16_multi_w2x4_r4_n4 :
+			rows <= 16u ? QWENSKL2_qwen_exact_bf16_multi_w4x2_r4_n4 : QWENSKL2_qwen_exact_bf16_multi_w4x2_r8_n2;
+		const uint32_t threads = rows <= 4u ? 128u : 256u;
+		const uint32_t grid_y = rows <= 16u ? 1u : (rows + 31u) / 32u;
+		return QwenSkl2Launch(kid, dim3(blk, grid_y), threads, 0, stream, args) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	}
+
+	static int32_t LaunchBf16MultiOrSkinny(const QwenBf16Part *parts, uint32_t count, const uint16_t *activation,
+		uint32_t rows, uint32_t input_dim, uint32_t exact, SparkGpuStream stream)
+	{
+		if ( rows >= 2u && rows <= 32u && input_dim >= 256u && (input_dim & 7u) == 0u )
+		{
+			QwenBf16MultiArgs args;
+			for ( uint32_t i = 0u; i < count; ++i )
+				args.part[i] = parts[i];
+			args.count = count;
+			args.activation = activation;
+			args.rows = rows;
+			args.input_dim = input_dim;
+			return LaunchExactBf16Multi(args, stream);
+		}
+		LmSkinnyDenseTarget targets[4];
+		for ( uint32_t i = 0u; i < count; ++i )
+			targets[i] = { parts[i].weight, parts[i].output, (float *)0, parts[i].out_dim, parts[i].out_dim, 0u, LmScaleTensorNone() };
+		return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dim, stream, exact);
 	}
 
 	static int32_t LaunchBf16Mma(const uint16_t *weight, const uint16_t *source, uint16_t *destination,
@@ -257,33 +254,22 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	{
 		if ( output_dimension < 512u && (input_dimension % 256u) == 0u )
 		{
-			const uint32_t nb = (output_dimension + 15u) / 16u;
-			SparkGpuError err;
-			if ( rows > 16u && (output_dimension >= 16u || rows >= 1024u) )
-				err = QwenSkl2Launch(QWENSKL2_qwen_bf16_smalln_mma_wide_32, ((rows + 31u) / 32u) * nb, 128u, 49152u, stream,
-					weight, source, destination, rows, input_dimension, output_dimension);
-			else
-				err = QwenSkl2Launch(QWENSKL2_qwen_bf16_smalln_mma_16, ((rows + 15u) / 16u) * nb, 128u, 0, stream,
-					weight, source, destination, rows, input_dimension, output_dimension);
-			return err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+			const bool wide = rows > 16u && (output_dimension >= 16u || rows >= 1024u);
+			const uint32_t kid = wide ? QWENSKL2_qwen_bf16_smalln_mma_wide_32 : QWENSKL2_qwen_bf16_smalln_mma_16;
+			const uint32_t tm = wide ? 32u : 16u;
+			const uint32_t blocks = ((rows + tm - 1u) / tm) * ((output_dimension + 15u) / 16u);
+			return QwenSkl2Launch(kid, blocks, 128u, wide ? 49152u : 0u, stream,
+				weight, source, destination, rows, input_dimension, output_dimension) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 		}
 		if ( output_dimension < 512u || rows > 128u || (rows > 16u && (output_dimension >= 8192u || rows >= 32u)) )
 			return LM_LAUNCH_ERR_SHAPE;
-		const uint32_t nb = (output_dimension + 63u) / 64u;
-		SparkGpuError err;
-		if ( rows <= 16u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_bf16_dense_mma_16x64, ((rows + 15u) / 16u) * nb, 128u, 0, stream,
-				weight, source, destination, rows, input_dimension, output_dimension);
-		else if ( rows <= 32u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_bf16_dense_mma_32x64, ((rows + 31u) / 32u) * nb, 256u, 0, stream,
-				weight, source, destination, rows, input_dimension, output_dimension);
-		else if ( rows <= 64u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_bf16_dense_mma_64x64, ((rows + 63u) / 64u) * nb, 256u, 0, stream,
-				weight, source, destination, rows, input_dimension, output_dimension);
-		else
-			err = QwenSkl2Launch(QWENSKL2_qwen_bf16_dense_mma_128x64, ((rows + 127u) / 128u) * nb, 256u, 0, stream,
-				weight, source, destination, rows, input_dimension, output_dimension);
-		return err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		const uint32_t tm = rows <= 16u ? 16u : (rows <= 32u ? 32u : (rows <= 64u ? 64u : 128u));
+		const uint32_t kid = rows <= 16u ? QWENSKL2_qwen_bf16_dense_mma_16x64 :
+			rows <= 32u ? QWENSKL2_qwen_bf16_dense_mma_32x64 :
+			rows <= 64u ? QWENSKL2_qwen_bf16_dense_mma_64x64 : QWENSKL2_qwen_bf16_dense_mma_128x64;
+		const uint32_t blocks = ((rows + tm - 1u) / tm) * ((output_dimension + 63u) / 64u);
+		return QwenSkl2Launch(kid, blocks, rows <= 16u ? 128u : 256u, 0, stream,
+			weight, source, destination, rows, input_dimension, output_dimension) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
 	template<uint32_t TILE_M>
@@ -302,39 +288,25 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		uint32_t rows, uint32_t input_dimension, uint32_t ffn_rows, uint32_t exact, bool force_stream, SparkGpuStream stream)
 	{
 		const bool use_mma = (force_stream || (exact == 0u && rows > LM_SKINNY_ROWS_WIDE)) && (input_dimension % 64u) == 0u;
-		SparkGpuError err;
 		if ( use_mma )
 		{
-			if ( rows <= 16u )
-				err = QwenSkl2Launch(QWENSKL2_qwen_bf16_fused_swiglu_mma_16x64,
-					((rows + 15u) / 16u) * ((ffn_rows + 63u) / 64u), 128u, 0, stream, weight, source, destination, rows, input_dimension, ffn_rows);
-			else if ( rows <= 32u )
-				err = QwenSkl2Launch(QWENSKL2_qwen_bf16_fused_swiglu_mma_32x64,
-					((rows + 31u) / 32u) * ((ffn_rows + 63u) / 64u), 256u, 0, stream, weight, source, destination, rows, input_dimension, ffn_rows);
-			else if ( rows <= 64u )
-				err = QwenSkl2Launch(QWENSKL2_qwen_bf16_fused_swiglu_mma_64x32,
-					((rows + 63u) / 64u) * ((ffn_rows + 31u) / 32u), 256u, 0, stream, weight, source, destination, rows, input_dimension, ffn_rows);
-			else
-				err = QwenSkl2Launch(QWENSKL2_qwen_bf16_fused_swiglu_mma_128x64,
-					((rows + 127u) / 128u) * ((ffn_rows + 63u) / 64u), 256u, 3u * (128u + 128u) * 128u, stream,
-					weight, source, destination, rows, input_dimension, ffn_rows);
-			return err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+			const uint32_t tm = rows <= 16u ? 16u : (rows <= 32u ? 32u : (rows <= 64u ? 64u : 128u));
+			const uint32_t tn = rows > 32u && rows <= 64u ? 32u : 64u;
+			const uint32_t kid = rows <= 16u ? QWENSKL2_qwen_bf16_fused_swiglu_mma_16x64 :
+				rows <= 32u ? QWENSKL2_qwen_bf16_fused_swiglu_mma_32x64 :
+				rows <= 64u ? QWENSKL2_qwen_bf16_fused_swiglu_mma_64x32 : QWENSKL2_qwen_bf16_fused_swiglu_mma_128x64;
+			const uint32_t smem = rows > 64u ? 3u * (128u + 128u) * 128u : 0u;
+			return QwenSkl2Launch(kid, ((rows + tm - 1u) / tm) * ((ffn_rows + tn - 1u) / tn), rows <= 16u ? 128u : 256u, smem, stream,
+				weight, source, destination, rows, input_dimension, ffn_rows) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 		}
 		if ( rows == 1u || rows > 32u )
 			return LM_LAUNCH_ERR_SHAPE;
-		if ( rows <= 4u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4, dim3((ffn_rows + 15u) / 16u, 1u), 128u, 0, stream,
-				weight, source, destination, rows, input_dimension, ffn_rows);
-		else if ( rows <= 8u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4, dim3((ffn_rows + 15u) / 16u, 1u), 256u, 0, stream,
-				weight, source, destination, rows, input_dimension, ffn_rows);
-		else if ( rows <= 16u )
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4, dim3((ffn_rows + 7u) / 8u, 1u), 256u, 0, stream,
-				weight, source, destination, rows, input_dimension, ffn_rows);
-		else
-			err = QwenSkl2Launch(QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2, dim3((ffn_rows + 3u) / 4u, 1u), 256u, 0, stream,
-				weight, source, destination, rows, input_dimension, ffn_rows);
-		return err == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		const uint32_t tn = rows <= 8u ? 16u : (rows <= 16u ? 8u : 4u);
+		const uint32_t kid = rows <= 4u ? QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w1x4_r4_n4 :
+			rows <= 8u ? QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w2x4_r4_n4 :
+			rows <= 16u ? QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w4x2_r4_n4 : QWENSKL2_qwen_exact_bf16_gate_up_swiglu_w4x2_r8_n2;
+		return QwenSkl2Launch(kid, dim3((ffn_rows + tn - 1u) / tn, 1u), rows <= 4u ? 128u : 256u, 0, stream,
+			weight, source, destination, rows, input_dimension, ffn_rows) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
 
 	template<class Format>
@@ -494,30 +466,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		{
 			if ( state->linear_bytes == 2u )
 			{
-				if ( rows >= 2u && rows <= 32u && G::kHidden >= 256u && (G::kHidden & 7u) == 0u )
+				const QwenBf16Part parts[3] =
 				{
-					QwenBf16MultiArgs args;
-					args.part[0] = { (const uint16_t *)layer->mix_weight, state->qkv, state->gdn_channels, 0u };
-					args.part[1] = { (const uint16_t *)(layer->mix_weight + (uint64_t)state->gdn_channels * G::kHidden * 2u), state->z, state->gdn_v, 0u };
-					args.part[2] = { layer->gdn_ba, state->ba, 2u * heads, 0u };
-					args.count = 3u;
-					args.activation = state->normed;
-					args.rows = rows;
-					args.input_dim = G::kHidden;
-					if ( LaunchExactBf16Multi(args, stream) != LM_LAUNCH_OK )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				}
-				else
-				{
-					const LmSkinnyDenseTarget targets[3] =
-					{
-						{ layer->mix_weight, state->qkv, (float *)0, state->gdn_channels, state->gdn_channels, 0u, LmScaleTensorNone() },
-						{ layer->mix_weight + (uint64_t)state->gdn_channels * G::kHidden * 2u, state->z, (float *)0, state->gdn_v, state->gdn_v, 0u, LmScaleTensorNone() },
-						{ layer->gdn_ba, state->ba, (float *)0, 2u * heads, 2u * heads, 0u, LmScaleTensorNone() }
-					};
-					if ( LmSkinnyDenseMulti<LmBf16Format>(targets, 3u, state->normed, rows, G::kHidden, stream, exact) != LM_LAUNCH_OK )
-						SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				}
+					{ (const uint16_t *)layer->mix_weight, state->qkv, state->gdn_channels, 0u },
+					{ (const uint16_t *)(layer->mix_weight + (uint64_t)state->gdn_channels * G::kHidden * 2u), state->z, state->gdn_v, 0u },
+					{ layer->gdn_ba, state->ba, 2u * heads, 0u }
+				};
+				if ( LaunchBf16MultiOrSkinny(parts, 3u, state->normed, rows, G::kHidden, exact, stream) != LM_LAUNCH_OK )
+					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
 			{
@@ -775,46 +731,11 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		memset(&plan, 0, sizeof(plan));
 		bool plan_ok = false;
 		uint32_t max_seq_rows = 0u, max_seq_prior = 0u, max_seq_peer = 0u, max_seq_total_ctx = 0u;
-		if ( prefill_wave && uniform_kvh && G::kHeadDim == 256u && (G::kHeads % G::kKvHeads) == 0u &&
-			step->sequences != 0u && step->sequences <= QH_PREFILL_MAX_SEQS )
+		if ( prefill_wave && uniform_kvh && G::kHeadDim == 256u && (G::kHeads % G::kKvHeads) == 0u )
 		{
-			if ( step->sequences == 1u )
-			{
-				const uint32_t total_ctx = step->gather_context;
-				if ( total_ctx >= rows )
+			plan_ok = CudaStageScanPrefillRuns(step, QH_PREFILL_MAX_SEQS, &plan.count,
+				[&](uint32_t s, uint32_t seq_id, uint32_t r0, uint32_t len, uint32_t old_ctx)
 				{
-					const uint32_t old_ctx = total_ctx - rows;
-					const uint32_t b1 = (old_ctx + grain - 1u) / grain;
-					const uint32_t peer_keys = old_ctx != 0u ? (((b1 + degree - 1u) / degree) * grain) : 0u;
-					plan.count = 1u;
-					plan.row_begin[0] = 0u;
-					plan.row_len[0] = rows;
-					plan.old_ctx[0] = old_ctx;
-					plan.prior_off[0] = 0u;
-					plan.peer_off[0] = 0u;
-					plan.peer_keys[0] = peer_keys;
-					plan.total_prior = old_ctx;
-					plan.total_peer = peer_keys;
-					max_seq_rows = rows;
-					max_seq_prior = old_ctx;
-					max_seq_peer = peer_keys;
-					max_seq_total_ctx = total_ctx;
-					plan_ok = true;
-				}
-			}
-			else if ( step->host_positions != 0 && step->host_sequence_of_row != 0 )
-			{
-				uint32_t r = 0u, s = 0u;
-				bool valid = true;
-				while ( r < rows && s < step->sequences )
-				{
-					const uint32_t seq_id = step->host_sequence_of_row[r];
-					const uint32_t old_ctx = step->host_positions[r];
-					const uint32_t r0 = r;
-					++r;
-					while ( r < rows && step->host_sequence_of_row[r] == seq_id && step->host_positions[r] == old_ctx + (r - r0) )
-						++r;
-					const uint32_t len = r - r0;
 					const uint32_t total_ctx = old_ctx + len;
 					const uint32_t b1 = (old_ctx + grain - 1u) / grain;
 					const uint32_t peer_keys = old_ctx != 0u ? (((b1 + degree - 1u) / degree) * grain) : 0u;
@@ -827,21 +748,11 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 					plan.peer_keys[s] = peer_keys;
 					plan.total_prior += old_ctx;
 					plan.total_peer += peer_keys;
-					if ( len > max_seq_rows )
-						max_seq_rows = len;
-					if ( old_ctx > max_seq_prior )
-						max_seq_prior = old_ctx;
-					if ( peer_keys > max_seq_peer )
-						max_seq_peer = peer_keys;
-					if ( total_ctx > max_seq_total_ctx )
-						max_seq_total_ctx = total_ctx;
-					++s;
-				}
-				if ( r != rows || s != step->sequences )
-					valid = false;
-				plan.count = s;
-				plan_ok = valid;
-			}
+					if ( len > max_seq_rows ) max_seq_rows = len;
+					if ( old_ctx > max_seq_prior ) max_seq_prior = old_ctx;
+					if ( peer_keys > max_seq_peer ) max_seq_peer = peer_keys;
+					if ( total_ctx > max_seq_total_ctx ) max_seq_total_ctx = total_ctx;
+				});
 		}
 		const bool host_dense = S::kIndexer && plan_ok && max_seq_total_ctx != 0u && (max_seq_total_ctx / G::kIndexRatio) <= S::kIndexBlocks;
 		const uint64_t unit_bytes = (uint64_t)G::kHidden * sizeof(uint16_t);
@@ -1077,17 +988,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static LmLocalExpertRoutes ExpertRoutes(const State *state, uint32_t rows, uint32_t routes, uint32_t sms)
 	{
-		LmLocalExpertRoutes expert_routes;
-		expert_routes.group_row_offset = state->group_row_offset;
-		expert_routes.route_source_token = state->route_source_token;
-		expert_routes.tile_prefix_up = state->tile_prefix_up;
-		expert_routes.tile_prefix_down = state->tile_prefix_down;
-		expert_routes.rows = rows;
-		expert_routes.routes = routes;
-		expert_routes.top_k = G::kTopK;
-		expert_routes.local_experts = G::kLocalExperts;
-		expert_routes.multiprocessors = sms;
-		return expert_routes;
+		(void)routes;
+		return CudaStageBuildExpertRoutes<LmLocalExpertRoutes>(state, rows, G::kTopK, G::kLocalExperts, sms);
 	}
 
 	static SparkStatus Moe(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows,
@@ -1472,20 +1374,12 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 					down, inject, state->hc_normed, state->hc_low, inject != 0 ? state->hc_inject : (float *)0,
 					rows, G::kStreams, G::kHidden, G::kHcLowRank) != SPARK_GPU_SUCCESS )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-				SparkGpuError up_err;
-				if ( rows >= 128u )
-					up_err = QwenSkl2Launch(QWENSKL2_qwen_hc_up_mix_mma_128, ((rows + 127u) / 128u) * (G::kHidden / 64u), 256u, 0, stream,
-						up, state->hc_low, state->hc_normed, mixed, rows, G::kStreams, G::kHidden, G::kHcLowRank);
-				else if ( rows > 32u )
-					up_err = QwenSkl2Launch(QWENSKL2_qwen_hc_up_mix_mma_64, ((rows + 63u) / 64u) * (G::kHidden / 64u), 128u, 0, stream,
-						up, state->hc_low, state->hc_normed, mixed, rows, G::kStreams, G::kHidden, G::kHcLowRank);
-				else if ( rows > 16u || (S::kResidual % 256u) != 0u )
-					up_err = QwenSkl2Launch(QWENSKL2_qwen_hc_up_mix_mma_32, ((rows + 31u) / 32u) * (G::kHidden / 64u), 128u, 0, stream,
-						up, state->hc_low, state->hc_normed, mixed, rows, G::kStreams, G::kHidden, G::kHcLowRank);
-				else
-					up_err = QwenSkl2Launch(QWENSKL2_qwen_hc_up_mix_mma_16, ((rows + 15u) / 16u) * (G::kHidden / 64u), 128u, 0, stream,
-						up, state->hc_low, state->hc_normed, mixed, rows, G::kStreams, G::kHidden, G::kHcLowRank);
-				if ( up_err != SPARK_GPU_SUCCESS )
+				const uint32_t up_tm = rows >= 128u ? 128u : (rows > 32u ? 64u : (rows > 16u || (S::kResidual % 256u) != 0u ? 32u : 16u));
+				const uint32_t up_id = up_tm == 128u ? QWENSKL2_qwen_hc_up_mix_mma_128 :
+					up_tm == 64u ? QWENSKL2_qwen_hc_up_mix_mma_64 :
+					up_tm == 32u ? QWENSKL2_qwen_hc_up_mix_mma_32 : QWENSKL2_qwen_hc_up_mix_mma_16;
+				if ( QwenSkl2Launch(up_id, ((rows + up_tm - 1u) / up_tm) * (G::kHidden / 64u), up_tm == 128u ? 256u : 128u, 0, stream,
+					up, state->hc_low, state->hc_normed, mixed, rows, G::kStreams, G::kHidden, G::kHcLowRank) != SPARK_GPU_SUCCESS )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 			else
@@ -1560,28 +1454,13 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			return status;
 		if ( !PrefillWave(step) && (rows <= LM_SKINNY_ROWS_WIDE || exact != 0u) )
 		{
-			if ( rows >= 2u && rows <= 32u && G::kHidden >= 256u && (G::kHidden & 7u) == 0u )
+			const QwenBf16Part parts[2] =
 			{
-				QwenBf16MultiArgs args;
-				args.part[0] = { state->ple_key_weight, state->ple_key, S::kResidual, 0u };
-				args.part[1] = { state->ple_value_weight, state->ple_value, G::kHidden, 0u };
-				args.count = 2u;
-				args.activation = state->ple_embed;
-				args.rows = rows;
-				args.input_dim = G::kHidden;
-				if ( LaunchExactBf16Multi(args, stream) != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			}
-			else
-			{
-				const LmSkinnyDenseTarget targets[2] =
-				{
-					{ state->ple_key_weight, state->ple_key, (float *)0, S::kResidual, S::kResidual, 0u, LmScaleTensorNone() },
-					{ state->ple_value_weight, state->ple_value, (float *)0, G::kHidden, G::kHidden, 0u, LmScaleTensorNone() }
-				};
-				if ( LmSkinnyDenseMulti<LmBf16Format>(targets, 2u, state->ple_embed, rows, G::kHidden, stream, exact) != LM_LAUNCH_OK )
-					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			}
+				{ state->ple_key_weight, state->ple_key, S::kResidual, 0u },
+				{ state->ple_value_weight, state->ple_value, G::kHidden, 0u }
+			};
+			if ( LaunchBf16MultiOrSkinny(parts, 2u, state->ple_embed, rows, G::kHidden, exact, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		else if ( Project<LmBf16Format>(state->ple_key_weight, 0, state->ple_embed, state->ple_key, rows, G::kHidden, S::kResidual, exact, sms, stream, PrefillWave(step)) !=
 				LM_LAUNCH_OK ||
@@ -1668,10 +1547,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)
 	{
-		if constexpr ( G::kTpDegree == 1u )
-			return SPARK_STATUS_OK;
-		else
-			return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+		return G::kTpDegree == 1u ? SPARK_STATUS_OK : CudaStageAllReduceSum(state, frame.stream, state->partial, frame.step->rows);
 	}
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
@@ -1886,62 +1762,45 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
-		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, experts = 0u, local = 0u, top_k = 0u;
-		if ( SparkNamedPackConfigU32(&state->pack, "tp_degree", &degree) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "tp_rank", &rank) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "hidden", &hidden) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "layers", &layers) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "vocab_rows", &vocab_rows) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( degree != configuration->tp_degree || rank != configuration->tp_rank || hidden != G::kHidden || layers != G::kLayers ||
-			vocab_rows * degree != G::kVocab )
+		const CudaStagePackCheck base[] =
 		{
-			fprintf(stderr, "%s: pack is tp %u rank %u hidden %u layers %u, the runner is tp %u rank %u\n",
-				G::Tag(), degree, rank, hidden, layers, configuration->tp_degree, configuration->tp_rank);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
+			{ "tp_degree", configuration->tp_degree }, { "tp_rank", configuration->tp_rank }, { "hidden", G::kHidden }, { "layers", G::kLayers },
+			{ "vocab_rows", G::kVocab / configuration->tp_degree }
+		};
+		SparkStatus status = CudaStagePackExpect(G::Tag(), &state->pack, base);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 		if constexpr ( G::kMoe )
 		{
-			if ( SparkNamedPackConfigU32(&state->pack, "experts", &experts) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "local_experts", &local) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "expert_first", &state->expert_first) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "top_k", &top_k) != SPARK_STATUS_OK ||
-				experts != G::kExperts || local != G::kLocalExperts || top_k != G::kTopK || state->expert_first != rank * G::kLocalExperts )
+			const uint32_t expected_first = configuration->tp_rank * G::kLocalExperts;
+			const CudaStagePackCheck moe[] =
 			{
-				fprintf(stderr, "%s: pack experts %u local %u first %u top_k %u do not match the model\n", G::Tag(), experts, local,
-					state->expert_first, top_k);
-				SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-			}
+				{ "experts", G::kExperts }, { "local_experts", G::kLocalExperts }, { "expert_first", expected_first }, { "top_k", G::kTopK }
+			};
+			status = CudaStagePackExpect(G::Tag(), &state->pack, moe);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+			state->expert_first = expected_first;
 		}
 		else if ( SparkNamedPackConfigU32(&state->pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK || state->ffn_rows == 0u ||
 			state->ffn_rows % QH_SCALE_K != 0u )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if constexpr ( S::kHyper )
 		{
-			uint32_t streams = 0u, lowrank = 0u, shared = 0u;
-			if ( SparkNamedPackConfigU32(&state->pack, "hc_streams", &streams) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "hc_lowrank", &lowrank) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "shared_rows", &shared) != SPARK_STATUS_OK ||
-				streams != G::kStreams || lowrank != G::kHcLowRank || shared != G::kSharedRows )
-			{
-				fprintf(stderr, "%s: pack hyper-connection streams %u lowrank %u shared rows %u do not match the model\n", G::Tag(),
-					streams, lowrank, shared);
-				SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-			}
+			const CudaStagePackCheck hc[] = { { "hc_streams", G::kStreams }, { "hc_lowrank", G::kHcLowRank }, { "shared_rows", G::kSharedRows } };
+			status = CudaStagePackExpect(G::Tag(), &state->pack, hc);
+			if ( status != SPARK_STATUS_OK )
+				return status;
 		}
 		if constexpr ( S::kPle )
 		{
-			uint32_t layer = 0u, eos = 0u;
-			if ( SparkNamedPackConfigU32(&state->pack, "ple_layer", &layer) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "ple_eos", &eos) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "ple_table_first", &state->ple_table_first) != SPARK_STATUS_OK ||
-				SparkNamedPackConfigU32(&state->pack, "ple_table_rows", &state->ple_table_rows) != SPARK_STATUS_OK ||
-				layer != G::kPleLayer || eos != G::kPleEos || state->ple_table_rows == 0u )
-			{
-				fprintf(stderr, "%s: pack n-gram embedding layer %u eos %u rows %u do not match the model\n", G::Tag(), layer, eos,
-					state->ple_table_rows);
+			const CudaStagePackCheck ple[] = { { "ple_layer", G::kPleLayer }, { "ple_eos", G::kPleEos } };
+			const CudaStagePackValue table[] = { { "ple_table_first", &state->ple_table_first }, { "ple_table_rows", &state->ple_table_rows } };
+			status = CudaStagePackExpect(G::Tag(), &state->pack, ple);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+			if ( CudaStagePackValues(&state->pack, table) != SPARK_STATUS_OK || state->ple_table_rows == 0u )
 				SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-			}
 		}
 		return SPARK_STATUS_OK;
 	}
@@ -1969,8 +1828,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->index_global_stride = global > S::kIndexBlocks ? global : S::kIndexBlocks;
 			state->index_mask_words = state->index_global_stride / 32u;
 		}
-		state->record_stride = (((uint64_t)state->max_rows * LmGqaShardRecordFloats(G::kHeads, G::kHeadDim, state->tp_degree) * sizeof(float) +
-			G::kHidden * sizeof(uint16_t) - 1u) / (G::kHidden * sizeof(uint16_t))) * G::kHidden * sizeof(uint16_t) / sizeof(float);
+		state->record_stride = CudaStageRecordStride(state->max_rows, LmGqaShardRecordFloats(G::kHeads, G::kHeadDim, state->tp_degree), G::kHidden);
 		if constexpr ( G::kTpDegree == 1u && !S::kIndexer && G::kHeadDim == 256u && (G::kHeads % G::kKvHeads) == 0u )
 		{
 			const uint32_t split_rows = state->max_rows < 64u ? state->max_rows : 64u;
@@ -2193,40 +2051,21 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static uint32_t ReportFields(const State *state, CudaStageReportField *fields)
 	{
-		const CudaStageReportField report[] =
-		{
-			{ "arena_bytes", state->arena_bytes }, { "slots", state->slots }, { "rows", state->max_rows }, { "ffn_rows", state->ffn_rows },
-			{ "expert_first", state->expert_first }
-		};
-		return CudaStageReportOut(fields, report);
+		return CudaStageStandardReport(state, fields, state->ffn_rows, state->expert_first);
 	}
 
 	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
 	{
 		State *state = (State *)model;
-		int16_t outputs[G::kLayers];
-		if ( state == 0 || plan == 0 )
+		if ( state == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if constexpr ( S::kHyper )
 		{
 			fprintf(stderr, "%s: taps refused: a layer output here is several hyper-connection streams, not one residual row\n", G::Tag());
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		}
-		for ( uint32_t layer = 0u; layer < G::kLayers; ++layer )
-			outputs[layer] = -1;
-		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
-		{
-			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
-				continue;
-			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= G::kLayers )
-				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-			outputs[plan->entries[index].layer] = (int16_t)index;
-		}
-		memcpy(state->tap_output, outputs, sizeof(outputs));
-		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
-		state->tap_stride = plan->row_stride_elements;
-		fprintf(stderr, "%s: taps entries=%u capture=%u; a layer output is its residual after the feed-forward add\n", G::Tag(), plan->entry_count, plan->capture);
-		return SPARK_STATUS_OK;
+		return CudaStageTapPlanApply(G::Tag(), "a layer output is its residual after the feed-forward add", plan, state->tap_output, G::kLayers,
+			&state->tap_slab, &state->tap_stride);
 	}
 
 	static uint32_t GraphKey(void *model, const SparkStageRunnerStep *step)

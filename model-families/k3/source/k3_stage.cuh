@@ -16,6 +16,7 @@
 #include "k3_streamed_prefill.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
+#include "inference/runner/stage_model_cuda.cuh"
 
 #if !defined(SPARK_K3_SERVING_INDEXER) || (SPARK_K3_SERVING_INDEXER != 0 && SPARK_K3_SERVING_INDEXER != 1)
 #error "SPARK_K3_SERVING_INDEXER must name the packs this build serves: 0 for Kimi K3, 1 for Kimi K3.1 Pro (the MLA indexer)"
@@ -1197,8 +1198,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	K3LayerBuffers *b = state->dispatch.buffers_host;
 	SparkK3StepInput in;
 	int32_t status;
-	if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 ||
-		step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 || step->state_saves == 0 || state->kda_snapshots == 0) )
+	if ( CudaStageCheckTreeBegin(step, true, state->kda_snapshots) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	b->slots = step->tree != 0u ? step->slots : 0;
 	b->fork_positions = step->tree != 0u ? step->fork_positions : 0;
@@ -1291,38 +1291,16 @@ static SparkStatus K3ModelRecurrentCopy(void *model, uint32_t to_buffer, uint32_
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	SparkK3KdaRankLayout layout;
-	uint8_t *pools[SPARK_K3_SLOT_POOLS], *packed = (uint8_t *)buffer;
-	uint64_t widths[SPARK_K3_SLOT_POOLS];
-	SparkGpuError error = SPARK_GPU_SUCCESS;
-	uint32_t part;
-	if ( slot >= state->dispatch.sequences || bytes != K3ModelRecurrentBytes(state) ||
-		SparkK3KdaRankLayoutFor(state->dispatch.tp_degree, &layout) == 0u )
+	if ( SparkK3KdaRankLayoutFor(state->dispatch.tp_degree, &layout) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	pools[SPARK_K3_SLOT_POOL_STATE] = state->dispatch.kda_state_pool;
-	pools[SPARK_K3_SLOT_POOL_Q_WINDOW] = (uint8_t *)state->dispatch.kda_q_window_pool;
-	pools[SPARK_K3_SLOT_POOL_K_WINDOW] = (uint8_t *)state->dispatch.kda_k_window_pool;
-	pools[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint8_t *)state->dispatch.kda_v_window_pool;
-	widths[SPARK_K3_SLOT_POOL_STATE] = layout.state_slot_bytes;
-	widths[SPARK_K3_SLOT_POOL_Q_WINDOW] = layout.qk_window_slot_bytes;
-	widths[SPARK_K3_SLOT_POOL_K_WINDOW] = layout.qk_window_slot_bytes;
-	widths[SPARK_K3_SLOT_POOL_V_WINDOW] = layout.v_window_slot_bytes;
-	for ( part = 0u; part < SPARK_K3_SLOT_POOLS && error == SPARK_GPU_SUCCESS; part++ )
+	const CudaStageRecurrent parts[SPARK_K3_SLOT_POOLS] =
 	{
-		uint8_t *pool = pools[part] + (uint64_t)slot * widths[part];
-		size_t pitch = (size_t)(widths[part] * state->dispatch.sequences);
-		error = to_buffer != 0u ?
-			SparkGpuMemcpy2DAsync(packed, (size_t)widths[part], pool, pitch, (size_t)widths[part], state->dispatch.kda_count, SPARK_GPU_COPY_DEFAULT, (SparkGpuStream)stream) :
-			SparkGpuMemcpy2DAsync(pool, pitch, packed, (size_t)widths[part], (size_t)widths[part], state->dispatch.kda_count, SPARK_GPU_COPY_DEFAULT, (SparkGpuStream)stream);
-		packed += widths[part] * state->dispatch.kda_count;
-	}
-	if ( error == SPARK_GPU_SUCCESS && stream == 0 )
-		error = SparkGpuStreamSynchronize(0);
-	if ( error != SPARK_GPU_SUCCESS )
-	{
-		fprintf(stderr, "sparkpipe_k3: KDA record copy failed slot=%u cuda=%s\n", slot, SparkGpuGetErrorString(error));
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	return SPARK_STATUS_OK;
+		{ state->dispatch.kda_state_pool, layout.state_slot_bytes, state->dispatch.kda_count },
+		{ (uint8_t *)state->dispatch.kda_q_window_pool, layout.qk_window_slot_bytes, state->dispatch.kda_count },
+		{ (uint8_t *)state->dispatch.kda_k_window_pool, layout.qk_window_slot_bytes, state->dispatch.kda_count },
+		{ (uint8_t *)state->dispatch.kda_v_window_pool, layout.v_window_slot_bytes, state->dispatch.kda_count }
+	};
+	return CudaStageRecurrentCopy("sparkpipe_k3", parts, SPARK_K3_SLOT_POOLS, state->dispatch.sequences, to_buffer, slot, buffer, bytes, stream);
 }
 
 static SparkStatus K3ModelResetSlot(void *model, uint32_t slot, void *stream)
@@ -1394,30 +1372,12 @@ static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *pl
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	K3SliceState *slice = state->dispatch.slice_state;
-	int16_t outputs[K3_LAYERS];
-	uint32_t index, active = 0u;
 	if ( slice == 0 || state->module.pack.config.first_layer != 0u || state->module.pack.config.layers != K3_LAYERS )
 	{
 		fprintf(stderr, "sparkpipe_k3: taps need the whole layer stack on every rank\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
-	for ( index = 0u; index < K3_LAYERS; ++index )
-		outputs[index] = -1;
-	for ( index = 0u; index < plan->entry_count; ++index )
-	{
-		if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
-			continue;
-		if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= K3_LAYERS )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		outputs[plan->entries[index].layer] = (int16_t)index;
-		active = 1u;
-	}
-	memcpy(slice->tap_output, outputs, sizeof(outputs));
-	slice->tap_slab = plan->capture != 0u ? plan->slab : 0;
-	slice->tap_row_stride = plan->row_stride_elements;
-	slice->tap_active = active;
-	fprintf(stderr, "sparkpipe_k3: taps entries=%u capture=%u\n", plan->entry_count, plan->capture);
-	return SPARK_STATUS_OK;
+	return CudaStageTapPlanApply("sparkpipe_k3", 0, plan, slice->tap_output, K3_LAYERS, &slice->tap_slab, &slice->tap_row_stride, &slice->tap_active);
 }
 
 static const SparkStageRunnerModelInterface spark_k3_stage_model =

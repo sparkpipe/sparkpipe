@@ -416,24 +416,15 @@ static SparkStatus Glm5NextLaneAllocate(Glm5NextModelState *state)
 
 static void Glm5NextFree(Glm5NextModelState *state)
 {
+	void **fields[G5N_SCRATCH_FIELDS];
 	Glm5NextLaneFree(state);
-	void *pointers[] =
-	{
-		state->kv_error, state->streams, state->snapshot, state->normed, state->collapsed,
-		state->streams_mean, state->hc_mixes, state->hc_pre, state->hc_post, state->hc_comb, state->q_compressed, state->q, state->query_latent,
-		state->index_query, state->index_key, state->index_head_weight, state->index_gate, state->index_packed, state->selected_pools,
-		state->selected_positions, state->selection_scores, state->index_local_scores, state->fused_qkvb,
-		state->fused_decay_gate, state->kda_decay_latent, state->kda_gate_latent, state->kda_beta_logit, state->kda_gate, state->kda_decay_logit,
-		state->kda_retention, state->kda_write_gate, state->kv_slot, state->attention_latent, state->attention_value, state->attention_out,
-		state->gate_up, state->intermediate, state->expert_out, state->shared_out, state->router_logits, state->route_expert, state->route_weight,
-		state->route_source_token, state->route_packed_row, state->group_row_offset, state->group_tile_prefix_w1, state->group_tile_prefix_w2,
-		state->shard_query_gathered, state->shard_partials, state->shard_partials_received, state->gather_seq, state->gather_offset,
-		state->gather_prior_ctx, state->kda_state, state->kda_windows,
-		state->replay_inputs, state->replay_retention, state->replay_write_gate, state->kda_snapshots,
-	};
-	for ( uint32_t index = 0u; index < sizeof(pointers) / sizeof(pointers[0]); ++index )
-		if ( pointers[index] != 0 )
-			(void)SparkGpuFree(pointers[index]);
+	for ( uint32_t index = 0u, count = Glm5NextScratch(state, fields); index < count; ++index )
+		if ( *fields[index] != 0 )
+			(void)SparkGpuFree(*fields[index]);
+	void *extra[] = { state->kv_error, state->kda_state, state->kda_windows, state->replay_inputs, state->replay_retention, state->replay_write_gate, state->kda_snapshots };
+	for ( uint32_t index = 0u; index < sizeof(extra) / sizeof(extra[0]); ++index )
+		if ( extra[index] != 0 )
+			(void)SparkGpuFree(extra[index]);
 	free(state->entries);
 }
 
@@ -657,30 +648,11 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr SparkStatus kLaneRefusal = SPARK_STATUS_INVALID_ARGUMENT;
 
-	static const char *Tag(void)
-	{
-		return G::Tag();
-	}
-
-	static const char *ReportTag(void)
-	{
-		return G::ReportTag();
-	}
-
-	static const char *WeightdModel(void)
-	{
-		return G::WeightdModel();
-	}
-
-	static const char *WeightdRevision(void)
-	{
-		return G::WeightdRevision();
-	}
-
-	static void Fail(Glm5NextModelState *state, SparkStatus status)
-	{
-		state->services->fail(state->services->context, status);
-	}
+	static const char *Tag(void) { return G::Tag(); }
+	static const char *ReportTag(void) { return G::ReportTag(); }
+	static const char *WeightdModel(void) { return G::WeightdModel(); }
+	static const char *WeightdRevision(void) { return G::WeightdRevision(); }
+	static void Fail(Glm5NextModelState *state, SparkStatus status) { state->services->fail(state->services->context, status); }
 
 	static SparkStatus Round(Glm5NextModelState *state, SparkGpuStream stream, uint32_t operation, uint32_t rows, const void *local, void *full)
 	{
@@ -1113,30 +1085,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 
 	static SparkStatus ManifestCheck(void *model, const SparkWeightdManifest *manifest)
 	{
-		Glm5NextModelState *state = (Glm5NextModelState *)model;
-		uint64_t covered = 0u;
-		for ( uint32_t index = 0u; index < state->entry_count; ++index )
-		{
-			const Glm5NextPackEntry *entry = &state->entries[index];
-			SparkStatus status;
-			if ( entry->tensor_kind != GLM5_NEXT_T_EXPERT_UP_GATE && entry->tensor_kind != GLM5_NEXT_T_EXPERT_DOWN )
-				continue;
-			status = SparkExpertPlanesCovered(manifest, entry->tensor_kind, entry->layer_index, entry->weight_codec, entry->scale_encoding,
-				entry->group_count, entry->payload_offset, entry->payload_bytes, entry->scale_offset, entry->scale_bytes, &covered);
-			if ( status != SPARK_STATUS_OK )
-			{
-				fprintf(stderr, "%s: the .experts manifest does not cover kind %u layer %u of the pack\n", G::Tag(), entry->tensor_kind,
-					entry->layer_index);
-				return status;
-			}
-		}
-		if ( covered != manifest->range_count )
-		{
-			fprintf(stderr, "%s: the .experts manifest holds %u ranges, the pack's experts cover %llu\n", G::Tag(), manifest->range_count,
-				(unsigned long long)covered);
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		}
-		return SPARK_STATUS_OK;
+		const Glm5NextModelState *state = (const Glm5NextModelState *)model;
+		return CudaStageExpertManifestCheck(G::Tag(), manifest, state->entries, state->entry_count, GLM5_NEXT_T_EXPERT_UP_GATE, GLM5_NEXT_T_EXPERT_DOWN);
 	}
 
 	static SparkStatus Slice(SparkWeightdLazyPack *lazy_pack, const Glm5NextPackEntry *entry, const void **pointer)
@@ -1221,24 +1171,11 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
 	{
 		Glm5NextModelState *state = (Glm5NextModelState *)model;
-		int16_t outputs[G5N_LAYERS];
-		if ( state == 0 || plan == 0 || plan->entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+		char detail[64];
+		if ( state == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t layer = 0u; layer < G5N_LAYERS; ++layer )
-			outputs[layer] = -1;
-		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
-		{
-			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
-				continue;
-			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= G5N_LAYERS )
-				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-			outputs[plan->entries[index].layer] = (int16_t)index;
-		}
-		memcpy(state->tap_output, outputs, sizeof(outputs));
-		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
-		state->tap_stride = plan->row_stride_elements;
-		fprintf(stderr, "%s: taps entries=%u capture=%u; layer outputs are the mean of the %u streams\n", G::Tag(), plan->entry_count, plan->capture, G5N_HC);
-		return SPARK_STATUS_OK;
+		snprintf(detail, sizeof(detail), "layer outputs are the mean of the %u streams", G5N_HC);
+		return CudaStageTapPlanApply(G::Tag(), detail, plan, state->tap_output, G5N_LAYERS, &state->tap_slab, &state->tap_stride);
 	}
 
 	static uint32_t ReportFields(const Glm5NextModelState *state, CudaStageReportField *fields)
@@ -1269,13 +1206,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 			}
 		if ( status == SPARK_STATUS_OK && step->tree != 0u )
 		{
-			for ( uint32_t dsa = 0u; dsa < G5N_DSA_LAYERS; ++dsa )
-			{
-				LM_LAUNCH((LmKvShardPathMoveKernel<Glm5NextKv, G5N_THREADS>), step->rows, G5N_THREADS, 0, stream,
-					state->latent_views[dsa], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, G5N_LATENT);
-				LM_LAUNCH((LmKvShardPathMoveKernel<Glm5NextIndexKv, G5N_THREADS>), step->rows, G5N_THREADS, 0, stream,
-					state->index_views[dsa], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, G5N_INDEX_PACKED);
-			}
+			CudaStageKeepMoveViews<Glm5NextKv, G5N_THREADS>(state, state->latent_views, G5N_DSA_LAYERS, G5N_LATENT, step->rows, step, kept, stream, false);
+			CudaStageKeepMoveViews<Glm5NextIndexKv, G5N_THREADS>(state, state->index_views, G5N_DSA_LAYERS, G5N_INDEX_PACKED, step->rows, step, kept, stream, false);
 			if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}

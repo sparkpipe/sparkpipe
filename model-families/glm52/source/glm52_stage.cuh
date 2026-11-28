@@ -2716,28 +2716,8 @@ struct GlmModel : CudaStage<GlmModel<G>>
 	static SparkStatus ManifestCheck(void *model, const struct SparkWeightdManifest *manifest)
 	{
 		const State *state = (const State *)model;
-		uint64_t expected = 0u;
-		for ( uint32_t index = 0u; index < state->entry_count; index++ )
-		{
-			const SparkGlm52StagePackEntry *entry = &state->entries[index];
-			SparkStatus status;
-			if ( entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE && entry->tensor_kind != SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
-				continue;
-			status = SparkExpertPlanesCovered(manifest, entry->tensor_kind, entry->layer_index, entry->weight_codec, entry->scale_encoding,
-				entry->group_count, entry->payload_offset, entry->payload_bytes, entry->scale_offset, entry->scale_bytes, &expected);
-			if ( status != SPARK_STATUS_OK )
-			{
-				fprintf(stderr, "%s: the .experts manifest does not cover layer %u kind %u\n", G::Tag(), entry->layer_index, entry->tensor_kind);
-				return status;
-			}
-		}
-		if ( expected != manifest->range_count )
-		{
-			fprintf(stderr, "%s: the .experts manifest has %u ranges, the pack's experts need %llu\n", G::Tag(), manifest->range_count,
-				(unsigned long long)expected);
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		}
-		return SPARK_STATUS_OK;
+		return CudaStageExpertManifestCheck(G::Tag(), manifest, state->entries, state->entry_count,
+			SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE, SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN);
 	}
 
 	static SparkStatus Slice(SparkWeightdLazyPack *lazy_pack, const SparkGlm52StagePackEntry *entry, const void **field)
@@ -3497,13 +3477,9 @@ struct GlmModel : CudaStage<GlmModel<G>>
 	{
 		State *state = (State *)model;
 		SparkGpuStream stream = (SparkGpuStream)stream_void;
-		if ( kept == 0 || step->commit != 0u || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u ||
-			step->sequences > state->slots || state->kv_attached == 0u )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->tree == 0u )
-			return SPARK_STATUS_OK;
-		if ( step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		const SparkStatus status = CudaStageKeepRowsCheck(state, step, kept);
+		if ( status != SPARK_STATUS_OK || step->tree == 0u )
+			return status;
 		for ( uint32_t layer = 0u; layer < S::kLayers; ++layer )
 		{
 			LmKvShardView view = { {}, state->shard };
@@ -3525,27 +3501,10 @@ struct GlmModel : CudaStage<GlmModel<G>>
 	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
 	{
 		State *state = (State *)model;
-		int16_t outputs[S::kLayers];
-		uint32_t has_output = 0u;
-		if ( state == 0 || plan == 0 || plan->entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
+		if ( state == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t layer = 0u; layer < S::kLayers; ++layer )
-			outputs[layer] = -1;
-		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
-		{
-			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
-				continue;
-			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= S::kLayers )
-				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-			outputs[plan->entries[index].layer] = (int16_t)index;
-			has_output = 1u;
-		}
-		memcpy(state->tap_output, outputs, sizeof(outputs));
-		state->taps = has_output;
-		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
-		state->tap_stride = plan->row_stride_elements;
-		fprintf(stderr, "%s: taps entries=%u capture=%u; a layer output is its residual after the feed-forward add\n", G::Tag(), plan->entry_count, plan->capture);
-		return SPARK_STATUS_OK;
+		return CudaStageTapPlanApply(G::Tag(), "a layer output is its residual after the feed-forward add", plan, state->tap_output, S::kLayers,
+			&state->tap_slab, &state->tap_stride, &state->taps);
 	}
 
 	static uint32_t ReportFields(const State *state, CudaStageReportField *fields)

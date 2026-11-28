@@ -26,7 +26,6 @@
 #define SPARK_K3_SERVING_CONTRACT_SHA256 "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
 #endif
 #define SPARK_K3_SERVING_TP_DEGREE 16u
-#define SPARK_K3_SERVING_MAX_ROWS 4096u
 
 static void K3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -39,21 +38,10 @@ static void K3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKv
 	SparkK3KvFillCapacityRequest(&kv->capacity_request);
 	kv->region_count = SPARK_K3_SERVING_KV_REGIONS;
 	if ( SPARK_K3_SERVING_KV_REGIONS > 1u )
-	{
-		kv->regions[1].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
-		kv->regions[1].layer_page_bytes = (uint64_t)SPARK_K3_KV_PAGE_SLOTS * SPARK_K3_KV_INDEX_KEY_DIMENSION * SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR;
-		kv->regions[1].layer_count = SPARK_K3_KV_MLA_LAYER_COUNT;
-		kv->capacity_request.index_key_layer_count = SPARK_K3_KV_MLA_LAYER_COUNT;
-		kv->capacity_request.index_key_dimension = SPARK_K3_KV_INDEX_KEY_DIMENSION;
-		kv->capacity_request.index_key_bytes_per_scalar = SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR;
-	}
+		SparkStageKvSetIndex(kv, (uint64_t)SPARK_K3_KV_PAGE_SLOTS * SPARK_K3_KV_INDEX_KEY_DIMENSION * SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR,
+			SPARK_K3_KV_MLA_LAYER_COUNT, SPARK_K3_KV_INDEX_KEY_DIMENSION, SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR);
 	if ( tp_degree > 1u )
 		kv->context_shard = SparkK3KvShardContext(tp_rank, tp_degree);
-}
-
-static uint32_t K3ServingCollectiveSequences(uint32_t rows, uint32_t tp_degree)
-{
-	return SparkK3TpSequenceCapacity(rows, tp_degree);
 }
 
 static const SparkStageServingModel K3StageServing =
@@ -65,22 +53,19 @@ static const SparkStageServingModel K3StageServing =
 	.contract_sha256 = SPARK_K3_SERVING_CONTRACT_SHA256,
 	.module_tag = SPARK_K3_SERVING_MODULE_TAG,
 	.runner_model = SparkK3StageModel,
-	.tp_degree = SPARK_K3_SERVING_TP_DEGREE,
+	.tp_degree = 16u,
 	.layer_count = SPARK_K3_MODEL_LAYER_COUNT,
 	.hidden = SPARK_K3_MODEL_HIDDEN_DIMENSION,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1,
-	.max_rows = SPARK_K3_SERVING_MAX_ROWS,
+	.max_rows = 4096u,
 	.verify_rows = SPARK_K3_SERVING_VERIFY_ROWS,
-	.tree_slot_grain = SPARK_K3_SERVING_TP_DEGREE,
+	.tree_slot_grain = 16u,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_K3_KV_PAGE_SLOTS,
 	.cache_checkpoint_token_count = SPARK_K3_KV_CHECKPOINT_TOKENS,
 	.kv_layout = K3ServingKvLayout,
-	.collective_sequences = K3ServingCollectiveSequences,
+	.collective_sequences = SparkK3TpSequenceCapacity,
 };
 
-const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)
-{
-	return SparkStageServingAdapterInterface(&K3StageServing);
-}
+SPARK_STAGE_SERVING_EXPORT(K3StageServing)

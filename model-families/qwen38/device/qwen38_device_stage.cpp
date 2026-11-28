@@ -1,12 +1,8 @@
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include "inference/runner/device_indexer.h"
-#include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_cxx.h"
 #include "inference/runner/device_stage_runner.h"
-#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_qwen38_27b_stage_model.h"
 #include "sparkpipe/spark_qwen35_small_geometry.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
@@ -14,17 +10,22 @@
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
 #include "sparkpipe/spark_qwen38_max_stage_model.h"
 
-#define QD_SLICES 59u
 #define QD_PLE_WINDOW_POOL 2u
 #define QD_PLE_HISTORY_POOL 3u
 #define QD_INDEX_WINDOW_POOL 4u
 #define QD_DENSE_INDEX_POSITIONS(G) ((G::kIndexBudget / G::kIndexRatio + 1u) * G::kIndexRatio - 1u)
 
 template<class P>
-struct QwenDevice
+struct QwenDevice : SparkDeviceStageModel<QwenDevice<P>>
 {
 	using G = typename P::Geometry;
 	using L = QwenHybridLayout<G>;
+
+	static constexpr bool kHasKeepRows = true;
+	static constexpr bool kTreeVerify = !L::kPle && !L::kIndexer;
+	static constexpr uint32_t kMaxSlices = 59u;
+	static constexpr const char *Tag(void) { return P::kTag; }
+	static constexpr const char *Name(void) { return P::kName; }
 	static constexpr uint32_t kIndexExpanded = L::kIndexBlocks * G::kIndexRatio + L::kIndexTail;
 
 	static_assert(L::kHyper == L::kPle, "the device layers run the n-gram embedding inside the hyper-connection streams");
@@ -142,6 +143,45 @@ struct QwenDevice
 		uint32_t sparse;
 	};
 
+	static void IndexRope(SparkHeadRopeParams *params, uint32_t heads, uint32_t input_stride, uint32_t output_stride)
+	{
+		memset(params, 0, sizeof(*params));
+		params->heads = heads;
+		params->head_dimension = G::kIndexDim;
+		params->input_stride = input_stride;
+		params->input_head_stride = G::kIndexDim;
+		params->output_stride = output_stride;
+		params->rope_dimension = G::kRopeDim;
+		params->epsilon = QH_EPSILON;
+		params->has_weight = 1u;
+		params->rope_rounding = SPARK_ROPE_ROUNDING_FP32;
+		params->scale = 1.0f;
+		for ( uint32_t pair = 0u; pair < G::kRopeDim / 2u; pair++ )
+			params->inverse_frequency[pair] = (float)(1.0 / pow((double)G::kRopeTheta, (double)(2u * pair) / (double)G::kRopeDim));
+	}
+
+	static void IndexShapes(State *state)
+	{
+		SparkIndexerShape *shape = &state->index_shape;
+		memset(shape, 0, sizeof(*shape));
+		shape->heads = G::kIndexHeads;
+		shape->head_dimension = G::kIndexDim;
+		shape->key_norm = SPARK_INDEXER_NORM_RMS;
+		shape->key_norm_epsilon = QH_EPSILON;
+		shape->score_scale = (float)(1.0 / sqrt((double)G::kIndexDim));
+		shape->topk = L::kIndexBlocks;
+		shape->key_ratio = G::kIndexRatio;
+		shape->query_stride = G::kIndexHeads * G::kIndexDim;
+		shape->weight_f32 = 1u;
+		shape->weight_shared = 1u;
+		shape->heads_in_order = 1u;
+		shape->key_stride = L::kIndexWidth;
+		state->index_store_shape = *shape;
+		state->index_store_shape.key_stride = G::kIndexDim;
+		IndexRope(&state->index_query_rope, G::kIndexHeads, L::kIndexWidth, G::kIndexHeads * G::kIndexDim);
+		IndexRope(&state->index_key_rope, 1u, G::kIndexDim, G::kIndexDim);
+	}
+
 	static void Shapes(State *state)
 	{
 		SparkDeviceStageShape *shape = &state->shape;
@@ -184,50 +224,6 @@ struct QwenDevice
 			IndexShapes(state);
 	}
 
-	static void IndexRope(SparkHeadRopeParams *params, uint32_t heads, uint32_t input_stride, uint32_t output_stride)
-	{
-		memset(params, 0, sizeof(*params));
-		params->heads = heads;
-		params->head_dimension = G::kIndexDim;
-		params->input_stride = input_stride;
-		params->input_head_stride = G::kIndexDim;
-		params->output_stride = output_stride;
-		params->rope_dimension = G::kRopeDim;
-		params->epsilon = QH_EPSILON;
-		params->has_weight = 1u;
-		params->rope_rounding = SPARK_ROPE_ROUNDING_FP32;
-		params->scale = 1.0f;
-		for ( uint32_t pair = 0u; pair < G::kRopeDim / 2u; pair++ )
-			params->inverse_frequency[pair] = (float)(1.0 / pow((double)G::kRopeTheta, (double)(2u * pair) / (double)G::kRopeDim));
-	}
-
-	static void IndexShapes(State *state)
-	{
-		SparkIndexerShape *shape = &state->index_shape;
-		memset(shape, 0, sizeof(*shape));
-		shape->heads = G::kIndexHeads;
-		shape->head_dimension = G::kIndexDim;
-		shape->key_norm = SPARK_INDEXER_NORM_RMS;
-		shape->key_norm_epsilon = QH_EPSILON;
-		shape->score_scale = (float)(1.0 / sqrt((double)G::kIndexDim));
-		shape->topk = L::kIndexBlocks;
-		shape->key_ratio = G::kIndexRatio;
-		shape->query_stride = G::kIndexHeads * G::kIndexDim;
-		shape->weight_f32 = 1u;
-		shape->weight_shared = 1u;
-		shape->heads_in_order = 1u;
-		shape->key_stride = L::kIndexWidth;
-		state->index_store_shape = *shape;
-		state->index_store_shape.key_stride = G::kIndexDim;
-		IndexRope(&state->index_query_rope, G::kIndexHeads, L::kIndexWidth, G::kIndexHeads * G::kIndexDim);
-		IndexRope(&state->index_key_rope, 1u, G::kIndexDim, G::kIndexDim);
-	}
-
-	static uint64_t Max(uint64_t a, uint64_t b)
-	{
-		return a > b ? a : b;
-	}
-
 	static uint32_t MixWidth(const State *state)
 	{
 		const uint32_t delta = SparkDeviceGatedDeltaMix(&state->delta_shape), attention = SparkDeviceAttentionFusedWidth(&state->attention_shape);
@@ -257,14 +253,14 @@ struct QwenDevice
 			{ rows * GatedWidth(state) * 2u, &state->delta.gated },
 			{ rows * SparkDeviceAttentionQueryWidth(attention) * 2u, &state->attention.query },
 			{ rows * SparkDeviceAttentionKvWidth(attention) * 2u, &state->attention.key },
-			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension, state->stage.max_positions),
+			{ SparkDeviceStageMax(SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension, state->stage.max_positions),
 				L::kIndexer ? SparkIndexerAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension,
 				kIndexExpanded) : 0u), &state->attention.records },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act },
 			{ SparkDeviceGatedDeltaKeepBytes(delta, state->stage.verify_rows, L::kGdnLayers), &state->delta.keep },
 			{ L::kPle ? 0u : SparkDeviceGatedDeltaSnapshotBytes(delta), &state->delta.snapshots },
-			{ state->fp8 != 0u ? Max(Max(2u * (uint64_t)state->ffn, MixWidth(state)), Max(GatedWidth(state), state->ffn)) * hidden * 2u : 0u,
+			{ state->fp8 != 0u ? SparkDeviceStageMax(SparkDeviceStageMax(2u * (uint64_t)state->ffn, MixWidth(state)), SparkDeviceStageMax(GatedWidth(state), state->ffn)) * hidden * 2u : 0u,
 				&state->stage.dequant },
 			{ residual, &state->residual },
 			{ residual, &state->hc_normed },
@@ -304,42 +300,39 @@ struct QwenDevice
 			{ L::kIndexer ? SparkIndexerSelectedBytes(state->stage.max_rows, kIndexExpanded) : 0u, &state->index_expanded },
 			{ L::kIndexer ? (uint64_t)state->stage.verify_rows * L::kIndexWidth * 2u * L::kAttnLayers : 0u, &state->index_keep }
 		};
-		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
-		for ( uint32_t index = 0u; index < count; index++ )
-			slices[index] = plan[index];
-		return count;
+		return SparkDeviceStageAppendSlices(slices, 0u, plan);
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **out, SparkStageRunnerModelGeometry *geometry)
+	static uint32_t RecurrentPools(const State *state, SparkDeviceStageRecurrentPlan *pools)
 	{
-		SparkDeviceStageSlice slices[QD_SLICES];
-		State *state = (State *)calloc(1u, sizeof(State));
-		SparkStatus status;
-		*out = state;
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		Shapes(state);
-		const SparkDeviceStageRecurrentPlan pools[] = { { L::kGdnLayers, SparkDeviceGatedDeltaStateBytes(&state->delta_shape) },
-			{ L::kGdnLayers, SparkDeviceGatedDeltaWindowBytes(&state->delta_shape) },
-			{ 1u, (uint64_t)L::kResidual * SPARK_CONV_SPAN(G::kPleConv, G::kPleDilation) * 2u }, { 1u, L::kPleHistory * sizeof(int32_t) },
-			{ L::kAttnLayers, L::kIndexer ? SparkIndexerPoolWindowBytes(&state->index_shape) : 0u } };
+		pools[0] = { L::kGdnLayers, SparkDeviceGatedDeltaStateBytes(&state->delta_shape) };
+		pools[1] = { L::kGdnLayers, SparkDeviceGatedDeltaWindowBytes(&state->delta_shape) };
+		pools[2] = { 1u, (uint64_t)L::kResidual * SPARK_CONV_SPAN(G::kPleConv, G::kPleDilation) * 2u };
+		pools[3] = { 1u, L::kPleHistory * sizeof(int32_t) };
+		pools[4] = { L::kAttnLayers, L::kIndexer ? SparkIndexerPoolWindowBytes(&state->index_shape) : 0u };
+		return L::kIndexer ? 5u : L::kPle ? 4u : SPARK_DEVICE_GATED_DELTA_POOLS;
+	}
+
+	static SparkStatus Configure(State *state, const SparkStageRunnerModelOpen *request)
+	{
+		(void)request;
 		const SparkDeviceStageConfigValue config[] = { { "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab_rows", G::kVocab / G::kTpDegree } };
 		const SparkDeviceStageConfigValue moe[] = { { "experts", G::kExperts }, { "local_experts", G::kLocalExperts }, { "top_k", G::kTopK },
 			{ "moe_inter", G::kMoeInter } };
 		const SparkDeviceStageConfigValue hyper[] = { { "hc_streams", G::kStreams }, { "hc_lowrank", G::kHcLowRank }, { "index_heads", G::kIndexHeads },
 			{ "index_dim", G::kIndexDim }, { "index_budget", G::kIndexBudget }, { "index_ratio", G::kIndexRatio }, { "ple_table_first", 0u } };
 		const SparkDeviceStageConfigValue windows[] = { { "attn_rank_heads", 0u } };
-		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
+		SparkStatus status = SPARK_STATUS_OK;
 		if constexpr ( G::kMoe )
 		{
-			if ( status == SPARK_STATUS_OK && SparkNamedPackConfigU32(&state->stage.pack, "shared_rows", &state->shared_rows) != SPARK_STATUS_OK )
+			if ( SparkNamedPackConfigU32(&state->stage.pack, "shared_rows", &state->shared_rows) != SPARK_STATUS_OK )
 				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks shared_rows");
 			if ( status == SPARK_STATUS_OK )
 				status = SparkDeviceStageExpectConfig(&state->stage, moe, sizeof(moe) / sizeof(moe[0]));
 		}
 		else
 		{
-			if ( status == SPARK_STATUS_OK && SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn) != SPARK_STATUS_OK )
+			if ( SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn) != SPARK_STATUS_OK )
 				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows");
 			if ( status == SPARK_STATUS_OK )
 			{
@@ -358,15 +351,14 @@ struct QwenDevice
 		if constexpr ( L::kIndexer )
 			if ( status == SPARK_STATUS_OK )
 				state->index_score_stride = SparkIndexerScoreStride(state->stage.max_positions / G::kIndexRatio);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), pools,
-				L::kIndexer ? 5u : L::kPle ? 4u : SPARK_DEVICE_GATED_DELTA_POOLS, request->configuration->state_budget_bytes);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		SparkDeviceAttentionRopePrepare(&state->attention_shape, &state->rope);
-		status = SparkDeviceStageGeometry(&state->stage, geometry);
-		geometry->tree_verify = status == SPARK_STATUS_OK && !L::kPle && !L::kIndexer ? 1u : 0u;
 		return status;
+	}
+
+	static SparkStatus AfterReserve(State *state, const SparkStageRunnerModelOpen *request)
+	{
+		(void)request;
+		SparkDeviceAttentionRopePrepare(&state->attention_shape, &state->rope);
+		return SPARK_STATUS_OK;
 	}
 
 	static void HyperName(char *name, size_t bytes, uint32_t index, const char *prefix, const char *part)
@@ -442,9 +434,8 @@ struct QwenDevice
 		PleWeights *ple = &state->ple;
 		uint64_t offset = 0u, bytes = 0u;
 		char name[64];
-		SparkStatus status;
 		snprintf(name, sizeof(name), "layers.%u.ple_table", index);
-		status = SparkDeviceStageEntry(&state->stage, name, "fp8_e4m3", &offset, &bytes, 0);
+		SparkStatus status = SparkDeviceStageEntry(&state->stage, name, "fp8_e4m3", &offset, &bytes, 0);
 		ple->table_rows = bytes / G::kPleHeadDim;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "ple_table", "fp8_e4m3", ple->table_rows * G::kPleHeadDim, &ple->table);
@@ -519,15 +510,10 @@ struct QwenDevice
 		return SparkDeviceGatedDeltaBind(&state->stage, weights, index, &state->delta_shape, &layer->delta);
 	}
 
-	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus BindWeights(State *state, const SparkStageRunnerDeviceWeights *weights)
 	{
-		State *state = (State *)model;
-		SparkDeviceStageSlice slices[QD_SLICES];
 		uint32_t recurrent = 0u, attention = 0u;
 		SparkStatus status = SPARK_STATUS_OK;
-		(void)geometry;
-		if ( weights == 0 || weights->pack_address == 0u || weights->pack_bytes != state->stage.pack_bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "bind_device needs the device mapping of the whole rank pack");
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
 		{
 			status = BindLayer(state, weights, index);
@@ -539,17 +525,13 @@ struct QwenDevice
 		if constexpr ( L::kPle )
 			if ( status == SPARK_STATUS_OK )
 				status = BindPle(state, weights);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		status = SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
-		state->attention.qkv = state->delta.mix;
-		state->attention.gated = state->delta.gated;
 		return status;
 	}
 
-	static const Layer &LayerOf(State *state, uint32_t index)
+	static void AfterAllocate(State *state)
 	{
-		return state->layers[index];
+		state->attention.qkv = state->delta.mix;
+		state->attention.gated = state->delta.gated;
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
@@ -571,16 +553,6 @@ struct QwenDevice
 				if ( frame->t.host_positions[row] >= QD_DENSE_INDEX_POSITIONS(G) )
 					frame->sparse = 1u;
 		return status;
-	}
-
-	static SparkStatus RmsNorm(State *state, const Frame &frame, SparkTensor weight)
-	{
-		return SparkDeviceResidualNorm(&state->stage, frame.queue, &frame.t, 0, weight, state->normed);
-	}
-
-	static SparkStatus AddRmsNorm(State *state, const Frame &frame, SparkTensor weight)
-	{
-		return SparkDeviceResidualNorm(&state->stage, frame.queue, &frame.t, &state->partial, weight, state->normed);
 	}
 
 	static SparkIndexerCache IndexCache(const State *state, uint32_t kv_index)
@@ -846,11 +818,6 @@ struct QwenDevice
 				state->partial);
 	}
 
-	static SparkStatus AllReduce(State *state, const Frame &frame)
-	{
-		return SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
-	}
-
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
 	{
 		SparkDeviceStageLayerDone(&state->stage, index);
@@ -858,18 +825,6 @@ struct QwenDevice
 			return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, state->residual, L::kResidual, index);
 		else
 			return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, frame.t.hidden, G::kHidden, index);
-	}
-
-	static SparkStatus AddRows(State *state, const Frame &frame)
-	{
-		return SparkOpsAddRows(state->stage.ops, frame.queue, frame.t.hidden, state->partial, frame.t.rows, G::kHidden, G::kHidden, G::kHidden);
-	}
-
-	static SparkStatus Check(State *state, const Frame &frame)
-	{
-		(void)state;
-		(void)frame;
-		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *queue)
@@ -921,44 +876,6 @@ struct QwenDevice
 			status = SparkDeviceStageKeepRelocate(&state->stage, (SparkDeviceQueue *)queue, step, &keep);
 		return status;
 	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			P::kTag,
-			P::kName,
-			"official",
-			Open,
-			SparkDeviceStageManifestCheck,
-			SparkDeviceStageBindWeightd,
-			SparkDeviceStageClose,
-			Step,
-			SparkDeviceStageSideband,
-			SparkDeviceStageAttachKv,
-			SparkDeviceStageRecurrentCopy,
-			SparkDeviceStageResetSlot,
-			SparkDeviceStageProbeBuffers,
-			SparkDeviceStageReport,
-			0,
-			SparkDeviceStageLane,
-			KeepRows,
-			0,
-			BindDevice,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0,
-			0u,
-			0u,
-			0
-		};
-		return &interface_table;
-	}
 };
 
 struct Qwen38_27bDevice
@@ -969,11 +886,6 @@ struct Qwen38_27bDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
-const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void)
-{
-	return QwenDevice<Qwen38_27bDevice>::Interface();
-}
-
 struct Qwen38FlashDevice
 {
 	using Geometry = Qwen38FlashGeometry<1u, SPARK_WEIGHT_CODEC_NVFP4_E2M1, SPARK_WEIGHT_CODEC_FP8_E4M3>;
@@ -981,11 +893,6 @@ struct Qwen38FlashDevice
 	static constexpr const char *kName = "qwen3.8-flash";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
-
-const SparkStageRunnerModelInterface *SparkQwen38FlashDeviceStageModel(void)
-{
-	return QwenDevice<Qwen38FlashDevice>::Interface();
-}
 
 template<uint32_t TP>
 struct Qwen38MaxDevice
@@ -996,29 +903,6 @@ struct Qwen38MaxDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
-template<template<uint32_t> class P>
-static const SparkStageRunnerModelInterface *QwenDeviceAt(uint32_t tp_degree)
-{
-	switch ( tp_degree )
-	{
-	case 1u:
-		return QwenDevice<P<1u>>::Interface();
-	case 2u:
-		return QwenDevice<P<2u>>::Interface();
-	case 4u:
-		return QwenDevice<P<4u>>::Interface();
-	case 8u:
-		return QwenDevice<P<8u>>::Interface();
-	default:
-		return 0;
-	}
-}
-
-const SparkStageRunnerModelInterface *SparkQwen38MaxDeviceStageModelAt(uint32_t tp_degree)
-{
-	return QwenDeviceAt<Qwen38MaxDevice>(tp_degree);
-}
-
 struct Qwen35_4bDevice
 {
 	using Geometry = Qwen35_4bGeometry;
@@ -1026,11 +910,6 @@ struct Qwen35_4bDevice
 	static constexpr const char *kName = "qwen3.5-4b";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
-
-const SparkStageRunnerModelInterface *SparkQwen35_4bDeviceStageModel(void)
-{
-	return QwenDevice<Qwen35_4bDevice>::Interface();
-}
 
 struct Qwen35_2bDevice
 {
@@ -1040,7 +919,8 @@ struct Qwen35_2bDevice
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
 };
 
-const SparkStageRunnerModelInterface *SparkQwen35_2bDeviceStageModel(void)
-{
-	return QwenDevice<Qwen35_2bDevice>::Interface();
-}
+const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void) { return QwenDevice<Qwen38_27bDevice>::Interface(); }
+const SparkStageRunnerModelInterface *SparkQwen38FlashDeviceStageModel(void) { return QwenDevice<Qwen38FlashDevice>::Interface(); }
+const SparkStageRunnerModelInterface *SparkQwen38MaxDeviceStageModelAt(uint32_t tp_degree) { return SparkDeviceStageAt<QwenDevice, Qwen38MaxDevice>(tp_degree); }
+const SparkStageRunnerModelInterface *SparkQwen35_4bDeviceStageModel(void) { return QwenDevice<Qwen35_4bDevice>::Interface(); }
+const SparkStageRunnerModelInterface *SparkQwen35_2bDeviceStageModel(void) { return QwenDevice<Qwen35_2bDevice>::Interface(); }
