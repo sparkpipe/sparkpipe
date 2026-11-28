@@ -2891,49 +2891,49 @@ $(TEST_DRAFTER_PROBE_ABI_MODULE): tests/fixtures/drafter_probe_module.c include/
 build/obj/drafter/%.o: %.c | build
 	@mkdir -p $(dir $@) && $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include -Imodel-families/common/include $(CFLAGS) -fPIC -c $< -o $@
 
-$(K31_DSPARK_DRAFTER_MODULE): modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(K31_DSPARK_DRAFTER_MODULE): modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(DSV41_DSPARK_DRAFTER_MODULE): modules/dsv41_dspark_draft_stage/source/spark_dsv41_dspark_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(DSV41_DSPARK_DRAFTER_MODULE): modules/dsv41_dspark_draft_stage/source/spark_dsv41_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(QWEN38_DSPINE_DRAFTER_MODULE): modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(QWEN38_DSPINE_DRAFTER_MODULE): modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(GLM53_DSPARK_DRAFTER_MODULE): modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_DSPARK_DRAFTER_MODULE): modules/glm53_dspark_draft_stage/source/spark_glm53_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(QWEN38_MAX_DSPARK_DRAFTER_MODULE): modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(QWEN38_MAX_DSPARK_DRAFTER_MODULE): modules/qwen38_max_dspark_draft_stage/source/spark_qwen38_max_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(KEXAONE2_DSPARK_DRAFTER_MODULE): modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(KEXAONE2_DSPARK_DRAFTER_MODULE): modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(GLM53_FLASH_DFLASH2_DRAFTER_MODULE): modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_FLASH_DFLASH2_DRAFTER_MODULE): modules/glm53_flash_dflash2_draft_stage/source/spark_glm53_flash_dflash2_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
 	mv $@.tmp $@
 
-$(AXK2_DSPARK_DRAFTER_MODULE): modules/axk2_dspark_draft_stage/source/spark_axk2_dspark_module.cu inference/kernels/drafter_blackwell.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(AXK2_DSPARK_DRAFTER_MODULE): modules/axk2_dspark_draft_stage/source/spark_axk2_dspark_module.cu inference/kernels/drafter_blackwell.cuh inference/kernels/dspark_draft_stage_common.cuh inference/kernels/dspark_standard_transformer.cuh include/sparkpipe/spark_drafter_module.h include/sparkpipe/spark_draft_tree_pack.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
 	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
@@ -2944,13 +2944,13 @@ drafter-modules: $(DRAFTER_MODULES)
 build/k31_dspark_context_probe: tools/k31_dspark_context_probe.c include/sparkpipe/spark_drafter_module.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
-build/k31_dspark_block_probe: tools/k31_dspark_block_probe.c include/sparkpipe/spark_drafter_module.h | build
+build/k31_dspark_block_probe: tools/k31_dspark_block_probe.c tools/drafter_block_probe_common.h include/sparkpipe/spark_drafter_module.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
-build/dsv41_dspark_block_probe: tools/dsv41_dspark_block_probe.c include/sparkpipe/spark_drafter_module.h | build
+build/dsv41_dspark_block_probe: tools/dsv41_dspark_block_probe.c tools/drafter_block_probe_common.h include/sparkpipe/spark_drafter_module.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
-build/qwen38_dspine_block_probe: tools/qwen38_dspine_block_probe.c include/sparkpipe/spark_drafter_module.h | build
+build/qwen38_dspine_block_probe: tools/qwen38_dspine_block_probe.c tools/drafter_block_probe_common.h include/sparkpipe/spark_drafter_module.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
 build/glm53_dspark_block_probe: tests/glm53_dspark_block_probe.c include/sparkpipe/spark_drafter_module.h | build

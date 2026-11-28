@@ -1,2 +1,0 @@
-+1841
-K-EXAONE 2.0 official DSpark drafter module (`modules/kexaone2_dspark_draft_stage/source/spark_kexaone2_dspark_module.cu`), `kexaone2dspark` packer support in `tools/drafter_pack.py`, and Makefile build rules for `KEXAONE2_DSPARK_DRAFTER_MODULE` and `build/kexaone2_dspark_block_probe`.
