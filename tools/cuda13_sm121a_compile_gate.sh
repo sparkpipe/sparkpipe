@@ -64,6 +64,7 @@ PROBE
 
 include_flags=(
 	-I"${repository_root}"
+	-I"${repository_root}/build"
 	-I"${repository_root}/include"
 	-I"${repository_root}/deployment/include"
 	-I"${repository_root}/model-families/common/include"
@@ -112,6 +113,7 @@ compile_cuda()
 	fi
 }
 
+make -C "${repository_root}" build/skl2_k3_embedded.h NVCC="${nvcc_binary}" CUDA_ARCH="${cuda_architecture}" CUDA_HOME="${cuda_home}" >/dev/null
 compile_pids=()
 compile_cuda "${output_directory}/probe.cu" probe &
 compile_pids+=("$!")
