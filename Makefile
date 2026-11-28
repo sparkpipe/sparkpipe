@@ -2332,7 +2332,7 @@ build/stage_runner_single_gpu_cuda: tests/cuda/stage_runner_single_gpu_cuda.cu i
 
 SKL2_BUILD_DIR := build
 SKL2_K3_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_k3_embedded.h
-SKL2_K3_SOURCES := inference/skl2/kernels/k3_mma.skl2 inference/skl2/kernels/k3_ops.skl2
+SKL2_K3_SOURCES := inference/skl2/kernels/k3_mma.skl2 inference/skl2/kernels/k3_ops.skl2 inference/skl2/kernels/k3_cells.skl2 inference/skl2/kernels/k3_stage_ops.skl2 inference/skl2/kernels/k3_layer_ops.skl2
 SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 k3_splitk_reduce_situ_256 \
 	k3_wide_mma_32x32 k3_wide_mma_64x32 k3_kda_proj_mma_32x32 k3_kda_proj_mma_64x32 \
 	k3_index_head_mma_skip_32x32 k3_index_q_mma_wide_skip_64x128 k3_index_q_mma_wide_skip_128x128 \
@@ -2343,7 +2343,14 @@ SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 
 	k3_moe_finalize_warp_slice_128 k3_moe_finalize_token224_224 k3_index_head_skip_128 k3_index_q_exact_skip_128 \
 	k3_shared_w1_situ_skinny_r1 k3_shared_w1_situ_skinny_r4 k3_shared_w1_situ_skinny_r8 k3_shared_w1_situ_skinny_r12 \
 	k3_kda_norm_gate_out_r1 k3_kda_norm_gate_out_r4 k3_kda_norm_gate_out_r8 k3_kda_norm_gate_out_r12 \
-	k3_mla_gate_out_r1 k3_mla_gate_out_r4 k3_mla_gate_out_r8 k3_mla_gate_out_r12
+	k3_mla_gate_out_r1 k3_mla_gate_out_r4 k3_mla_gate_out_r8 k3_mla_gate_out_r12 \
+	k3_cell_mma_w1_situ_c2 k3_cell_mma_w1_situ_c4 k3_cell_mma_w2_slice_c2 k3_cell_mma_w2_slice_c4 k3_cell_mma_w2_slice_c4_stream \
+	k3_cell_skinny_w1_situ_b1 k3_cell_skinny_w1_situ_b4 k3_cell_skinny_w2_finalize_row1 k3_cell_skinny_w2_b4 \
+	k3_runner_fused_pack_256 k3_runner_mla_down_rows_256 k3_runner_latent_logits_256 k3_identity_pages_256 k3_fold_l2_norm_128 \
+	k3_streamed_state_identity_256 k3_streamed_state_compose_256 k3_streamed_conv_seed_256 k3_streamed_conv_tail_256 k3_streamed_conv_end_256 \
+	k3_streamed_pad_rows_128 k3_streamed_fold_records_256 \
+	k3_exact_split_8x4_256 k3_split_fused_proj_256 k3_kda_prep_finish_128 k3_kda_norm_gate_128 \
+	k3_rms_norm_slice_256 k3_unpack_prior_kv_128 k3_fill_dense_selected_256
 
 $(SKL2_K3_EMBEDDED): $(SKL2_K3_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_K3_KERNELS),--only $(k)) --prefix K3Skl2 --emit-embedded-h $@ $(SKL2_K3_SOURCES)

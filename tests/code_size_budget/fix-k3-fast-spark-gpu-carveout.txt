@@ -1,2 +1,0 @@
-+7
-Route K3CellMmaW1SituKernel<8u> shared-memory carveout attribute through SparkGpuFuncSetAttribute and SPARK_GPU_FUNCTION_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT in spark_gpu_{cuda,nvrm}.h and spark_gpu_nvrm.c so test_gpu_api.py passes with 0 raw CUDA runtime names and k3_fast.cuh stays NVRM-compatible.

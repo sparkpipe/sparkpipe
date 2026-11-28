@@ -1,2 +1,0 @@
-+1112
-K3/K3.1-Pro Blackwell sm_121a remaining MXFP4 cell MoE kernels (K3CellMmaW1SituKernel, K3CellMmaW2SliceKernel, K3CellSkinnyW1SituKernel, K3CellSkinnyW2FinalizeRow1Kernel, K3CellSkinnyW2Kernel) after retiring all 26 non-cell K3 CUDA kernels to native skl2 sm_121a embedded cubins.

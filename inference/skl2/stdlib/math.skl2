@@ -85,16 +85,18 @@ macro rsqrt_exact_div(sum_sq, dim_f, eps, out_scale) {
 
 @export
 macro silu_exact_f32(g, out_q) {
-    reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
+    reg f32 d = exp2_ftz(maxf(g, -88.0f) * -1.4426950408889634f) + 1.0f;
     reg f32 r = 0.0f;
     rcp_nr1_f32(d, r);
     div_nr1_f32(g, d, r, out_q);
+    out_q = (g < -88.0f) ? 0.0f : out_q;
 }
 
 @export
 macro sigmoid_exact_f32(g, out_s) {
-    reg f32 d = exp2_ftz(g * -1.4426950408889634f) + 1.0f;
+    reg f32 d = exp2_ftz(maxf(g, -88.0f) * -1.4426950408889634f) + 1.0f;
     rcp_nr2_f32(d, out_s);
+    out_s = (g < -88.0f) ? 0.0f : out_s;
 }
 
 @export
@@ -544,4 +546,12 @@ macro fp8_e4m3_qdq_lane_bf16(val_f, out_bf16) {
     reg f32 inv = u32_as_f32(0x7F000000 - sbits);
     reg u32 q = cvt_f32x2_e4m3x2(minf(maxf(val_f * inv, -448.0f), 448.0f), 0.0f);
     out_bf16 = f32_to_bf16(e4m3_to_f32(q & 0xFF) * sc);
+}
+
+@export
+macro bounded_decay_f32(logit, bias, log_scale, min_log_decay, out_decay) {
+    reg f32 scaled = exp2_ftz(log_scale * 1.4426950408889634f) * (logit + bias);
+    reg f32 sg = 0.0f;
+    sigmoid_exact_f32(scaled, sg);
+    out_decay = exp2_ftz((min_log_decay * sg) * 1.4426950408889634f);
 }
