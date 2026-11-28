@@ -355,6 +355,8 @@ def test_full_cubin_emission_and_cli():
                 "k3_exact_split_8x4_256", "k3_split_fused_proj_256",
                 "k3_kda_prep_finish_128", "k3_kda_norm_gate_128",
                 "k3_rms_norm_slice_256", "k3_unpack_prior_kv_128", "k3_fill_dense_selected_256",
+                "k3_rms_norm_kv_shard_store_64", "k3_layer_norm_kv_shard_store_32", "k3_sparse_score_slots_256",
+                "k3_mla_gather_prefill_sparse_256", "k3_mla_gather_prefill_6head_256",
             ):
                 assert f"kernel {required} " in mtxt, f"missing {required} in {arch} manifest"
             assert "spill_stores 0 spill_loads 0" in mtxt
@@ -378,7 +380,7 @@ def test_full_cubin_emission_and_cli():
             assert "//" not in htxt and "/*" not in htxt, "generated C99 header must be comment-free"
             for tok in (
                 "#define SKL2_QWEN38_27B_HIDDEN 5120u",
-                "SKL2_ORD_COUNT = 415",
+                "SKL2_ORD_COUNT = 420",
                 "Skl2ModuleLoad",
                 "Skl2KernelLayout",
                 "Skl2Launch_qwen_bf16_dense_mma_16x64",

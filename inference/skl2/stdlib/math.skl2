@@ -194,9 +194,9 @@ macro sincos_pos_f32(angle, out_sin, out_cos) {
 }
 
 @export
-macro kv_shard_slot_addr_page(kv_view, seq, pos, page, slot_in_page, page_slots, slot_bytes, out_addr, out_ok) {
+macro kv_shard_slot_index_page(kv_view, seq, pos, page, slot_in_page, page_slots, out_idx, out_ok) {
     out_ok = 0;
-    out_addr = param_u64(kv_view, 0);
+    out_idx = 0xFFFFFFFF;
     reg u32 pt_stride = param_u32(kv_view, 16);
     reg u32 seq_cnt = param_u32(kv_view, 20);
     reg u32 pool_pages = param_u32(kv_view, 24);
@@ -229,11 +229,19 @@ macro kv_shard_slot_addr_page(kv_view, seq, pos, page, slot_in_page, page_slots,
             reg u64 pt_ptr = param_u64(kv_view, 8);
             reg u32 phys = ldg32_persist(ptr_add(pt_ptr, seq * pt_stride + page, 4));
             if (phys < pool_pages) {
-                out_addr = ptr_add(out_addr, phys * sh_page_slots + sip, slot_bytes);
+                out_idx = phys * sh_page_slots + sip;
                 out_ok = 1;
             }
         }
     }
+}
+
+@export
+macro kv_shard_slot_addr_page(kv_view, seq, pos, page, slot_in_page, page_slots, slot_bytes, out_addr, out_ok) {
+    out_addr = param_u64(kv_view, 0);
+    reg u32 sidx = 0xFFFFFFFF;
+    kv_shard_slot_index_page(kv_view, seq, pos, page, slot_in_page, page_slots, sidx, out_ok);
+    if (out_ok != 0) { out_addr = ptr_add(out_addr, sidx, slot_bytes); }
 }
 
 @export

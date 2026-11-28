@@ -2332,7 +2332,7 @@ build/stage_runner_single_gpu_cuda: tests/cuda/stage_runner_single_gpu_cuda.cu i
 
 SKL2_BUILD_DIR := build
 SKL2_K3_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_k3_embedded.h
-SKL2_K3_SOURCES := inference/skl2/kernels/k3_mma.skl2 inference/skl2/kernels/k3_ops.skl2 inference/skl2/kernels/k3_cells.skl2 inference/skl2/kernels/k3_stage_ops.skl2 inference/skl2/kernels/k3_layer_ops.skl2
+SKL2_K3_SOURCES := inference/skl2/kernels/k3_mma.skl2 inference/skl2/kernels/k3_ops.skl2 inference/skl2/kernels/k3_cells.skl2 inference/skl2/kernels/k3_stage_ops.skl2 inference/skl2/kernels/k3_layer_ops.skl2 inference/skl2/kernels/k3_prefill_attn.skl2
 SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 k3_splitk_reduce_situ_256 \
 	k3_wide_mma_32x32 k3_wide_mma_64x32 k3_kda_proj_mma_32x32 k3_kda_proj_mma_64x32 \
 	k3_index_head_mma_skip_32x32 k3_index_q_mma_wide_skip_64x128 k3_index_q_mma_wide_skip_128x128 \
@@ -2350,7 +2350,9 @@ SKL2_K3_KERNELS := k3_splitk_mma_32x32 k3_splitk_mma_64x32 k3_splitk_reduce_256 
 	k3_streamed_state_identity_256 k3_streamed_state_compose_256 k3_streamed_conv_seed_256 k3_streamed_conv_tail_256 k3_streamed_conv_end_256 \
 	k3_streamed_pad_rows_128 k3_streamed_fold_records_256 \
 	k3_exact_split_8x4_256 k3_split_fused_proj_256 k3_kda_prep_finish_128 k3_kda_norm_gate_128 \
-	k3_rms_norm_slice_256 k3_unpack_prior_kv_128 k3_fill_dense_selected_256
+	k3_rms_norm_slice_256 k3_unpack_prior_kv_128 k3_fill_dense_selected_256 \
+	k3_rms_norm_kv_shard_store_64 k3_layer_norm_kv_shard_store_32 k3_sparse_score_slots_256 \
+	k3_mla_gather_prefill_sparse_256 k3_mla_gather_prefill_6head_256
 
 $(SKL2_K3_EMBEDDED): $(SKL2_K3_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_K3_KERNELS),--only $(k)) --prefix K3Skl2 --emit-embedded-h $@ $(SKL2_K3_SOURCES)

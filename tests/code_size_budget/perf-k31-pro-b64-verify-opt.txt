@@ -1,2 +1,0 @@
-+10
-Remaining K3SparseScoreSlotsKernel from kimi-k3.1-pro B64/B8 verify optimization after retiring K3ExactSplitKernel, K3SplitFusedProjectionsKernel, K3FoldL2NormKernel, and K3RunnerMlaDownRowsKernel to skl2.
