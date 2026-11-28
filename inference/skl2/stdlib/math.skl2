@@ -653,3 +653,103 @@ macro fused_last_arrival(counter_ptr, arrivals, tid, s_last, out_last) {
         membar_gpu();
     }
 }
+
+@export
+macro bf16x8_sumsq(v, sq) {
+    unroll (k = 0..4) {
+        reg f32 x0 = bf16_lo(v[k]);
+        reg f32 x1 = bf16_hi(v[k]);
+        sq = fma(x0, x0, sq);
+        sq = fma(x1, x1, sq);
+    }
+}
+
+@export
+macro bf16x8_add(a, b) {
+    unroll (k = 0..4) {
+        a[k] = pack_bf16x2(bf16_lo(a[k]) + bf16_lo(b[k]), bf16_hi(a[k]) + bf16_hi(b[k]));
+    }
+}
+
+@export
+macro bf16x8_fma_scalar(acc, v, wt) {
+    unroll (k = 0..4) {
+        acc[k * 2] = fma(bf16_lo(v[k]), wt, acc[k * 2]);
+        acc[k * 2 + 1] = fma(bf16_hi(v[k]), wt, acc[k * 2 + 1]);
+    }
+}
+
+@export
+macro bf16x8_scale_weight(W_F32, ROUND_MID, CENTERED, sv, w_ptr, v_idx, scale) {
+    if constexpr (W_F32 == 1) {
+        reg u32x8 wv = ldg256_persist(ptr_add(w_ptr, v_idx, 32));
+        unroll (k = 0..4) {
+            reg f32 a = bf16_lo(sv[k]) * scale;
+            reg f32 b = bf16_hi(sv[k]) * scale;
+            if constexpr (ROUND_MID == 1) { a = bf16_lo(f32_to_bf16(a)); b = bf16_lo(f32_to_bf16(b)); }
+            sv[k] = pack_bf16x2(a * u32_as_f32(wv[k * 2]), b * u32_as_f32(wv[k * 2 + 1]));
+        }
+    } else {
+        reg u32x4 wv = ldg128_persist(ptr_add(w_ptr, v_idx, 16));
+        unroll (k = 0..4) {
+            reg f32 a = bf16_lo(sv[k]) * scale;
+            reg f32 b = bf16_hi(sv[k]) * scale;
+            if constexpr (ROUND_MID == 1) { a = bf16_lo(f32_to_bf16(a)); b = bf16_lo(f32_to_bf16(b)); }
+            reg f32 w0 = bf16_lo(wv[k]);
+            reg f32 w1 = bf16_hi(wv[k]);
+            if constexpr (CENTERED == 1) { w0 = 1.0f + w0; w1 = 1.0f + w1; }
+            sv[k] = pack_bf16x2(a * w0, b * w1);
+        }
+    }
+}
+
+@export
+macro copy_bf16_1d(src, dst, width, tid, stride) {
+    if (((width & 7) | (src[0] & 15) | (dst[0] & 15)) == 0) {
+        reg u32 vecs = width >> 3;
+        for (reg u32 v = tid; v < vecs; v += stride) {
+            stg128(ptr_add(dst, v, 16), ldg128_stream(ptr_add(src, v, 16)));
+        }
+    } else {
+        for (reg u32 idx = tid; idx < width; idx += stride) {
+            stg16(ptr_add(dst, idx, 2), ldg16_stream(ptr_add(src, idx, 2)));
+        }
+    }
+}
+
+@export
+macro rope_pair_bf16_u32(bits, sn, cs, out_bits) {
+    reg f32 re = bf16_lo(bits);
+    reg f32 im = bf16_hi(bits);
+    out_bits = pack_bf16x2(fma(re, cs, 0.0f - im * sn), fma(re, sn, im * cs));
+}
+
+@export
+macro row_active_keys(row, seq, len, bound, out_active) {
+    reg u32 s = ldg32_persist(ptr_add(seq, row, 4));
+    out_active = ldg32_persist(ptr_add(len, s, 4));
+    if ((bound[0] | bound[1]) != 0) {
+        reg u32 b = ldg32_persist(ptr_add(bound, row, 4));
+        if (b == 0xFFFFFFFF) {
+            out_active = 0;
+        } else if (b + 1 < out_active) {
+            out_active = b + 1;
+        }
+    }
+}
+
+@export
+macro warp_sq_bcast(val, out_sq) {
+    reg f32 sq = val * val;
+    warp_sum_down(sq);
+    out_sq = shfl_idx(sq, 0);
+}
+
+@export
+macro relu4_weighted_reduce(c0, c1, w0, w1, w2, w3, out_lo, out_hi) {
+    out_lo = fma(w3, maxf(c1[2], 0.0f), fma(w2, maxf(c1[0], 0.0f), fma(w1, maxf(c0[2], 0.0f), w0 * maxf(c0[0], 0.0f))));
+    out_hi = fma(w3, maxf(c1[3], 0.0f), fma(w2, maxf(c1[1], 0.0f), fma(w1, maxf(c0[3], 0.0f), w0 * maxf(c0[1], 0.0f))));
+    out_lo = out_lo + shfl_xor(out_lo, 4); out_hi = out_hi + shfl_xor(out_hi, 4);
+    out_lo = out_lo + shfl_xor(out_lo, 8); out_hi = out_hi + shfl_xor(out_hi, 8);
+    out_lo = out_lo + shfl_xor(out_lo, 16); out_hi = out_hi + shfl_xor(out_hi, 16);
+}
