@@ -2420,7 +2420,8 @@ $(SKL2_QWEN38_EMBEDDED): $(SKL2_QWEN38_SOURCES) $(wildcard tools/skl2c/*.py tool
 
 SKL2_DSV41_EMBEDDED := $(SKL2_BUILD_DIR)/skl2_dsv41_embedded.h
 SKL2_DSV41_SOURCES := inference/skl2/kernels/dsv41_exchange.skl2 inference/skl2/kernels/dsv41_moe.skl2 inference/skl2/kernels/dsv41_stage.skl2 \
-	inference/skl2/kernels/dsv41_window.skl2 inference/skl2/kernels/dsv41_gemv.skl2 inference/skl2/kernels/dsv41_ops.skl2
+	inference/skl2/kernels/dsv41_window.skl2 inference/skl2/kernels/dsv41_gemv.skl2 inference/skl2/kernels/dsv41_ops.skl2 \
+	inference/skl2/kernels/dsv41_rope_prep.skl2 inference/skl2/kernels/dsv41_route.skl2 inference/skl2/kernels/dsv41_hc.skl2
 SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_unpack_r16 \
 	d41_record_place_r4 d41_record_place_r16 d41_exchange_finalize_r4 d41_exchange_finalize_r16 \
 	d41_finalize_map_r4 d41_finalize_map_r16 d41_shuffle_pack_256 d41_shuffle_unpack_r4 d41_shuffle_unpack_r16 \
@@ -2452,7 +2453,16 @@ SKL2_DSV41_KERNELS := d41_exchange_pack_256 d41_exchange_unpack_r4 d41_exchange_
 	d41_act_quant_256 d41_fp8_block_linear_256 d41_rms_norm_256 d41_rope_op_256 d41_fp8_qdq_256 \
 	d41_sink_attention_256 d41_grouped_fp8_linear_256 d41_gate_256 d41_mxfp4_linear_256 \
 	d41_swiglu_256 d41_accumulate_256 d41_narrow_256 d41_bf16_linear_256 d41_compress_pool_256 \
-	d41_fp4_pow2_qdq_vec_256 d41_fp4_pow2_qdq_256 d41_index_score_ref_256
+	d41_fp4_pow2_qdq_vec_256 d41_fp4_pow2_qdq_256 d41_index_score_ref_256 \
+	d41_compress_finish_store_256 d41_index_query_prep_64 d41_window_ring_store_256 d41_merge_sink_256 \
+	d41_columns_256 d41_route_local_256 d41_rope_table_32 d41_rope_rows_32 \
+	d41_spread_output_256 d41_spread_output_ring_256 \
+	d41_balance_route_256 d41_topk_balance_route_256 d41_topk_route_packed_256 \
+	d41_fused_router_balance_r1_256 d41_fused_router_balance_r4_256 d41_fused_router_balance_r8_256 d41_fused_router_balance_r12_256 \
+	d41_fused_router_packed_r1_256 d41_fused_router_packed_r4_256 d41_fused_router_packed_r8_256 \
+	d41_hc_mix_norm_r1_128 d41_hc_mix_norm_r8_128 \
+	d41_hc_mix_norm_staged_r4_256 d41_hc_mix_norm_staged_r8_256 d41_hc_mix_norm_staged_r16_256 \
+	d41_hc_mix_norm_ksplit_r1_256 d41_hc_mix_norm_ksplit_r4_256 d41_hc_mix_norm_ksplit_r8_256 d41_hc_mix_norm_ksplit_r16_256
 
 $(SKL2_DSV41_EMBEDDED): $(SKL2_DSV41_SOURCES) $(wildcard tools/skl2c/*.py tools/sklc/*.py inference/skl2/std/*.skl2 inference/skl2/stdlib/*.skl2) | build
 	python3 -I tools/skl2c/skl2c.py --arch $(CUDA_ARCH) $(foreach k,$(SKL2_DSV41_KERNELS),--only $(k)) --prefix D41Skl2 --emit-embedded-h $@ $(SKL2_DSV41_SOURCES)

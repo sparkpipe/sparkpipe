@@ -617,11 +617,11 @@ static void TestSpreadOutputAndSplitSkinny(uint32_t *rng)
 		TEST_CHECK(cudaMemcpy(dpos, hpos.data(), rows * 4u, cudaMemcpyHostToDevice));
 		for ( uint32_t qdq = 0u; qdq < 2u; ++qdq )
 		{
-			D41MergeSinkKernel<<<dim3(rows, heads), 256u>>>(drec, stride, 1u, heads, dsink, dref);
-			D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(dref, heads, D41K_LATENT, D41K_LATENT - 2u * D41K_ROPE_PAIRS, dpos, 0, dfreq, 1u, 0);
+			D41MergeSinkLaunch(dim3(rows, heads), 256u, (SparkGpuStream)0, drec, stride, 1u, heads, dsink, dref);
+			D41RopeRowsLaunch(dim3(rows, heads), D41K_ROPE_PAIRS, (SparkGpuStream)0, dref, heads, D41K_LATENT, D41K_LATENT - 2u * D41K_ROPE_PAIRS, dpos, 0, dfreq, 1u, 0);
 			if ( qdq != 0u )
 				TEST_CHECK((cudaError_t)SparkDsv41FlashLaunchFp8Qdq(0, dref, out_n));
-			D41SpreadOutputKernel<256u><<<dim3(rows, heads), 256u>>>(drec, stride, heads, dsink, dpos, dfreq, dgot, qdq);
+			D41SpreadOutputLaunch<256u>(dim3(rows, heads), 256u, (SparkGpuStream)0, drec, stride, heads, dsink, dpos, dfreq, dgot, qdq);
 			TEST_CHECK(cudaDeviceSynchronize());
 			std::vector<uint16_t> r1(out_n), r2(out_n);
 			TEST_CHECK(cudaMemcpy(r1.data(), dref, out_n * 2u, cudaMemcpyDeviceToHost));
@@ -734,16 +734,16 @@ static void TestRows16HillclimbParity(uint32_t *rng)
 					use_mx != 0u ? dc1 : (uint8_t *)0, use_mx != 0u ? ds1 : (uint8_t *)0);
 				if ( use_mx == 0u ) TEST_CHECK((cudaError_t)SparkDsv41FlashLaunchFp8Qdq(0, dxq1, (uint64_t)rows * hidden));
 				if ( rows == 1u )
-					D41HcMixNormKernel<1u, 8u, 2u, 5120u><<<2u * tasks + 1u, 128u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+					D41HcMixNormLaunch<1u, 8u, 2u, 5120u>(2u * tasks + 1u, 128u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 						use_mx != 0u ? (uint16_t *)0 : dxq2, use_mx != 0u ? dc2 : (uint8_t *)0, use_mx != 0u ? ds2 : (uint8_t *)0, rows, 1e-20f, 20u, 1e-6f);
 				else if ( rows <= 8u )
-					D41HcMixNormKernel<8u, 4u, 2u, 5120u><<<2u * tasks + rows, 128u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+					D41HcMixNormLaunch<8u, 4u, 2u, 5120u>(2u * tasks + rows, 128u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 						use_mx != 0u ? (uint16_t *)0 : dxq2, use_mx != 0u ? dc2 : (uint8_t *)0, use_mx != 0u ? ds2 : (uint8_t *)0, rows, 1e-20f, 20u, 1e-6f);
 				else if ( rows <= 32u )
-					D41HcMixNormStagedKernel<4u, 5120u><<<((rows + 3u) / 4u) * 8u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+					D41HcMixNormStagedLaunch<4u, 5120u>(((rows + 3u) / 4u) * 8u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 						use_mx != 0u ? (uint16_t *)0 : dxq2, use_mx != 0u ? dc2 : (uint8_t *)0, use_mx != 0u ? ds2 : (uint8_t *)0, rows, 1e-20f, 20u, 1e-6f);
 				else
-					D41HcMixNormStagedKernel<8u, 5120u><<<((rows + 7u) / 8u) * 8u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+					D41HcMixNormStagedLaunch<8u, 5120u>(((rows + 7u) / 8u) * 8u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 						use_mx != 0u ? (uint16_t *)0 : dxq2, use_mx != 0u ? dc2 : (uint8_t *)0, use_mx != 0u ? ds2 : (uint8_t *)0, rows, 1e-20f, 20u, 1e-6f);
 				TEST_CHECK(cudaDeviceSynchronize());
 				std::vector<float> pr1((size_t)rows * hc), pr2((size_t)rows * hc), po1((size_t)rows * hc), po2((size_t)rows * hc), cb1((size_t)rows * hc * hc), cb2((size_t)rows * hc * hc);
@@ -843,9 +843,9 @@ static void TestRows16HillclimbParity(uint32_t *rng)
 					TEST_CHECK(cudaMemcpy(dbeg, hbeg.data(), (rows + 1u) * 4u, cudaMemcpyHostToDevice));
 					TEST_CHECK(cudaMemcpy(didx, hidx.data(), rows * 4u, cudaMemcpyHostToDevice));
 					TEST_CHECK(cudaMemcpy(dslot, hslot.data(), rows * 4u, cudaMemcpyHostToDevice));
-					D41RopeTableKernel<<<rows, D41K_ROPE_PAIRS>>>(dpos, dfreq, drsc, drsc_c, rows);
+					D41RopeTableLaunch(rows, D41K_ROPE_PAIRS, (SparkGpuStream)0, dpos, dfreq, drsc, drsc_c, rows);
 					D41WindowFoldWholeLaunch(dim3(rows, heads), D41K_THREADS, (SparkGpuStream)0, drec1, heads, dq, dwkv, dring1, dpos, dlane, dord, dbeg, didx, dslot, rstride, window, qk_scale);
-					D41SpreadOutputRingKernel<256u><<<rows * (heads + 1u), 256u>>>(drec1, (uint64_t)rows * heads * D41K_RECORD, heads, dsink, dpos, dfreq, dout1, qdq,
+					D41SpreadOutputRingLaunch<256u>(rows * (heads + 1u), 256u, (SparkGpuStream)0, drec1, (uint64_t)rows * heads * D41K_RECORD, heads, dsink, dpos, dfreq, dout1, qdq,
 						dwkv, dring1, dlane, dord, dbeg, dslot, rstride, window, window, rows, 1u);
 					if ( rows <= 8u )
 						D41WindowFoldSpreadClusterKernel<4u><<<dim3(D41K_WINDOW_PARTS, rows), D41K_THREADS>>>(drec2, has_c, dq, dwkv, dring2, dpos, dlane, dord,
@@ -910,8 +910,8 @@ static void TestRows16HillclimbParity(uint32_t *rng)
 					TEST_CHECK(cudaMemset(df1, 0, 4u)); TEST_CHECK(cudaMemset(df2, 0, 4u));
 					TEST_CHECK(cudaMemcpy(dlog, h_log.data(), h_log.size() * 4u, cudaMemcpyHostToDevice));
 					TEST_CHECK((cudaError_t)LmTopkRouteLaunch<256u, 6u, true, LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, dlog, experts, de1, dw1, dbias, 0, 1.5f, df1, 0));
-					D41BalanceRouteKernel<16u, 384u, 24u, 256u, 73u><<<1u, 256u>>>(de1, dw1, dg1, rows, topk, 3u, copies, ri, down, dbak, dgrp, do1, dp1, ds1, 16u, 36u, dt, 40u, dt, dpw1);
-					D41TopkBalanceRouteKernel<16u, 384u, 24u, 256u, 73u, 6u, 2u><<<1u, 256u>>>(dlog, dbias, 1.5f, df2, de2, dw2, dg2, rows, 3u, copies, ri, down, dbak, dgrp, do2, dp2, ds2, 16u, 36u, dt, 40u, dt, dpw2);
+					D41BalanceRouteLaunch<16u, 384u, 24u, 256u, 73u>(1u, 256u, (SparkGpuStream)0, de1, dw1, dg1, rows, topk, 3u, copies, ri, down, dbak, dgrp, do1, dp1, ds1, 16u, 36u, dt, 40u, dt, dpw1);
+					D41TopkBalanceRouteLaunch<16u, 384u, 24u, 256u, 73u, 6u, 2u>(1u, 256u, (SparkGpuStream)0, dlog, dbias, 1.5f, df2, de2, dw2, dg2, rows, 3u, copies, ri, down, dbak, dgrp, do2, dp2, ds2, 16u, 36u, dt, 40u, dt, dpw2);
 					TEST_CHECK(cudaDeviceSynchronize());
 					std::vector<uint32_t> o1(held1 + 1u), o2(held1 + 1u), p1(routes), p2(routes), s1(routes), s2(routes), e1(routes), e2(routes), g1(routes), g2(routes);
 					std::vector<float> pw1(routes), pw2(routes);
@@ -1057,10 +1057,10 @@ static void TestRows16HillclimbParity(uint32_t *rng)
 		TEST_CHECK(cudaMemcpy(dw2, hw.data(), hw.size() * 2u, cudaMemcpyHostToDevice));
 		TEST_CHECK(cudaMemcpy(dpos, hpos.data(), rows * 4u, cudaMemcpyHostToDevice));
 		const float wscale = (float)(1.0 / sqrt(128.0) / sqrt(32.0));
-		D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(dq1, heads, dim, dim - 2u * D41K_ROPE_PAIRS, dpos, 0, dfreq + D41K_ROPE_PAIRS, 0u, 0);
+		D41RopeRowsLaunch(dim3(rows, heads), D41K_ROPE_PAIRS, (SparkGpuStream)0, dq1, heads, dim, dim - 2u * D41K_ROPE_PAIRS, dpos, 0, dfreq + D41K_ROPE_PAIRS, 0u, 0);
 		SparkDsv41FlashLaunchFp4Pow2Qdq(0, dq1, (uint64_t)rows * heads * (dim / 32u), 32u);
 		LmScaleElementsKernel<uint16_t><<<16u, 256u>>>(dw1, (uint64_t)rows * heads, wscale);
-		D41IndexQueryPrepKernel<<<dim3(rows, heads), 64u>>>(dq2, dw2, dpos, dfreq + D41K_ROPE_PAIRS, heads, dim, wscale, 0, 0, 0, 0u);
+		D41IndexQueryPrepLaunch(dim3(rows, heads), 64u, (SparkGpuStream)0, dq2, dw2, dpos, dfreq + D41K_ROPE_PAIRS, heads, dim, wscale, 0, 0, 0, 0u);
 		TEST_CHECK(cudaDeviceSynchronize());
 		std::vector<uint16_t> q1(hq.size()), q2(hq.size()), w1(hw.size()), w2(hw.size());
 		TEST_CHECK(cudaMemcpy(q1.data(), dq1, q1.size() * 2u, cudaMemcpyDeviceToHost));
@@ -1133,14 +1133,14 @@ static void TestRows16HillclimbParity(uint32_t *rng)
 		D41CompressorSaveLaunch(rows, 256u, (SparkGpuStream)0, dckv, dcsc, dst1, dpos, dlane, dord, dbeg, dslot, rows, 2u, 2u * lat, lat, 1u, 0);
 		LmFusedResidualRmsNormKernel<256u, uint16_t><<<rows, 256u, (lat + 8u) * 4u>>>(dp1, 0, dcn, 0, dp1, lat, lat, 1e-20f);
 		LmFusedResidualRmsNormKernel<256u, uint16_t><<<rows, 256u, (idim + 8u) * 4u>>>(dik1, 0, dikn, 0, dik1, idim, idim, 1e-20f);
-		D41RopeRowsKernel<<<dim3(rows, 1u), D41K_ROPE_PAIRS>>>(dik1, 1u, idim, idim - 2u * D41K_ROPE_PAIRS, dpos, -1, dfreq + D41K_ROPE_PAIRS, 0u, dem1);
+		D41RopeRowsLaunch(dim3(rows, 1u), D41K_ROPE_PAIRS, (SparkGpuStream)0, dik1, 1u, idim, idim - 2u * D41K_ROPE_PAIRS, dpos, -1, dfreq + D41K_ROPE_PAIRS, 0u, dem1);
 		SparkDsv41FlashLaunchFp4Pow2Qdq(0, dik1, (uint64_t)rows * (idim / 32u), 32u);
 		TEST_CHECK(cudaMemcpy(dls, dp1, (size_t)rows * lat * 2u, cudaMemcpyDeviceToDevice));
-		D41RopeRowsKernel<<<dim3(rows, 1u), D41K_ROPE_PAIRS>>>(dls, 1u, lat, lat - 2u * D41K_ROPE_PAIRS, dpos, -1, dfreq + D41K_ROPE_PAIRS, 0u, dem1);
+		D41RopeRowsLaunch(dim3(rows, 1u), D41K_ROPE_PAIRS, (SparkGpuStream)0, dls, 1u, lat, lat - 2u * D41K_ROPE_PAIRS, dpos, -1, dfreq + D41K_ROPE_PAIRS, 0u, dem1);
 		TEST_CHECK((cudaError_t)SparkDsv41FlashLaunchKvFp4Qdq(0, dls, lat, rows, lat));
 		D41StoreCompressedLaunch<KvGeo>(rows, 256u, (SparkGpuStream)0, v1, dls, dik1, dem1, dseq, idim);
 		D41CompressorRowsLaunch(rows, 256u, (SparkGpuStream)0, dckv, dcsc, dp2, dem2, dst2, dpos, dlane, dord, dbeg, didx, dslot, 2u, 2u * lat, lat, 0, 0, dcn, 1e-20f, 1u);
-		D41CompressFinishStoreKernel<KvGeo><<<rows, 256u>>>(v2, dp2, dik2, dikn, dpos, -1, dfreq + D41K_ROPE_PAIRS, dem2, dseq, idim, 1e-20f);
+		D41CompressFinishStoreLaunch<KvGeo>(rows, 256u, (SparkGpuStream)0, v2, dp2, dik2, dikn, dpos, -1, dfreq + D41K_ROPE_PAIRS, dem2, dseq, idim, 1e-20f);
 		TEST_CHECK(cudaDeviceSynchronize());
 		std::vector<uint8_t> p1(pool_bytes), p2(pool_bytes);
 		std::vector<float> s1(hst.size()), s2(hst.size());
@@ -1388,7 +1388,7 @@ static void TestDirectIndexScoreAndFastTopk(uint32_t *rng)
 			TEST_CHECK((cudaError_t)LmTopkRouteLaunch<256u, topk, true, LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, dlog, experts, dre1, drw1, dbias, 0, 2.5f, df1, 0));
 			if ( LmRouteBuild<256u, experts>(dre1, rows, routes, topk, doff1, dpr1, dst1, 640u, 1280u, 128u, dtu1, dtd1, 0) != LM_LAUNCH_OK ) exit(1);
 			LmPackedRouteWeightKernel<<<1, 256>>>(dpr1, drw1, dpw1, routes);
-			D41TopkRoutePackedKernel<experts, topk><<<1, 256>>>(dlog, dbias, 2.5f, df2, dre2, drw2, doff2, dpr2, dst2,
+			D41TopkRoutePackedLaunch<experts, topk>(1, 256, (SparkGpuStream)0, dlog, dbias, 2.5f, df2, dre2, drw2, doff2, dpr2, dst2,
 				(uint32_t)LmLaunchGroupedTileM(rows, topk, experts), 5u, dtu2, 10u, dtd2, dpw2, rows);
 			TEST_CHECK(cudaDeviceSynchronize());
 			auto eq_u32 = [&](const uint32_t *a, const uint32_t *b, size_t n, const char *tag) {
@@ -1447,16 +1447,16 @@ static void TestE5LeapfrogKernels(uint32_t *rng)
 			sa.weight = (const uint8_t *)dw; sa.activation = dx; sa.output_f32 = dlog1;
 			sa.scale = LmScaleTensorNone(); sa.rows = rows; sa.input_dimension = hidden; sa.output_dimension = experts;
 			if ( LmSkinnyLaunch<LmBf16Format>(&sa, 0, 1u) != LM_LAUNCH_OK ) exit(1);
-			D41TopkRoutePackedKernel<experts, topk><<<1u, 256u>>>(dlog1, dbias, 2.5f, df1, dre1, drw1, doff1, dpr1, dst1,
+			D41TopkRoutePackedLaunch<experts, topk>(1u, 256u, (SparkGpuStream)0, dlog1, dbias, 2.5f, df1, dre1, drw1, doff1, dpr1, dst1,
 				tile_m, 5u, dtu1, 10u, dtd1, dpw1, rows);
 			if ( rows == 1u )
-				D41FusedRouterPackedKernel<experts, topk, hidden, 1u><<<experts, 256u>>>(dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
+				D41FusedRouterPackedLaunch<experts, topk, hidden, 1u>(experts, 256u, (SparkGpuStream)0, dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
 					doff2, dpr2, dst2, tile_m, 5u, dtu2, 10u, dtd2, dpw2, rows, dcnt);
 			else if ( rows == 4u )
-				D41FusedRouterPackedKernel<experts, topk, hidden, 4u><<<experts, 256u>>>(dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
+				D41FusedRouterPackedLaunch<experts, topk, hidden, 4u>(experts, 256u, (SparkGpuStream)0, dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
 					doff2, dpr2, dst2, tile_m, 5u, dtu2, 10u, dtd2, dpw2, rows, dcnt);
 			else
-				D41FusedRouterPackedKernel<experts, topk, hidden, 8u><<<experts, 256u>>>(dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
+				D41FusedRouterPackedLaunch<experts, topk, hidden, 8u>(experts, 256u, (SparkGpuStream)0, dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
 					doff2, dpr2, dst2, tile_m, 5u, dtu2, 10u, dtd2, dpw2, rows, dcnt);
 			TEST_CHECK(cudaDeviceSynchronize());
 			auto eq = [&](const void *a, const void *b, size_t n, const char *tag) {
@@ -1475,7 +1475,7 @@ static void TestE5LeapfrogKernels(uint32_t *rng)
 		const uint32_t hv[4] = { 1u, 0u, 1u, 0u };
 		TEST_CHECK(cudaMemcpy(dvalid, hv, 16u, cudaMemcpyHostToDevice));
 		TEST_CHECK(cudaMemset(dcnt, 0, 4u)); TEST_CHECK(cudaMemset(df2, 0, 4u));
-		D41FusedRouterPackedKernel<experts, topk, hidden, 4u><<<experts, 256u>>>(dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
+		D41FusedRouterPackedLaunch<experts, topk, hidden, 4u>(experts, 256u, (SparkGpuStream)0, dw, dx, dlog2, dbias, 2.5f, df2, dre2, drw2,
 			doff2, dpr2, dst2, (uint32_t)LmLaunchGroupedTileM(4u, topk, experts), 5u, dtu2, 10u, dtd2, dpw2, 4u, dcnt, dvalid);
 		TEST_CHECK(cudaDeviceSynchronize());
 		std::vector<uint32_t> hre(24u), hoff(experts + 1u), hpr(24u);
@@ -1533,7 +1533,7 @@ static void TestE5LeapfrogKernels(uint32_t *rng)
 		{
 			TEST_CHECK(cudaMemcpy(dre, hre_in.data(), routes * 4u, cudaMemcpyHostToDevice));
 			TEST_CHECK(cudaMemcpy(drw, hrw_in.data(), routes * 4u, cudaMemcpyHostToDevice));
-			D41BalanceRouteKernel<ranks, experts, local, 256u, held1><<<1u, 256u>>>(dre, drw, drg, rows, topk, 0u, copies, row_inv,
+			D41BalanceRouteLaunch<ranks, experts, local, 256u, held1>(1u, 256u, (SparkGpuStream)0, dre, drw, drg, rows, topk, 0u, copies, row_inv,
 				down, dbk, dgrp, doff, dpr, dst, 16u, 36u, dtu, 40u, dtd, dpw);
 			TEST_CHECK(cudaDeviceSynchronize());
 			std::vector<uint32_t> ref_re(routes), ref_rg(routes), ref_off(held1 + 1u, 0u), ref_pr(routes), ref_st(routes), ref_tu(held1 + 1u, 0u), ref_td(held1 + 1u, 0u);
@@ -1772,13 +1772,13 @@ static void TestTp4HcMixK32Parity(uint32_t *rng)
 		if ( LmHcSinkhornMixes<4u>(dst, dfn, dsc, dbs, dpart1, dpr1, dpo1, dcb1, rows, hidden, 1e-20f, 20u, 1e-6f, 0) != LM_LAUNCH_OK ) exit(1);
 		TestRmsNormMxKernel<256u><<<rows, 256u, (hidden + 8u) * 4u>>>(0, dst, dcpre, dnw, dx1, (uint16_t *)0, hidden, 1e-20f, dc1, ds1);
 		if ( rows <= 4u )
-			D41HcMixNormK32Kernel<4u, 5120u><<<32u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart2, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+			D41HcMixNormK32Launch<4u, 5120u>(32u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart2, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 				(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 		else if ( rows <= 8u )
-			D41HcMixNormK32Kernel<8u, 5120u><<<32u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart2, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+			D41HcMixNormK32Launch<8u, 5120u>(32u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart2, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 				(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 		else
-			D41HcMixNormK32Kernel<16u, 5120u><<<((rows + 15u) / 16u) * 32u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart2, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+			D41HcMixNormK32Launch<16u, 5120u>(((rows + 15u) / 16u) * 32u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart2, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 				(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 		TEST_CHECK(cudaDeviceSynchronize());
 		std::vector<float> pr1((size_t)rows * hc), pr2((size_t)rows * hc), po1((size_t)rows * hc), po2((size_t)rows * hc), cb1((size_t)rows * hc * hc), cb2((size_t)rows * hc * hc);
@@ -2116,16 +2116,16 @@ static void TestTp4BaseRLeapfrogParity(uint32_t *rng)
 			if ( LmHcSinkhornMixes<4u>(dst, dfn, dsc, dbs, dpart, dpr1, dpo1, dcb1, rows, hidden, 1e-20f, 20u, 1e-6f, 0) != LM_LAUNCH_OK ) exit(1);
 			TestRmsNormMxKernel<256u><<<rows, 256u, (hidden + 8u) * 4u>>>(0, dst, dcpre, dnw, dx1, (uint16_t *)0, hidden, 1e-20f, dc1, ds1);
 			if ( rows == 1u )
-				D41HcMixNormK40Kernel<1u, 5120u><<<40u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+				D41HcMixNormK40Launch<1u, 5120u>(40u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 					(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 			else if ( rows <= 4u )
-				D41HcMixNormK40Kernel<4u, 5120u><<<40u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+				D41HcMixNormK40Launch<4u, 5120u>(40u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 					(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 			else if ( rows <= 8u )
-				D41HcMixNormK40Kernel<8u, 5120u><<<40u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+				D41HcMixNormK40Launch<8u, 5120u>(40u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 					(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 			else
-				D41HcMixNormK40Kernel<16u, 5120u><<<((rows + 15u) / 16u) * 40u + rows, 256u>>>(dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
+				D41HcMixNormK40Launch<16u, 5120u>(((rows + 15u) / 16u) * 40u + rows, 256u, (SparkGpuStream)0, dst, dfn, dsc, dbs, dpart, dpr2, dpo2, dcb2, dcnt, dcpre, dnw, dx2,
 					(uint16_t *)0, dc2, ds2, rows, 1e-20f, 20u, 1e-6f);
 			TEST_CHECK(cudaDeviceSynchronize());
 			std::vector<float> pr1((size_t)rows * hc), pr2((size_t)rows * hc), po1((size_t)rows * hc), po2((size_t)rows * hc), cb1((size_t)rows * hc * hc), cb2((size_t)rows * hc * hc);
@@ -2251,7 +2251,7 @@ static void TestTp4BaseRLeapfrogParity(uint32_t *rng)
 		TEST_CHECK(cudaMemcpy(dw, hw.data(), hw.size() * 2u, cudaMemcpyHostToDevice));
 		TEST_CHECK(cudaMemcpy(dx, hx.data(), hx.size() * 2u, cudaMemcpyHostToDevice));
 		TEST_CHECK(cudaMemcpy(dbias, hbias.data(), experts * 4u, cudaMemcpyHostToDevice));
-		D41FusedRouterPackedKernel<384u, 6u, 5120u, 8u><<<experts, 256u>>>(dw, dx, dlog_m, dbias, 2.5f, dfault, dre_m, drw_m,
+		D41FusedRouterPackedLaunch<384u, 6u, 5120u, 8u>(experts, 256u, (SparkGpuStream)0, dw, dx, dlog_m, dbias, 2.5f, dfault, dre_m, drw_m,
 			doff_m, dpr_m, dsrc_m, 16u, 18u, dtu, 20u, dtd, dpw_m, rows, dcnt, (const uint32_t *)0, dact_m);
 		D41CompactActiveExpertsLaunch<384u>(1u, 256u, (SparkGpuStream)0, doff_m, dact_c);
 		TEST_CHECK(cudaDeviceSynchronize());
@@ -2465,16 +2465,16 @@ static void TestTp4BaseRLeapfrogParity(uint32_t *rng)
 					TEST_CHECK(cudaMemcpy(didx, hidx.data(), rows * 4u, cudaMemcpyHostToDevice));
 					TEST_CHECK(cudaMemcpy(dslot, hslot.data(), rows * 4u, cudaMemcpyHostToDevice));
 					TEST_CHECK(cudaMemcpy(dsel, hsel.data(), (size_t)rows * topk * 4u, cudaMemcpyHostToDevice));
-					D41RopeTableKernel<<<rows, D41K_ROPE_PAIRS>>>(dpos, dfreq, drsc, drsc_c, rows);
+					D41RopeTableLaunch(rows, D41K_ROPE_PAIRS, (SparkGpuStream)0, dpos, dfreq, drsc, drsc_c, rows);
 					const float *freq_use = compressed != 0u ? dfreq + D41K_ROPE_PAIRS : dfreq;
 					const float2 *rsc_use = compressed != 0u ? drsc_c : drsc;
 					if ( D41AttendLaunch<KvGeo, 512u>(view, compressed, dq, dseq, dlen, dbnd, dsel, topk, dwkv, dring_ref, rstride, window,
 						dpos, dlane, dbeg, didx, dslot, dsink, qk_scale, mode == 0u ? dref_out : (uint16_t *)0, freq_use, dim - 64u,
 						group_heads, mode == 1u ? dc_ref : (uint8_t *)0, rows, rows, 0u, 0) != SPARK_GPU_SUCCESS ) exit(1);
-					D41WindowRingStoreKernel<<<rows, 256u>>>(dwkv, dring_ref, dpos, dlane, dord, dbeg, dslot, rstride, window, window, 1u, 0u, rows, 1u, (const uint32_t *)0);
+					D41WindowRingStoreLaunch(rows, 256u, (SparkGpuStream)0, dwkv, dring_ref, dpos, dlane, dord, dbeg, dslot, rstride, window, window, 1u, 0u, rows, 1u, (const uint32_t *)0);
 					if ( mode == 0u )
 					{
-						D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(dref_out, heads, dim, dim - 64u, dpos, 0, freq_use, 1u, (const uint32_t *)0, rsc_use);
+						D41RopeRowsLaunch(dim3(rows, heads), D41K_ROPE_PAIRS, (SparkGpuStream)0, dref_out, heads, dim, dim - 64u, dpos, 0, freq_use, 1u, (const uint32_t *)0, rsc_use);
 						TEST_CHECK((cudaError_t)SparkDsv41FlashLaunchFp8Qdq(0, dref_out, (uint64_t)rows * heads * dim));
 						if ( D41AttendSplitDecodeLaunch<KvGeo, 512u, 0u>(view, compressed, dq, dseq, dlen, dbnd, dsel, topk, dwkv, dring_sp, rstride, window,
 							dpos, dlane, dord, dbeg, didx, dslot, dsink, qk_scale, rsc_use, group_heads, dgi_sp, (uint8_t *)0, dpart, dcnt, rows, splits, 1u, 0) != SPARK_GPU_SUCCESS )
