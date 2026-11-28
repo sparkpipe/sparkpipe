@@ -53,46 +53,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Files: tools/hy4_dequant/hy4_iq_dequant_vendor.h
-Upstream: https://github.com/ggml-org/llama.cpp
-Commit: 0cea36222fe9bac5ebfc45716c9eef11f37046c4
-License: MIT
-
-tools/hy4_dequant/hy4_iq_dequant_vendor.h is adapted from
-ggml/src/ggml-common.h and ggml/src/ggml-quants.c of llama.cpp at that commit:
-the tables kmask_iq2xs, ksigns_iq2xs, iq2xxs_grid, iq3xxs_grid, iq1s_grid and
-kvalues_iq4nl, the table macros GGML_TABLE_BEGIN and GGML_TABLE_END, and the
-constants NGRID_IQ1S, IQ1S_DELTA and QK_K; the block layouts block_q4_K,
-block_q5_K, block_q6_K, block_iq4_xs and block_iq4_nl; and the routines
-dequantize_row_iq2_xxs, dequantize_row_iq3_xxs, dequantize_row_iq1_m,
-dequantize_row_q4_K, dequantize_row_q5_K, dequantize_row_q6_K,
-dequantize_row_iq4_xs and get_scale_min_k4. Changes: the routines carry a hy4_
-prefix, the ggml types and GGML_FP16_TO_FP32 are replaced by plain C structs
-and hy4_fp16_to_fp32 (IEEE binary16), and the source comments are removed.
-llama.cpp is distributed under the following license:
-
-MIT License
-
-Copyright (c) 2023-2026 The ggml authors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
 Files: model_contracts/references/modeling_axk2.py
 Files: model_contracts/references/modular_axk2.py
 Files: model_contracts/references/configuration_axk2.py
@@ -217,16 +177,14 @@ Copyright (C) 2026 Tencent.
 Licensed under the Apache License, Version 2.0 (LICENSE).
 
 Files: tools/hy4_reference.py
-Files: tools/hy4_dequant/hy4_layer_semantics.md
-Files: tools/hy4_dequant/hy4_tokenize.py
 Upstream: https://github.com/ggml-org/llama.cpp
 Commit: 49c0dc82b849344f945b14ab997386bd793369ae
 License: MIT
 
-These files follow the Hunyuan HY4 graph and pre-tokenizer that llama.cpp
+This file follows the Hunyuan HY4 graph and pre-tokenizer that llama.cpp
 added at that commit (src/models/hy-v4.cpp and the hy-v4 pre-tokenizer in
-src/llama-vocab.cpp), distributed under the llama.cpp MIT license reproduced
-above.
+src/llama-vocab.cpp), distributed under the MIT license (Copyright (c)
+2023-2026 The ggml authors; full MIT terms reproduced above).
 
 Files: text/unicode_nfc_tables.h
 Files: text/unicode_class_tables.h
