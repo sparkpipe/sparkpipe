@@ -656,9 +656,9 @@ macro fused_last_arrival(counter_ptr, arrivals, tid, s_last, out_last) {
 
 @export
 macro bf16x8_sumsq(v, sq) {
-    unroll (k = 0..4) {
-        reg f32 x0 = bf16_lo(v[k]);
-        reg f32 x1 = bf16_hi(v[k]);
+    unroll (bk_ = 0..4) {
+        reg f32 x0 = bf16_lo(v[bk_]);
+        reg f32 x1 = bf16_hi(v[bk_]);
         sq = fma(x0, x0, sq);
         sq = fma(x1, x1, sq);
     }
@@ -666,16 +666,17 @@ macro bf16x8_sumsq(v, sq) {
 
 @export
 macro bf16x8_add(a, b) {
-    unroll (k = 0..4) {
-        a[k] = pack_bf16x2(bf16_lo(a[k]) + bf16_lo(b[k]), bf16_hi(a[k]) + bf16_hi(b[k]));
+    unroll (bk_ = 0..4) {
+        a[bk_] = pack_bf16x2(bf16_lo(a[bk_]) + bf16_lo(b[bk_]), bf16_hi(a[bk_]) + bf16_hi(b[bk_]));
     }
 }
 
 @export
 macro bf16x8_fma_scalar(acc, v, wt) {
-    unroll (k = 0..4) {
-        acc[k * 2] = fma(bf16_lo(v[k]), wt, acc[k * 2]);
-        acc[k * 2 + 1] = fma(bf16_hi(v[k]), wt, acc[k * 2 + 1]);
+    reg u32x4 bv_ = v;
+    unroll (bk_ = 0..4) {
+        acc[bk_ * 2] = fma(bf16_lo(bv_[bk_]), wt, acc[bk_ * 2]);
+        acc[bk_ * 2 + 1] = fma(bf16_hi(bv_[bk_]), wt, acc[bk_ * 2 + 1]);
     }
 }
 
@@ -752,4 +753,39 @@ macro relu4_weighted_reduce(c0, c1, w0, w1, w2, w3, out_lo, out_hi) {
     out_lo = out_lo + shfl_xor(out_lo, 4); out_hi = out_hi + shfl_xor(out_hi, 4);
     out_lo = out_lo + shfl_xor(out_lo, 8); out_hi = out_hi + shfl_xor(out_hi, 8);
     out_lo = out_lo + shfl_xor(out_lo, 16); out_hi = out_hi + shfl_xor(out_hi, 16);
+}
+
+@export
+macro bf16x8_acc_add(sum, raw) {
+    reg u32x4 br_ = raw;
+    unroll (bk_ = 0..4) {
+        sum[bk_ * 2] = sum[bk_ * 2] + bf16_lo(br_[bk_]);
+        sum[bk_ * 2 + 1] = sum[bk_ * 2 + 1] + bf16_hi(br_[bk_]);
+    }
+}
+
+@export
+macro bf16x8_pack_f32(sum, out_v) {
+    unroll (bk_ = 0..4) { out_v[bk_] = pack_bf16x2(sum[bk_ * 2], sum[bk_ * 2 + 1]); }
+}
+
+@export
+macro fp8_e4m3_quant8_pow2(v, out_c0, out_c1, out_sbits) {
+    reg f32 am = maxf(maxf(fabsf(v[0]), fabsf(v[1])), maxf(fabsf(v[2]), fabsf(v[3])));
+    am = maxf(am, maxf(maxf(fabsf(v[4]), fabsf(v[5])), maxf(fabsf(v[6]), fabsf(v[7]))));
+    am = maxf(am, shfl_xor(am, 1)); am = maxf(am, shfl_xor(am, 2));
+    out_sbits = pow2_ceil_e8m0_bits(maxf(am, 1.0e-4f)) << 23;
+    reg f32 inv = u32_as_f32(0x7F000000 - out_sbits);
+    reg u32 p0 = cvt_f32x2_e4m3x2(minf(maxf(v[0] * inv, -448.0f), 448.0f), minf(maxf(v[1] * inv, -448.0f), 448.0f));
+    reg u32 p1 = cvt_f32x2_e4m3x2(minf(maxf(v[2] * inv, -448.0f), 448.0f), minf(maxf(v[3] * inv, -448.0f), 448.0f));
+    reg u32 p2 = cvt_f32x2_e4m3x2(minf(maxf(v[4] * inv, -448.0f), 448.0f), minf(maxf(v[5] * inv, -448.0f), 448.0f));
+    reg u32 p3 = cvt_f32x2_e4m3x2(minf(maxf(v[6] * inv, -448.0f), 448.0f), minf(maxf(v[7] * inv, -448.0f), 448.0f));
+    out_c0 = p0 | (p1 << 16); out_c1 = p2 | (p3 << 16);
+}
+
+@export
+macro fp8_e4m3_dequant8_bf16(c0, c1, sbits, out_u4) {
+    reg f32 sc = u32_as_f32(sbits);
+    reg f32x4 d0 = cvt_e4m3x4_f32x4(c0); reg f32x4 d1 = cvt_e4m3x4_f32x4(c1);
+    out_u4 = pack_u32x4(pack_bf16x2(d0[0] * sc, d0[1] * sc), pack_bf16x2(d0[2] * sc, d0[3] * sc), pack_bf16x2(d1[0] * sc, d1[1] * sc), pack_bf16x2(d1[2] * sc, d1[3] * sc));
 }

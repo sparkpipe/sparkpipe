@@ -876,3 +876,60 @@ kernel[IDX_BLK256, 80] index_gathered_select_mask_256(
     }
     preexit();
 }
+
+@pdl
+@concept(linear)
+kernel[128, 64] k3_index_head_skip_128(
+    global u32* weight, global u32* activation, global u32* output,
+    global u32* seq_of_row, global u32* ctx_len, global u32* positions, u32 rows, u32 hidden, u32 heads, u32 topk
+) {
+    acqbulk();
+    reg u32 row = ctaid_y(); reg u32 head = (ctaid_x() << 2) + warp_id();
+    if (row >= rows || head >= heads) { preexit(); return; }
+    reg u32 bnd = 0; row_active_keys(row, seq_of_row, ctx_len, positions, bnd);
+    if (bnd <= topk) { preexit(); return; }
+    reg u32 lane = lane_id(); reg u32 chunks = hidden >> 3;
+    reg u64 w_row = ptr_add(weight, head * chunks, 16); reg u64 a_row = ptr_add(activation, row * chunks, 16);
+    reg f32 acc = 0.0f;
+    for (reg u32 c = lane; c < chunks; c += 32) { bf16_dot8_acc(acc, ldg128_stream(ptr_add(w_row, c, 16)), ldg128_persist(ptr_add(a_row, c, 16))); }
+    acc = warp_sum(acc);
+    if (lane == 0) { stg16(ptr_add(output, row * heads + head, 2), f32_to_bf16(acc)); }
+    preexit();
+}
+
+@pdl
+@concept(linear)
+kernel[128, 96] k3_index_q_exact_skip_128(
+    global u32* weight, global u32* activation, global u32* output,
+    global u32* seq_of_row, global u32* ctx_len, global u32* positions, u32 rows, u32 k_dim, u32 n_dim, u32 topk
+) {
+    shared u32 s_rows[8]; shared u32 s_cnt[1];
+    acqbulk();
+    reg u32 col0 = ((ctaid_x() << 2) + warp_id()) << 1;
+    if (col0 >= n_dim) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 lane = lane_id(); reg u32 chunks = k_dim >> 3;
+    reg u64 w0 = ptr_add(weight, col0 * chunks, 16); reg u64 w1 = ptr_add(w0, chunks, 16);
+    for (reg u32 r_base = 0; r_base < rows; r_base += 8) {
+        if (tid == 0) {
+            reg u32 cnt = 0; reg u32 lim = (rows - r_base < 8) ? (rows - r_base) : 8;
+            for (reg u32 r = 0; r < lim; r += 1) {
+                reg u32 row = r_base + r; reg u32 bnd = 0;
+                row_active_keys(row, seq_of_row, ctx_len, positions, bnd);
+                if (bnd > topk) { sts32(s_rows, cnt, row); cnt = cnt + 1; }
+            }
+            sts32(s_cnt, 0, cnt);
+        }
+        barrier();
+        reg u32 cnt = lds32(s_cnt, 0);
+        reg f32 a0[8]; reg f32 a1[8];
+        if (cnt != 0) { bf16_exact_2col_rows8(cnt, s_rows, activation, w0, w1, chunks, lane, a0, a1); }
+        unroll (r = 0..8) {
+            if (r < cnt) {
+                a0[r] = warp_sum(a0[r]); a1[r] = warp_sum(a1[r]);
+                if (lane == 0) { stg32(ptr_add(output, lds32(s_rows, r) * n_dim + col0, 2), pack_bf16x2(a0[r], a1[r])); }
+            }
+        }
+        if (r_base + 8 < rows) { barrier(); }
+    }
+    preexit();
+}

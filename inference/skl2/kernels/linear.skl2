@@ -473,3 +473,117 @@ kernel[BLOCK256, 56] skinny_bf16_split_r1_pdl(blob[216, 8] args) {
         skinny_store_out(param_u64(args, 24), param_u64(args, 16), row, param_u32(args, 172), param_u32(args, 176) + neuron, total);
     }
 }
+
+@pdl
+@concept(linear)
+template kernel[BLOCK256, REGS] k3_shared_w1_situ_skinny_tpl<RG, REGS>(
+    global u32* weight, global u32* activation, global u32* output_bf16,
+    u32 rows, u32 hidden, u32 channels, f32 beta, f32 lin_beta
+) {
+    shared f32 partial[8 * 2 * RG];
+    acqbulk();
+    reg u32 c0 = ctaid_x(); reg u32 base_row = ctaid_y() * RG;
+    reg u32 count = (base_row < rows) ? ((rows - base_row < RG) ? (rows - base_row) : RG) : 0;
+    if (count == 0 || c0 >= channels) { preexit(); return; }
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 sub = lane_id();
+    reg u32 chunks = hidden >> 3; reg u32 first = (chunks * wid) >> 3; reg u32 last = (chunks * (wid + 1)) >> 3;
+    reg u64 wg = ptr_add(weight, c0 * chunks, 16); reg u64 wu = ptr_add(weight, (channels + c0) * chunks, 16);
+    reg f32 acc_g[RG]; reg f32 acc_u[RG]; unroll (r = 0..RG) { acc_g[r] = 0.0f; acc_u[r] = 0.0f; }
+    for (reg u32 c = first + sub; c < last; c += 32) {
+        reg u32x4 vwg = ldg128_stream(ptr_add(wg, c, 16)); reg u32x4 vwu = ldg128_stream(ptr_add(wu, c, 16));
+        unroll (r = 0..RG) {
+            if (r < count) {
+                reg u32x4 va = ldg128_persist(ptr_add(activation, (base_row + r) * chunks + c, 16));
+                bf16_dot8_acc(acc_g[r], vwg, va); bf16_dot8_acc(acc_u[r], vwu, va);
+            }
+        }
+    }
+    unroll (r = 0..RG) { acc_g[r] = warp_sum(acc_g[r]); acc_u[r] = warp_sum(acc_u[r]); }
+    if (sub == 0) { unroll (r = 0..RG) { sts32(partial, (wid * 2) * RG + r, acc_g[r]); sts32(partial, (wid * 2 + 1) * RG + r, acc_u[r]); } }
+    barrier();
+    if (tid < count) {
+        reg f32 gv = 0.0f; reg f32 uv = 0.0f; reg f32 out_v = 0.0f;
+        unroll (w = 0..8) { gv = gv + lds32(partial, (w * 2) * RG + tid); uv = uv + lds32(partial, (w * 2 + 1) * RG + tid); }
+        situ_exact_f32(bf16_lo(f32_to_bf16(gv)), bf16_lo(f32_to_bf16(uv)), beta, lin_beta, out_v);
+        stg16(ptr_add(output_bf16, (base_row + tid) * channels + c0, 2), f32_to_bf16(out_v));
+    }
+    preexit();
+}
+
+instantiate k3_shared_w1_situ_skinny_tpl<1, 64> as k3_shared_w1_situ_skinny_r1;
+instantiate k3_shared_w1_situ_skinny_tpl<4, 80> as k3_shared_w1_situ_skinny_r4;
+instantiate k3_shared_w1_situ_skinny_tpl<8, 96> as k3_shared_w1_situ_skinny_r8;
+instantiate k3_shared_w1_situ_skinny_tpl<12, 112> as k3_shared_w1_situ_skinny_r12;
+
+@pdl
+@concept(linear)
+template kernel[BLOCK256, REGS] staged_gate_out_gemv_tpl<HAS_NORM, RG, REGS>(
+    global u32* primary, global u32* gate, if (HAS_NORM == 1) global f32* norm_w,
+    global u32* out_weight, global u32* output, u32 rows, u32 hidden, if (HAS_NORM == 1) f32 eps
+) {
+    shared u32 s_in[RG * 384];
+    if constexpr (HAS_NORM == 1) { shared f32 s_wsum[8]; }
+    acqbulk();
+    reg u32 base_row = ctaid_y() * RG;
+    if (base_row >= rows) { preexit(); return; }
+    reg u32 count = (rows - base_row < RG) ? (rows - base_row) : RG;
+    reg u32 tid = tid_x(); reg u32 wid = warp_id(); reg u32 lane = lane_id();
+    if constexpr (HAS_NORM == 1) {
+        reg u32 half_id = tid >> 7; reg u32 within = tid & 127; reg u32 w_in_h = within >> 5;
+        reg f32 nw = u32_as_f32(ldg32_persist(ptr_add(norm_w, within, 4)));
+        for (reg u32 r = 0; r < count; r += 1) {
+            reg u32 row = base_row + r;
+            unroll (h0 = 0..3) {
+                reg u32 h = (h0 << 1) + half_id; reg u32 idx = (row * 6 + h) * 128 + within;
+                reg f32 v = bf16_lo(ldg16_persist(ptr_add(primary, idx, 2)));
+                reg f32 sq = warp_sum(v * v);
+                if (lane == 0) { sts32(s_wsum, (half_id << 2) + w_in_h, sq); }
+                barrier();
+                reg f32 sm = lds32(s_wsum, half_id << 2) + lds32(s_wsum, (half_id << 2) + 1) + lds32(s_wsum, (half_id << 2) + 2) + lds32(s_wsum, (half_id << 2) + 3);
+                reg f32 sc = 0.0f; rsqrt_exact_div(sm, 128.0f, eps, sc);
+                reg f32 nrm = bf16_lo(f32_to_bf16((v * sc) * nw));
+                reg f32 sg = 0.0f; sigmoid_exact_f32(bf16_lo(ldg16_persist(ptr_add(gate, idx, 2))), sg);
+                reg u32 out16 = f32_to_bf16(nrm * sg); reg u32 other = shfl_xor(out16, 1);
+                if ((within & 1) == 0) { sts32(s_in, r * 384 + (h << 6) + (within >> 1), pack_u16x2(out16, other)); }
+                barrier();
+            }
+        }
+    } else {
+        for (reg u32 r = 0; r < count; r += 1) {
+            reg u32 rbase = (base_row + r) * 384;
+            for (reg u32 i = tid; i < 384; i += BLOCK256) {
+                reg u32 vv = ldg32_persist(ptr_add(primary, rbase + i, 4)); reg u32 gv = ldg32_persist(ptr_add(gate, rbase + i, 4));
+                reg f32 s0 = 0.0f; reg f32 s1 = 0.0f;
+                sigmoid_exact_f32(bf16_lo(gv), s0); sigmoid_exact_f32(bf16_hi(gv), s1);
+                sts32(s_in, r * 384 + i, pack_bf16x2(bf16_lo(vv) * s0, bf16_hi(vv) * s1));
+            }
+        }
+        barrier();
+    }
+    unroll (pass = 0..4) {
+        reg u32 col = ((ctaid_x() << 2) + pass) * 8 + wid;
+        reg u32 col_c = (col < hidden) ? col : 0;
+        reg u64 w0 = ptr_add(out_weight, col_c * 96, 16);
+        reg f32 acc[RG]; unroll (r = 0..RG) { acc[r] = 0.0f; }
+        for (reg u32 c = lane; c < 96; c += 32) {
+            reg u32x4 vw = ldg128_stream(ptr_add(w0, c, 16));
+            unroll (r = 0..RG) { if (r < count) { bf16_dot8_acc(acc[r], vw, lds128(s_in, r * 384 + (c << 2))); } }
+        }
+        unroll (r = 0..RG) {
+            if (r < count) {
+                acc[r] = warp_sum(acc[r]);
+                if (lane == 0 && col < hidden) { stg16(ptr_add(output, (base_row + r) * hidden + col, 2), f32_to_bf16(acc[r])); }
+            }
+        }
+    }
+    preexit();
+}
+
+instantiate staged_gate_out_gemv_tpl<1, 1, 64> as k3_kda_norm_gate_out_r1;
+instantiate staged_gate_out_gemv_tpl<1, 4, 80> as k3_kda_norm_gate_out_r4;
+instantiate staged_gate_out_gemv_tpl<1, 8, 96> as k3_kda_norm_gate_out_r8;
+instantiate staged_gate_out_gemv_tpl<1, 12, 112> as k3_kda_norm_gate_out_r12;
+instantiate staged_gate_out_gemv_tpl<0, 1, 64> as k3_mla_gate_out_r1;
+instantiate staged_gate_out_gemv_tpl<0, 4, 80> as k3_mla_gate_out_r4;
+instantiate staged_gate_out_gemv_tpl<0, 8, 96> as k3_mla_gate_out_r8;
+instantiate staged_gate_out_gemv_tpl<0, 12, 112> as k3_mla_gate_out_r12;
