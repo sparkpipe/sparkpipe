@@ -377,7 +377,7 @@ static SparkStatus ReplayAttention(D41ModelState *state, const D41Layer *layer, 
 		if ( SparkGpuEventRecord(fork->after, fork->side) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	LM_LAUNCH((D41WindowFoldWholeKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
+	D41WindowFoldWholeLaunch(dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
 		state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 		step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
@@ -570,10 +570,10 @@ static void ReplaySetup(ReplayWorld *world, const ReplayOptions *options, uint32
 		world->step.hidden_bf16 = (uint16_t *)ReplayFilled((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * sizeof(uint16_t), REPLAY_FILL_BF16, 0x700u);
 		LM_LAUNCH((LmRowLanesKernel), rows, 256u, 0, (SparkGpuStream)0, world->step.sequence_row_begin, world->step.sequence_row_indices, state->row_lane,
 			state->row_ordinal);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, world->step.positions, state->bound_ratio2, rows, 2u);
-		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, world->step.positions, state->bound_ratio1, rows, 1u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, world->step.context_length, state->length_ratio2, REPLAY_SLOTS, 2u);
-		LM_LAUNCH((D41CompressedLengthKernel), 1u, 256u, 0, (SparkGpuStream)0, world->step.context_length, state->length_ratio1, REPLAY_SLOTS, 1u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, world->step.positions, state->bound_ratio2, rows, 2u);
+		D41CompressedEmitPositionLaunch(1u, 256u, (SparkGpuStream)0, world->step.positions, state->bound_ratio1, rows, 1u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, world->step.context_length, state->length_ratio2, REPLAY_SLOTS, 2u);
+		D41CompressedLengthLaunch(1u, 256u, (SparkGpuStream)0, world->step.context_length, state->length_ratio1, REPLAY_SLOTS, 1u);
 	}
 	state->row_invariant = world->step.commit == 0u ? 1u : 0u;
 	memset(&world->plan, 0, sizeof(world->plan));
