@@ -521,7 +521,7 @@ void DsparkYarnTableKernel(float *__restrict__ inverse, double base, double fact
 		const double dimension = (double)DIM;
 		double low = floor(dimension * log(original / (beta_fast * 2.0 * DSPARK_PI)) / (2.0 * log(base)));
 		double high = ceil(dimension * log(original / (beta_slow * 2.0 * DSPARK_PI)) / (2.0 * log(base)));
-		const double extrapolated = 1.0 / pow(base, (2.0 * (double)threadIdx.x) / dimension);
+		const double base_inv = 1.0 / pow(base, (2.0 * (double)threadIdx.x) / dimension);
 		double ramp;
 		low = low < 0.0 ? 0.0 : low;
 		high = high > dimension - 1.0 ? dimension - 1.0 : high;
@@ -529,7 +529,7 @@ void DsparkYarnTableKernel(float *__restrict__ inverse, double base, double fact
 			high += 0.001;
 		ramp = ((double)threadIdx.x - low) / (high - low);
 		ramp = ramp < 0.0 ? 0.0 : ramp > 1.0 ? 1.0 : ramp;
-		inverse[threadIdx.x] = (float)(extrapolated / factor * ramp + extrapolated * (1.0 - ramp));
+		inverse[threadIdx.x] = (float)(base_inv / factor * ramp + base_inv * (1.0 - ramp));
 	}
 }
 
